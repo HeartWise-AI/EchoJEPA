@@ -19,3 +19,4 @@ model_data/
 *.zip
 *.tar
 *.gz
+*.egg-info/
