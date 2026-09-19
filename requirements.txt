@@ -2,6 +2,8 @@ torch>=2
 torchvision
 tensorboard
 wandb
+moviepy
+imageio-ffmpeg
 iopath
 pyyaml
 numpy

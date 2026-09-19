@@ -30,7 +30,7 @@ except Exception:
 import torch.nn.functional as F
 from torch.nn.parallel import DistributedDataParallel
 
-from app.vjepa.transforms import make_transforms
+from app.vjepa.transforms import DEFAULT_NORMALIZE, make_transforms
 from app.vjepa.utils import init_opt, init_video_model, load_checkpoint
 from src.datasets.data_manager import init_data
 from src.masks.multiseq_multiblock3d import MaskCollator
@@ -38,6 +38,7 @@ from src.masks.utils import apply_masks
 from src.utils.distributed import init_distributed
 from src.utils.logging import AverageMeter, CSVLogger, get_logger, gpu_timer
 from src.utils.checkpoint_loader import robust_checkpoint_loader
+from src.utils.wandb_logging import finish_wandb, init_wandb, log_input_clips, log_scalars
 
 import torch.distributed as dist
 
@@ -98,6 +99,9 @@ def main(args, resume_preempt=False):
     seed = cfgs_meta.get("seed", _GLOBAL_SEED)
     skip_batches = cfgs_meta.get("skip_batches", -1)
     use_sdpa = cfgs_meta.get("use_sdpa", False)
+    # Log the input video(s). By default, log 2 videos once per epoch.
+    log_video_freq = cfgs_meta.get("log_video_freq", 0)
+    num_log_videos = cfgs_meta.get("num_log_videos", 2)
     sync_gc = cfgs_meta.get("sync_gc", False)
     which_dtype = cfgs_meta.get("dtype")
     logger.info(f"{which_dtype=}")
@@ -210,6 +214,8 @@ def main(args, resume_preempt=False):
         ("%d", "gpu-time(ms)"),
         ("%d", "dataload-time(ms)"),
     )
+    # Initiate a wandb experiment run.
+    wandb_run = init_wandb(cfgs_meta, args, rank, folder)
 
     encoder, predictor = init_video_model(
         device=device,
@@ -548,6 +554,18 @@ def main(args, resume_preempt=False):
     
                 clips, masks_enc, masks_pred = load_clips()
                 data_elapsed_time_ms = (time.time() - itr_start_time) * 1000.0
+
+                # Log the clips that will be fed into the encoder.
+                if wandb_run is not None:
+                    # Always log video(s) at the start of the iterations, and log video(s) every `log_video_freq` iterations.
+                    if (itr == itr_start) or (log_video_freq > 0 and itr % log_video_freq == 0):
+                        log_input_clips(
+                            wandb_run,
+                            clips,                          # actual video tensors that have just been loaded and moved onto the GPU.
+                            step=epoch * ipe + itr,         # global training step.
+                            normalize=DEFAULT_NORMALIZE,    # reverse the normalization for visualization.
+                            num_videos=num_log_videos,
+                        )
     
                 if sync_gc and (itr + 1) % GARBAGE_COLLECT_ITR_FREQ == 0:
                     logger.info("Running garbage collection...")
@@ -632,6 +650,22 @@ def main(args, resume_preempt=False):
                         gpu_etime_ms,
                         data_elapsed_time_ms,
                     )
+                    # Log scalar training metrics to wandb every `log_freq` iterations, plus once at the end of each epoch.
+                    if (itr % log_freq == 0) or (itr == ipe - 1):
+                        log_scalars(
+                            wandb_run,
+                            {
+                                "train/loss": loss,                   # current iteration's loss.
+                                "train/loss_avg": loss_meter.avg,     # running averge loss across the epoch so far.
+                                "train/lr": _new_lr,                  # current learning rate.
+                                "train/wd": _new_wd,                  # current weight decay.
+                                "train/epoch": epoch + 1,
+                                "time/iter_ms": iter_elapsed_time_ms, # total wall-clock time per iteration (include data loading, GPU work).
+                                "time/gpu_ms": gpu_etime_ms,          # time spent executing training step on GPU.
+                                "time/data_ms": data_elapsed_time_ms, # time spent preparing data before for/backward pass.
+                            },
+                            step=epoch * ipe + itr,
+                        )
                     if (itr % log_freq == 0) or (itr == ipe - 1) or np.isnan(loss) or np.isinf(loss):
                         logger.info(
                             "[%d, %5d] loss: %.3f "
@@ -696,6 +730,8 @@ def main(args, resume_preempt=False):
     
             _barrier()  # keep others from entering next epoch while rank 0 uploads
     finally:
+        # Finish wandb logging.
+        finish_wandb(wandb_run)
         try:
             _barrier()
         except Exception:
