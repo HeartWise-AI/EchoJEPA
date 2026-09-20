@@ -214,8 +214,6 @@ def main(args, resume_preempt=False):
         ("%d", "gpu-time(ms)"),
         ("%d", "dataload-time(ms)"),
     )
-    # Initiate a wandb experiment run.
-    wandb_run = init_wandb(cfgs_meta, args, rank, folder)
 
     encoder, predictor = init_video_model(
         device=device,
@@ -477,6 +475,10 @@ def main(args, resume_preempt=False):
     if sync_gc:
         gc.disable()
         gc.collect()
+
+    # Initiate a wandb experiment run only after setup succeeds so its lifecycle is covered
+    # by the training try/finally below.
+    wandb_run = init_wandb(cfgs_meta, args, rank, folder)
 
     try:
         for epoch in range(start_epoch, num_epochs):
