@@ -178,7 +178,8 @@ def denormalize_clips(clips, normalize):
 
     # Denormalization: must never mutate the tensor being trained on.
     out = clips.detach().float() * std + mean
-    out = out.clamp_(0.0, 255.0).to(torch.uint8)
+    # Round before the uint8 cast.
+    out = out.round_().clamp_(0.0, 255.0).to(torch.uint8)
     return out.permute(0, 2, 1, 3, 4)
 
 

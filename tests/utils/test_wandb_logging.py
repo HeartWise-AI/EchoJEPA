@@ -1,12 +1,14 @@
 # tests/utils/test_wandb_logging.py
 
-"""Tests for W&B run initialization and checkpoint resume behavior."""
+"""Tests for W&B run initialization, checkpoint resume behavior, and input-clip logging."""
 
 import os
 import tempfile
 import unittest
 from types import SimpleNamespace
 from unittest import mock
+
+import torch
 
 from src.utils import wandb_logging
 
@@ -259,6 +261,124 @@ class TestInitWandb(unittest.TestCase):
             self.assertEqual(run_id, "legacy-id")
             self.assertEqual(fake_wandb.calls[0]["id"], "legacy-id")
             self.assertEqual(fake_wandb.calls[0]["resume"], "must")
+
+    def test_logging_is_disabled_unless_a_project_is_configured(self):
+        fake_wandb = _FakeWandb()
+        for meta in ({}, {"wandb_project": None}, {"wandb_project": None, "wandb_entity": "entity"}):
+            with self.subTest(meta=meta), tempfile.TemporaryDirectory() as folder:
+                with mock.patch.object(wandb_logging, "wandb", fake_wandb):
+                    result = wandb_logging.init_wandb(meta, {}, rank=0, folder=folder)
+
+                self.assertEqual(result, (None, None))
+                # Nothing is opened and nothing is written to the run folder.
+                self.assertEqual(os.listdir(folder), [])
+        self.assertEqual(fake_wandb.calls, [])
+
+    def test_only_rank_zero_opens_a_run(self):
+        """Nonzero ranks must not open duplicate runs, even when resuming."""
+        fake_wandb = _FakeWandb()
+        for rank in (1, 3):
+            with self.subTest(rank=rank), tempfile.TemporaryDirectory() as folder:
+                with mock.patch.object(wandb_logging, "wandb", fake_wandb):
+                    result = wandb_logging.init_wandb(
+                        self.meta,
+                        {},
+                        rank=rank,
+                        folder=folder,
+                        resuming_training=True,
+                        checkpoint_run_id="existing-id",
+                        checkpoint_has_wandb_run_id=True,
+                    )
+
+                self.assertEqual(result, (None, None))
+                self.assertEqual(os.listdir(folder), [])
+        self.assertEqual(fake_wandb.calls, [])
+
+    def test_run_landing_in_another_destination_is_reported(self):
+        class _RedirectingWandb(_FakeWandb):
+            def init(self, **kwargs):
+                run = super().init(**kwargs)
+                run.entity = "personal-account"
+                return run
+
+        with tempfile.TemporaryDirectory() as folder:
+            with mock.patch.object(wandb_logging, "wandb", _RedirectingWandb()):
+                with self.assertLogs(level="WARNING") as logs:
+                    wandb_logging.init_wandb(self.meta, {}, rank=0, folder=folder)
+
+        self.assertTrue(any("personal-account/project" in line for line in logs.output))
+
+
+def _clips(batch, frames=4, size=8, seed=0):
+    """A (B, C, T, H, W) batch whose frames are all distinct."""
+    generator = torch.Generator().manual_seed(seed)
+    return torch.randn(batch, 3, frames, size, size, generator=generator)
+
+
+class TestClipHelpers(unittest.TestCase):
+    def test_select_clips_takes_the_first_fpc_batch(self):
+        first, second = _clips(2), _clips(2, frames=8)
+        self.assertIs(wandb_logging._select_clips([first, second]), first)
+        self.assertIs(wandb_logging._select_clips((first,)), first)
+        self.assertIs(wandb_logging._select_clips(first), first)
+
+    def test_select_clips_rejects_what_it_cannot_display(self):
+        self.assertIsNone(wandb_logging._select_clips([]))
+        self.assertIsNone(wandb_logging._select_clips(torch.zeros(2, 3, 8, 8)))
+        self.assertIsNone(wandb_logging._select_clips("not a tensor"))
+
+    def test_denormalize_recovers_the_original_pixels(self):
+        mean, std = (0.485, 0.456, 0.406), (0.229, 0.224, 0.225)
+        # Every uint8 value, in every channel and frame.
+        pixels = torch.arange(256, dtype=torch.float32).reshape(1, 1, 1, 16, 16)
+        pixels = pixels.expand(1, 3, 4, 16, 16).contiguous()
+        normalized = (pixels / 255.0 - torch.tensor(mean).view(1, 3, 1, 1, 1)) / torch.tensor(std).view(
+            1, 3, 1, 1, 1
+        )
+        before = normalized.clone()
+
+        out = wandb_logging.denormalize_clips(normalized, (mean, std))
+
+        self.assertEqual(out.dtype, torch.uint8)
+        # (B, C, T, H, W) -> (B, T, C, H, W), the layout wandb.Video expects.
+        self.assertEqual(tuple(out.shape), (1, 4, 3, 16, 16))
+        self.assertTrue(torch.equal(out.permute(0, 2, 1, 3, 4), pixels.to(torch.uint8)))
+        # The tensor being trained on is left untouched.
+        self.assertTrue(torch.equal(normalized, before))
+
+    def test_denormalize_clamps_out_of_range_values(self):
+        clips = torch.tensor([-100.0, 100.0]).view(1, 1, 1, 1, 2).expand(1, 3, 1, 1, 2)
+        out = wandb_logging.denormalize_clips(clips, ((0.5,) * 3, (0.5,) * 3))
+        self.assertEqual(out.flatten()[:2].tolist(), [0, 255])
+
+    def test_unique_frame_fraction(self):
+        clips = _clips(2)
+        self.assertEqual(wandb_logging.unique_frame_fraction(clips), 1.0)
+
+        # Clip 0 repeats frame 0 once (3/4 unique); clip 1 stays fully unique.
+        clips[0, :, 1] = clips[0, :, 0]
+        self.assertAlmostEqual(wandb_logging.unique_frame_fraction(clips), (0.75 + 1.0) / 2)
+
+    def test_log_input_clips_uploads_and_analyses_only_the_sample(self):
+        """Repeated frames outside the uploaded sample must not affect the metric."""
+        clips = _clips(4)
+        clips[2:, :, 1] = clips[2:, :, 0]  # only clips that are not uploaded repeat frames
+        logged = []
+        fake_wandb = SimpleNamespace(Video=lambda data, fps, format: ("video", data.shape, format))
+        run = SimpleNamespace(log=lambda payload, **kwargs: logged.append((payload, kwargs)))
+
+        with mock.patch.object(wandb_logging, "wandb", fake_wandb):
+            wandb_logging.log_input_clips(
+                run, [clips], step=6, normalize=((0.5,) * 3, (0.5,) * 3), num_videos=2
+            )
+
+        [(payload, kwargs)] = logged
+        videos = {k: v for k, v in payload.items() if k.startswith("train/input_clips/")}
+        self.assertEqual(sorted(videos), ["train/input_clips/0", "train/input_clips/1"])
+        self.assertEqual(videos["train/input_clips/0"], ("video", (4, 3, 8, 8), "gif"))
+        self.assertEqual(payload["data/unique_frame_frac"], 1.0)
+        self.assertEqual(payload[wandb_logging.STEP_METRIC], 6)
+        self.assertNotIn("step", kwargs)
 
 
 if __name__ == "__main__":
