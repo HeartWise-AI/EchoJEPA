@@ -63,9 +63,9 @@ mask:
 meta:
   # Weights & Biases. Unset wandb_project to disable all wandb logging.
   wandb_project: null
-  # wandb_entity: mhi_ai
+  wandb_entity: mhi_ai
   # wandb_run_name: null
-  # log_video_freq: 0         # 0: log input clips once per epoch.
+  # log_video_freq: 0         # 0: log input clips once, on the first iteration.
   # num_log_videos: 2
   dtype: bfloat16
   eval_freq: 100

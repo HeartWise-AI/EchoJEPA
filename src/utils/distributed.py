@@ -104,3 +104,96 @@ class AllReduce(torch.autograd.Function):
     @staticmethod
     def backward(ctx, grads):
         return grads
+
+
+def _collective_device(device=None):
+    """Pick a device the current process group can run a collective on."""
+    if device is not None:
+        return device
+    try:
+        nccl = dist.get_backend() == "nccl"
+    except Exception:
+        nccl = False
+    if nccl and torch.cuda.is_available():
+        return torch.device("cuda", torch.cuda.current_device())
+    return torch.device("cpu")
+
+
+def any_rank_failed(failed, device=None):
+    """Check if at least one rank of the job failed.
+
+    Some setup work only happens on one rank, so an exception there leaves the
+    healthy ranks running until they deadlock on a collective the failed rank
+    never enters. Voting on the failure lets the whole job abort together at a
+    known line instead of waiting for the NCCL watchdog.
+
+    Args:
+        failed: whether this rank failed.
+        device: device to run the collective on. Defaults to the current CUDA device
+            under NCCL, CPU otherwise.
+
+    Return: 
+        True: when `failed=True` on at least one rank of the job.
+        This rank's own value unchanged: when not running distributed.
+    """
+    failed = bool(failed)
+    if not (dist.is_available() and dist.is_initialized() and dist.get_world_size() > 1):
+        return failed
+
+    # MAX over 0/1: any single failing rank makes the result 1 on every rank.
+    flag = torch.tensor(
+        [1 if failed else 0],
+        dtype=torch.int32,
+        device=_collective_device(device),
+    )
+    dist.all_reduce(flag, op=dist.ReduceOp.MAX)
+    return bool(flag.item())
+
+
+def global_sample_weighted_means(values, num_samples, device=None):
+    """Reduce per-rank means into sample-weighted means over every rank, in one collective.
+    Note: This is a metrics-only reduction. Must not perturb the loss used for backpropagation.
+
+    Args:
+        values: this rank's local means, one per metric.
+        num_samples: how many samples each entry of `values` was averaged over on this rank.
+        device: device to run the collective on. Defaults to the current CUDA device
+            under NCCL, CPU otherwise.
+
+    Returns: a list of (global_mean, global_num_samples), one per metric.
+        Non-finite values propagate instead of being masked.
+        Returns the local values unchanged when not running distributed.
+    """
+    values = [float(value) for value in values]
+    num_samples = [float(count) for count in num_samples]
+    if len(values) != len(num_samples):
+        raise ValueError("Values and num_samples must have the same length.")
+    if not values:
+        return []
+
+    local_results = [
+        (value if count > 0 else float("nan"), count)
+        for value, count in zip(values, num_samples)
+    ]
+    if not (dist.is_available() and dist.is_initialized() and dist.get_world_size() > 1):
+        return local_results
+
+    packed = []
+    for value, count in zip(values, num_samples):
+        # A rank with nothing to contribute must add nothing. `value` is NaN there,
+        # and NaN * 0 is NaN, which would poison the sum for every other rank.
+        packed.extend((value * count if count > 0 else 0.0, count))
+    totals = torch.tensor(
+        packed,
+        dtype=torch.float64,
+        device=_collective_device(device),
+    )
+    dist.all_reduce(totals, op=dist.ReduceOp.SUM)
+    reduced = totals.tolist()
+
+    results = []
+    for index in range(0, len(reduced), 2):
+        total_value, total_count = reduced[index : index + 2]
+        mean = total_value / total_count if total_count > 0 else float("nan")
+        results.append((mean, total_count))
+    return results

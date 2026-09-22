@@ -3,7 +3,7 @@ torchvision
 tensorboard
 wandb
 moviepy
-imageio-ffmpeg
+imageio>=2.28.1
 iopath
 pyyaml
 numpy
