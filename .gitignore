@@ -12,6 +12,8 @@ __pycache__/
 __MACOSX/
 
 # Large Data & Medical Images
+data/csv/
+*.parquet
 model_data/
 *.dcm
 *.pth
@@ -19,3 +21,5 @@ model_data/
 *.zip
 *.tar
 *.gz
+*.egg-info/
+scratch/

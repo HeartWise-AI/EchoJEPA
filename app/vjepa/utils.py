@@ -108,6 +108,11 @@ def load_checkpoint(
 
     epoch = checkpoint["epoch"]
     itr   = checkpoint.get("itr", 0)
+    # The tracking state resumes with the model state from `save_checkpoint`.
+    # Track whether the field exists so callers can distinguish a legacy checkpoint
+    # from a newer checkpoint that explicitly has no associated run.
+    has_wandb_run_id = "wandb_run_id" in checkpoint
+    wandb_run_id = checkpoint.get("wandb_run_id", None)
 
     # -- loading encoder
     pretrained_dict = _strip_ddp_prefix(checkpoint["encoder"])
@@ -141,7 +146,9 @@ def load_checkpoint(
         opt,
         scaler,
         epoch,
-        itr
+        itr,
+        wandb_run_id,
+        has_wandb_run_id,
     )
 
 
@@ -272,3 +279,21 @@ def init_opt(
     )
     scaler = torch.cuda.amp.GradScaler() if mixed_precision else None
     return optimizer, scaler, scheduler, wd_scheduler
+
+
+def grad_norm(*modules, norm_type=2.0):
+    """Compute the total L2 norm over the gradients of every trainable parameter in `modules`.
+    Note: `*modules` can accept any number of model arguments.
+
+    Returns the gradient norm as a 0-dim tensor. `inf`/`nan` propagate rather than being 
+    clamped: exploding and non-finite gradients should stay visible.
+    """
+    trainable_params = [
+        p for module in modules for p in module.parameters() if p.requires_grad
+    ]
+    grads = [p.grad for p in trainable_params if p.grad is not None]
+    if not grads:
+        device = trainable_params[0].device if trainable_params else None
+        return torch.zeros((), dtype=torch.float32, device=device)
+    norms = torch._foreach_norm(grads, norm_type)
+    return torch.linalg.vector_norm(torch.stack([n.to(torch.float32) for n in norms]), norm_type)

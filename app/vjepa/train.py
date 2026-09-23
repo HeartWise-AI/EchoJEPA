@@ -3,7 +3,7 @@
 # LICENSE file in the root directory of this source tree.
 
 import os
-import glob
+# import glob
 
 # -- FOR DISTRIBUTED TRAINING ENSURE ONLY 1 DEVICE VISIBLE PER PROCESS
 try:
@@ -18,6 +18,7 @@ import time
 import io
 import boto3
 import numpy as np
+import math
 import torch
 # import torch.multiprocessing as mp
 import torch.multiprocessing as mp
@@ -30,14 +31,19 @@ except Exception:
 import torch.nn.functional as F
 from torch.nn.parallel import DistributedDataParallel
 
-from app.vjepa.transforms import make_transforms
-from app.vjepa.utils import init_opt, init_video_model, load_checkpoint
+from app.vjepa.transforms import DEFAULT_NORMALIZE, make_transforms
+from app.vjepa.utils import init_opt, init_video_model, load_checkpoint, grad_norm
+from app.vjepa.loss import jepa_loss
 from src.datasets.data_manager import init_data
 from src.masks.multiseq_multiblock3d import MaskCollator
-from src.masks.utils import apply_masks
-from src.utils.distributed import init_distributed
+from src.utils.distributed import (
+    any_rank_failed,
+    global_sample_weighted_means,
+    init_distributed,
+)
 from src.utils.logging import AverageMeter, CSVLogger, get_logger, gpu_timer
 from src.utils.checkpoint_loader import robust_checkpoint_loader
+from src.utils.wandb_logging import finish_wandb, init_wandb, log_input_clips, log_scalars
 
 import torch.distributed as dist
 
@@ -88,16 +94,20 @@ def main(args, resume_preempt=False):
     cfgs_meta = args.get("meta")
     s3_checkpoint_uri = cfgs_meta.get("s3_checkpoint_uri", None)
     save_every_freq = cfgs_meta.get("save_every_freq", -1)
-    save_every_steps = cfgs_meta.get("save_every_steps", 0)
+    # save_every_steps = cfgs_meta.get("save_every_steps", 0)
     checkpoints_to_keep = cfgs_meta.get("checkpoints_to_keep", 3)
     # Legacy fallback
     max_epoch_checkpoints = cfgs_meta.get("max_epoch_checkpoints", checkpoints_to_keep)
-    max_step_checkpoints = cfgs_meta.get("max_step_checkpoints", 5)
+    # max_step_checkpoints = cfgs_meta.get("max_step_checkpoints", 5)
     load_model = cfgs_meta.get("load_checkpoint") or resume_preempt
     r_file = cfgs_meta.get("read_checkpoint", None)
     seed = cfgs_meta.get("seed", _GLOBAL_SEED)
     skip_batches = cfgs_meta.get("skip_batches", -1)
     use_sdpa = cfgs_meta.get("use_sdpa", False)
+    # Log the input video(s). By default, log 2 videos during the first epoch only.
+    # `log_video_freq > 0`: optionally logs additional samples within that epoch.
+    log_video_freq = cfgs_meta.get("log_video_freq", 0)
+    num_log_videos = cfgs_meta.get("num_log_videos", 2)
     sync_gc = cfgs_meta.get("sync_gc", False)
     which_dtype = cfgs_meta.get("dtype")
     logger.info(f"{which_dtype=}")
@@ -321,6 +331,15 @@ def main(args, resume_preempt=False):
     # with the correct start_step so EMA is aligned.
     start_epoch, start_itr = 0, 0
     completed_steps = 0  # (LATEST) Track how many global steps have already been completed
+    # Only an actual resume may reattach to the previous wandb run.
+    resuming_training = False
+    checkpoint_run_id = None
+    checkpoint_has_wandb_run_id = False
+    # `save_checkpoint()` will reference these two variables:
+    # 1. `effective_wandb_run_id`: run ID. Set from `init_wandb` and persisted in every checkpoint.
+    # 2. `epoch_loss_avg`: global sample-weighted loss over the last completed epoch.
+    effective_wandb_run_id = None
+    epoch_loss_avg = None
 
     if force_load_pretrain:
         if anneal_ckpt_path and os.path.exists(anneal_ckpt_path):
@@ -357,38 +376,64 @@ def main(args, resume_preempt=False):
         latest_path = os.path.join(folder, "latest.pt")
         load_path = None
 
-        if load_model or os.path.exists(latest_path):
+        # Resume only happens when explicitly requested.
+        if load_model:
             load_path = os.path.join(folder, r_file) if r_file is not None else latest_path
             logger.info(f"Loading checkpoint from {load_path}")
 
-            if load_path and os.path.exists(load_path):
-                logger.info(f"Resuming training from checkpoint: {load_path}")
-                (
-                    encoder,
-                    predictor,
-                    target_encoder,
-                    optimizer,
-                    scaler,
-                    start_epoch,
-                    start_itr,
-                ) = load_checkpoint(
-                    r_path=load_path,
-                    encoder=encoder,
-                    predictor=predictor,
-                    target_encoder=target_encoder,
-                    opt=optimizer,
-                    scaler=scaler,
+            # If request resume, but the checkpoint is missing, raise the error.
+            if not os.path.exists(load_path):
+                logger.error(f"Configured to resume but checkpoint was not found at: {load_path}")
+                raise FileNotFoundError(
+                    f"Resume was requested (meta.load_checkpoint or preemption recovery) "
+                    f"but no checkpoint exists at {load_path}. Point meta.read_checkpoint at "
+                    f"an existing file, or set meta.load_checkpoint: false to start fresh."
                 )
-                logger.info(f"SUCCESS: Loaded checkpoint from {load_path}")
-                completed_steps = start_epoch * ipe + start_itr  # (LATEST) compute once
 
-                # (LATEST) Burn LR/WD/Mask schedules up to the resume step, but do NOT
-                # advance EMA here. We'll rebuild EMA to start at completed_steps.
-                for _ in range(completed_steps):
-                    scheduler.step()
-                    wd_scheduler.step()
-                    # next(momentum_scheduler)  # (LATEST) removed: do NOT consume EMA steps here
-                    mask_collator.step()
+            logger.info(f"Resuming training from checkpoint: {load_path}")
+            (
+                encoder,
+                predictor,
+                target_encoder,
+                optimizer,
+                scaler,
+                start_epoch,
+                start_itr,
+                checkpoint_run_id,
+                checkpoint_has_wandb_run_id,
+            ) = load_checkpoint(
+                r_path=load_path,
+                encoder=encoder,
+                predictor=predictor,
+                target_encoder=target_encoder,
+                opt=optimizer,
+                scaler=scaler,
+            )
+            logger.info(f"SUCCESS: Loaded checkpoint from {load_path}")
+            # Only set to resume after a checkpoint has actually loaded successfully.
+            resuming_training = True
+
+            # Checkpoints resume at epoch boundaries only. 
+            # Silent training bug (not just logging): the loader is always rebuilt from
+            # batch 0 of `start_epoch`, so a checkpoint saved mid-epoch would put the 
+            # LR/WD/EMA/mask schedules `start_itr` steps ahead of the data they are applied to.
+            if start_itr != 0:
+                raise RuntimeError(
+                    f"Checkpoint {load_path} was saved mid-epoch (epoch={start_epoch}, "
+                    f"itr={start_itr}). Resuming from it would advance the schedules to "
+                    f"step {start_epoch * ipe + start_itr} while the data loader restarts "
+                    f"at batch 0 of the epoch. Only epoch-boundary checkpoints "
+                    f"(itr == 0) can be resumed."
+                )
+            completed_steps = start_epoch * ipe + start_itr  # (LATEST) compute once
+
+            # (LATEST) Burn LR/WD/Mask schedules up to the resume step, but do NOT
+            # advance EMA here. We'll rebuild EMA to start at completed_steps.
+            for _ in range(completed_steps):
+                scheduler.step()
+                wd_scheduler.step()
+                # next(momentum_scheduler)  # (LATEST) removed: do NOT consume EMA steps here
+                mask_collator.step()
 
     encoder = DistributedDataParallel(encoder, static_graph=True)
     predictor = DistributedDataParallel(predictor, static_graph=False, find_unused_parameters=True)
@@ -414,11 +459,12 @@ def main(args, resume_preempt=False):
             "scaler": None if scaler is None else scaler.state_dict(),
             "target_encoder": target_encoder.state_dict(),
             "epoch": epoch,
-            "loss": loss_meter.avg,
+            "loss": epoch_loss_avg, # global sample-weighted average over the epoch just finished.
             "batch_size": batch_size,
             "world_size": world_size,
             "lr": lr,
             "itr": itr,
+            "wandb_run_id": effective_wandb_run_id,
         }
 
         try:
@@ -472,12 +518,42 @@ def main(args, resume_preempt=False):
         gc.disable()
         gc.collect()
 
+    wandb_run = None
     try:
+        # Initialize only after setup succeeds, and wandb init errors go through normal cleanup.
+        wandb_init_error = None
+        try:
+            wandb_run, effective_wandb_run_id = init_wandb(
+                cfgs_meta,
+                args,
+                rank,
+                folder,
+                resuming_training=resuming_training,
+                checkpoint_run_id=checkpoint_run_id,
+                checkpoint_has_wandb_run_id=checkpoint_has_wandb_run_id,
+            )
+        # Not throw immediately, but temporarily stores the exception.
+        # For multi-GPU distributed training, want every rank participates in `any_rank_failed`.
+        except Exception as e:
+            wandb_init_error = e
+        # Every rank votes here, so the failed job aborts together.
+        if any_rank_failed(wandb_init_error is not None, device=device):
+            if wandb_init_error is not None:
+                raise wandb_init_error
+            raise RuntimeError("wandb initialization failed on another rank: aborting.")
+
         for epoch in range(start_epoch, num_epochs):
             unsupervised_sampler.set_epoch(epoch)
             logger.info("Epoch %d" % (epoch + 1))
     
             loss_meter = AverageMeter()
+            local_epoch_loss_total = 0.0
+            local_epoch_num_samples = 0.0
+            # The norm is measured every step but only reaches wandb every `log_freq` steps. 
+            # `grad_norm_max`: measure the spike between two logged steps. `None` until the 
+            # interval sees its first finite norm.
+            grad_norm_max = None
+            nonfinite_grad_steps = 0
             mask_meters = {fpc: AverageMeter() for fpc in dataset_fpcs}
             iter_time_meter = AverageMeter()
             gpu_time_meter = AverageMeter()
@@ -548,6 +624,19 @@ def main(args, resume_preempt=False):
     
                 clips, masks_enc, masks_pred = load_clips()
                 data_elapsed_time_ms = (time.time() - itr_start_time) * 1000.0
+
+                # Log the clips that will be fed into the encoder. Only run during the first
+                # epoch of a run, while a resumed job logs again during its first resumed epoch.
+                if wandb_run is not None and epoch == start_epoch:
+                    # Always log video(s) at the start of the iterations, and log video(s) every `log_video_freq` iterations.
+                    if (itr == itr_start) or (log_video_freq > 0 and itr % log_video_freq == 0):
+                        log_input_clips(
+                            wandb_run,
+                            clips,                          # actual video tensors that have just been loaded and moved onto the GPU.
+                            step=epoch * ipe + itr,         # global training step.
+                            normalize=DEFAULT_NORMALIZE,    # reverse the normalization for visualization.
+                            num_videos=num_log_videos,
+                        )
     
                 if sync_gc and (itr + 1) % GARBAGE_COLLECT_ITR_FREQ == 0:
                     logger.info("Running garbage collection...")
@@ -569,20 +658,12 @@ def main(args, resume_preempt=False):
                         z = predictor(z, masks_enc, masks_pred)
                         return z
     
-                    def loss_fn(z, h):
-                        h = [apply_masks(hi, mi, concat=False) for hi, mi in zip(h, masks_pred)]
-                        loss, n = 0, 0
-                        for zi, hi in zip(z, h):
-                            for zij, hij in zip(zi, hi):
-                                loss += torch.mean(torch.abs(zij - hij) ** loss_exp) / loss_exp
-                                n += 1
-                        loss /= n
-                        return loss
-    
                     with torch.amp.autocast("cuda", dtype=dtype, enabled=mixed_precision):
                         h = forward_target(clips)
                         z = forward_context(clips)
-                        loss = loss_fn(z, h)
+                        # `loss` is the objective, weighted per (bucket, mask) term. 
+                        # The other two are detached and used by logging to form a true mean over samples.
+                        loss, sample_loss_sum, num_samples = jepa_loss(z, h, masks_pred, loss_exp)
     
                     if mixed_precision:
                         scaler.scale(loss).backward()
@@ -590,39 +671,122 @@ def main(args, resume_preempt=False):
                     else:
                         loss.backward()
     
-                    if mixed_precision:
-                        scaler.step(optimizer)
-                        scaler.update()
-                    else:
-                        optimizer.step()
+                    # Both branches meet here with unscaled gradients.
+                    # Measure the total L2 gradient norm before the optimizer updates the model.
+                    # Note: measured even on a bad iteration (not mutate weights but log).
+                    _grad_norm = grad_norm(encoder, predictor)
+
+                    # One host synchronization when every forward and backward kernel is 
+                    # already queued, so blocking now costs less.
+                    _loss_value, _sample_loss_sum = torch.stack(
+                        [loss.detach().float(), sample_loss_sum]
+                    ).tolist()
+
+                    # All ranks should make the same decision: one fails, all fail.
+                    _loss_failed = any_rank_failed(not math.isfinite(_loss_value), device=device)
+
+                    if not _loss_failed:
+                        if mixed_precision:
+                            scaler.step(optimizer)
+                            scaler.update()
+                        else:
+                            optimizer.step()
     
                     optimizer.zero_grad()
     
+                    # Advance EMA momentum even on a failed step to make logged value correspond
+                    # to the schedule position for this step.
+                    # Note: no future consequence because the program is gonna stop anyway.
                     m = next(momentum_scheduler)
-                    with torch.no_grad():
-                        params_k = []
-                        params_q = []
-                        ## REVERTED: No device transfer needed for EMA update
-                        for param_q, param_k in zip(encoder.parameters(), target_encoder.parameters()):
-                            params_k.append(param_k)
-                            params_q.append(param_q)
-                        torch._foreach_mul_(params_k, m)
-                        torch._foreach_add_(params_k, params_q, alpha=1 - m)
+                    if not _loss_failed:
+                        with torch.no_grad():
+                            params_k = []
+                            params_q = []
+                            ## REVERTED: No device transfer needed for EMA update
+                            for param_q, param_k in zip(encoder.parameters(), target_encoder.parameters()):
+                                params_k.append(param_k)
+                                params_q.append(param_q)
+                            torch._foreach_mul_(params_k, m)
+                            torch._foreach_add_(params_k, params_q, alpha=1 - m)
+                    else:
+                        logger.error(
+                            f"Non-finite loss on at least one rank (this rank: {_loss_value}) "
+                            f"at epoch {epoch + 1} itr {itr}: every rank skipped the optimizer "
+                            f"and EMA updates, leaving the weights as they were. The job stops "
+                            f"at the end of this iteration."
+                        )
     
                     return (
-                        float(loss),
+                        _loss_value,
+                        _sample_loss_sum,
+                        num_samples,
+                        _grad_norm,
+                        m,
                         _new_lr,
                         _new_wd,
+                        _loss_failed,   # globally agreed fatal/not-fatal flag.
                     )
     
-                (loss, _new_lr, _new_wd,), gpu_etime_ms = gpu_timer(train_step)
+                (
+                    loss,
+                    sample_loss_sum,
+                    local_num_samples,
+                    grad_norm_tensor,
+                    _ema_m,
+                    _new_lr,
+                    _new_wd,
+                    loss_failed,
+                ), gpu_etime_ms = gpu_timer(train_step)
                 iter_elapsed_time_ms = (time.time() - itr_start_time) * 1000.0
-    
-                loss_meter.update(loss)
+
+                _grad_norm = float(grad_norm_tensor)
+                if math.isfinite(_grad_norm):
+                    grad_norm_max = _grad_norm if grad_norm_max is None else max(grad_norm_max, _grad_norm)
+                else:
+                    # Counts steps whose measured total gradient norm was non-finite.
+                    # Useful to detect gradient overflow under AMP.
+                    nonfinite_grad_steps += 1
+
+                # Compute this rank's mean loss per clip.
+                local_loss = (
+                    sample_loss_sum / local_num_samples if local_num_samples > 0 else float("nan")
+                )
+                # Exclude a non-finite loss from every running average.
+                if math.isfinite(loss) and math.isfinite(local_loss):
+                    # Weighted, so the meter is this rank's true per-clip average even
+                    # if a final batch comes up short.
+                    loss_meter.update(local_loss, local_num_samples)
+                    local_epoch_loss_total += sample_loss_sum
+                    local_epoch_num_samples += local_num_samples
                 iter_time_meter.update(iter_elapsed_time_ms)
                 gpu_time_meter.update(gpu_etime_ms)
                 data_elapsed_time_meter.update(data_elapsed_time_ms)
     
+                # `loss_failed` forces a log on the iteration that ends the job: useful 
+                # diagnostic point and would otherwise be dropped whenever it lands 
+                # between two `log_freq` boundaries.
+                should_log = (itr % log_freq == 0) or (itr == ipe - 1) or loss_failed
+                # Rank-local until the reduction below replaces it.
+                display_loss_avg = loss_meter.avg
+
+                # Reduce detached metrics only at wandb logging points.
+                # Backpropagation loss remains untouched.
+                if should_log and cfgs_meta.get("wandb_project", None):
+                    local_epoch_loss_avg = (
+                        local_epoch_loss_total / local_epoch_num_samples
+                        if local_epoch_num_samples > 0
+                        else float("nan")
+                    )
+                    (
+                        (global_loss, _),
+                        (global_loss_avg, _),
+                    ) = global_sample_weighted_means(
+                        [local_loss, local_epoch_loss_avg],
+                        [local_num_samples, local_epoch_num_samples],
+                        device=device,
+                    )
+                    display_loss_avg = global_loss_avg
+
                 def log_stats():
                     csv_logger.log(
                         epoch + 1,
@@ -632,7 +796,28 @@ def main(args, resume_preempt=False):
                         gpu_etime_ms,
                         data_elapsed_time_ms,
                     )
-                    if (itr % log_freq == 0) or (itr == ipe - 1) or np.isnan(loss) or np.isinf(loss):
+                    # Log scalar training metrics to wandb every `log_freq` iterations, plus once at the end of each epoch.
+                    if should_log and cfgs_meta.get("wandb_project", None):
+                        log_scalars(
+                            wandb_run,
+                            {
+                                # Mean loss per clip, reduced over all ranks.
+                                "train/loss": global_loss,               # current iteration's global loss.
+                                "train/loss_avg": global_loss_avg,       # running global average loss over the epoch so far.
+                                "train/lr": _new_lr,                     # current learning rate.
+                                "train/wd": _new_wd,                     # current weight decay.
+                                "train/epoch": epoch + 1,
+                                "optimization/grad_norm": _grad_norm,    # total L2 norm of the encoder/predictor gradients.
+                                "optimization/grad_norm_max": float("nan") if grad_norm_max is None else grad_norm_max,
+                                "optimization/nonfinite_grad_steps": nonfinite_grad_steps,
+                                "optimization/ema_momentum": _ema_m,     # target-encoder EMA momentum.
+                                "time/iter_ms": iter_elapsed_time_ms,    # total wall-clock time per iteration (include data loading, GPU work).
+                                "time/gpu_ms": gpu_etime_ms,             # time spent executing training step on GPU.
+                                "time/data_ms": data_elapsed_time_ms,    # time spent preparing data before for/backward pass.
+                            },
+                            step=epoch * ipe + itr,
+                        )
+                    if should_log or np.isnan(loss) or np.isinf(loss):
                         logger.info(
                             "[%d, %5d] loss: %.3f "
                             "masks: %s "
@@ -644,7 +829,9 @@ def main(args, resume_preempt=False):
                             % (
                                 epoch + 1,
                                 itr,
-                                loss_meter.avg,
+                                # Before reduction: this rank's epoch avg.
+                                # After reduction: all ranks' epoch avg.
+                                display_loss_avg,
                                 "["
                                 + ", ".join([f"{k}: " + "%.1f" % mask_meters[k].avg for k in mask_meters])
                                 + "]",
@@ -658,9 +845,23 @@ def main(args, resume_preempt=False):
                         )
     
                 log_stats()
-                assert not np.isnan(loss), "loss is nan"
+                if should_log:
+                    # Start a fresh interval (this one has been reported).
+                    grad_norm_max = None
+                    nonfinite_grad_steps = 0
+
+                # Every rank raises together here (no rank is left waiting on a collective 
+                # another one never enters).
+                if loss_failed:
+                    raise RuntimeError(
+                        f"loss is non-finite on at least one rank (this rank: {loss})."
+                    )
     
                 # -- Step-based checkpoint saving with cleanup
+                # Current resume logic cannot safely resume from the middle of an epoch.
+                # Re-enabling this block needs `import glob` and the
+                # `save_every_steps` / `max_step_checkpoints` reads from `meta`
+                # restored: they were dropped because only this comment used them.
                 # if save_every_steps > 0 and (itr + 1) % save_every_steps == 0:
                 #     # Only rank 0 should do cleanup to avoid race conditions
                 #     if rank == 0:
@@ -679,10 +880,26 @@ def main(args, resume_preempt=False):
                 #         # NOW save the new checkpoint (this already has rank check inside save_checkpoint)
                 #         step_checkpoint_file = f"step_e{epoch}_i{itr}.pt"
                 #         step_checkpoint_path = os.path.join(folder, step_checkpoint_file)
-                #         save_checkpoint(epoch, itr, step_checkpoint_path, s3_checkpoint_uri)
+                #         # `itr + 1` -- the next iteration to run, not the one that just
+                #         # finished, which `range(start_itr, ipe)` would otherwise repeat.
+                #         # Re-enabling this also needs the loader fast-forwarded to batch
+                #         # `itr + 1`; until then the resume guard above rejects itr != 0.
+                #         save_checkpoint(epoch, itr + 1, step_checkpoint_path, s3_checkpoint_uri)
                 #         logger.info(f"Saved step checkpoint at epoch {epoch}, iteration {itr}")
     
-            logger.info("avg. loss %.3f" % loss_meter.avg)
+            # One reduction per epoch so the summary line and the checkpoint's `loss`
+            # field carry the same global sample-weighted average wandb reports, instead
+            # of rank 0's local step-weighted one.
+            [(epoch_loss_avg, _)] = global_sample_weighted_means(
+                [
+                    local_epoch_loss_total / local_epoch_num_samples
+                    if local_epoch_num_samples > 0
+                    else float("nan")
+                ],
+                [local_epoch_num_samples],
+                device=device,
+            )
+            logger.info("avg. loss %.3f (global, sample-weighted)" % epoch_loss_avg)
             _barrier()  # everyone reach end-of-epoch together
     
             latest_path = os.path.join(folder, "latest.pt")
@@ -696,6 +913,8 @@ def main(args, resume_preempt=False):
     
             _barrier()  # keep others from entering next epoch while rank 0 uploads
     finally:
+        # Finish wandb logging.
+        finish_wandb(wandb_run)
         try:
             _barrier()
         except Exception:

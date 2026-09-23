@@ -2,13 +2,16 @@ torch>=2
 torchvision
 tensorboard
 wandb
+moviepy
+imageio>=2.28.1
 iopath
 pyyaml
 numpy
-opencv-python
+opencv-python-headless
 submitit
 braceexpand
 webdataset
+boto3
 timm
 transformers
 peft

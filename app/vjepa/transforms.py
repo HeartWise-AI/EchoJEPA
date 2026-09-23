@@ -9,6 +9,10 @@ import torchvision.transforms as transforms
 import src.datasets.utils.video.transforms as video_transforms
 from src.datasets.utils.video.randerase import RandomErasing
 
+# Original hardcoded normalization, just kept it as a module-level constant,
+# so that anything needing to undo this normalization can directly use it.
+DEFAULT_NORMALIZE = ((0.485, 0.456, 0.406), (0.229, 0.224, 0.225))
+
 
 def make_transforms(
     random_horizontal_flip=True,
@@ -18,7 +22,7 @@ def make_transforms(
     auto_augment=False,
     motion_shift=False,
     crop_size=224,
-    normalize=((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)),
+    normalize=DEFAULT_NORMALIZE,
 ):
 
     _frames_augmentation = VideoTransform(
