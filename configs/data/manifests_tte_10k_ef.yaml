@@ -15,7 +15,7 @@ columns:
   exam_type: study_type
   view: predicted_class
   video_path: avi_path
-  status: avi_status
+  avi_status: avi_status
   study_date: date            # YYYYMMDD...; used for the years filter and reports.
 
 # Role -> column in the study-level label table.
@@ -42,3 +42,10 @@ split:                        # patient-level fractions.
   train: 0.7
   val: 0.1
   test: 0.2
+
+# Clip sampling of the pretraining loader; keep equal to the pretraining config's
+# `data.dataset_fpcs` and `data.fps`. Only used to flag videos shorter than one clip
+# (`needs_padding` in videos.csv); no video is excluded for it.
+clip:
+  frames_per_clip: 16
+  fps: 8

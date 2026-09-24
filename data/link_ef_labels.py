@@ -9,6 +9,8 @@ Example:
     python data/link_ef_labels.py --config configs/data/manifests_tte_10k_ef.yaml \\
         --reports <report_export.csv> --pacs <pacs_index.csv> \\
         --metadata <video_metadata.parquet> --out <study_labels.parquet>
+
+See data/README.md for the inputs, the outputs and how experiments use them.
 """
 
 import argparse
@@ -16,7 +18,7 @@ import os
 
 import pandas as pd
 
-from build_manifests import iter_table, load_config, normalize_id
+from build_manifests import ensure_outside_repo, iter_table, load_config, normalize_id, parse_labels
 
 
 def parse_args():
@@ -25,7 +27,7 @@ def parse_args():
     p.add_argument("--reports", required=True, help="An exported report that includes the EF label as one of its fields.")
     p.add_argument("--pacs", required=True, help="PACS index used to link accession numbers to study instance UIDs.")
     p.add_argument("--metadata", required=True, help="Per-video metadata (.parquet or .csv).")
-    p.add_argument("--out", required=True, help="Output study-level label table (.parquet or .csv).")
+    p.add_argument("--out", required=True, help="Output study-level label table (.parquet or .csv); must be outside this repository.")
     p.add_argument("--report-patient-col", default="Dossier")
     p.add_argument("--report-accession-col", default="AccessionNumber")
     p.add_argument("--report-label-col", default="Visually Estimated EF")
@@ -41,24 +43,6 @@ def parse_args():
     return p.parse_args()
 
 
-def parse_labels(raw):
-    """Converts valid EF values (number in (0, 100]) into numbers and invalid values into `NaN`.
-    records why invalid values were rejected.
-    Also returns how many values were dropped for each dropping reason.
-    """
-    text = raw.astype("string").str.strip()
-    empty = text.isna() | (text == "")
-    value = pd.to_numeric(text.mask(empty), errors="coerce").astype(float)
-    dropped = {
-        "empty": int(empty.sum()),
-        "invalid": int((~empty & value.isna()).sum()),
-        "zero": int((value == 0).sum()),
-        "negative": int((value < 0).sum()),
-        "above_100": int((value > 100).sum()),
-    }
-    return value.where((value > 0) & (value <= 100)), dropped
-
-
 def unique_or_drop(df, key, cols, what):
     """Return one row per unique `key` and drop keys with conflicting values in
     any of `cols` rather than choosing among them.
@@ -72,8 +56,15 @@ def unique_or_drop(df, key, cols, what):
 
 
 def same_patient(a, b):
-    """Compare patient ids from two systems without zero padding."""
-    return a.str.lstrip("0") == b.str.lstrip("0")
+    """Compare patient ids from two systems without zero padding. A missing id never matches."""
+    return matches(a.str.lstrip("0") == b.str.lstrip("0"))
+
+
+def matches(compared):
+    """Returns an element-wise boolean comparison, treating any pair with a missing value as
+    a mismatch rather than skipping it.
+    """
+    return compared.fillna(False).astype(bool)
 
 
 def link(reports, pacs, videos, min_id_agreement, check_path_layout=False):
@@ -117,7 +108,7 @@ def link(reports, pacs, videos, min_id_agreement, check_path_layout=False):
     # Check for patient/date consistency in PACS and metadata.
     checks = {
         "PACS patient == metadata patient": same_patient(j.pacs_patient, j.patient_id),
-        "PACS date == metadata date": j.pacs_date.str.strip().str[:8] == j.study_date.str.strip().str[:8],
+        "PACS date == metadata date": matches(j.pacs_date.str.strip().str[:8] == j.study_date.str.strip().str[:8]),
     }
     for name, ok in checks.items():
         print(f"[verify] {name:<33} {ok.mean() * 100:.4f}%")
@@ -127,7 +118,7 @@ def link(reports, pacs, videos, min_id_agreement, check_path_layout=False):
     if check_path_layout:
         v = videos[videos.video_path.notna()]
         parts = v.video_path.str.split("/")
-        ok = (parts.str[-3] == v.patient_id) & (parts.str[-2] == v.study_id)
+        ok = matches(parts.str[-3] == v.patient_id) & matches(parts.str[-2] == v.study_id)
         print(f"[verify] path encodes patient/study          {ok.mean() * 100:.4f}%")
         if not ok.all():
             raise ValueError(f"{(~ok).sum()} videos sit at a path inconsistent with their ids.")
@@ -154,6 +145,8 @@ def stream_videos(source, cols, study_ids, batch_size):
 
 def main():
     args = parse_args()
+    # The label table holds patient identifiers, so it may never land inside the repository.
+    ensure_outside_repo(args.out, "--out")
 
     # Read the config.
     cfg = load_config(args.config)
