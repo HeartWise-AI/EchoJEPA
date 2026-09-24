@@ -150,6 +150,11 @@ def main():
 
     # Read the config.
     cfg = load_config(args.config)
+    # `columns.study_date` is optional for Stage 2, but Stage 1 checks each linked study's
+    # date against it, so fail here rather than after reading the exports.
+    if "study_date" not in cfg["columns"]:
+        raise ValueError(f"{args.config}: stage 1 needs columns.study_date, the video-metadata date "
+                         "each linked study is checked against.")
 
     # Read the clinical reports.
     # Read the label column as text so non-numeric values can be counted as invalid instead of being silently

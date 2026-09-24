@@ -188,6 +188,8 @@ class TestConfigValidation(unittest.TestCase):
         (lambda c: c["eligibility"].update(require_label="yes"), "require_label must be true or false"),
         (lambda c: c["eligibility"].update(years="2020"), "years must be null"),
         (lambda c: c["eligibility"].update(years=[]), "years must be null"),
+        (lambda c: (c["columns"].pop("study_date"), c["eligibility"].update(years=[2020])),
+         "years needs columns.study_date"),
         (lambda c: c.update(split=[0.7, 0.1, 0.2]), "`split` must be a mapping"),
         (lambda c: c["labels"].update(low_threshold="40%"), "low_threshold must be null or a number"),
         (lambda c: c["labels"].update(low_threshold=0), "low_threshold must be null or a number"),
@@ -617,7 +619,7 @@ class TestVideoFiles(unittest.TestCase):
                 path, label = line.split(" ")
                 self.assertEqual(label, "0")
                 self.assertTrue(os.path.isfile(path))
-        quiet(bm.smoke_test, out)
+        quiet(bm.smoke_test, out, bm.SPLITS, cfg["clip"])
 
         with open(os.path.join(out, "manifest_info.json")) as f:
             info = json.load(f)
@@ -634,7 +636,45 @@ class TestVideoFiles(unittest.TestCase):
         # An empty manifest shows nothing about whether it can be read, so it fails the smoke test.
         open(os.path.join(out, "val.csv"), "w").close()
         with self.assertRaisesRegex(RuntimeError, "val.csv is empty"):
-            quiet(bm.smoke_test, out)
+            quiet(bm.smoke_test, out, bm.SPLITS, cfg["clip"])
+
+    def test_smoke_test_loads_each_special_case_with_the_pretraining_sampling(self):
+        from src.datasets.video_dataset import VideoDataset
+
+        clip = CFG["clip"]
+        paths = {name: self.path(f"{name}.mp4") for name in ("first", "slow", "unknown", "short", "plain")}
+        write_video(paths["first"], frames=60), write_video(paths["plain"], frames=60)
+        write_video(paths["slow"], frames=20, fps=5), write_video(paths["unknown"], frames=60)
+        write_video(paths["short"], frames=12)
+        out = self.path("manifests")
+        os.makedirs(out)
+        # videos.csv as build_manifests writes it; the smoke test picks its cases from it.
+        cases = [("first", 30.0, False), ("slow", 5.0, False), ("unknown", np.nan, False), ("short", 30.0, True),
+                 ("plain", 30.0, False)]
+        pd.DataFrame([(paths[n], "train", fps, pad) for n, fps, pad in cases],
+                     columns=["video_path", "split", "fps", "needs_padding"]).to_csv(os.path.join(out, "videos.csv"), index=False)
+        with open(os.path.join(out, "train.csv"), "w") as f:
+            f.writelines(f"{paths[n]} 0\n" for n, *_ in cases)
+
+        loaded = []
+
+        def record(ds, index):
+            loaded.append((ds.samples[index], ds.fps, ds.frame_step, ds.dataset_fpcs))
+            return [np.zeros((clip["frames_per_clip"], 2, 2, 3))], 0, [np.arange(clip["frames_per_clip"])]
+
+        with mock.patch.object(VideoDataset, "get_item_video", autospec=True, side_effect=record):
+            quiet(bm.smoke_test, out, ["train"], clip)
+        self.assertEqual({p for p, *_ in loaded}, {paths[n] for n in ("first", "slow", "unknown", "short")})
+        self.assertEqual({tuple(x[1:3]) + (tuple(x[3]),) for x in loaded}, {(clip["fps"], None, (clip["frames_per_clip"],))})
+
+        def fail_below_clip_fps(ds, index):
+            if ds.samples[index] == paths["slow"]:
+                raise AssertionError("frame step 0")
+            return record(ds, index)
+
+        with mock.patch.object(VideoDataset, "get_item_video", autospec=True, side_effect=fail_below_clip_fps):
+            with self.assertRaisesRegex(RuntimeError, r"a frame rate below 8 fps \(1 video\), sampling 16 frames at 8 fps: .*slow\.mp4"):
+                quiet(bm.smoke_test, out, ["train"], clip)
 
     def test_cli_seed_override_is_used_and_recorded(self):
         metadata, labels, config_path, _ = cli_inputs(self.dir)
@@ -709,6 +749,19 @@ class TestLinkEfLabels(unittest.TestCase):
             videos.loc[0, column] = pd.NA
             with self.assertRaisesRegex(ValueError, "1 studies fail", msg=column):
                 quiet(lel.link, reports, pacs, videos, min_id_agreement=0.5)
+
+    def test_stage_1_needs_the_study_date_column(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            metadata, _, config_path, _ = cli_inputs(tmp, n_patients=6)
+            with open(config_path) as f:
+                cfg = yaml.safe_load(f)
+            del cfg["columns"]["study_date"]
+            with open(config_path, "w") as f:
+                yaml.safe_dump(cfg, f)
+            # Fails before reading any export: these files are not even valid inputs.
+            with self.assertRaisesRegex(ValueError, "stage 1 needs columns.study_date"):
+                run_cli(lel, ["link_ef_labels.py", "--config", config_path, "--reports", metadata, "--pacs", metadata,
+                              "--metadata", metadata, "--out", os.path.join(tmp, "study_labels.csv")])
 
     def test_link_fails_when_id_agreement_is_too_low(self):
         reports, pacs, videos = self.tables()

@@ -46,7 +46,9 @@ Other options of `build_manifests.py`:
 | `--workers N` | Processes that decode videos in parallel (default 32, or the CPU count if lower) |
 | `--batch-size N` | Metadata rows read at a time (default 500,000) |
 | `--overwrite` | Replace the manifests in a non-empty `--out-dir` |
-| `--no-smoke-test` | Skip reading the manifests back with the EchoJEPA loader (which fails on an empty manifest) |
+| `--no-smoke-test` | Skip the smoke test below |
+
+After the manifest files are written, the code performs a small end-to-end sanity check using the real EchoJEPA data loader, to make sure the generated manifests can actually be used for pretraining.
 
 ## Inputs
 
@@ -63,7 +65,7 @@ each role the scripts use to a column name, so another export needs only a new m
 | `view` | `predicted_class` | Predicted view. Reported, never filtered: `OTHER` is kept |
 | `video_path` | `avi_path` | Path of the video file; must not contain whitespace. A video with no path is excluded as `no_path` |
 | `avi_status` | `avi_status` | Conversion status, matched against `eligibility.status_ok` |
-| `study_date` | `date` | Optional, `YYYYMMDD`; used by `eligibility.years` and the reports |
+| `study_date` | `date` | `YYYYMMDD`. Required by stage 1, which checks each linked study's date against it; optional for stage 2, which uses it for `eligibility.years` and the reports |
 
 A study must belong to one patient and one exam type, and a video path must not appear
 under two different studies, patients, exam types or views; the scripts stop with an error

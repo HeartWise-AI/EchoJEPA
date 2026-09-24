@@ -122,6 +122,7 @@ def check_config(cfg):
     years = el.get("years")
     require(years is None or (isinstance(years, list) and years and all(positive_int(y) for y in years)),
             f"eligibility.years must be null (all years) or a non-empty list of years, got {years!r}.")
+    require(years is None or "study_date" in columns, "eligibility.years needs columns.study_date.")
 
     if "clip" in cfg:
         clip = block("clip")
@@ -880,30 +881,53 @@ def summary_markdown(info):
     return "\n".join(lines) + "\n"
 
 
-def smoke_test(out_dir, splits=SPLITS):
-    """Read the manifest of each of `splits` with the EchoJEPA parser and decode its first
-    clip; raise a clear error if a manifest is empty or cannot be ingested.
+def smoke_test(out_dir, splits=SPLITS, clip=None):
+    """Read the manifest of each of `splits` with the EchoJEPA parser, then load clips the
+    way pretraining samples them (`clip`: frames_per_clip at clip.fps; frame_step 4
+    without it). Besides each manifest's first video, one video of each case the loader
+    samples differently is loaded, taken from videos.csv: a frame rate below clip.fps, no
+    usable frame rate, and a video shorter than one clip. Raise a clear error if a
+    manifest is empty or cannot be ingested, or if any of these videos cannot be loaded.
     """
     sys.path.insert(0, REPO_ROOT)
     from src.datasets.video_dataset import VideoDataset
 
+    if clip:
+        sampling = {"frames_per_clip": clip["frames_per_clip"], "fps": clip["fps"], "frame_step": None}
+        how = f"{clip['frames_per_clip']} frames at {clip['fps']} fps"
+    else:
+        sampling, how = {"frame_step": 4}, "frame step 4"
+    videos = pd.read_csv(os.path.join(out_dir, "videos.csv"))
     for s in splits:
         path = os.path.join(out_dir, f"{s}.csv")
         if os.path.getsize(path) == 0:
             raise RuntimeError(f"{s}.csv is empty, so nothing shows the EchoJEPA parser can read it.")
         expected = pd.read_csv(path, sep=" ", header=None)[0].tolist()
-        ds = VideoDataset(data_paths=[path], frame_step=4)
+        ds = VideoDataset(data_paths=[path], **sampling)
         if list(ds.samples) != expected:
             raise RuntimeError(f"{s}.csv: the EchoJEPA parser read different paths than were written.")
         if any(int(x) != 0 for x in ds.labels):
             raise RuntimeError(f"{s}.csv: the EchoJEPA parser read labels other than 0.")
-        # Use `get_item_video` rather than `ds[0]`: normal dataset indexing retries another random video
-        # on load failure, which would mask unreadable videos during verification.
-        loaded = ds.get_item_video(0)
-        if not loaded:
-            raise RuntimeError(f"{s}.csv: the EchoJEPA loader could not decode {expected[0]}.")
-        print(f"[smoke]  {s}.csv: {len(ds)} rows parsed, first clip decoded "
-              f"{tuple(np.asarray(loaded[0][0]).shape)}.")
+
+        cases = {"the first video": expected[0]}
+        if clip:
+            v = videos[videos.split == s]
+            for case, rows in ((f"a frame rate below {clip['fps']} fps", v[np.ceil(v.fps) < clip["fps"]]),
+                               ("no usable frame rate", v[v.fps.isna()]),
+                               ("fewer frames than one clip", v[v.needs_padding.fillna(False).astype(bool)])):
+                if len(rows):
+                    cases[f"{case} ({len(rows)} video{'s' * (len(rows) > 1)})"] = rows.video_path.iloc[0]
+        for case, video in cases.items():
+            # `get_item_video`, not `ds[i]`: indexing retries another random video on a
+            # failure, which would hide a video the loader cannot sample.
+            try:
+                loaded = ds.get_item_video(expected.index(video))
+            except Exception as e:
+                raise RuntimeError(f"{s}.csv: the EchoJEPA loader failed on {case}, sampling {how}: "
+                                   f"{video}: {e!r}") from e
+            if not loaded:
+                raise RuntimeError(f"{s}.csv: the EchoJEPA loader could not load {case}, sampling {how}: {video}.")
+        print(f"[smoke]  {s}.csv: {len(ds)} rows parsed; loaded with {how}: " + ", ".join(cases) + ".")
 
 
 # --------------------------------------------------------------------------- #
@@ -959,7 +983,7 @@ def main():
           "excluded_videos.csv, manifest_info.json, summary.md (safe to share).")
     if not args.no_smoke_test:
         # A split with fraction 0 is empty by design; every other one must be readable.
-        smoke_test(args.out_dir, [s for s in SPLITS if cfg["split"][s] > 0])
+        smoke_test(args.out_dir, [s for s in SPLITS if cfg["split"][s] > 0], cfg.get("clip"))
 
 
 if __name__ == "__main__":
