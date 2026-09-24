@@ -1,0 +1,44 @@
+# configs/data/manifests_tte_10k_ef.yaml
+# Cohort definition for the initial EchoJEPA experiments (issue #6).
+#
+# Read by `data/link_ef_labels.py` (stage 1: EF labels per study) and
+# `data/build_manifests.py` (stage 2: cohort, split, manifests). Input and output
+# locations are command-line arguments; nothing here names a filesystem path.
+#
+# Draw the cohort once and reuse it for pretraining from scratch, continued pretraining,
+# and frozen-backbone evaluation.
+
+# Role -> column in the video metadata table (one row per video).
+columns:
+  patient_id: mrn
+  study_id: study_uid
+  exam_type: study_type
+  view: predicted_class
+  video_path: avi_path
+  status: avi_status
+  study_date: date            # YYYYMMDD...; used for the years filter and reports.
+
+# Role -> column in the study-level label table.
+labels:
+  study_id: study_id
+  value: ef
+  low_threshold: 40           # reported per split; quick sanity check for if one split has many more reduced-EF patients than another.
+
+eligibility:
+  # Standard transthoracic study. TEE ("ETO ..."), stress, dobutamine,
+  # congenital and outside-hospital copies are other exam types.
+  exam_types:
+  - ECHO CARDIAQUE AVEC DOPPLER
+  status_ok:
+  - success
+  require_label: true         # so val/test need no redraw for the Visual EF probe.
+  years: null                 # e.g. [2022, 2023, 2024]; `null` keeps every year.
+
+selection:
+  n_patients: 10000           # one study per patient.
+  seed: 42
+
+split:                        # patient-level fractions.
+  train: 0.7
+  val: 0.1
+  test: 0.2
