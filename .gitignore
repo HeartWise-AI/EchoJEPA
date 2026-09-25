@@ -14,6 +14,8 @@ __MACOSX/
 # Large Data & Medical Images
 data/csv/
 *.parquet
+# Patient-level tables (source exports, labels, manifests) must never be committed.
+*.csv
 model_data/
 *.dcm
 *.pth

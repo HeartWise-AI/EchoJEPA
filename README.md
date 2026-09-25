@@ -93,6 +93,8 @@ mimic-echo-224px/files/p10/p10002221/s94106955/94106955_0008.mp4 0
 mimic-echo-224px/files/p10/p10002221/s94106955/94106955_0009.mp4 0
 ```
 
+To build these files from in-house echo metadata as a reproducible, patient-level train/val/test cohort, see [data/README.md](data/README.md).
+
 We keep the pretraining configuration mostly the same as in V-JEPA 2, but adjust some of the sampling and augmentation parameters for echocardiography:
 ```
 app: vjepa
