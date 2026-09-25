@@ -109,7 +109,7 @@ study counts as unlabelled.
 | `eligibility` | Configure allowed exam types and statuses, whether a label is required, and an optional year filter |
 | `selection` | Number of patients (one study each) and the seed |
 | `split` | Patient fractions for train, val and test |
-| `clip` | Clip sampling of the pretraining loader, used only for the `needs_padding` flag |
+| `clip` | Clip sampling of the pretraining loader, used for the `needs_padding` flag and by the smoke test; no video is excluded for it |
 
 The configuration is checked when it is loaded, and a malformed one stops with a message
 naming the problem. The split fractions must lie in [0, 1] and sum to 1. `n_patients`

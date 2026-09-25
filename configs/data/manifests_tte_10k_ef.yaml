@@ -44,8 +44,9 @@ split:                        # patient-level fractions.
   test: 0.2
 
 # Clip sampling of the pretraining loader; keep equal to the pretraining config's
-# `data.dataset_fpcs` and `data.fps`. Only used to flag videos shorter than one clip
-# (`needs_padding` in videos.csv); no video is excluded for it.
+# `data.dataset_fpcs` and `data.fps`. Used to flag videos shorter than one clip
+# (`needs_padding` in videos.csv) and by the smoke test, which loads clips this way;
+# no video is excluded for it.
 clip:
   frames_per_clip: 16
   fps: 8
