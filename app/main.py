@@ -5,7 +5,9 @@
 
 import argparse
 import multiprocessing as mp
+import multiprocessing.connection
 import pprint
+import sys
 from pathlib import Path
 
 import yaml
@@ -73,12 +75,34 @@ def process_main(rank, fname, world_size, devices):
     app_main(params["app"], args=params)
 
 
+def launch(fname, devices, target=process_main):
+    """Run one process per device and wait for them. Returns the ranks that failed, so the
+    launcher can fail when any rank does. Once a rank fails, the others are stopped instead
+    of waiting on collectives that rank will never join; ranks stopped this way are not
+    reported as failures."""
+    processes = [mp.Process(target=target, args=(rank, fname, len(devices), devices)) for rank in range(len(devices))]
+    for p in processes:
+        p.start()
+    running, stopped = set(range(len(processes))), set()
+    while running:
+        mp.connection.wait([processes[rank].sentinel for rank in running])
+        finished = {rank for rank in running if not processes[rank].is_alive()}
+        running -= finished
+        if any(processes[rank].exitcode != 0 for rank in finished - stopped):
+            for rank in running - stopped:
+                processes[rank].terminate()
+                stopped.add(rank)
+    for p in processes:
+        p.join()
+    return [rank for rank, p in enumerate(processes) if p.exitcode != 0 and rank not in stopped]
+
+
 if __name__ == "__main__":
     args = parser.parse_args()
     if args.debugmode:
         process_main(rank=0, fname=args.fname, world_size=1, devices=["cuda:0"])
     else:
-        num_gpus = len(args.devices)
         mp.set_start_method("spawn")
-        for rank in range(num_gpus):
-            mp.Process(target=process_main, args=(rank, args.fname, num_gpus, args.devices)).start()
+        failed = launch(args.fname, args.devices)
+        if failed:
+            sys.exit(f"Training failed on rank(s) {failed}; the other ranks were stopped.")

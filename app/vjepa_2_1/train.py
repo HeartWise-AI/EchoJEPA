@@ -28,7 +28,9 @@ from app.vjepa_2_1.utils import (
     init_opt,
     init_video_model,
     load_checkpoint,
+    load_pretrained_weights,
     normalize_nested,
+    select_load_path,
 )
 from src.datasets.data_manager import init_data
 from src.masks.multiseq_multiblock3d import MaskCollator
@@ -64,6 +66,18 @@ def main(args, resume_preempt=False):
     cfgs_meta = args.get("meta")
     load_model = cfgs_meta.get("load_checkpoint") or resume_preempt
     r_file = cfgs_meta.get("read_checkpoint", None)
+    # Initialize the model from pretrained weights for the encoder, target encoder,
+    # and predictor, but start a brand-new optimizer and learning-rate schedule.
+    # If this training run later has its own checkpoint, resume from that
+    # checkpoint instead and ignore the original weights-only initialization.
+    init_checkpoint = cfgs_meta.get("init_checkpoint", None)
+    # `read_checkpoint` resumes the full training state, including model weights, optimizer, scaler,
+    # epoch, and schedules. Do not use it when starting a new run from pretrained weights only.
+    if init_checkpoint is not None and r_file is not None:
+        raise ValueError(
+            "Set `meta.init_checkpoint` (weights only, fresh optimizer and schedule) or "
+            "`meta.read_checkpoint` (full resume of a run), not both."
+        )
     seed = cfgs_meta.get("seed", _GLOBAL_SEED)
     save_every_freq = cfgs_meta.get("save_every_freq", -1)
     skip_batches = cfgs_meta.get("skip_batches", -1)
@@ -111,17 +125,24 @@ def main(args, resume_preempt=False):
     lambda_value_vid = cfgs_model.get("lambda_value_vid", 0.0)
     n_registers_predictor = cfgs_model.get("n_registers_predictor", 0)
     lambda_progressive = cfgs_model.get("lambda_progressive", True)
+    # Upstream uses a fixed 15k–30k-step ramp intended for ~300k-step training runs.
+    # For much shorter runs, that ramp should be shortened proportionally;
+    # otherwise the context-loss weighting/schedule spends most of training in
+    # the ramp phase instead of its intended steady state.
+    lambda_start_iter = cfgs_model.get("lambda_start_iter", 15000)
+    lambda_end_iter = cfgs_model.get("lambda_end_iter", 30000)
     normalize_predictor = cfgs_model.get("normalize_predictor", False)
     modality_embedding = cfgs_model.get("modality_embedding", False)
-    levels_predictor = cfgs_model.get("levels_predictor", 4)
-    if model_name == "vit_large":
-        embed_dim_encoder = 1024
-    elif model_name == "vit_giant_xformers":
-        embed_dim_encoder = 1408
-    elif model_name == "vit_gigantic_xformers":
-        embed_dim_encoder = 1664
-    else:
-        print("Model name not recognized :(")
+    # Number of encoder layers used as predictor targets:
+    # `4`: gives deep multi-layer self-supervision.
+    # `1`: uses only the final layer.
+    # Encoder, predictor, and target representations must use the same normalization,
+    # so a single config key controls all three; upstream applied it only to the target side.
+    n_output_distillation = cfgs_model.get("n_output_distillation", 4)
+    # The encoder only defines its distillation layers for these two values.
+    if n_output_distillation not in (1, 4):
+        raise ValueError(f"model.n_output_distillation must be 1 or 4, got {n_output_distillation!r}.")
+    levels_predictor = n_output_distillation
 
     # -- DATA
     cfgs_data = args.get("data")
@@ -161,6 +182,9 @@ def main(args, resume_preempt=False):
     motion_shift = cfgs_data_aug.get("motion_shift", False)
     reprob = cfgs_data_aug.get("reprob", 0.0)
     use_aa = cfgs_data_aug.get("auto_augment", False)
+    # Horizontal flipping is disabled by default because it creates anatomically
+    # unrealistic mirrored views that the scanner does not produce.
+    random_hflip = cfgs_data_aug.get("random_horizontal_flip", False)
 
     # -- LOSS
     cfgs_loss = args.get("loss")
@@ -300,19 +324,13 @@ def main(args, resume_preempt=False):
     latest_file = "latest.pth.tar"
     latest_path = os.path.join(folder, latest_file)
 
-    load_path = None
-    if load_model:
-        if is_anneal:
-            if os.path.exists(latest_path) and resume_anneal:
-                load_path = latest_path
-            else:
-                load_path = anneal_ckpt
-                resume_anneal = False
-        else:
-            load_path = r_file if r_file is not None else latest_path
-        if not os.path.exists(load_path):
-            load_path = None
-            load_model = False
+    # Upstream silently initialized a fresh model when the pretraining checkpoint was unavailable,
+    # or when `meta.load_checkpoint` was `False`, so a cooldown could train from random weights
+    # instead of the intended pretrained checkpoint. Cooldown runs now require the pretrained
+    # checkpoint to load successfully; otherwise they fail.
+    load_path, resume_anneal = select_load_path(
+        latest_path, load_model, r_file, is_anneal, resume_anneal, anneal_ckpt
+    )
 
     # -- make csv_logger
     csv_logger = CSVLogger(
@@ -357,8 +375,20 @@ def main(args, resume_preempt=False):
         has_cls_first=has_cls_first,
         interpolate_rope=interpolate_rope,
         modality_embedding=modality_embedding,
+        n_output_distillation=n_output_distillation,
     )
     target_encoder = copy.deepcopy(encoder)
+    embed_dim_encoder = encoder.backbone.embed_dim
+
+    if init_checkpoint is not None:
+        if is_anneal:
+            raise ValueError(
+                "`init_checkpoint` and `is_anneal` cannot both be set; cooldown runs must start from `anneal_ckpt`."
+            )
+        if load_path is None:
+            load_pretrained_weights(init_checkpoint, encoder, predictor, target_encoder)
+        else:
+            logger.info(f"Resuming from {load_path}; init_checkpoint {init_checkpoint} not used.")
 
     if compile_model:
         logger.info("Compiling encoder, target_encoder, and predictor.")
@@ -376,7 +406,7 @@ def main(args, resume_preempt=False):
     )
 
     transform = make_transforms(
-        random_horizontal_flip=True,
+        random_horizontal_flip=random_hflip,
         random_resize_aspect_ratio=ar_range,
         random_resize_scale=rr_scale,
         reprob=reprob,
@@ -401,6 +431,10 @@ def main(args, resume_preempt=False):
         collator=mask_collator,
         num_workers=num_workers,
         pin_mem=pin_mem,
+        # Upstream never passed `data.persistent_workers` to the `DataLoader`,
+        # so each rank recreated its workers on every dataset pass, adding
+        # startup overhead each time.
+        persistent_workers=cfgs_data.get("persistent_workers", False),
         log_dir=None,
     )
     try:
@@ -449,12 +483,18 @@ def main(args, resume_preempt=False):
         ema[0] + i * (ema[1] - ema[0]) / (ipe * num_epochs * ipe_scale)
         for i in range(int(ipe * num_epochs) + 1)
     )
-    lambda_sched = Lambda_LinearWarmupHold(lambda_value=lambda_value)
+    lambda_sched = Lambda_LinearWarmupHold(
+        lambda_value=lambda_value,
+        start_iter=lambda_start_iter,
+        end_iter=lambda_end_iter,
+    )
 
     start_epoch = 0
     # -- load training checkpoint
     print("Loadind checkpoint from: ", load_path)
-    if load_model or os.path.exists(latest_path):
+    # Upstream entered the checkpoint-loading branch whenever `latest.pth.tar` existed, even if
+    # `meta.load_checkpoint` was `False`, then crashed by attempting to load a `None` checkpoint path.
+    if load_path is not None:
         (
             encoder,
             predictor,
@@ -830,6 +870,7 @@ def main(args, resume_preempt=False):
         if (epoch + 1) % CHECKPOINT_FREQ == 0 or epoch == (num_epochs - 1):
             save_checkpoint(epoch + 1, latest_path)
             if save_every_freq > 0 and (epoch + 1) % save_every_freq == 0:
-                save_every_file = f"e{epoch}.pth.tar"
+                # Named after the epoch count stored inside; upstream used the 0-based index.
+                save_every_file = f"e{epoch + 1}.pth.tar"
                 save_every_path = os.path.join(folder, save_every_file)
                 save_checkpoint(epoch + 1, save_every_path)

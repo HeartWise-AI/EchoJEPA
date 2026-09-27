@@ -5,6 +5,7 @@
 # LICENSE file in the root directory of this source tree.
 
 import logging
+import os
 import sys
 
 import app.vjepa_2_1.models.predictor as vit_pred
@@ -25,21 +26,23 @@ logger = logging.getLogger()
 
 
 def normalize_and_concat(tensor, embed_dim):
-    """Split tensor into 4 chunks of size embed_dim along the last axis,
-    apply LayerNorm to each chunk, then concatenate back."""
+    """Split tensor into chunks of size `embed_dim` along the last axis (one per
+    distilled encoder layer), apply LayerNorm to each chunk, then concatenate back."""
     chunks = [
-        F.layer_norm(tensor[:, :, i * embed_dim : (i + 1) * embed_dim], (embed_dim,))
-        for i in range(4)
+        F.layer_norm(chunk, (embed_dim,)) for chunk in tensor.split(embed_dim, dim=-1)
     ]
-    return torch.cat(chunks, dim=2)
+    return torch.cat(chunks, dim=-1)
 
 
 def normalize_nested(nested, embed_dim):
-    """Apply normalize_and_concat recursively over nested lists."""
-    return [
-        [[normalize_and_concat(z, embed_dim) for z in inner] for inner in outer]
-        for outer in nested
-    ]
+    """Apply normalize_and_concat to every tensor of nested lists.
+
+    Upstream always descended three list levels, but the predictor returns two
+    ([clip length][mask] -> tensor), so it iterated over batch rows and failed.
+    """
+    if isinstance(nested, torch.Tensor):
+        return normalize_and_concat(nested, embed_dim)
+    return [normalize_nested(x, embed_dim) for x in nested]
 
 
 def build_eval_args(
@@ -115,60 +118,47 @@ def load_checkpoint(
     scaler,
     is_anneal=False,
 ):
+    """Resume training from a checkpoint of this trainer: model weights, optimizer and scaler
+    state, and the epoch (0 when a cooldown starts from `anneal_ckpt`).
+
+    Everything must match the run exactly. Upstream skipped missing tensors, kept the current
+    weights for mis-shaped ones and started a fresh optimizer when its groups did not match,
+    which silently turned a resume into a partial re-initialisation.
+    """
     logger.info(f"Loading {r_path}")
     checkpoint = robust_checkpoint_loader(r_path, map_location=torch.device("cpu"))
-
-    epoch = 0
-    if not is_anneal:
-        epoch = checkpoint["epoch"]
-
-    pretrained_dict = checkpoint["encoder"]
-    for k, v in encoder.state_dict().items():
-        if k not in pretrained_dict:
-            logger.info(f'key "{k}" could not be found in loaded state dict')
-        elif pretrained_dict[k].shape != v.shape:
-            logger.info(
-                f'key "{k}" is of different shape in model and loaded state dict'
-            )
-            pretrained_dict[k] = v
-    msg = encoder.load_state_dict(pretrained_dict, strict=False)
-    logger.info(f"loaded pretrained encoder from epoch {epoch} with msg: {msg}")
-
-    pretrained_dict = checkpoint["predictor"]
-    for k, v in predictor.state_dict().items():
-        if k not in pretrained_dict:
-            logger.info(f'key "{k}" could not be found in loaded state dict')
-        elif pretrained_dict[k].shape != v.shape:
-            logger.info(
-                f'key "{k}" is of different shape in model and loaded state dict'
-            )
-            pretrained_dict[k] = v
-    msg = predictor.load_state_dict(pretrained_dict, strict=False)
-    logger.info(f"loaded pretrained predictor from epoch {epoch} with msg: {msg}")
-
-    if target_encoder is not None:
-        pretrained_dict = checkpoint["target_encoder"]
-        for k, v in target_encoder.state_dict().items():
-            if k not in pretrained_dict:
-                logger.info(f'key "{k}" could not be found in loaded state dict')
-            elif pretrained_dict[k].shape != v.shape:
-                logger.info(
-                    f'key "{k}" is of different shape in model and loaded state dict'
-                )
-                pretrained_dict[k] = v
-        msg = target_encoder.load_state_dict(pretrained_dict, strict=False)
-        logger.info(
-            f"loaded pretrained target encoder from epoch {epoch} with msg: {msg}"
+    needed = ["encoder", "predictor", "opt", "scaler"]
+    needed += [] if target_encoder is None else ["target_encoder"]
+    needed += [] if is_anneal else ["epoch"]
+    missing = [k for k in needed if k not in checkpoint]
+    if missing:
+        raise KeyError(
+            f"{r_path} is not a training checkpoint of this trainer: it has no {missing}. "
+            "To start from another run's weights only, use `meta.init_checkpoint`."
         )
+    epoch = 0 if is_anneal else checkpoint["epoch"]
+
+    for name, model in (("encoder", encoder), ("predictor", predictor), ("target_encoder", target_encoder)):
+        if model is None:
+            continue
+        try:
+            model.load_state_dict(checkpoint[name], strict=True)
+        except RuntimeError as e:
+            raise RuntimeError(f"{r_path}: `{name}` does not match the {name} of this run.") from e
+        logger.info(f"Loaded {name} from epoch {checkpoint.get('epoch')}, strict.")
 
     try:
         opt.load_state_dict(checkpoint["opt"])
-    except ValueError:
-        print("[warn] Optimizer groups mismatch; reinitializing optimizer.")
+    except ValueError as e:
+        raise ValueError(f"{r_path}: the optimizer state does not match this run's parameter groups.") from e
+    if (scaler is None) != (checkpoint["scaler"] is None):
+        raise ValueError(
+            f"{r_path} was saved {'without' if checkpoint['scaler'] is None else 'with'} a gradient scaler "
+            f"and this run uses {'none' if scaler is None else 'one'}; check `meta.dtype`."
+        )
     if scaler is not None:
         scaler.load_state_dict(checkpoint["scaler"])
-    logger.info(f"loaded optimizers from epoch {epoch}")
-    logger.info(f"read-path: {r_path}")
+    logger.info(f"Loaded optimizer and scaler state; resuming at epoch {epoch}.")
     del checkpoint
 
     return (
@@ -179,6 +169,85 @@ def load_checkpoint(
         scaler,
         epoch,
     )
+
+
+def load_pretrained_weights(r_path, encoder, predictor, target_encoder):
+    """Initialize model weights from another run. Loads encoder, predictor, and
+    target encoder weights strictly while keeping the optimizer and schedule fresh.
+    Call before wrapping models in DDP.
+
+    Args:
+        r_path: path to the source checkpoint.
+    """
+    logger.info(f"Initialising weights from {r_path}")
+    # Load the checkpoint into CPU memory first rather than immediately putting everything
+    # onto the GPU, which is safer (avoid suddenly allocating GPU memory while loading).
+    checkpoint = robust_checkpoint_loader(r_path, map_location=torch.device("cpu"))
+    ema_key = "target_encoder" if "target_encoder" in checkpoint else "ema_encoder"
+    for name, key, model in (
+        ("encoder", "encoder", encoder),
+        ("predictor", "predictor", predictor),
+        ("target_encoder", ema_key, target_encoder),
+    ):
+        if key not in checkpoint:
+            raise KeyError(
+                f"{r_path} has no `{key}` weights for the {name}; "
+                f"its entries are {sorted(checkpoint)}."
+            )
+        # Remove the `module.` prefix from DDP-wrapped model.
+        state = {k.removeprefix("module."): v for k, v in checkpoint[key].items()}
+        try:
+            # `strict=True`: the source checkpoint and the destination model must match exactly.
+            model.load_state_dict(state, strict=True)
+        except RuntimeError as e:
+            raise RuntimeError(
+                f"{r_path}: `{key}` does not match the {name} built from this config; "
+                "check `model_name`, `pred_depth`, `pred_embed_dim` and `n_output_distillation`."
+            ) from e
+        logger.info(f"Loaded {name} from `{key}` (source epoch {checkpoint.get('epoch')}), strict.")
+    logger.info("Weights only: optimizer, scaler, schedules and epoch start fresh.")
+    del checkpoint
+
+
+def select_load_path(latest_path, load_model, r_file, is_anneal, resume_anneal, anneal_ckpt):
+    """Select the checkpoint to load. Annealing always loads a checkpoint; normal training may
+    start fresh.
+
+    Returns:
+        (checkpoint_path, resumed_anneal)
+    """
+    # If it's a cooldown run, it must load something because a cooldown run is never allowed to
+    # start from random weights.
+    if is_anneal:
+        # A cooldown loads `anneal_ckpt` or its own latest checkpoint; a named file would be ignored.
+        if r_file is not None:
+            raise ValueError(
+                "A cooldown starts from `optimization.anneal_ckpt` or resumes its own latest.pth.tar; "
+                "remove `meta.read_checkpoint`."
+            )
+        # If the cooldown started previously, continue the cooldown from where it stopped.
+        if resume_anneal and os.path.exists(latest_path):
+            return latest_path, True
+        # Otherwise, start from checkpoint `anneal_ckpt` (starting point of cooldown training).
+        if not os.path.exists(anneal_ckpt):
+            raise FileNotFoundError(f"Cooldown needs `anneal_ckpt`, not found: {anneal_ckpt}.")
+        return anneal_ckpt, False
+    # Otherwise, this is a normal training run.
+    # A named checkpoint is a resume, so it needs `load_checkpoint`; upstream silently ignored it.
+    if r_file is not None and not load_model:
+        raise ValueError(
+            f"`meta.read_checkpoint` ({r_file}) needs `meta.load_checkpoint: true`; "
+            "set it to resume from that file, or remove `meta.read_checkpoint`."
+        )
+    # Start using its normal fresh initialization if `load_model=False`.
+    if not load_model:
+        return None, resume_anneal
+    # Load the checkpoint otherwise.
+    if r_file is not None:
+        if not os.path.exists(r_file):
+            raise FileNotFoundError(f"`read_checkpoint` not found: {r_file}.")
+        return r_file, resume_anneal
+    return (latest_path if os.path.exists(latest_path) else None), resume_anneal
 
 
 def init_video_model(
@@ -212,6 +281,7 @@ def init_video_model(
     has_cls_first=False,
     interpolate_rope=False,
     modality_embedding=False,
+    n_output_distillation=4,
 ):
     encoder = video_vit.__dict__[model_name](
         img_size=crop_size,
@@ -231,6 +301,7 @@ def init_video_model(
         has_cls_first=has_cls_first,
         interpolate_rope=interpolate_rope,
         modality_embedding=modality_embedding,
+        n_output_distillation=n_output_distillation,
     )
     encoder = MultiSeqWrapper(encoder)
     predictor = vit_pred.__dict__["vit_predictor"](
@@ -261,6 +332,7 @@ def init_video_model(
         interpolate_rope=interpolate_rope,
         modality_embedding=modality_embedding,
         img_temporal_dim_size=img_temporal_dim_size,
+        n_output_distillation=n_output_distillation,
     )
     predictor = PredictorMultiSeqWrapper(predictor)
 
