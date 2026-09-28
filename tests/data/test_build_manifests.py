@@ -638,9 +638,9 @@ class TestVideoFiles(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "val.csv is empty"):
             quiet(bm.smoke_test, out, bm.SPLITS, cfg["clip"])
 
-    def test_smoke_test_loads_each_special_case_with_the_pretraining_sampling(self):
-        from src.datasets.video_dataset import VideoDataset
-
+    def smoke_test_inputs(self):
+        """Manifests whose special cases are real videos: 5 fps (below the clip's 8 fps), an
+        unknown frame rate in videos.csv, and 12 frames (shorter than one clip)."""
         clip = CFG["clip"]
         paths = {name: self.path(f"{name}.mp4") for name in ("first", "slow", "unknown", "short", "plain")}
         write_video(paths["first"], frames=60), write_video(paths["plain"], frames=60)
@@ -655,7 +655,12 @@ class TestVideoFiles(unittest.TestCase):
                      columns=["video_path", "split", "fps", "needs_padding"]).to_csv(os.path.join(out, "videos.csv"), index=False)
         with open(os.path.join(out, "train.csv"), "w") as f:
             f.writelines(f"{paths[n]} 0\n" for n, *_ in cases)
+        return clip, paths, out
 
+    def test_smoke_test_loads_each_special_case_with_the_pretraining_sampling(self):
+        from src.datasets.video_dataset import VideoDataset
+
+        clip, paths, out = self.smoke_test_inputs()
         loaded = []
 
         def record(ds, index):
@@ -675,6 +680,13 @@ class TestVideoFiles(unittest.TestCase):
         with mock.patch.object(VideoDataset, "get_item_video", autospec=True, side_effect=fail_below_clip_fps):
             with self.assertRaisesRegex(RuntimeError, r"a frame rate below 8 fps \(1 video\), sampling 16 frames at 8 fps: .*slow\.mp4"):
                 quiet(bm.smoke_test, out, ["train"], clip)
+
+    def test_smoke_test_passes_with_the_production_clip_on_real_videos(self):
+        # No mock: the loader samples the low-fps, unknown-fps and short videos with the
+        # shipped clip (16 frames at 8 fps), as pretraining does, and pads the short ones.
+        clip, _, out = self.smoke_test_inputs()
+        self.assertEqual((clip["frames_per_clip"], clip["fps"]), (16, 8))
+        quiet(bm.smoke_test, out, ["train"], clip)  # raises if any of them cannot be loaded
 
     def test_cli_seed_override_is_used_and_recorded(self):
         metadata, labels, config_path, _ = cli_inputs(self.dir)

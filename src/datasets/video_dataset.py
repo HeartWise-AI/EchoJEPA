@@ -4,9 +4,12 @@
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
+import contextlib
 import math
 import os
 import pathlib
+import sys
+import threading
 import warnings
 from logging import getLogger
 
@@ -25,7 +28,39 @@ from src.datasets.utils.weighted_sampler import DistributedWeightedSampler
 
 _GLOBAL_SEED = 0
 logger = getLogger()
-  
+
+# Use a lock so only one thread can swap `stderr` at a time. Forks wait for the lock,
+# preventing child processes from inheriting discarded `stderr`.
+_stderr_swap = threading.Lock()
+os.register_at_fork(before=_stderr_swap.acquire, after_in_parent=_stderr_swap.release,
+                    after_in_child=_stderr_swap.release)
+
+
+@contextlib.contextmanager
+def _native_stderr_discarded():
+    """Discard all `stderr` output inside the block, including native C++ output from `decord`.
+    This prevents failed-video logs from exposing paths or file bytes. `stderr` from other
+    threads during the block is discarded as well.
+    """
+    with _stderr_swap:
+        if sys.stderr is not None:
+            sys.stderr.flush()
+        try:
+            saved = os.dup(2)
+        except OSError:     # no `stderr` to protect.
+            saved = None
+        if saved is None:
+            yield
+            return
+        devnull = os.open(os.devnull, os.O_WRONLY)
+        try:
+            os.dup2(devnull, 2)
+            yield
+        # Restoration must happen even if `VideoReader` throws an exception.
+        finally:
+            os.dup2(saved, 2)
+            os.close(saved)
+            os.close(devnull)
 
 
 def _worker_init_fn(_):
@@ -133,6 +168,10 @@ def make_videodataset(
 class VideoDataset(torch.utils.data.Dataset):
     """
     Video classification dataset that supports both local filesystem and S3 paths.
+
+    Every clip has exactly `frames_per_clip` frames. A video that is too short for a
+    whole clip is sampled in full and padded at the end with black frames, which are
+    reported at clip index `-1`; padding frames never duplicate real video frames.
     """
 
     def __init__(
@@ -152,6 +191,8 @@ class VideoDataset(torch.utils.data.Dataset):
         filter_long_videos=int(10**9),
         duration=None,  # duration in seconds
     ):
+        if isinstance(data_paths, str):
+            data_paths = [data_paths]
         self.data_paths = data_paths
         self.datasets_weights = datasets_weights
         self.frame_step = frame_step
@@ -170,9 +211,6 @@ class VideoDataset(torch.utils.data.Dataset):
 
         if sum([v is not None for v in (fps, duration, frame_step)]) != 1:
             raise ValueError(f"Must specify exactly one of either {fps=}, {duration=}, or {frame_step=}.")
-
-        if isinstance(data_paths, str):
-            data_paths = [data_paths]
 
         if dataset_fpcs is None:
             self.dataset_fpcs = [frames_per_clip for _ in data_paths]
@@ -214,10 +252,16 @@ class VideoDataset(torch.utils.data.Dataset):
         self.samples = samples
         self.labels = labels
 
+        # Log counts only; never include manifest paths, since they may identify patients.
         logger.info(f"Loaded {len(self.samples)} samples")
-        if len(self.samples) > 0:
-            logger.info(f"First 5 samples: {self.samples[:5]}")
-            logger.info(f"Sample types: {[type(s) for s in self.samples[:5]]}")
+
+    def describe(self, index):
+        """Safe replacement for printing the filename to avoid exposing sensitive information:
+        Identify a sample by its manifest index in `data_paths` and line number (not the manifest's
+        name), without its path.
+        """
+        dataset_idx, row = self.per_dataset_indices[index]
+        return f"sample {index} (manifest {dataset_idx}, line {row + 1})"
 
     # ---------- S3 helper ----------
     def _ensure_s3_client(self):
@@ -240,7 +284,7 @@ class VideoDataset(torch.utils.data.Dataset):
                 loaded = self.get_item_image(index) if is_image else self.get_item_video(index)
                 if loaded:
                     return loaded
-            warnings.warn(f"Retrying with new sample, failed to load: {self.samples[index]}")
+            warnings.warn(f"Retrying with new sample, failed to load {self.describe(index)}.")
             index = np.random.randint(len(self))
 
     def get_item_video(self, index):
@@ -287,7 +331,7 @@ class VideoDataset(torch.utils.data.Dataset):
                 # Local image
                 image_tensor = torchvision.io.read_image(path=sample_uri, mode=torchvision.io.ImageReadMode.RGB)
         except Exception as e:
-            logger.warning(f"Failed to load image {sample_uri}: {e}")
+            logger.warning(f"Failed to load image {self.describe(index)}: {type(e).__name__}.")
             return None
 
         label = self.labels[index]
@@ -305,6 +349,7 @@ class VideoDataset(torch.utils.data.Dataset):
         return buffer, label, clip_indices
 
     def debug_sample_loading(self, index):
+        # Prints the sample's path: for interactive debugging only; training never calls it.
         sample_uri = self.samples[index]
         print(f"Attempting to load sample {index}: {sample_uri}")
         print(f"Sample type: {type(sample_uri)}")
@@ -330,22 +375,29 @@ class VideoDataset(torch.utils.data.Dataset):
           - Local path: matches the default filesystem logic exactly.
           - S3 path: mirrors the same semantics (size check, skip behavior, sampling math).
         Returns (buffer[T,H,W,3], clip_indices) or ([], None) on skip/failure.
+        
+        Note: warnings give the reason only, never the file paths. `__getitem__` identifies the
+        affected sample by its manifest line number.
         """
         # --- Local filesystem branch
         if not (isinstance(sample_uri, str) and sample_uri.startswith("s3://")):
             fname = sample_uri
-            if not os.path.exists(fname):
-                warnings.warn(f"video path not found fname='{fname}'")
-                return [], None
-
-            _fsize = os.path.getsize(fname)
-            if self.filter_long_videos and _fsize > self.filter_long_videos:
-                warnings.warn(f"skipping long video of size _fsize={_fsize} (bytes)")
-                return [], None
-
+            # Make one try, since the file may disappear or lose permissions between calls.
+            # Avoid exposing filesystem errors because their messages may include the path.
             try:
-                vr = VideoReader(fname, num_threads=-1, ctx=cpu(0))
-            except Exception:
+                if not os.path.exists(fname):
+                    warnings.warn("Video file not found.")
+                    return [], None
+
+                _fsize = os.path.getsize(fname)
+                if self.filter_long_videos and _fsize > self.filter_long_videos:
+                    warnings.warn(f"Skipping long video of size _fsize={_fsize} (bytes).")
+                    return [], None
+
+                with _native_stderr_discarded():  # `decord`` streams the file from its path.
+                    vr = VideoReader(fname, num_threads=-1, ctx=cpu(0))
+            except Exception as e:
+                logger.warning(f"Failed to load video: {type(e).__name__}.")
                 return [], None
 
             return self._sample_from_vr(vr, fpc)
@@ -358,48 +410,59 @@ class VideoDataset(torch.utils.data.Dataset):
             try:
                 head = self.s3_client.head_object(Bucket=bucket, Key=key)
             except self.s3_client.exceptions.NoSuchKey:
-                warnings.warn(f"video path not found fname='{sample_uri}'")
+                warnings.warn("Video object not found on S3.")
                 return [], None
             except self.s3_client.exceptions.ClientError as e:
                 # Could be NoSuchKey or perms; treat as skip like default
-                logger.warning(f"S3 access error for {sample_uri}: {e}")
+                logger.warning(f"S3 access error: {type(e).__name__}.")
                 return [], None
 
             fsize = head.get("ContentLength", 0)
             if self.filter_long_videos and fsize > self.filter_long_videos:
-                warnings.warn(f"skipping long video of size _fsize={fsize} (bytes)")
+                warnings.warn(f"Skipping long video of size _fsize={fsize} (bytes).")
                 return [], None
 
             obj = self.s3_client.get_object(Bucket=bucket, Key=key)
             data = obj["Body"].read()
             if not data:
-                logger.warning(f"Empty S3 object: {sample_uri}")
+                logger.warning("Empty S3 object.")
                 return [], None
 
             bio = io.BytesIO(data)
-            vr = VideoReader(bio, num_threads=-1, ctx=cpu(0))
+            with _native_stderr_discarded():
+                vr = VideoReader(bio, num_threads=-1, ctx=cpu(0))
 
         except Exception as e:
-            logger.warning(f"Failed to load video: {sample_uri}\n{e}")
+            logger.warning(f"Failed to load video: {type(e).__name__}.")
             return [], None
 
         return self._sample_from_vr(vr, fpc)
 
     # ---------- Sampling (shared by local & S3) ----------
     def _sample_from_vr(self, vr, fpc):
-        fstp = self.frame_step            
+        if len(vr) == 0:
+            warnings.warn("Skipping video without frames.")
+            return [], None
+        fstp = self.frame_step
         if self.duration is not None or self.fps is not None:
             try:
-                video_fps = math.ceil(vr.get_avg_fps())
+                video_fps = float(vr.get_avg_fps())
             except Exception as e:
-                logger.warning(e)
-                # keep parity with default (no fallback change)
-            if self.duration is not None:
+                logger.warning(f"FPS unavailable: {type(e).__name__}.")
+                video_fps = float("nan")
+            # Clamp the sampling step to at least 1: lets low-FPS or very short videos be sampled
+            # frame by frame instead of failing validation.
+            if not (math.isfinite(video_fps) and video_fps > 0):
+                # If FPS is unavailable, fall back to a frame step of 1 (sample every frame),
+                # matching the assumption used to compute the manifest’s `needs_padding` flag.
+                warnings.warn(f"Unusable FPS {video_fps}: sampling every frame.")
+                fstp = 1
+            elif self.duration is not None:
                 assert self.fps is None
-                fstp = int(self.duration * video_fps / fpc)
+                fstp = max(1, int(self.duration * math.ceil(video_fps) / fpc))
             else:
                 assert self.duration is None
-                fstp = video_fps // self.fps
+                fstp = max(1, int(math.ceil(video_fps) // self.fps))  # whole integer even when FPS is a float like 8.0.
 
         # Validate frame step, fps
         # if not hasattr(self, "_logged_mode"):
@@ -413,7 +476,7 @@ class VideoDataset(torch.utils.data.Dataset):
         clip_len = int(fpc * fstp)
 
         if self.filter_short_videos and len(vr) < clip_len:
-            warnings.warn(f"skipping video of length {len(vr)}")
+            warnings.warn(f"Skipping video of length {len(vr)}.")
             return [], None
 
         vr.seek(0)  # Go to start of video before sampling frames
@@ -421,8 +484,11 @@ class VideoDataset(torch.utils.data.Dataset):
         # Partition video into equal sized segments and sample each clip
         partition_len = len(vr) // self.num_clips
 
-        all_indices, clip_indices = [], []
+        # Pad short videos to `frames_per_clip` with black frames matching the decoded shape and dtype.
+        # Padding frames are marked with clip index `-1`; the last real frame is decoded, then replaced with black.
+        all_indices, clip_indices, pad_masks = [], [], []
         for i in range(self.num_clips):
+            n_real = fpc
             if partition_len > clip_len:
                 # sample a random window of clip_len frames within the segment
                 end_indx = clip_len
@@ -434,7 +500,8 @@ class VideoDataset(torch.utils.data.Dataset):
                 indices = indices + i * partition_len
             else:
                 if not self.allow_clip_overlap:
-                    base = partition_len // fstp
+                    base = max(1, partition_len // fstp)    # never an all-black clip.
+                    n_real = min(base, fpc)
                     indices = np.linspace(0, partition_len, num=base)
                     if base < fpc:
                         indices = np.concatenate(
@@ -444,22 +511,32 @@ class VideoDataset(torch.utils.data.Dataset):
                     indices = indices + i * partition_len
                 else:
                     sample_len = min(clip_len, len(vr)) - 1
-                    base = sample_len // fstp
+                    # Treat `sample_len` as the window's last frame index, not its length. Upstream counted
+                    # frames and clipped indices as if it were the length, so even a long video got a padding
+                    # frame, and the last frame never read.
+                    base = max(1, (sample_len + 1) // fstp)
+                    n_real = min(base, fpc)
                     indices = np.linspace(0, sample_len, num=base)
                     if base < fpc:
                         indices = np.concatenate(
                             (indices, np.ones(fpc - base) * sample_len)
                         )
-                    indices = np.clip(indices, 0, sample_len - 1).astype(np.int64)
+                    indices = np.clip(indices, 0, sample_len).astype(np.int64)
                     clip_step = 0
                     if len(vr) > clip_len and self.num_clips > 1:
                         clip_step = (len(vr) - clip_len) // (self.num_clips - 1)
                     indices = indices + i * clip_step
 
-            clip_indices.append(indices)
+            # Clamp decoded frame indices to the valid video range, which prevents `-1` from being treated as
+            # the last real frame when `-1` is reserved for padding.
+            indices = np.clip(indices, 0, len(vr) - 1)
+            pad = np.arange(fpc) >= n_real
+            clip_indices.append(np.where(pad, -1, indices))
+            pad_masks.append(pad)
             all_indices.extend(list(indices))
 
         buffer = vr.get_batch(all_indices).asnumpy()
+        buffer[np.concatenate(pad_masks)] = 0
         return buffer, clip_indices
 
     def __len__(self):

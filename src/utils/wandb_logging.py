@@ -194,14 +194,17 @@ def _select_clips(clips):
     return clips
 
 
-def unique_frame_fraction(clips):
+def unique_frame_fraction(clips, padded=None):
     """A diagnostic function that checks the average fraction of unique frames
-    within each clip across uploaded samples, which helps detect repeated-frame padding.
+    within each clip across uploaded samples, which helps detect repeated frames.
 
     Args:
         clips: (B, C, T, H, W) float tensor, exactly as fed to the encoder.
+        padded: optional (B, T) bool tensor marking the black padding frames of short
+            videos (clip index `-1`). Exclude padding frames so intentional black
+            padding is not counted as repeated frames.
 
-    Returns a float number between 0.0 and 1.0(=all frames are unique).
+    Returns a float number between 0.0 and 1.0(=all real frames are unique).
     """
     b, _c, t, _h, _w = clips.shape
     # Shape: (B, C, T, H, W) -> (B, T, C, H, W) -> (B, T, N) for N = C x H x W.
@@ -209,15 +212,17 @@ def unique_frame_fraction(clips):
     # Loop over each video in the batch to compute fraction of unique frames within each clip.
     total = 0.0
     for i in range(b):
-        total += len(torch.unique(flat[i], dim=0)) / float(t)
+        real = flat[i] if padded is None else flat[i][~padded[i].to(flat.device)]
+        total += len(torch.unique(real, dim=0)) / float(len(real)) if len(real) else 1.0
     # Get the average fraction across uploaded samples.
     return total / float(b)
 
 
-def log_input_clips(run, clips, step, normalize, num_videos=2, fps=4, tag="train/input_clips"):
+def log_input_clips(run, clips, step, normalize, num_videos=2, fps=4, tag="train/input_clips", padded=None):
     """Actual logging function to wandb. `step` is recorded as the `STEP_METRIC` value 
     rather than passed to `run.log(step=...)`, so a resumed run never replays a step 
-    wandb would drop.
+    wandb would drop. `padded` marks the black padding frames of `clips` (a (B, T) bool
+    tensor, or a list parallel to `clips`).
     """
     if run is None or wandb is None:
         return
@@ -230,18 +235,23 @@ def log_input_clips(run, clips, step, normalize, num_videos=2, fps=4, tag="train
         if n <= 0:
             return
         sample = clips[:n]
+        if isinstance(padded, (list, tuple)):
+            padded = padded[0] if padded else None
+        pad = None if padded is None else padded[:n]
         vids = denormalize_clips(sample, normalize).cpu().numpy()
         payload = {f"{tag}/{i}": wandb.Video(vids[i], fps=fps, format="gif") for i in range(n)}
 
-        # Check the same clips that get uploaded in the batch for repeated frames.
-        frac = unique_frame_fraction(sample)
+        # Check uploaded clips for repeated real frames only. Report black padding separately
+        # rather than counting it as repetition.
+        frac = unique_frame_fraction(sample, pad)
         payload["data/unique_frame_frac"] = frac
-        # Warning if fewer than 95% of frames are unique.
+        if pad is not None:
+            payload["data/padded_frame_frac"] = float(pad.float().mean())
+        # Warning if fewer than 95% of real frames are unique.
         if frac < 0.95:
             logger.warning(
-                f"Only {frac:.0%} of frames in the {n} logged clip(s) are unique. "
-                "The sampler may be padding clips with repeated frames because source videos "
-                "are shorter than dataset_fpcs/fps implies."
+                f"Only {frac:.0%} of the real frames in the {n} logged clip(s) are unique: "
+                "the source videos may contain repeated or frozen frames."
             )
         payload[STEP_METRIC] = step
         run.log(payload)
