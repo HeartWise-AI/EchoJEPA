@@ -100,6 +100,8 @@ class StudyRunner:
 
     def run_still(self, base: dict, path: str, out: list):
         ds = pydicom_read_header(path)
+        if int(ds.get("NumberOfFrames", 1) or 1) > 1:
+            return  # a clip whose AVI conversion failed, not a still
         regs = dio.regions(ds)
         sreg = dio.spectral_region(regs)
         if sreg is None:
@@ -185,8 +187,11 @@ def pydicom_read_header(path):
 # ---------------------------------------------------------------------- batch runner
 def worker(args):
     shard_id, n_shards, gpu, cohort_path, rows_path, out_dir, limit = args
-    torch.cuda.set_device(gpu)
-    device = torch.device(f"cuda:{gpu}")
+    # Pin the worker to one physical GPU by visibility: EasyOCR wraps its nets in DataParallel with
+    # device_ids=[0], so the process must see its GPU as cuda:0.
+    os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu)
+    torch.cuda.set_device(0)
+    device = torch.device("cuda:0")
     cohort = pd.read_parquet(cohort_path)
     cohort = cohort.iloc[shard_id::n_shards]
     if limit:
@@ -232,7 +237,7 @@ if __name__ == "__main__":
     ap.add_argument("--cohort", default="/volume/echonet_eval/cohort_10k.parquet")
     ap.add_argument("--rows", default="/volume/echonet_eval/cohort_rows.parquet")
     ap.add_argument("--out", default="/volume/echonet_eval/results")
-    ap.add_argument("--gpus", default="0,1,2,3")
+    ap.add_argument("--gpus", default="0,1,2,3", help="comma list; repeat a GPU id to put more workers on it")
     ap.add_argument("--workers_per_gpu", type=int, default=3)
     ap.add_argument("--limit", type=int, default=0, help="studies per shard (pilot)")
     a = ap.parse_args()

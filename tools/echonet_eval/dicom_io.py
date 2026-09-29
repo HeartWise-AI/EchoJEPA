@@ -60,8 +60,19 @@ def regions(ds: pydicom.Dataset) -> list[Region]:
 def read_frames(path: str, max_frames: Optional[int] = None) -> tuple[np.ndarray, pydicom.Dataset]:
     """Return frames as (T, H, W, 3) uint8 RGB and the dataset (pixel data already read)."""
     ds = pydicom.dcmread(path)
-    arr = ds.pixel_array
     pi = str(ds.get("PhotometricInterpretation", "RGB"))
+    try:
+        arr = ds.pixel_array
+    except ValueError as e:
+        # Some GE clips are tagged YBR_FULL_422 but stored 4:4:4 (3 bytes/pixel); pydicom refuses
+        # ("pixel data is a third larger than expected"). Re-interpret the raw bytes as YBR_FULL.
+        nf = int(ds.get("NumberOfFrames", 1) or 1)
+        raw = np.frombuffer(ds.PixelData, dtype=np.uint8)
+        if raw.size == nf * int(ds.Rows) * int(ds.Columns) * 3:
+            arr = raw.reshape(nf, int(ds.Rows), int(ds.Columns), 3)
+            pi = "YBR_FULL"
+        else:
+            raise e
     if arr.ndim == 2:
         arr = np.repeat(arr[None, ..., None], 3, axis=-1)
     elif arr.ndim == 3:
