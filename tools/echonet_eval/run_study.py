@@ -65,14 +65,22 @@ class StudyRunner:
         r = dict(base); r.update(kw); return r
 
     def run_clip(self, base: dict, path: str, view: str, models_2d: list[str], out: list):
-        frames, ds = dio.read_frames(path, max_frames=MAX_FRAMES)
+        # A4C clips are read in full for EchoNet-Dynamic (temporal sampling matters); other views are
+        # subsampled to MAX_FRAMES for the frame-wise 2D models.
+        all_frames, ds = dio.read_frames(path, max_frames=None if view == "A4C" else MAX_FRAMES)
         regs = dio.regions(ds)
         treg = dio.tissue_region(regs)
         has_color = any(r.dtype == 2 for r in regs)
-        fps = float(ds.get("CineRate", 0) or ds.get("RecommendedDisplayFrameRate", 0) or 30)
+        fps = clip_fps(ds)
+        if len(all_frames) > MAX_FRAMES:
+            idx = np.linspace(0, len(all_frames) - 1, MAX_FRAMES).round().astype(int)
+            frames, fps_sub = all_frames[idx], fps * MAX_FRAMES / len(all_frames)
+        else:
+            frames, fps_sub = all_frames, fps
         cv = dio.to_canvas_3x4(frames, treg)
-        b = dict(base, file=os.path.basename(path), view=view, n_frames=int(len(frames)), color_doppler=bool(has_color),
+        b = dict(base, file=os.path.basename(path), view=view, n_frames=int(len(all_frames)), color_doppler=bool(has_color),
                  cm_per_px=cv.cm_per_model_px, fps=fps)
+        fps = fps_sub  # for the low-pass filter on the subsampled series
         # 2D calipers
         if models_2d and cv.cm_per_model_px:
             for m in models_2d:
@@ -94,8 +102,12 @@ class StudyRunner:
                                  area_med_cm2=float(np.median(sm)), conf_mean=float(confs.mean()), frac_frames_with_mask=float((px > 200).mean())))
         # EchoNet-Dynamic on A4C
         if view == "A4C":
-            r = self.dyn.predict(self.dyn.to_112(frames, treg))
-            out.append(self._row(b, kind="dynamic", model="echonet_dynamic", ef_mean=r["ef_mean"], ef_clips=json.dumps(r["ef_clips"]),
+            f112 = self.dyn.to_112(all_frames, treg)
+            period = max(1, int(round(b["fps"] / 25.0)))  # match the 25 fps effective sampling of training
+            r = self.dyn.predict(f112, period=period)
+            r2 = self.dyn.predict(f112, period=2) if period != 2 else r  # the released default, for comparison
+            out.append(self._row(b, kind="dynamic", model="echonet_dynamic", period=period, duration_s=len(all_frames) / max(b["fps"], 1e-3),
+                                 ef_mean=r["ef_mean"], ef_clips=json.dumps(r["ef_clips"]), ef_mean_p2=r2["ef_mean"], ef_clips_p2=json.dumps(r2["ef_clips"]),
                                  lv_area_max=r["lv_area_max"], lv_area_min=r["lv_area_min"], lv_frac_change=r["lv_frac_change"], lv_frac_frames=r["lv_frac_frames"]))
 
     def run_still(self, base: dict, path: str, out: list):
@@ -123,7 +135,7 @@ class StudyRunner:
             baseline = (sreg.ref_y0 or 0)
             v_cms = abs(sreg.dy) * (y - baseline)
             out.append(self._row(b, kind="doppler_vmax", model=dmodel, pred_x=x, pred_y_strip=y, peak_prob=p, vmax_ms=float(abs(v_cms) / 100.0),
-                                 edge_hit=bool(x <= 2 or x >= strip.shape[1] - 3)))
+                                 edge_hit=bool(x <= sreg.x0 + 2 or x >= sreg.x1 - 2 or y + sreg.y0 >= sreg.y1 - 2)))
         vt = LABEL_TO_VTI.get(ocr["label"])
         if vt in self.vti.seg and sreg.dy and sreg.dx:
             strip_bgr = cv2.cvtColor(img[sreg.y0:, :, :], cv2.COLOR_RGB2BGR)
@@ -177,6 +189,17 @@ class StudyRunner:
             except Exception as e:
                 out.append(self._row(base, kind="error", model="still", file=os.path.basename(p), error=str(e)[:200]))
         return out
+
+
+def clip_fps(ds) -> float:
+    """Frame rate from FrameTime (ms) when present, else CineRate / RecommendedDisplayFrameRate, else 30."""
+    ft = ds.get("FrameTime", None)
+    try:
+        if ft and float(ft) > 0:
+            return 1000.0 / float(ft)
+    except (TypeError, ValueError):
+        pass
+    return float(ds.get("CineRate", 0) or ds.get("RecommendedDisplayFrameRate", 0) or 30)
 
 
 def pydicom_read_header(path):

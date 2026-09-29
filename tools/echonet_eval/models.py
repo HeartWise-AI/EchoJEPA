@@ -171,15 +171,18 @@ class EchoNetDynamic:
         return np.stack([cv2.resize(f, (112, 112), interpolation=cv2.INTER_CUBIC) for f in a])
 
     @torch.no_grad()
-    def predict(self, frames112: np.ndarray, max_clips: int = 8) -> dict:
+    def predict(self, frames112: np.ndarray, max_clips: int = 8, period: Optional[int] = None) -> dict:
+        """period: temporal stride between the 32 sampled frames. The released model was trained on
+        50 fps videos with period 2 (25 fps effective); pass round(fps / 25) for other frame rates."""
+        period = int(period or self.period)
         x = torch.from_numpy((frames112.astype(np.float32) - self.MEAN) / self.STD).permute(3, 0, 1, 2)
-        T = x.shape[1]; need = self.frames_n * self.period
+        T = x.shape[1]; need = self.frames_n * period
         if T < need:
             x = torch.cat([x] * int(np.ceil(need / T)), 1)[:, :need]; T = need
-        starts = list(range(0, T - need + 1, self.period))
+        starts = list(range(0, T - need + 1, period))
         if len(starts) > max_clips:
             starts = [starts[i] for i in np.linspace(0, len(starts) - 1, max_clips).round().astype(int)]
-        clips = torch.stack([x[:, s:s + need:self.period] for s in starts]).to(self.device)
+        clips = torch.stack([x[:, s:s + need:period] for s in starts]).to(self.device)
         with torch.autocast("cuda", dtype=torch.float16, enabled=self.device.type == "cuda"):
             preds = self.ef(clips).float().squeeze(1).cpu().numpy()
         xs = torch.from_numpy((frames112.astype(np.float32) - self.MEAN) / self.STD).permute(0, 3, 1, 2)

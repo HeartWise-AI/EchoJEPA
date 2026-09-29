@@ -61,6 +61,9 @@ def read_frames(path: str, max_frames: Optional[int] = None) -> tuple[np.ndarray
     """Return frames as (T, H, W, 3) uint8 RGB and the dataset (pixel data already read)."""
     ds = pydicom.dcmread(path)
     pi = str(ds.get("PhotometricInterpretation", "RGB"))
+    # pydicom >= 3 converts YBR_FULL / YBR_FULL_422 to RGB inside `pixel_array` (as_rgb=True default)
+    # while leaving PhotometricInterpretation untouched; converting again turns the frames green/pink.
+    needs_convert = pi.startswith("YBR") and int(pydicom.__version__.split(".")[0]) < 3
     try:
         arr = ds.pixel_array
     except ValueError as e:
@@ -70,7 +73,7 @@ def read_frames(path: str, max_frames: Optional[int] = None) -> tuple[np.ndarray
         raw = np.frombuffer(ds.PixelData, dtype=np.uint8)
         if raw.size == nf * int(ds.Rows) * int(ds.Columns) * 3:
             arr = raw.reshape(nf, int(ds.Rows), int(ds.Columns), 3)
-            pi = "YBR_FULL"
+            pi, needs_convert = "YBR_FULL", True
         else:
             raise e
     if arr.ndim == 2:
@@ -80,7 +83,7 @@ def read_frames(path: str, max_frames: Optional[int] = None) -> tuple[np.ndarray
     if max_frames and arr.shape[0] > max_frames:
         idx = np.linspace(0, arr.shape[0] - 1, max_frames).round().astype(int)
         arr = arr[idx]
-    if pi.startswith("YBR"):
+    if needs_convert:
         arr = np.stack([convert_color_space(f, pi, "RGB") for f in arr])
     return np.ascontiguousarray(arr.astype(np.uint8)), ds
 
