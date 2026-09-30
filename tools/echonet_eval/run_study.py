@@ -131,10 +131,16 @@ class StudyRunner:
         strip = masked[sreg.y0:, :, :]
         dmodel = LABEL_TO_DOPPLER.get(ocr["label"])
         if dmodel and sreg.dy:
-            x, y, p = self.dop.predict(dmodel, strip)
             baseline = (sreg.ref_y0 or 0)
+            # The Cedars models expect the jet below the baseline (baseline in the upper part of the strip).
+            # GE displays with the baseline shifted to the bottom (inverted trace) are flipped vertically
+            # before inference; the peak row is mapped back. Validated on AV CW stills (errors 2.5 -> 0.3 m/s).
+            flip = baseline > 0.6 * strip.shape[0]
+            x, y, p = self.dop.predict(dmodel, np.ascontiguousarray(strip[::-1]) if flip else strip)
+            if flip:
+                y = strip.shape[0] - 1 - y
             v_cms = abs(sreg.dy) * (y - baseline)
-            out.append(self._row(b, kind="doppler_vmax", model=dmodel, pred_x=x, pred_y_strip=y, peak_prob=p, vmax_ms=float(abs(v_cms) / 100.0),
+            out.append(self._row(b, kind="doppler_vmax", model=dmodel, pred_x=x, pred_y_strip=y, peak_prob=p, vmax_ms=float(abs(v_cms) / 100.0), flipped=bool(flip),
                                  edge_hit=bool(x <= sreg.x0 + 2 or x >= sreg.x1 - 2 or y + sreg.y0 >= sreg.y1 - 2)))
         vt = LABEL_TO_VTI.get(ocr["label"])
         if vt in self.vti.seg and sreg.dy and sreg.dx:

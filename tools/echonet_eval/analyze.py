@@ -48,7 +48,8 @@ def agreement(h, d):
     diff = d - h
     r = stats.pearsonr(h, d)[0]
     lo, hi = bootstrap(h, d, lambda a, b: stats.pearsonr(a, b)[0], n=300)
-    return dict(n=int(len(h)), r=float(r), r_ci_low=lo, r_ci_high=hi, mae=float(np.mean(np.abs(diff))),
+    r2_cod = 1.0 - float(np.sum(diff ** 2) / max(np.sum((h - h.mean()) ** 2), 1e-12))  # coefficient of determination (paper's R2)
+    return dict(n=int(len(h)), r=float(r), r2=float(r ** 2), r2_cod=r2_cod, r_ci_low=lo, r_ci_high=hi, mae=float(np.mean(np.abs(diff))),
                 mae_ci=bootstrap(h, d, lambda a, b: np.mean(np.abs(b - a)), n=300),
                 bias=float(diff.mean()), loa_low=float(diff.mean() - 1.96 * diff.std()), loa_high=float(diff.mean() + 1.96 * diff.std()),
                 mape=float(np.mean(np.abs(diff) / np.clip(np.abs(h), 1e-6, None)) * 100), human_mean=float(h.mean()), dl_mean=float(d.mean()))
@@ -84,11 +85,14 @@ CALIPER_DEFS = [
     ("IVC", "ivc", ["SUBCOSTAL"], "d_max_mm", "ivc_diam", "sr_ivc_mm", "mm", 10.0),
 ]
 DOPPLER_DEFS = [  # (name, model, report col, sr col, unit, scale report->m/s)
-    ("TR Vmax", "trvmax", "tr_vmax", "sr_tr_vmax_ms", "m/s"),
+    # SR TR Vmax (r=0.38 vs the report) and the report e' columns (r~0 vs the on-screen value) are not
+    # reliable references and are left out; the on-screen GE value is the reference for e'.
+    ("TR Vmax", "trvmax", "tr_vmax", None, "m/s"),
     ("AV Vmax", "avvmax", "av_vmax", "sr_av_vmax_ms", "m/s"),
+    ("MR Vmax", "mrvmax", None, None, "m/s"),
     ("LVOT Vmax", "lvotvmax", None, "sr_lvot_vmax_ms", "m/s"),
-    ("Lateral e'", "latevel", "lat_e", None, "cm/s"),
-    ("Septal e'", "medevel", "sept_e", None, "cm/s"),
+    ("Lateral e'", "latevel", None, None, "cm/s"),
+    ("Septal e'", "medevel", None, None, "cm/s"),
 ]
 
 
@@ -125,6 +129,7 @@ def main(results_dir, out_dir, ef_agg="median", ef_min_clips=1, ef_gate_frac=0.0
         pred = per_study(df, "caliper", model, views, stat)
         if rcol is not None and rcol in cohort:
             gt = cohort[rcol].astype(float); gt = gt * guess_report_unit(gt)
+            gt = gt[(gt > 2) & (gt < 120)]  # plausible mm range; drops report entry errors
             j = pd.concat([gt.rename("human"), pred.rename("dl")], axis=1).dropna()
             m = agreement(j.human, j.dl); m.update(measurement=name, model=model, gt="report", views="+".join(views), stat=stat); table.append(m)
             scatter_ba(j.human, j.dl, f"{name} (EchoNet {model} vs report)", unit, f"{out_dir}/caliper_{model}_{name.replace(' ', '_').replace('/', '')}_report.png")
@@ -142,10 +147,8 @@ def main(results_dir, out_dir, ef_agg="median", ef_min_clips=1, ef_gate_frac=0.0
         factor = 100.0 if unit == "cm/s" else 1.0
         s["dl"] = s.vmax_ms.astype(float) * factor
         s["ocr"] = pd.to_numeric(s.ocr_value, errors="coerce")
-        if unit == "m/s":
-            s.loc[s.ocr_unit.astype(str).str.upper().str.contains("CM"), "ocr"] /= 100.0
-        else:
-            s.loc[s.ocr_unit.astype(str).str.upper().eq("M/S"), "ocr"] *= 100.0
+        # keep only stills whose OCR'd value carries the expected unit (m/s for jets, cm/s for e')
+        s = s[s.ocr_unit.astype(str).str.upper().eq("M/S" if unit == "m/s" else "CM/S")]
         s = s[(s.ocr > 0) & (s.ocr < (600 if unit == "cm/s" else 8))]
         m = agreement(s.ocr, s.dl); m.update(measurement=name, model=model, gt="on-screen GE value (per still)", views="DOPPLER", stat="argmax"); table.append(m)
         scatter_ba(s.ocr, s.dl, f"{name} (EchoNet {model} vs on-screen GE value)", unit, f"{out_dir}/doppler_{model}_ocr.png")
@@ -157,6 +160,7 @@ def main(results_dir, out_dir, ef_agg="median", ef_min_clips=1, ef_gate_frac=0.0
             gt = cohort[rcol].astype(float)
             if unit == "m/s" and np.nanmedian(gt) > 20:
                 gt = gt / 100.0
+            gt = gt[(gt > 0) & (gt < (600 if unit == "cm/s" else 8))]  # drop report entry errors (e.g. AV Vmax 3,045 m/s)
             j = pd.concat([gt.rename("human"), pst.rename("dl")], axis=1).dropna()
             m = agreement(j.human, j.dl); m.update(measurement=name, model=model, gt="report (per study, median of stills)", views="DOPPLER", stat="median"); table.append(m)
             scatter_ba(j.human, j.dl, f"{name} (EchoNet {model} vs report)", unit, f"{out_dir}/doppler_{model}_report.png")
@@ -191,7 +195,7 @@ def main(results_dir, out_dir, ef_agg="median", ef_min_clips=1, ef_gate_frac=0.0
     ef_table, ef_summary = ef_analysis(dyn, cohort, out_dir, ef_agg, ef_min_clips, ef_gate_frac, ef_gate_change)
     summary["ef"] = ef_summary
     tab = pd.DataFrame(table)
-    cols = ["measurement", "model", "gt", "views", "stat", "n", "r", "r_ci_low", "r_ci_high", "mae", "mae_ci", "mape", "bias", "loa_low", "loa_high", "human_mean", "dl_mean"]
+    cols = ["measurement", "model", "gt", "views", "stat", "n", "r", "r2", "r2_cod", "r_ci_low", "r_ci_high", "mae", "mae_ci", "mape", "bias", "loa_low", "loa_high", "human_mean", "dl_mean"]
     tab = tab[[c for c in cols if c in tab]]
     tab.to_csv(f"{out_dir}/agreement_table.csv", index=False)
     ef_table.to_csv(f"{out_dir}/ef_table.csv", index=False)
@@ -207,23 +211,40 @@ def main(results_dir, out_dir, ef_agg="median", ef_min_clips=1, ef_gate_frac=0.0
 def ef_analysis(dyn, cohort, out_dir, agg, min_clips, gate_frac, gate_change):
     rows = []
     gt = cohort["ef_visual"].astype(float)
+    if "ef_mean_p2" not in dyn:
+        dyn["ef_mean_p2"] = dyn["ef_mean"]
+    if "duration_s" not in dyn:
+        dyn["duration_s"] = np.nan
+    base = dict(col="ef_mean", agg="median", min_clips=1, gate_frac=0.0, gate_change=0.0, no_color=False, min_dur=0.0)
     variants = {
-        "all A4C clips, mean": dict(agg="mean", min_clips=1, gate_frac=0.0, gate_change=0.0),
-        "all A4C clips, median": dict(agg="median", min_clips=1, gate_frac=0.0, gate_change=0.0),
-        "LV visible >=80% frames": dict(agg="median", min_clips=1, gate_frac=0.8, gate_change=0.0),
-        "LV visible >=80% & area change >=0.25": dict(agg="median", min_clips=1, gate_frac=0.8, gate_change=0.25),
-        ">=2 clips, gated": dict(agg="median", min_clips=2, gate_frac=0.8, gate_change=0.25),
-        "no colour-Doppler clips, gated": dict(agg="median", min_clips=1, gate_frac=0.8, gate_change=0.25, no_color=True),
-        "requested": dict(agg=agg, min_clips=min_clips, gate_frac=gate_frac, gate_change=gate_change),
+        "released period 2, all A4C clips, mean": dict(base, col="ef_mean_p2", agg="mean"),
+        "period matched to fps, all A4C clips, mean": dict(base, agg="mean"),
+        "period matched, all A4C clips, median": dict(base),
+        "LV visible >=80% frames": dict(base, gate_frac=0.8),
+        "LV visible >=80% & area change >=0.25": dict(base, gate_frac=0.8, gate_change=0.25),
+        "gated + no colour-Doppler clips": dict(base, gate_frac=0.8, gate_change=0.25, no_color=True),
+        "gated + no colour + >=1 s clips": dict(base, gate_frac=0.8, gate_change=0.25, no_color=True, min_dur=1.0),
+        "gated + no colour + >=2 clips": dict(base, gate_frac=0.8, gate_change=0.25, no_color=True, min_clips=2),
+        "gated + no colour, best clip (max LV area change)": dict(base, gate_frac=0.8, gate_change=0.25, no_color=True, agg="best"),
+        "gated + no colour, min over clips": dict(base, gate_frac=0.8, gate_change=0.25, no_color=True, agg="min"),
+        "requested": dict(base, agg=agg, min_clips=min_clips, gate_frac=gate_frac, gate_change=gate_change),
     }
     best = None
     for name, v in variants.items():
         d = dyn.copy()
-        if v.get("no_color"):
+        if v["no_color"]:
             d = d[~d.color_doppler.astype(bool)]
+        if v["min_dur"] > 0:
+            d = d[d.duration_s.fillna(0) >= v["min_dur"]]
         d = d[(d.lv_frac_frames >= v["gate_frac"]) & (d.lv_frac_change >= v["gate_change"])]
-        g = d.groupby("StudyInstanceUID").ef_mean
-        pred = g.agg(v["agg"]); cnt = g.size()
+        d = d[d[v["col"]].notna()]
+        if v["agg"] == "best":
+            d = d.sort_values("lv_frac_change", ascending=False)
+            g = d.groupby("StudyInstanceUID")[v["col"]]
+            pred = g.first(); cnt = g.size()
+        else:
+            g = d.groupby("StudyInstanceUID")[v["col"]]
+            pred = g.agg(v["agg"]); cnt = g.size()
         pred = pred[cnt >= v["min_clips"]]
         j = pd.concat([gt.rename("ef_gt"), pred.rename("ef_dl")], axis=1).dropna()
         if len(j) < 20:
@@ -233,7 +254,7 @@ def ef_analysis(dyn, cohort, out_dir, agg, min_clips, gate_frac, gate_change):
         lo, hi = bootstrap(y, s, roc_auc_score)
         m = agreement(j.ef_gt, j.ef_dl)
         rows.append(dict(variant=name, n=len(j), prevalence_ef_lt_50=float(y.mean()), auroc=auc, auroc_ci_low=lo, auroc_ci_high=hi, auprc=ap,
-                         mae=m["mae"], r=m["r"], bias=m["bias"], **{k: v[k] for k in ("agg", "min_clips", "gate_frac", "gate_change")}))
+                         mae=m["mae"], r=m["r"], bias=m["bias"], **{k: v[k] for k in ("col", "agg", "min_clips", "gate_frac", "gate_change", "no_color", "min_dur")}))
         if best is None or auc > best[0]:
             best = (auc, name, j, y, s)
     if best:
