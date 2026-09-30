@@ -9,7 +9,7 @@ Key pieces
   full-screen Cedars frames; GE exports are 708x1016 (1.43:1). We cut the 2D sector bounding
   box out of the frame (region tags), place it on a black 3:4 canvas with a small margin and
   resize the canvas to 640x480 with OpenCV. The uniform scale keeps the pixel calibration:
-  distance_cm = distance_px_640 * (canvas_w / 640) * PhysicalDeltaX_cm.
+  distance_cm = distance_px_640 * (canvas_w / 640) * PhysicalDelta (per axis).
 - doppler_strip(): the Doppler image with the Cedars ECG-trace masking and the strip origin.
 - LabelOCR: EasyOCR on the GE measurement label box (top-right) -> canonical trace type and
   the on-screen machine value (used both to route the still to the right Doppler model and
@@ -99,9 +99,11 @@ def tissue_region(regs: list[Region]) -> Optional[Region]:
 class Canvas:
     frames: np.ndarray      # (T, 480, 640, 3) uint8 RGB
     scale: float            # original px per model px (canvas_w / 640)
-    cm_per_model_px: Optional[float]  # scale * PhysicalDeltaX (cm)
+    cm_per_model_px: Optional[float]  # scale * PhysicalDeltaX (cm); = cm_per_px_x
     bbox: tuple             # sector bbox in the original frame
     canvas_wh: tuple
+    cm_per_px_x: Optional[float] = None  # horizontal calibration (cm per model px)
+    cm_per_px_y: Optional[float] = None  # vertical calibration (cm per model px)
 
 
 def to_canvas_3x4(frames: np.ndarray, reg: Optional[Region], margin: float = 0.04) -> Canvas:
@@ -109,10 +111,11 @@ def to_canvas_3x4(frames: np.ndarray, reg: Optional[Region], margin: float = 0.0
     T, H, W, _ = frames.shape
     if reg is None:
         x0, y0, x1, y1 = 0, 0, W - 1, H - 1
-        dx = None
+        dx = dy = None
     else:
         x0, y0, x1, y1 = max(reg.x0, 0), max(reg.y0, 0), min(reg.x1, W - 1), min(reg.y1, H - 1)
         dx = abs(reg.dx) if reg.dx else None
+        dy = abs(reg.dy) if reg.dy else dx
     bw, bh = x1 - x0 + 1, y1 - y0 + 1
     cw = int(round(bw * (1 + 2 * margin)))
     ch = int(round(cw * 3 / 4))
@@ -124,7 +127,9 @@ def to_canvas_3x4(frames: np.ndarray, reg: Optional[Region], margin: float = 0.0
     canvas[:, oy:oy + bh, ox:ox + bw] = frames[:, y0:y1 + 1, x0:x1 + 1]
     out = np.stack([cv2.resize(f, (MODEL_W, MODEL_H), interpolation=cv2.INTER_AREA) for f in canvas])
     scale = cw / MODEL_W
-    return Canvas(out, scale, (scale * dx) if dx else None, (x0, y0, x1, y1), (cw, ch))
+    cx = (scale * dx) if dx else None
+    cy = (scale * dy) if dy else cx
+    return Canvas(out, scale, cx, (x0, y0, x1, y1), (cw, ch), cx, cy)
 
 
 def mask_ecg_trace(rgb: np.ndarray) -> np.ndarray:
