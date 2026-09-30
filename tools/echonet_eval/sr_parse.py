@@ -75,9 +75,17 @@ def find_sr_files(study_dir: str, max_size_kb: int = 2000):
     return out
 
 
-# Canonical measurement -> selector on the parsed rows (first match wins). Values in the
-# unit the paper reports (mm for linear, m/s for velocities, cm2 for areas, cm for VTI).
-def _pick(df, name=None, code=None, **mods):
+# Canonical measurement -> selector on the parsed rows. Values are converted with the unit of the
+# selected row to the unit the paper reports (mm for linear, m/s for velocities, cm2 for areas, cm for VTI).
+_TO = {
+    "mm": {"mm": 1.0, "cm": 10.0, "m": 1000.0},
+    "m/s": {"m/s": 1.0, "cm/s": 0.01, "mm/s": 0.001},
+    "cm": {"cm": 1.0, "mm": 0.1, "m": 100.0},
+    "cm2": {"cm2": 1.0, "mm2": 0.01},
+}
+
+
+def _pick_row(df, name=None, code=None, **mods):
     q = df
     if code is not None:
         q = q[q["code"] == code]
@@ -86,46 +94,49 @@ def _pick(df, name=None, code=None, **mods):
     for k, v in mods.items():
         if v is None:
             continue
-        col = q[k].astype(str)
-        q = q[col.str.contains(v, regex=False, na=False)]
+        q = q[q[k].astype(str).str.contains(v, regex=False, na=False)]
     if len(q) == 0:
         return None
-    # prefer the sonographer-chosen/mean value over individual replicates
-    pref = q[q["selection_status"].astype(str).str.contains("chosen", na=False)]
-    return float((pref if len(pref) else q)["value"].iloc[0])
+    # prefer the sonographer-chosen value ('Mean value chosen', 'User chosen value', ...) over replicates
+    pref = q[q["selection_status"].astype(str).str.contains("chosen", case=False, na=False)]
+    return (pref if len(pref) else q).iloc[0]
+
+
+def _pick(df, target_unit=None, **kw):
+    row = _pick_row(df, **kw)
+    if row is None:
+        return None
+    v, u = float(row["value"]), str(row["unit"])
+    if target_unit is None or u == target_unit:
+        return v
+    f = _TO.get(target_unit, {}).get(u)
+    return v * f if f is not None else None  # unknown unit: drop rather than mis-scale
 
 
 def canonical_measurements(df: pd.DataFrame) -> dict:
     if df is None or len(df) == 0:
         return {}
-    to_mm = lambda v, u: None if v is None else (v * 10 if u == "cm" else v)
-    def pick_mm(**kw):
-        q = df[(df["name"].str.contains(kw["name"], regex=False))] if "name" in kw else df[df["code"] == kw["code"]]
-        v = _pick(df, **kw)
-        if v is None:
-            return None
-        u = q["unit"].iloc[0] if len(q) else "mm"
-        return to_mm(v, u)
-    out = {
-        "ivsd_mm": pick_mm(code="18154-5"),
-        "lvidd_mm": pick_mm(code="29436-3"),
-        "lvids_mm": pick_mm(code="29438-9"),
-        "lvpwd_mm": pick_mm(code="18152-9"),
-        "lvot_diam_mm": pick_mm(code="G-038F", finding_site="Left Ventricle Outflow Tract"),
-        "la_diam_mm": pick_mm(code="M-02550"),                       # GE 'Diameter' in the LA group (PLAX LA AP dimension)
-        "asc_ao_mm": pick_mm(code="18012-5"),
-        "ivc_mm": pick_mm(code="18006-7"),
-        "rv_base_mm": pick_mm(code="80080-5"),
-        "la_area_a4c_cm2": _pick(df, code="17977-0"),
-        "la_area_a2c_cm2": _pick(df, code="GEU-106-0104"),
+    return {
+        "ivsd_mm": _pick(df, "mm", code="18154-5"),
+        "lvidd_mm": _pick(df, "mm", code="29436-3"),
+        "lvids_mm": _pick(df, "mm", code="29438-9"),
+        "lvpwd_mm": _pick(df, "mm", code="18152-9"),
+        "lvot_diam_mm": _pick(df, "mm", code="G-038F", finding_site="Left Ventricle Outflow Tract"),
+        "la_diam_mm": _pick(df, "mm", code="M-02550"),                  # GE 'Diameter' in the LA group (PLAX LA AP dimension)
+        "asc_ao_mm": _pick(df, "mm", code="18012-5"),
+        "ivc_mm": _pick(df, "mm", code="18006-7"),
+        "rv_base_mm": _pick(df, "mm", code="80080-5"),
+        "la_area_a4c_cm2": _pick(df, "cm2", code="17977-0"),
+        "la_area_a2c_cm2": _pick(df, "cm2", code="GEU-106-0104"),
         "lvef_pct": _pick(df, code="18043-0"),
-        "lvot_vmax_ms": _pick(df, code="11726-7", finding_site="Left Ventricle Outflow Tract", image_mode="Pulsed"),
-        "lvot_vti_cm": _pick(df, code="20354-7", finding_site="Left Ventricle Outflow Tract"),
-        "tr_vmax_ms": _pick(df, code="11726-7", direction_of_flow="Regurgitant", image_mode="Continuous"),
-        "av_vmax_ms": _pick(df, code="11726-7", direction_of_flow="Antegrade", image_mode="Continuous"),
+        "lvot_vmax_ms": _pick(df, "m/s", code="11726-7", finding_site="Left Ventricle Outflow Tract", image_mode="Pulsed"),
+        "lvot_vti_cm": _pick(df, "cm", code="20354-7", finding_site="Left Ventricle Outflow Tract"),
+        "av_vti_cm": _pick(df, "cm", code="20354-7", finding_site="Aortic Valve"),
+        "mv_vti_cm": _pick(df, "cm", code="20354-7", finding_site="Mitral Valve"),
+        "tr_vmax_ms": _pick(df, "m/s", code="11726-7", direction_of_flow="Regurgitant", image_mode="Continuous"),
+        "av_vmax_ms": _pick(df, "m/s", code="11726-7", direction_of_flow="Antegrade", image_mode="Continuous"),
         "tapse_or_tissue_vel_cms": _pick(df, code="59133-9"),
     }
-    return out
 
 
 if __name__ == "__main__":
