@@ -50,8 +50,8 @@ DOPPLER_MODELS = ["avvmax", "trvmax", "mrvmax", "lvotvmax", "latevel", "medevel"
 # which OCR label routes to which Doppler model
 LABEL_TO_DOPPLER = {"TR_VMAX": "trvmax", "AV_VMAX": "avvmax", "MR_VMAX": "mrvmax", "LVOT_VMAX": "lvotvmax",
                     "LAT_E_PRIME": "latevel", "SEPT_E_PRIME": "medevel"}
-LABEL_TO_VTI = {"LVOT_VMAX": "LVOT", "LVOT_VTI": "LVOT", "AV_VMAX": "AV", "AV_VTI": "AV", "MV_E": "MV", "MV_VTI": "MV",
-                "PV_VMAX": "PV", "RVOT_VMAX": "RVOT"}
+# VTI targets evaluated here (PV / RVOT weights exist on the NAS but are not loaded or evaluated)
+LABEL_TO_VTI = {"LVOT_VMAX": "LVOT", "LVOT_VTI": "LVOT", "AV_VMAX": "AV", "AV_VTI": "AV", "MV_E": "MV", "MV_VTI": "MV"}
 
 
 def _load_ckpt_into(backbone, path, device):
@@ -68,7 +68,7 @@ class Calipers2D:
     def __init__(self, device, names=TWO_D_MODELS):
         self.seg2coord = meas_utils().segmentation_to_coordinates
         self.device = device
-        self.models = {n: _load_ckpt_into(deeplabv3_resnet50(num_classes=2), f"{NAS}/measurements/weights/2D_models/{n}_weights.ckpt", device) for n in names}
+        self.models = {n: _load_ckpt_into(deeplabv3_resnet50(weights=None, weights_backbone=None, num_classes=2), f"{NAS}/measurements/weights/2D_models/{n}_weights.ckpt", device) for n in names}
 
     @torch.no_grad()
     def predict(self, name: str, frames_640x480: np.ndarray, batch: int = 32):
@@ -90,7 +90,7 @@ class DopplerVmax:
 
     def __init__(self, device, names=DOPPLER_MODELS):
         self.device = device
-        self.models = {n: _load_ckpt_into(deeplabv3_resnet50(num_classes=1), f"{NAS}/measurements/weights/Doppler_models/{n}_weights.ckpt", device) for n in names}
+        self.models = {n: _load_ckpt_into(deeplabv3_resnet50(weights=None, weights_backbone=None, num_classes=1), f"{NAS}/measurements/weights/Doppler_models/{n}_weights.ckpt", device) for n in names}
 
     @torch.no_grad()
     def predict(self, name: str, strip_rgb: np.ndarray):
@@ -112,7 +112,8 @@ class AreaSeg:
 
     @torch.no_grad()
     def predict(self, target: str, frames_640x480: np.ndarray, batch: int = 16):
-        """Returns (T,480,640) binary masks and per-frame mean confidence, at model resolution."""
+        """Returns (T,480,640) binary masks and per-frame mean confidence, at model resolution.
+        Segmentation/utils.load_seg_model registers a forward hook that returns output['out'], so m.m(x) is a tensor."""
         m = self.models[target]
         masks, confs = [], []
         for i in range(0, len(frames_640x480), batch):
@@ -144,7 +145,7 @@ class VTISeg:
 
 
 class EchoNetDynamic:
-    MEAN, STD = 32.7, 50.0  # EchoNet-Dynamic training statistics (published); not in the checkpoint
+    MEAN, STD = 32.7, 50.0  # EchoNet-Dynamic training statistics in 0-255 pixel units (echonet.utils.get_mean_and_std on raw uint8 videos); not in the checkpoint
 
     def __init__(self, device):
         self.device = device
@@ -153,7 +154,7 @@ class EchoNetDynamic:
         ck = torch.load(f"{NAS}/dynamic/weights/r2plus1d_18_32_2_pretrained.pt", map_location="cpu", weights_only=False)
         m.load_state_dict({k.replace("module.", ""): v for k, v in ck["state_dict"].items()})
         self.ef, self.frames_n, self.period = m.to(device).eval(), ck["frames"], ck["period"]
-        s = torchvision.models.segmentation.deeplabv3_resnet50(weights=None, aux_loss=False)
+        s = torchvision.models.segmentation.deeplabv3_resnet50(weights=None, weights_backbone=None, aux_loss=False)
         s.classifier[-1] = torch.nn.Conv2d(s.classifier[-1].in_channels, 1, 1)
         ck2 = torch.load(f"{NAS}/dynamic/weights/deeplabv3_resnet50_random.pt", map_location="cpu", weights_only=False)
         s.load_state_dict({k.replace("module.", ""): v for k, v in ck2["state_dict"].items()}, strict=False)

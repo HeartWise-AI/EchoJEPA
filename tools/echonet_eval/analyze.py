@@ -2,15 +2,16 @@
 the paper-style performance tables and figures.
 
 Ground truth
-- df_report (MHI echo report export, per AccessionNumber): IVSd, LVIDd, LVIDs, LVPWd, LA dimension, LVOT
+- df_report (MHI echo report export cleaned by clean_report.py, per AccessionNumber): IVSd, LVIDd, LVIDs, LVPWd, LA dimension, LVOT
   diameter, IVC, RV base, TR/AV/MV-E peak velocity, lateral/septal e', TAPSE, Visually Estimated EF.
-- GE structured report (SR) parsed per study: same 2D items plus LA area A4C/A2C, LVOT Vmax and LVOT VTI.
+- GE structured report (SR) parsed per study: same 2D items plus LA area A4C/A2C, LVOT Vmax and LVOT/AV VTI.
 - OCR machine value on the Doppler still itself (per image, for the Doppler models).
 
 Metrics per measurement (as in Sahashi et al. JACC 2025): n, Pearson r, MAE, mean bias (DL - human),
 limits of agreement, plus scatter (identity line) and Bland-Altman figures.
-EchoNet-Dynamic: AUROC / AUPRC for EF < 50 % (Visual EF) with 1,000 x 80 % bootstrap CIs, MAE, r, and a
-configurable per-study aggregation / clip-quality gate.
+EchoNet-Dynamic: AUROC / AUPRC for EF < 50 % (Visual EF) with 1,000-resample bootstrap CIs, MAE, r, for several
+per-study aggregation / clip-quality gates. The headline gate is selected on a random half of the cohort
+(dev) and reported on the other half (test), so the reported AUROC is not tuned on its own test set.
 """
 from __future__ import annotations
 
@@ -27,11 +28,11 @@ from sklearn.metrics import roc_auc_score, average_precision_score, roc_curve
 COHORT = os.environ.get("ECHONET_COHORT", "/volume/echonet_eval/cohort_10k.parquet")
 
 
-def bootstrap(y, s, fn, n=1000, frac=0.8, seed=0):
+def bootstrap(y, s, fn, n=1000, seed=0):
+    """Percentile bootstrap: n resamples of the full sample size, with replacement."""
     rng = np.random.default_rng(seed); y = np.asarray(y); s = np.asarray(s); vals = []
-    m = max(2, int(len(y) * frac))
     for _ in range(n):
-        idx = rng.choice(len(y), m, replace=False)
+        idx = rng.integers(0, len(y), len(y))
         try:
             vals.append(fn(y[idx], s[idx]))
         except Exception:
@@ -85,20 +86,23 @@ CALIPER_DEFS = [
     ("IVC", "ivc", ["SUBCOSTAL"], "d_max_mm", "ivc_diam", "sr_ivc_mm", "mm", 10.0),
 ]
 DOPPLER_DEFS = [  # (name, model, report col, sr col, unit, scale report->m/s)
-    # SR TR Vmax (r=0.38 vs the report) and the report e' columns (r~0 vs the on-screen value) are not
-    # reliable references and are left out; the on-screen GE value is the reference for e'.
+    # SR TR Vmax (r=0.38 vs the report) is not a reliable reference and is left out. The report columns are
+    # read from the cleaned export (clean_report.py fixes decimal/unit shifts and implausible values).
     ("TR Vmax", "trvmax", "tr_vmax", None, "m/s"),
     ("AV Vmax", "avvmax", "av_vmax", "sr_av_vmax_ms", "m/s"),
     ("MR Vmax", "mrvmax", None, None, "m/s"),
     ("LVOT Vmax", "lvotvmax", None, "sr_lvot_vmax_ms", "m/s"),
-    ("Lateral e'", "latevel", None, None, "cm/s"),
-    ("Septal e'", "medevel", None, None, "cm/s"),
+    ("Lateral e'", "latevel", "lat_e", None, "cm/s"),
+    ("Septal e'", "medevel", "sept_e", None, "cm/s"),
 ]
 
 
 def load_rows(results_dir):
     files = sorted(glob.glob(os.path.join(results_dir, "rows_shard*.parquet")))
     df = pd.concat([pd.read_parquet(f) for f in files], ignore_index=True)
+    sr_new = os.path.join(results_dir, "sr_reparsed.parquet")  # written by reparse_sr.py (current sr_parse.py)
+    if os.path.exists(sr_new):
+        df = pd.concat([df[df.kind != "sr"], pd.read_parquet(sr_new)], ignore_index=True)
     return df
 
 
@@ -146,6 +150,7 @@ def main(results_dir, out_dir, ef_agg="median", ef_min_clips=1, ef_gate_frac=0.0
             continue
         factor = 100.0 if unit == "cm/s" else 1.0
         s["dl"] = s.vmax_ms.astype(float) * factor
+        pst = s.groupby("StudyInstanceUID").dl.median()  # study value from every label-routed still (no OCR-value filter)
         s["ocr"] = pd.to_numeric(s.ocr_value, errors="coerce")
         # keep only stills whose OCR'd value carries the expected unit (m/s for jets, cm/s for e')
         s = s[s.ocr_unit.astype(str).str.upper().eq("M/S" if unit == "m/s" else "CM/S")]
@@ -155,7 +160,6 @@ def main(results_dir, out_dir, ef_agg="median", ef_min_clips=1, ef_gate_frac=0.0
         # exclude edge hits as a QC variant
         s2 = s[~s.edge_hit.astype(bool)]
         m = agreement(s2.ocr, s2.dl); m.update(measurement=name, model=model, gt="on-screen GE value, edge hits removed", views="DOPPLER", stat="argmax"); table.append(m)
-        pst = s.groupby("StudyInstanceUID").dl.median()
         if rcol is not None and rcol in cohort:
             gt = cohort[rcol].astype(float)
             if unit == "m/s" and np.nanmedian(gt) > 20:
@@ -179,7 +183,9 @@ def main(results_dir, out_dir, ef_agg="median", ef_min_clips=1, ef_gate_frac=0.0
             scatter_ba(j.human, j.dl, f"LA area {view} (EchoNet LA_AREA vs GE SR)", "cm2", f"{out_dir}/la_area_{view}_sr.png")
     # ---- VTI
     vti = df[(df.kind == "vti") & df.vti_cm.notna()]
-    for target, scol in (("LVOT", "sr_lvot_vti_cm"),):
+    # MV is not compared: the SR's MV VTI is the CW transmitral VTI (mean ~47 cm, used for MVA), while the stills
+    # routed to the MV model are PW inflow (E-wave) traces (mean ~22 cm), so the reference measures something else.
+    for target, scol in (("LVOT", "sr_lvot_vti_cm"), ("AV", "sr_av_vti_cm")):
         p = vti[vti.model == target].groupby("StudyInstanceUID").vti_cm.median()
         if scol in sr:
             j = pd.concat([sr[scol].astype(float).rename("human"), p.rename("dl")], axis=1).dropna()
@@ -206,6 +212,12 @@ def main(results_dir, out_dir, ef_agg="median", ef_min_clips=1, ef_gate_frac=0.0
     print(tab.round(3).to_string())
     print(ef_table.round(3).to_string())
     return tab, ef_table
+
+
+def _is_dev(uid) -> bool:
+    """Deterministic 50/50 split by StudyInstanceUID (dev = gate selection, test = reporting)."""
+    import zlib
+    return zlib.crc32(str(uid).encode()) % 2 == 0
 
 
 def ef_analysis(dyn, cohort, out_dir, agg, min_clips, gate_frac, gate_change):
@@ -247,26 +259,32 @@ def ef_analysis(dyn, cohort, out_dir, agg, min_clips, gate_frac, gate_change):
             pred = g.agg(v["agg"]); cnt = g.size()
         pred = pred[cnt >= v["min_clips"]]
         j = pd.concat([gt.rename("ef_gt"), pred.rename("ef_dl")], axis=1).dropna()
-        if len(j) < 20:
+        if len(j) < 20 or (j.ef_gt < 50).nunique() < 2:
             continue
         y = (j.ef_gt < 50).astype(int); s = -j.ef_dl
         auc = roc_auc_score(y, s); ap = average_precision_score(y, s)
         lo, hi = bootstrap(y, s, roc_auc_score)
         m = agreement(j.ef_gt, j.ef_dl)
+        dev = np.asarray(j.index.map(_is_dev), dtype=bool)
+        auc_dev = roc_auc_score(y[dev], s[dev]) if y[dev].nunique() == 2 else np.nan
+        auc_test = roc_auc_score(y[~dev], s[~dev]) if y[~dev].nunique() == 2 else np.nan
         rows.append(dict(variant=name, n=len(j), prevalence_ef_lt_50=float(y.mean()), auroc=auc, auroc_ci_low=lo, auroc_ci_high=hi, auprc=ap,
+                         auroc_dev=auc_dev, auroc_test=auc_test, n_test=int((~dev).sum()),
                          mae=m["mae"], r=m["r"], bias=m["bias"], **{k: v[k] for k in ("col", "agg", "min_clips", "gate_frac", "gate_change", "no_color", "min_dur")}))
-        if best is None or auc > best[0]:
-            best = (auc, name, j, y, s)
+        if best is None or auc_dev > best[0]:  # select on the dev half only
+            best = (auc_dev, name, j[~dev], y[~dev], s[~dev])
     if best:
-        auc, name, j, y, s = best
+        _, name, j, y, s = best
+        auc = roc_auc_score(y, s)
+        rows = [dict(r, selected_on_dev=(r["variant"] == name)) for r in rows]
         fig, ax = plt.subplots(1, 2, figsize=(11, 5))
         fpr, tpr, _ = roc_curve(y, s); ax[0].plot(fpr, tpr, color="#2a6f97"); ax[0].plot([0, 1], [0, 1], "k--", lw=1)
-        ax[0].set_xlabel("1 - specificity"); ax[0].set_ylabel("sensitivity"); ax[0].set_title(f"EchoNet-Dynamic EF<50% vs Visual EF<50%\n{name}: AUROC={auc:.3f}, n={len(j)}")
+        ax[0].set_xlabel("1 - specificity"); ax[0].set_ylabel("sensitivity"); ax[0].set_title(f"EchoNet-Dynamic EF<50% vs Visual EF<50% (test half)\n{name}: AUROC={auc:.3f}, n={len(j)}")
         ax[1].scatter(j.ef_gt, j.ef_dl, s=6, alpha=0.3, color="#c9184a"); ax[1].plot([10, 80], [10, 80], "k--", lw=1); ax[1].axvline(50, color="gray", ls=":"); ax[1].axhline(50, color="gray", ls=":")
         ax[1].set_xlabel("Visual EF, report (%)"); ax[1].set_ylabel("EchoNet-Dynamic EF (%)"); ax[1].set_title(f"r={stats.pearsonr(j.ef_gt, j.ef_dl)[0]:.2f}  MAE={np.mean(np.abs(j.ef_dl-j.ef_gt)):.1f}%")
         plt.tight_layout(); plt.savefig(f"{out_dir}/dynamic_ef_roc_scatter.png", dpi=130); plt.close(fig)
     tab = pd.DataFrame(rows)
-    return tab, (tab.sort_values("auroc", ascending=False).iloc[0].to_dict() if len(tab) else {})
+    return tab, (tab[tab.selected_on_dev].iloc[0].to_dict() if len(tab) and "selected_on_dev" in tab else {})
 
 
 if __name__ == "__main__":
