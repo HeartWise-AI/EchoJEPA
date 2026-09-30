@@ -85,8 +85,8 @@ class StudyRunner:
         if models_2d and cv.cm_per_model_px:
             for m in models_2d:
                 coords = self.cal.predict(m, cv.frames)  # (T,2,2) (y,x)
-                d_px = np.linalg.norm(coords[:, 0] - coords[:, 1], axis=1)
-                d_cm = d_px * cv.cm_per_model_px
+                dyx = coords[:, 0] - coords[:, 1]  # (T,2) in (y,x) model px; calibrate each axis separately
+                d_cm = np.hypot(dyx[:, 0] * cv.cm_per_px_y, dyx[:, 1] * cv.cm_per_px_x)
                 sm = smooth(d_cm, fps=fps)
                 out.append(self._row(b, kind="caliper", model=m, d_min_mm=float(sm.min() * 10), d_med_mm=float(np.median(sm) * 10),
                                      d_max_mm=float(sm.max() * 10), d_raw_med_mm=float(np.median(d_cm) * 10),
@@ -96,7 +96,7 @@ class StudyRunner:
         if view in ("A4C", "A2C") and cv.cm_per_model_px:
             masks, confs = self.area.predict("LA_AREA", cv.frames)
             px = masks.reshape(len(masks), -1).sum(1).astype(float)
-            area_cm2 = px * (cv.cm_per_model_px ** 2)
+            area_cm2 = px * (cv.cm_per_px_x * cv.cm_per_px_y)
             sm = smooth(area_cm2, fps=fps) if len(area_cm2) >= 8 else area_cm2
             out.append(self._row(b, kind="la_area", model="LA_AREA", area_max_cm2=float(sm.max()), area_min_cm2=float(sm.min()),
                                  area_med_cm2=float(np.median(sm)), conf_mean=float(confs.mean()), frac_frames_with_mask=float((px > 200).mean())))
