@@ -1,5 +1,5 @@
 # Test runtime and tools for static checking.
 pyarrow
-black == 24.4.2
+black == 26.3.1
 flake8 == 7.0.0
 isort == 5.13.2
