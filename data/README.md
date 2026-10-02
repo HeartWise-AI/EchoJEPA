@@ -90,8 +90,9 @@ study date as `YYYYMMDD` (`--pacs-accession-col`, `--pacs-study-col`, `--pacs-pa
 Stage 1 joins report → PACS index by accession number, then requires the study's patient ID
 and date in the PACS index to equal those in the video metadata. Accessions or studies with
 conflicting values are dropped and counted. It stops if report and PACS patient IDs agree
-less often than `--min-id-agreement` (default 99.9%), or if any linked study disagrees with
-the video metadata.
+less often than `--min-id-agreement` (default 99.9%). PACS-to-metadata failures are also
+dropped and counted when their combined patient/date agreement remains above that threshold;
+the run stops when it falls below the threshold.
 
 ### Label table (`--labels`, stage 2)
 
