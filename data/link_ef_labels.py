@@ -36,7 +36,8 @@ def parse_args():
     p.add_argument("--pacs-patient-col", default="PatientID")
     p.add_argument("--pacs-date-col", default="StudyDate")
     p.add_argument("--min-id-agreement", type=float, default=0.999,
-                   help="Fail if the patient IDs from the report and PACS data agree less often than this.")
+                   help="Fail if either report/PACS patient-ID agreement or combined PACS/metadata "
+                        "patient/date agreement is below this fraction.")
     p.add_argument("--check-path-layout", action="store_true",
                    help="Also require each video path to end in `<patient>/<study>/<file>`.")
     p.add_argument("--batch-size", type=int, default=500_000, help="Parquet streaming batch size.")
@@ -110,13 +111,19 @@ def link(reports, pacs, videos, min_id_agreement, check_path_layout=False):
         "PACS patient == metadata patient": same_patient(j.pacs_patient, j.patient_id),
         "PACS date == metadata date": matches(j.pacs_date.str.strip().str[:8] == j.study_date.str.strip().str[:8]),
     }
+    verified = pd.Series(True, index=j.index, dtype=bool)
     for name, ok in checks.items():
         print(f"[verify] {name:<33} {ok.mean() * 100:.4f}%")
-        if not ok.all():
-            raise ValueError(f"{(~ok).sum()} studies fail: {name}.")
+        verified &= ok
+    if len(verified) and verified.mean() < min_id_agreement:
+        raise ValueError("Patient/date agreement between the PACS and video metadata is below "
+                         "the required threshold. Check the input.")
+    if not verified.all():
+        print(f"[drop]   {(~verified).sum()} studies failed PACS-to-metadata identity verification.")
+        j = j[verified]
     # For `--check-path-layout`, optionally validate the path-layout.
     if check_path_layout:
-        v = videos[videos.video_path.notna()]
+        v = videos[videos.study_id.isin(set(j.study_id)) & videos.video_path.notna()]
         parts = v.video_path.str.split("/")
         ok = matches(parts.str[-3] == v.patient_id) & matches(parts.str[-2] == v.study_id)
         print(f"[verify] path encodes patient/study          {ok.mean() * 100:.4f}%")

@@ -738,6 +738,15 @@ class TestLinkEfLabels(unittest.TestCase):
         self.assertEqual(values.dropna().tolist(), [55.0])
         self.assertEqual(dropped, {"empty": 1, "invalid": 0, "zero": 1, "negative": 0, "above_100": 1})
 
+    def test_cli_help_describes_both_id_agreement_checks(self):
+        out = io.StringIO()
+        with mock.patch.object(sys, "argv", ["link_ef_labels.py", "--help"]), \
+                contextlib.redirect_stdout(out), self.assertRaises(SystemExit):
+            lel.parse_args()
+        help_text = out.getvalue()
+        self.assertIn("report/PACS patient-ID agreement", help_text)
+        self.assertIn("combined PACS/metadata patient/date agreement", help_text)
+
     def test_link_keeps_only_unambiguous_verified_studies(self):
         reports, pacs, videos = self.tables()
         out = quiet(lel.link, reports, pacs, videos, min_id_agreement=0.5, check_path_layout=True)
@@ -747,20 +756,35 @@ class TestLinkEfLabels(unittest.TestCase):
         self.assertEqual(out.study_id.tolist(), ["1.2.999.1"])
         self.assertEqual(out.label.tolist(), [55.0])
 
-    def test_link_fails_when_metadata_disagrees_with_pacs(self):
-        reports, pacs, videos = self.tables()
-        videos.loc[0, "patient_id"] = "0000077"
-        with self.assertRaises(ValueError):
-            quiet(lel.link, reports, pacs, videos, min_id_agreement=0.5)
+    def add_second_verified_study(self, reports, pacs, videos):
+        reports.loc[len(reports)] = ("0000008", "A8", 58.0)
+        pacs.loc[len(pacs)] = ("A8", "1.2.999.8", "0000008", "20200101")
+        videos.loc[len(videos)] = (
+            "0000008", "1.2.999.8", "20200101", "/synthetic/0000008/1.2.999.8/0001.mp4"
+        )
 
-    def test_link_fails_when_the_metadata_lacks_the_patient_or_date(self):
+    def test_link_drops_metadata_disagreement_when_overall_agreement_is_acceptable(self):
+        reports, pacs, videos = self.tables()
+        self.add_second_verified_study(reports, pacs, videos)
+        videos.loc[0, "patient_id"] = "0000077"
+        out = quiet(lel.link, reports, pacs, videos, min_id_agreement=0.5)
+        self.assertEqual(out.study_id.tolist(), ["1.2.999.8"])
+
+    def test_link_drops_metadata_missing_the_patient_or_date(self):
         # A missing value is a mismatch, not a comparison to skip.
         for column in ("patient_id", "study_date"):
             reports, pacs, videos = self.tables()
+            self.add_second_verified_study(reports, pacs, videos)
             videos = videos.astype({"patient_id": "string", "study_date": "string"})  # as stream_videos returns them
             videos.loc[0, column] = pd.NA
-            with self.assertRaisesRegex(ValueError, "1 studies fail", msg=column):
-                quiet(lel.link, reports, pacs, videos, min_id_agreement=0.5)
+            out = quiet(lel.link, reports, pacs, videos, min_id_agreement=0.5, check_path_layout=True)
+            self.assertEqual(out.study_id.tolist(), ["1.2.999.8"], msg=column)
+
+    def test_link_fails_when_metadata_agreement_is_too_low(self):
+        reports, pacs, videos = self.tables()
+        videos.loc[0, "patient_id"] = "0000077"
+        with self.assertRaisesRegex(ValueError, "PACS and video metadata"):
+            quiet(lel.link, reports, pacs, videos, min_id_agreement=0.5)
 
     def test_stage_1_needs_the_study_date_column(self):
         with tempfile.TemporaryDirectory() as tmp:
