@@ -7,14 +7,13 @@ import unittest
 from copy import deepcopy
 
 import numpy as np
-import pytest
 import torch
 
 from src.models.vision_transformer import vit_giant_xformers_rope
 
 
-# Usage: pytest tests/models/test_vision_transformer.py
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="This test requires CUDA")
+# Usage: python -m unittest tests.models.test_vision_transformer
+@unittest.skipUnless(torch.cuda.is_available(), "This test requires CUDA")
 class TestViTGiant(unittest.TestCase):
     def setUp(self) -> None:
         self.model_shape_invariant = vit_giant_xformers_rope(
