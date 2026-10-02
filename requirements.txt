@@ -1,5 +1,8 @@
-torch>=2
-torchvision
+# Keep the default environment compatible with the CUDA 12.4 runtime used by
+# the project Docker image. Pilot runs have their own exact pins in
+# requirements-pilot.txt.
+torch>=2.5,<2.6
+torchvision>=0.20,<0.21
 tensorboard
 wandb
 moviepy

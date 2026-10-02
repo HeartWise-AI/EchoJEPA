@@ -55,7 +55,30 @@ We recommend `vitl-vmix22m-pt220-c55.pt` as the default starting point for funct
 
 ### Setup
 
+#### uv (recommended)
+
+Install [uv](https://docs.astral.sh/uv/getting-started/installation/), then create the
+project environment from the committed lockfile:
+
+```bash
+uv sync
 ```
+
+This creates `.venv` and installs the reproducible runtime and development dependencies.
+Run EchoJEPA commands through that environment without activating it:
+
+```bash
+uv run python -m app.main --help
+```
+
+Use `uv sync --frozen` when a job must consume the existing `uv.lock` without updating it.
+The default lock uses the PyTorch 2.5 / CUDA 12.4-compatible release line; the separately
+pinned pilot environment remains documented in
+[`docs/pretraining_baseline.md`](docs/pretraining_baseline.md).
+
+#### Conda and pip
+
+```bash
 conda create -n vjepa2-312 python=3.12
 conda activate vjepa2-312
 pip install .  # or `pip install -e .` for development mode
@@ -69,17 +92,17 @@ For the pilot comparison of V-JEPA 2.1 ViT-B pretraining from scratch and from t
 
 #### Local
 
-```
-python -m app.main --fname configs/train/vitl16/pretrain-mimic-224px-16f.yaml \
+```bash
+uv run python -m app.main --fname configs/train/vitl16/pretrain-mimic-224px-16f.yaml \
   --devices cuda:0
 ```
 
 #### Distributed
 
-```
-python -m app.main_distributed \
-  --fname configs/train/vitl16/pretrain-mimic-224px-16f.yaml
-  --time 6000
+```bash
+uv run python -m app.main_distributed \
+  --fname configs/train/vitl16/pretrain-mimic-224px-16f.yaml \
+  --time 6000 \
   --account my_account --qos=my_qos
 ```
 

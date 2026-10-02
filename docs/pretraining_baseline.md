@@ -339,8 +339,9 @@ done
 - **Restarts.** Re-running the script resumes each run from its own `latest.pth.tar`,
   saved at the end of every epoch (300 steps); a finished run only reloads and exits.
   A restart is not bit-exact; see [Checkpoint loading](#checkpoint-loading).
-- **Environment.** `requirements.txt` allows any `torch>=2` and leaves most packages
-  unpinned, so the pilot pins its own: `requirements-pilot.txt` lists Python 3.12 and the
+- **Environment.** `requirements.txt` keeps PyTorch on the CUDA 12.4-compatible 2.5
+  release line and leaves most other packages unpinned, so the pilot pins its own:
+  `requirements-pilot.txt` lists Python 3.12 and the
   exact version of every package in the environment that ran the smoke test and the
   tests. The script refuses any other version, and writes the full
   package list to `$RUNS/environment.txt`. It also refuses an import path that reaches

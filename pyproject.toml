@@ -1,3 +1,43 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vjepa2"
+version = "0.0.1"
+description = "PyTorch code and models for V-JEPA 2"
+readme = "README.md"
+requires-python = ">=3.11,<3.13"
+dynamic = ["dependencies"]
+
+[tool.setuptools.dynamic]
+dependencies = { file = ["requirements.txt"] }
+
+[dependency-groups]
+dev = [
+    "black==24.4.2",
+    "flake8==7.0.0",
+    "isort==5.13.2",
+    "pyarrow",
+]
+
+[tool.uv]
+# EchoJEPA is run from its checkout. Sync the environment without installing a
+# second copy of the repository, which also keeps the pilot-run safety check
+# in docs/pretraining_baseline.md effective.
+package = false
+constraint-dependencies = [
+    "torch>=2.5,<2.6",
+    "torchvision>=0.20,<0.21",
+]
+# Dependencies are loaded dynamically from requirements.txt. Include it in the
+# project cache key so changing a requirement always invalidates uv's metadata.
+cache-keys = [
+    { file = "pyproject.toml" },
+    { file = "setup.py" },
+    { file = "requirements.txt" },
+]
+
 [tool.isort]
 profile="black"
 line_length=119
