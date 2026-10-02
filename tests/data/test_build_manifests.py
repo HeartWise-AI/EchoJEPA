@@ -738,6 +738,15 @@ class TestLinkEfLabels(unittest.TestCase):
         self.assertEqual(values.dropna().tolist(), [55.0])
         self.assertEqual(dropped, {"empty": 1, "invalid": 0, "zero": 1, "negative": 0, "above_100": 1})
 
+    def test_cli_help_describes_both_id_agreement_checks(self):
+        out = io.StringIO()
+        with mock.patch.object(sys, "argv", ["link_ef_labels.py", "--help"]), \
+                contextlib.redirect_stdout(out), self.assertRaises(SystemExit):
+            lel.parse_args()
+        help_text = out.getvalue()
+        self.assertIn("report/PACS patient-ID agreement", help_text)
+        self.assertIn("combined PACS/metadata patient/date agreement", help_text)
+
     def test_link_keeps_only_unambiguous_verified_studies(self):
         reports, pacs, videos = self.tables()
         out = quiet(lel.link, reports, pacs, videos, min_id_agreement=0.5, check_path_layout=True)

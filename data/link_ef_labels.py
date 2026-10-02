@@ -36,7 +36,8 @@ def parse_args():
     p.add_argument("--pacs-patient-col", default="PatientID")
     p.add_argument("--pacs-date-col", default="StudyDate")
     p.add_argument("--min-id-agreement", type=float, default=0.999,
-                   help="Fail if the patient IDs from the report and PACS data agree less often than this.")
+                   help="Fail if either report/PACS patient-ID agreement or combined PACS/metadata "
+                        "patient/date agreement is below this fraction.")
     p.add_argument("--check-path-layout", action="store_true",
                    help="Also require each video path to end in `<patient>/<study>/<file>`.")
     p.add_argument("--batch-size", type=int, default=500_000, help="Parquet streaming batch size.")
