@@ -159,6 +159,51 @@ class TestNoPathsInLogs(unittest.TestCase):
                 self.assertSaid(emitted, f"Failed to load video: {error.__name__}")
                 self.assertSaid(emitted, "Retrying with new sample, failed to load sample 0 (manifest 0, line 1)")
 
+    def test_late_decoder_failures_are_sanitized_and_skipped(self):
+        # A damaged stream can open successfully and fail only when Decord seeks or decodes frames.
+        # Both its native output and Python exception may contain the video path.
+        late_failure = os.path.join(self.folder, "late_failure.mp4")
+        write_video(late_failure)
+        actual_video_reader = video_dataset.VideoReader
+
+        class LateFailureReader:
+            def __init__(self, operation):
+                self.operation = operation
+
+            def __len__(self):
+                return 24
+
+            def get_avg_fps(self):
+                return 8
+
+            def seek(self, _):
+                if self.operation == "seek":
+                    os.write(2, f"native decoder error for {late_failure}\n".encode())
+                    raise RuntimeError(f"could not seek in {late_failure}")
+
+            def get_batch(self, _):
+                os.write(2, f"native decoder error for {late_failure}\n".encode())
+                raise RuntimeError(f"could not decode {late_failure}")
+
+        for operation in ("seek", "get_batch"):
+            with self.subTest(operation=operation):
+                dataset = self.dataset(self.manifest(f"{operation}.csv", late_failure, self.real))
+
+                def video_reader(path, *args, **kwargs):
+                    if path == late_failure:
+                        return LateFailureReader(operation)
+                    return actual_video_reader(path, *args, **kwargs)
+
+                with everything_emitted() as emitted, \
+                        mock.patch.object(video_dataset, "VideoReader", side_effect=video_reader), \
+                        mock.patch.object(video_dataset.np.random, "randint", return_value=1):
+                    buffer, _, _ = dataset[0]
+
+                self.assertEqual(len(buffer[0]), 16)
+                self.assertNoPath(emitted)
+                self.assertSaid(emitted, "Failed to decode video: RuntimeError")
+                self.assertSaid(emitted, "Retrying with new sample, failed to load sample 0 (manifest 0, line 1)")
+
     def test_an_unreadable_image_is_reported_by_its_manifest_line(self):
         image = os.path.join(self.folder, "frame.png")
         dataset = self.dataset(self.manifest("train.csv", image, self.real))

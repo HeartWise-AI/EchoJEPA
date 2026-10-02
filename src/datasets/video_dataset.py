@@ -479,7 +479,13 @@ class VideoDataset(torch.utils.data.Dataset):
             warnings.warn(f"Skipping video of length {len(vr)}.")
             return [], None
 
-        vr.seek(0)  # Go to start of video before sampling frames
+        try:
+            # Decord may report a corrupt stream's path to native stderr at either stage.
+            with _native_stderr_discarded():
+                vr.seek(0)  # Go to start of video before sampling frames
+        except Exception as e:
+            logger.warning(f"Failed to decode video: {type(e).__name__}.")
+            return [], None
 
         # Partition video into equal sized segments and sample each clip
         partition_len = len(vr) // self.num_clips
@@ -535,7 +541,12 @@ class VideoDataset(torch.utils.data.Dataset):
             pad_masks.append(pad)
             all_indices.extend(list(indices))
 
-        buffer = vr.get_batch(all_indices).asnumpy()
+        try:
+            with _native_stderr_discarded():
+                buffer = vr.get_batch(all_indices).asnumpy()
+        except Exception as e:
+            logger.warning(f"Failed to decode video: {type(e).__name__}.")
+            return [], None
         buffer[np.concatenate(pad_masks)] = 0
         return buffer, clip_indices
 
