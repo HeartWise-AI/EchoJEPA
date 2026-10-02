@@ -65,6 +65,8 @@ pip install .  # or `pip install -e .` for development mode
 
 Pretraining can also be run locally or distributed. Pretraining and cooldown training phases are run with the same command using different configs. These sample commands launch initial training of a ViT-L model on [MIMIC-IV-ECHO](https://physionet.org/content/mimic-iv-echo/0.1/), a dataset of 525K echocardiograms which can be accessed through PhysioNet.
 
+For the pilot comparison of V-JEPA 2.1 ViT-B pretraining from scratch and from the EchoJEPA ViT-B checkpoint (code version, checkpoint, configs and launch commands), see [docs/pretraining_baseline.md](docs/pretraining_baseline.md).
+
 #### Local
 
 ```

@@ -146,12 +146,13 @@ data:
   dataset_type: VideoDataset
   datasets:
   - <output_dir>/train.csv
-  datasets_weights:
-  - 1.0
   dataset_fpcs:
   - 16    # keep equal to clip.frames_per_clip
   fps: 8  # keep equal to clip.fps
 ```
+
+Leave out `datasets_weights`: with it, the loader's weighted sampler draws videos with
+replacement, so a pass over the data repeats some videos and skips others.
 
 `val.csv` and `test.csv` hold the held-out patients and are referenced the same way, but
 only in a config of their own, never next to `train.csv`:

@@ -1,0 +1,131 @@
+# configs/train_2_1/vitb16/pretrain-continued-224px-16f.yaml
+#
+# V-JEPA 2.1 ViT-B pretraining, CONTINUED arm.
+# Initializes encoder, EMA encoder and predictor from the EchoJEPA ViT-B MIMIC
+# checkpoint with a fresh optimizer/schedule. Otherwise identical to the
+# scratch arm, so initialization is the only experimental difference.
+#
+# Trains on `train.csv` only with the dense predict-all loss.
+# Budget: 13 x 300 = 3,900 steps, followed by a 900-step cooldown.
+# See `docs/pretraining_baseline.md` for checkpoint checks and launch commands.
+
+app: vjepa_2_1
+nodes: 1
+tasks_per_node: 4          # GPUs.
+cpus_per_task: 32
+mem_per_gpu: 44G
+folder: /your_folder/pretrain/vitb16-continued-224px-16f
+
+data:
+  dataset_type: VideoDataset
+  datasets:
+  - /your_manifests/train.csv
+  # No `datasets_weights`: with it, the weighted sampler draws videos with replacement;
+  # without it, each pass is a shuffle of `train.csv` that skips each GPU's last partial batch.
+  batch_size: 64           # per GPU; if it OOMs, halve it and halve `lr`/`start_lr`.
+  crop_size: 224
+  patch_size: 16
+  dataset_fpcs:
+  - 16
+  fps: 8                   # 16 frames at 8 fps = 2 s, as EchoJEPA.
+  tubelet_size: 2
+  num_workers: 16
+  persistent_workers: true
+  pin_mem: true
+
+data_aug:
+  auto_augment: false
+  motion_shift: false
+  random_horizontal_flip: false
+  random_resize_aspect_ratio:
+  - 0.9
+  - 1.1
+  random_resize_scale:
+  - 0.5
+  - 1.0
+  reprob: 0.0
+
+loss:
+  loss_exp: 1.0
+  predict_all: true
+  shift_by_n: 0
+  weight_distance_loss: true
+  offset_context_loss: false
+
+mask:
+- aspect_ratio:
+  - 0.75
+  - 1.5
+  full_complement: false
+  max_keep: null
+  max_temporal_keep: 1.0
+  num_blocks: 8
+  spatial_scale:
+  - 0.15
+  - 0.15
+  temporal_scale:
+  - 1.0
+  - 1.0
+- aspect_ratio:
+  - 0.75
+  - 1.5
+  full_complement: false
+  max_keep: null
+  max_temporal_keep: 1.0
+  num_blocks: 2
+  spatial_scale:
+  - 0.7
+  - 0.7
+  temporal_scale:
+  - 1.0
+  - 1.0
+
+meta:
+  dtype: bfloat16
+  eval_freq: 100
+  load_checkpoint: true         # resume from `latest.pth.tar` when present.
+  read_checkpoint: null
+  init_checkpoint: /your_checkpoints/vjepa2_1_vitb_mimic_pt169_c60.pt
+  save_every_freq: 5
+  seed: 239
+  use_sdpa: true
+
+model:
+  model_name: vit_base
+  pred_depth: 12
+  pred_embed_dim: 384
+  pred_num_heads: 12
+  n_output_distillation: 1
+  has_cls_first: false
+  img_temporal_dim_size: 1
+  interpolate_rope: true
+  modality_embedding: true
+  n_registers: 0
+  n_registers_predictor: 0
+  normalize_predictor: false
+  uniform_power: true
+  use_activation_checkpointing: true
+  use_mask_tokens: true
+  use_rope: true
+  zero_init_mask_tokens: true
+  lambda_value_vid: 0.5
+  lambda_progressive: true
+  lambda_start_iter: 200
+  lambda_end_iter: 400
+
+optimization:
+  is_anneal: false
+  ipe: 300
+  ipe_scale: 1.25
+  ema:
+  - 0.99925
+  - 0.99925
+  weight_decay: 0.04
+  final_weight_decay: 0.04
+  # Linear scaling as in the EchoJEPA configs. `final_lr` == `lr` holds the LR constant
+  # after warmup; the decay is in cooldown.
+  start_lr: 1.0e-5
+  lr: 4.375e-5
+  final_lr: 4.375e-5
+  warmup: 1.5              # epochs, ~450 steps.
+  epochs: 13               # x ipe 300 = 3,900 steps.
