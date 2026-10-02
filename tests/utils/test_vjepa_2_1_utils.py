@@ -106,6 +106,36 @@ class TestNonFiniteLoss(unittest.TestCase):
         vote.assert_called_once_with(False, device=device)
 
 
+class TestDataLoaderErrorLogging(unittest.TestCase):
+
+    def test_retry_log_contains_only_the_error_type_and_retry_count(self):
+        sensitive_path = "/clinical-storage/patient-identifier/video.dcm"
+        message = f"decoder failed for {sensitive_path}"
+        error = RuntimeError(message)
+
+        with mock.patch.object(train.logger, "warning") as warning:
+            train._log_data_loading_retry(error, retry_number=2, max_retries=5)
+
+        warning.assert_called_once_with(
+            "Data loading failed with %s; retrying (%d/%d).",
+            "RuntimeError",
+            2,
+            5,
+        )
+        logged = warning.call_args.args[0] % warning.call_args.args[1:]
+        self.assertNotIn(sensitive_path, logged)
+        self.assertNotIn(message, logged)
+
+    def test_exhausted_retries_keep_the_original_exception_as_the_cause(self):
+        error = OSError("private storage detail")
+
+        with self.assertRaisesRegex(RuntimeError, r"Exceeded max retries \(5\)") as raised:
+            train._raise_data_loading_retries_exhausted(error, max_retries=5)
+
+        self.assertIs(raised.exception.__cause__, error)
+        self.assertNotIn(str(error), str(raised.exception))
+
+
 class TestAtomicCheckpointSave(unittest.TestCase):
 
     def setUp(self):

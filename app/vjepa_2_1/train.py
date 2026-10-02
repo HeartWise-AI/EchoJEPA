@@ -103,6 +103,23 @@ def _run_rank_zero_checkpoint_save(save, rank, device):
         raise RuntimeError(message)
 
 
+def _log_data_loading_retry(error, retry_number, max_retries):
+    """Log a retry without exposing paths or other details from the exception."""
+    logger.warning(
+        "Data loading failed with %s; retrying (%d/%d).",
+        type(error).__name__,
+        retry_number,
+        max_retries,
+    )
+
+
+def _raise_data_loading_retries_exhausted(error, max_retries):
+    """Raise a safe public error while preserving the original exception as its cause."""
+    raise RuntimeError(
+        f"Exceeded max retries ({max_retries}) when loading data."
+    ) from error
+
+
 def main(args, resume_preempt=False):
     # ----------------------------------------------------------------------- #
     #  PASSED IN PARAMS FROM CONFIG FILE
@@ -635,15 +652,11 @@ def main(args, resume_preempt=False):
                 except Exception as e:
                     NUM_RETRIES = 5
                     if iter_retries < NUM_RETRIES:
-                        logger.warning(
-                            f"Encountered exception when loading data (num retries {iter_retries}):\n{e}"
-                        )
                         iter_retries += 1
+                        _log_data_loading_retry(e, iter_retries, NUM_RETRIES)
                         time.sleep(5)
                     else:
-                        raise RuntimeError(
-                            f"Exceeded max retries ({NUM_RETRIES}) when loading data."
-                        ) from e
+                        _raise_data_loading_retries_exhausted(e, NUM_RETRIES)
 
             for _fpc_sample in sample:
                 bs, fpc = _fpc_sample[0][-1][0].size()
