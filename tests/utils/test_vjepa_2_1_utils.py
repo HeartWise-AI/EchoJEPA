@@ -4,12 +4,14 @@
 normalization, strict weight initialisation and resume, and the choice of checkpoint
 to load."""
 
-from datetime import timedelta
+import copy
+import inspect
 import logging
 import os
 import socket
 import tempfile
 import unittest
+from datetime import timedelta
 from unittest import mock
 
 import torch
@@ -104,6 +106,43 @@ class TestNonFiniteLoss(unittest.TestCase):
                 train._raise_if_non_finite_loss(torch.tensor(1.0), device)
 
         vote.assert_called_once_with(False, device=device)
+
+    def test_non_finite_loss_leaves_model_optimizer_and_ema_unchanged(self):
+        source = inspect.getsource(train.main)
+        guard = source.index("_raise_if_non_finite_loss(loss, device)")
+        for mutation in ("loss.backward()", "optimizer.step()", "torch._foreach_mul_"):
+            self.assertLess(guard, source.index(mutation, guard), mutation)
+
+        torch.manual_seed(0)
+        encoder = torch.nn.Linear(2, 1, bias=False)
+        target_encoder = copy.deepcopy(encoder)
+        optimizer = torch.optim.AdamW(encoder.parameters(), lr=0.1)
+        inputs = torch.tensor([[1.0, -2.0]])
+
+        # Populate AdamW's moments and make the online and EMA models different,
+        # so mutations to every state below would be observable.
+        encoder(inputs).square().mean().backward()
+        optimizer.step()
+        optimizer.zero_grad()
+        self.assertFalse(torch.equal(encoder.weight, target_encoder.weight))
+
+        encoder_before = copy.deepcopy(encoder.state_dict())
+        optimizer_before = copy.deepcopy(optimizer.state_dict())
+        target_before = copy.deepcopy(target_encoder.state_dict())
+
+        non_finite_loss = encoder(inputs).square().mean() + torch.tensor(float("inf"))
+        with self.assertRaises(FloatingPointError):
+            train._raise_if_non_finite_loss(non_finite_loss, torch.device("cpu"))
+            non_finite_loss.backward()
+            optimizer.step()
+            optimizer.zero_grad()
+            with torch.no_grad():
+                for online, target in zip(encoder.parameters(), target_encoder.parameters()):
+                    target.mul_(0.9).add_(online, alpha=0.1)
+
+        torch.testing.assert_close(encoder.state_dict(), encoder_before, rtol=0, atol=0)
+        torch.testing.assert_close(optimizer.state_dict(), optimizer_before, rtol=0, atol=0)
+        torch.testing.assert_close(target_encoder.state_dict(), target_before, rtol=0, atol=0)
 
 
 class TestDataLoaderErrorLogging(unittest.TestCase):
