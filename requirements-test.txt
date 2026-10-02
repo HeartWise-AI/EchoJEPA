@@ -1,4 +1,6 @@
-# Tools for static checking.
+# Test runtime and tools for static checking.
+pyarrow
+pytest
 black == 24.4.2
 flake8 == 7.0.0
 isort == 5.13.2
