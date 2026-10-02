@@ -4,13 +4,17 @@
 normalization, strict weight initialisation and resume, and the choice of checkpoint
 to load."""
 
+from datetime import timedelta
 import logging
 import os
+import socket
 import tempfile
 import unittest
 from unittest import mock
 
 import torch
+import torch.distributed as dist
+import torch.multiprocessing as mp
 import torch.nn.functional as F
 
 from app.vjepa_2_1 import train
@@ -23,6 +27,35 @@ from app.vjepa_2_1.utils import (
 )
 
 EMBED_DIM = 192  # vit_tiny
+
+
+def _free_port():
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        return str(sock.getsockname()[1])
+
+
+def _checkpoint_failure_worker(rank, world_size, port, queue):
+    os.environ["MASTER_ADDR"] = "127.0.0.1"
+    os.environ["MASTER_PORT"] = port
+    dist.init_process_group(
+        backend="gloo",
+        rank=rank,
+        world_size=world_size,
+        timeout=timedelta(seconds=60),
+    )
+    try:
+        def save():
+            raise OSError("simulated rank-0 checkpoint failure")
+
+        try:
+            train._run_rank_zero_checkpoint_save(save, rank, torch.device("cpu"))
+        except RuntimeError as exc:
+            queue.put((rank, str(exc)))
+        else:
+            queue.put((rank, None))
+    finally:
+        dist.destroy_process_group()
 
 
 def tiny_model(n_output_distillation):
@@ -71,6 +104,76 @@ class TestNonFiniteLoss(unittest.TestCase):
                 train._raise_if_non_finite_loss(torch.tensor(1.0), device)
 
         vote.assert_called_once_with(False, device=device)
+
+
+class TestAtomicCheckpointSave(unittest.TestCase):
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.directory = temporary.name
+        self.path = os.path.join(self.directory, "latest.pth.tar")
+        with open(self.path, "wb") as checkpoint:
+            checkpoint.write(b"previous checkpoint")
+
+    @staticmethod
+    def _fail_after_partial_write(_save_dict, temporary_file):
+        temporary_file.write(b"partial replacement")
+        raise OSError("simulated write failure")
+
+    def test_a_failed_write_preserves_the_previous_checkpoint(self):
+        with mock.patch.object(train.torch, "save", side_effect=self._fail_after_partial_write):
+            with self.assertRaisesRegex(OSError, "simulated write failure"):
+                train._atomic_torch_save({"epoch": 2}, self.path)
+
+        with open(self.path, "rb") as checkpoint:
+            self.assertEqual(checkpoint.read(), b"previous checkpoint")
+
+    def test_a_successful_write_atomically_replaces_the_checkpoint(self):
+        real_replace = os.replace
+        with mock.patch.object(train.os, "replace", wraps=real_replace) as replace:
+            train._atomic_torch_save({"epoch": 2}, self.path)
+
+        replace.assert_called_once()
+        temporary_path, destination = replace.call_args.args
+        self.assertEqual(os.path.dirname(temporary_path), self.directory)
+        self.assertEqual(destination, self.path)
+        self.assertEqual(torch.load(self.path, weights_only=True)["epoch"], 2)
+
+    def test_a_failed_write_cleans_up_the_temporary_file(self):
+        with mock.patch.object(train.torch, "save", side_effect=self._fail_after_partial_write):
+            with self.assertRaises(OSError):
+                train._atomic_torch_save({"epoch": 2}, self.path)
+
+        self.assertEqual(os.listdir(self.directory), ["latest.pth.tar"])
+
+
+@unittest.skipUnless(
+    dist.is_available() and dist.is_gloo_available(),
+    "requires torch.distributed with gloo",
+)
+class TestDistributedCheckpointSave(unittest.TestCase):
+
+    def test_a_rank_zero_save_failure_stops_every_rank(self):
+        world_size = 3
+        context = mp.get_context("spawn")
+        queue = context.Queue()
+
+        mp.spawn(
+            _checkpoint_failure_worker,
+            args=(world_size, _free_port(), queue),
+            nprocs=world_size,
+            join=True,
+        )
+
+        results = dict(queue.get(timeout=60) for _ in range(world_size))
+        self.assertEqual(sorted(results), list(range(world_size)))
+        for rank, message in results.items():
+            self.assertEqual(
+                message,
+                "Checkpoint save failed on rank 0; stopping all ranks.",
+                msg=f"rank {rank}",
+            )
 
 
 class TestNormalizePredictor(QuietLogs):

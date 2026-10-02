@@ -5,6 +5,7 @@
 # LICENSE file in the root directory of this source tree.
 
 import os
+import tempfile
 
 # -- FOR DISTRIBUTED TRAINING ENSURE ONLY 1 DEVICE VISIBLE PER PROCESS
 try:
@@ -64,6 +65,42 @@ def _raise_if_non_finite_loss(loss, device):
             "Non-finite loss detected on at least one rank before backward; "
             "stopping all ranks."
         )
+
+
+def _atomic_torch_save(save_dict, path):
+    """Write a checkpoint beside its destination, then publish it atomically."""
+    destination = os.path.abspath(os.fspath(path))
+    directory = os.path.dirname(destination)
+    prefix = f".{os.path.basename(destination)}."
+    fd, temporary_path = tempfile.mkstemp(prefix=prefix, suffix=".tmp", dir=directory)
+    os.close(fd)
+    try:
+        with open(temporary_path, "wb") as temporary_file:
+            torch.save(save_dict, temporary_file)
+            temporary_file.flush()
+            os.fsync(temporary_file.fileno())
+        os.replace(temporary_path, destination)
+    finally:
+        try:
+            os.unlink(temporary_path)
+        except FileNotFoundError:
+            pass
+
+
+def _run_rank_zero_checkpoint_save(save, rank, device):
+    """Run a checkpoint write on rank 0 and stop every rank if it fails."""
+    error = None
+    if rank == 0:
+        try:
+            save()
+        except Exception as exc:
+            error = exc
+
+    if any_rank_failed(error is not None, device=device):
+        message = "Checkpoint save failed on rank 0; stopping all ranks."
+        if error is not None:
+            raise RuntimeError(message) from error
+        raise RuntimeError(message)
 
 
 def main(args, resume_preempt=False):
@@ -529,24 +566,22 @@ def main(args, resume_preempt=False):
                 mask_collator.step()
 
     def save_checkpoint(epoch, path):
-        if rank != 0:
-            return
-        save_dict = {
-            "encoder": encoder.state_dict(),
-            "predictor": predictor.state_dict(),
-            "opt": optimizer.state_dict(),
-            "scaler": None if scaler is None else scaler.state_dict(),
-            "target_encoder": target_encoder.state_dict(),
-            "epoch": epoch,
-            "loss": loss_meter.avg,
-            "batch_size": batch_size,
-            "world_size": world_size,
-            "lr": lr,
-        }
-        try:
-            torch.save(save_dict, path)
-        except Exception as e:
-            logger.info(f"Encountered exception when saving checkpoint: {e}")
+        def save_on_rank_zero():
+            save_dict = {
+                "encoder": encoder.state_dict(),
+                "predictor": predictor.state_dict(),
+                "opt": optimizer.state_dict(),
+                "scaler": None if scaler is None else scaler.state_dict(),
+                "target_encoder": target_encoder.state_dict(),
+                "epoch": epoch,
+                "loss": loss_meter.avg,
+                "batch_size": batch_size,
+                "world_size": world_size,
+                "lr": lr,
+            }
+            _atomic_torch_save(save_dict, path)
+
+        _run_rank_zero_checkpoint_save(save_on_rank_zero, rank, device)
 
     logger.info("Initializing loader...")
     unsupervised_sampler.set_epoch(start_epoch)
