@@ -380,6 +380,35 @@ class TestClipHelpers(unittest.TestCase):
         self.assertEqual(payload[wandb_logging.STEP_METRIC], 6)
         self.assertNotIn("step", kwargs)
 
+    def test_black_padding_is_not_counted_as_repeated_frames(self):
+        # Clip 0 has 2 real frames and 2 identical padding frames; clip 1 is all real.
+        clips = _clips(2)
+        clips[0, :, 2:] = -2.0  # a normalised black frame
+        padded = torch.tensor([[False, False, True, True], [False] * 4])
+        self.assertEqual(wandb_logging.unique_frame_fraction(clips, padded), 1.0)
+        self.assertAlmostEqual(wandb_logging.unique_frame_fraction(clips), (0.75 + 1.0) / 2)  # without the mask
+        # A repeated real frame still counts.
+        clips[0, :, 1] = clips[0, :, 0]
+        self.assertAlmostEqual(wandb_logging.unique_frame_fraction(clips, padded), (0.5 + 1.0) / 2)
+
+    def test_log_input_clips_reports_padding_separately(self):
+        clips = _clips(2)
+        clips[0, :, 2:] = -2.0
+        padded = torch.tensor([[False, False, True, True], [False] * 4])
+        logged = []
+        fake_wandb = SimpleNamespace(Video=lambda data, fps, format: ("video", data.shape, format))
+        run = SimpleNamespace(log=lambda payload, **kwargs: logged.append(payload))
+
+        with mock.patch.object(wandb_logging, "wandb", fake_wandb), \
+                self.assertNoLogs(wandb_logging.logger, level="WARNING"):
+            wandb_logging.log_input_clips(
+                run, [clips], step=0, normalize=((0.5,) * 3, (0.5,) * 3), num_videos=2, padded=[padded]
+            )
+
+        [payload] = logged
+        self.assertEqual(payload["data/unique_frame_frac"], 1.0)
+        self.assertEqual(payload["data/padded_frame_frac"], 2 / 8)
+
 
 if __name__ == "__main__":
     unittest.main()

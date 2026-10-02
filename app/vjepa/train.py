@@ -636,6 +636,9 @@ def main(args, resume_preempt=False):
                             step=epoch * ipe + itr,         # global training step.
                             normalize=DEFAULT_NORMALIZE,    # reverse the normalization for visualization.
                             num_videos=num_log_videos,
+                            # Black padding frames of short videos (clip index -1), which are excluded from the
+                            # repeated-frame check.
+                            padded=[fpc_sample[0][2][0] == -1 for fpc_sample in sample],
                         )
     
                 if sync_gc and (itr + 1) % GARBAGE_COLLECT_ITR_FREQ == 0:
