@@ -8,6 +8,7 @@ import logging
 import os
 import tempfile
 import unittest
+from unittest import mock
 
 import torch
 import torch.nn.functional as F
@@ -43,6 +44,33 @@ class QuietLogs(unittest.TestCase):
     @classmethod
     def tearDownClass(cls):
         logging.disable(logging.NOTSET)
+
+
+class TestNonFiniteLoss(unittest.TestCase):
+
+    def test_finite_loss_continues_when_every_rank_is_finite(self):
+        device = torch.device("cpu")
+        with mock.patch.object(train, "any_rank_failed", return_value=False) as vote:
+            train._raise_if_non_finite_loss(torch.tensor(1.0), device)
+
+        vote.assert_called_once_with(False, device=device)
+
+    def test_nan_and_infinities_stop_before_the_update(self):
+        device = torch.device("cpu")
+        for value in (float("nan"), float("inf"), float("-inf")):
+            with self.subTest(value=value), mock.patch.object(
+                train, "any_rank_failed", side_effect=lambda failed, device: failed
+            ) as vote, self.assertRaisesRegex(FloatingPointError, "Non-finite loss"):
+                train._raise_if_non_finite_loss(torch.tensor(value), device)
+            vote.assert_called_once_with(True, device=device)
+
+    def test_a_remote_failure_stops_a_rank_with_a_finite_loss(self):
+        device = torch.device("cpu")
+        with mock.patch.object(train, "any_rank_failed", return_value=True) as vote:
+            with self.assertRaisesRegex(FloatingPointError, "stopping all ranks"):
+                train._raise_if_non_finite_loss(torch.tensor(1.0), device)
+
+        vote.assert_called_once_with(False, device=device)
 
 
 class TestNormalizePredictor(QuietLogs):

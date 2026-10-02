@@ -35,7 +35,7 @@ from app.vjepa_2_1.utils import (
 from src.datasets.data_manager import init_data
 from src.masks.multiseq_multiblock3d import MaskCollator
 from src.masks.utils import apply_masks
-from src.utils.distributed import init_distributed
+from src.utils.distributed import any_rank_failed, init_distributed
 from src.utils.logging import AverageMeter, CSVLogger, get_logger, gpu_timer
 from torch.nn.parallel import DistributedDataParallel
 
@@ -54,6 +54,16 @@ torch.backends.cudnn.benchmark = True
 
 
 logger = get_logger(__name__, force=True)
+
+
+def _raise_if_non_finite_loss(loss, device):
+    """Stop every rank when any rank produces a non-finite loss."""
+    local_failure = not bool(torch.isfinite(loss.detach()).item())
+    if any_rank_failed(local_failure, device=device):
+        raise FloatingPointError(
+            "Non-finite loss detected on at least one rank before backward; "
+            "stopping all ranks."
+        )
 
 
 def main(args, resume_preempt=False):
@@ -742,6 +752,8 @@ def main(args, resume_preempt=False):
                             lambda_value_step = lambda_value
                         loss += loss_context * lambda_value_step
 
+                _raise_if_non_finite_loss(loss, device)
+
                 # Step 2. Backward & step
                 run_step = True
                 if loss_reg_std_mult is not None:
@@ -863,7 +875,6 @@ def main(args, resume_preempt=False):
                     )
 
             log_stats()
-            assert not np.isnan(loss), "loss is nan"
 
         # -- Save Checkpoint
         logger.info("avg. loss %.3f" % loss_meter.avg)
