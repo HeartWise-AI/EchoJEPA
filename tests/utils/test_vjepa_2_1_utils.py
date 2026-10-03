@@ -1,12 +1,13 @@
 # tests/utils/test_vjepa_2_1_utils.py
 
-"""Tests for the V-JEPA 2.1 training helpers EchoJEPA adds or changes: predictor
-normalization, strict weight initialisation and resume, and the choice of checkpoint
-to load."""
+"""Tests for the V-JEPA 2.1 training helpers EchoJEPA adds or changes: the padded-token
+loss mask, predictor normalization, strict weight initialisation and resume, and the
+choice of checkpoint to load."""
 
 import copy
 import inspect
 import logging
+import math
 import os
 import socket
 import tempfile
@@ -21,11 +22,15 @@ import torch.nn.functional as F
 
 from app.vjepa_2_1 import train
 from app.vjepa_2_1.utils import (
+    clip_grads_with_norm_,
+    feature_spread,
     init_video_model,
     load_checkpoint,
     load_pretrained_weights,
+    masked_l1_loss,
     normalize_nested,
     select_load_path,
+    token_validity,
 )
 
 EMBED_DIM = 192  # vit_tiny
@@ -69,6 +74,14 @@ def tiny_model(n_output_distillation):
     )
 
 
+def upstream_loss(z, h, loss_exp, d_weights=None):
+    """The loss term upstream computed for one mask, before padding was masked."""
+    err = torch.abs(z - h) ** loss_exp
+    if d_weights is not None:
+        err = err * (1 / d_weights.unsqueeze(2))
+    return torch.mean(err) / loss_exp
+
+
 class QuietLogs(unittest.TestCase):
     """init_video_model prints every model it builds, and the trainer its settings."""
 
@@ -79,6 +92,138 @@ class QuietLogs(unittest.TestCase):
     @classmethod
     def tearDownClass(cls):
         logging.disable(logging.NOTSET)
+
+
+class TestTokenValidity(unittest.TestCase):
+    # 4 frames, tubelets of 2, a 2 x 2 grid: tokens 0-3 are tubelet 0, 4-7 tubelet 1.
+
+    def validity(self, *clips):
+        return token_validity(torch.tensor(clips), tubelet_size=2, grid_size=2).squeeze(-1).tolist()
+
+    def test_real_padded_and_partly_padded_tubelets(self):
+        rows = self.validity(
+            [0, 1, 2, 3],     # all real
+            [0, 1, -1, -1],   # tubelet 1 all padding
+            [0, -1, -1, -1],  # tubelet 0 has one real frame: kept
+            [-1, -1, -1, -1], # all padding
+        )
+        self.assertEqual(rows, [
+            [1.0] * 8,
+            [1.0] * 4 + [0.0] * 4,
+            [1.0] * 4 + [0.0] * 4,
+            [0.0] * 8,
+        ])
+
+    def test_shape_matches_the_token_sequence(self):
+        v = token_validity(torch.zeros(3, 16, dtype=torch.long), tubelet_size=2, grid_size=14)
+        self.assertEqual(tuple(v.shape), (3, 8 * 14 * 14, 1))
+
+    def test_frames_that_do_not_fill_whole_tubelets_are_refused(self):
+        with self.assertRaisesRegex(ValueError, "multiple of `data.tubelet_size`"):
+            token_validity(torch.zeros(3, 15, dtype=torch.long), tubelet_size=2, grid_size=14)
+
+
+class TestMaskedL1Loss(unittest.TestCase):
+
+    def setUp(self):
+        g = torch.Generator().manual_seed(0)
+        self.z = torch.randn(2, 6, 5, generator=g)
+        self.h = torch.randn(2, 6, 5, generator=g)
+        self.d = torch.rand(2, 6, generator=g) + 0.5
+        self.valid = torch.ones(2, 6, 1)
+        self.valid[1, 4:] = 0  # the last two tokens of sample 1 are padding
+
+    def test_equals_the_upstream_loss_when_every_token_is_real(self):
+        for p in (1, 2):
+            for d in (None, self.d):
+                expected = upstream_loss(self.z, self.h, p, d)
+                self.assertTrue(torch.allclose(masked_l1_loss(self.z, self.h, p, None, d), expected))
+                self.assertTrue(torch.allclose(masked_l1_loss(self.z, self.h, p, torch.ones(2, 6, 1), d), expected))
+
+    def test_padded_tokens_do_not_count(self):
+        keep = self.valid.squeeze(-1).bool()
+        for p in (1, 2):
+            for d in (None, self.d):
+                err = torch.abs(self.z - self.h) ** p
+                if d is not None:
+                    err = err / d.unsqueeze(2)
+                expected = err[keep].mean() / p  # mean over the real tokens only
+                loss = masked_l1_loss(self.z, self.h, p, self.valid, d)
+                self.assertTrue(torch.allclose(loss, expected))
+
+                z = self.z.clone()
+                z[1, 4:] += 100.0  # a prediction on padding changes nothing
+                self.assertTrue(torch.allclose(masked_l1_loss(z, self.h, p, self.valid, d), loss))
+
+    def test_an_all_padding_batch_gives_zero_not_nan(self):
+        loss = masked_l1_loss(self.z, self.h, 1, torch.zeros(2, 6, 1))
+        self.assertEqual(float(loss), 0.0)
+
+
+class TestFeatureSpread(unittest.TestCase):
+    """The collapse check: how alike the target encoder makes different clips."""
+
+    def test_identical_clips_are_fully_collapsed(self):
+        h = torch.randn(1, 6, 8).expand(4, 6, 8)
+        clip_cosine, effective_rank = feature_spread(h)
+        self.assertAlmostEqual(clip_cosine, 1.0, places=5)
+        self.assertEqual(effective_rank, 0.0)
+
+    def test_orthogonal_clips_use_every_direction(self):
+        # Clip i has every token on axis i: no similarity, and n clips span n - 1 centred directions.
+        h = torch.eye(5, 8).unsqueeze(1).expand(5, 6, 8)
+        clip_cosine, effective_rank = feature_spread(h)
+        self.assertAlmostEqual(clip_cosine, 0.0, places=6)
+        self.assertAlmostEqual(effective_rank, 4.0, places=4)
+
+    def test_padding_tokens_are_left_out(self):
+        # Two clips alike on their real tokens, different on their padding.
+        h = torch.randn(1, 6, 8).repeat(2, 1, 1)
+        h[0, 4:], h[1, 4:] = 5.0, -5.0
+        valid = torch.tensor([1.0] * 4 + [0.0] * 2).view(1, 6, 1).expand(2, 6, 1)
+        self.assertAlmostEqual(feature_spread(h, valid)[0], 1.0, places=5)
+        self.assertLess(feature_spread(h)[0], 0.99)
+
+    def test_clips_of_every_length_are_pooled_together(self):
+        short, long = torch.eye(3, 8)[:2].unsqueeze(1).expand(2, 4, 8), torch.eye(3, 8)[2:].unsqueeze(1).expand(1, 8, 8)
+        clip_cosine, effective_rank = feature_spread([short, long], [None, None])
+        self.assertAlmostEqual(clip_cosine, 0.0, places=6)
+        self.assertAlmostEqual(effective_rank, 2.0, places=4)
+
+    def test_one_clip_has_no_spread(self):
+        self.assertTrue(all(math.isnan(v) for v in feature_spread(torch.randn(1, 6, 8))))
+
+
+class TestClipGradsWithNorm(unittest.TestCase):
+    """Gradient clipping against a norm the trainer already computed (and logs)."""
+
+    def params(self):
+        a, b, unused = (torch.nn.Parameter(torch.zeros(2)) for _ in range(3))
+        a.grad, b.grad = torch.tensor([3.0, 0.0]), torch.tensor([0.0, 4.0])  # total norm 5
+        return [a, b, unused]
+
+    def test_gradients_above_the_limit_are_scaled_to_it(self):
+        params = self.params()
+        clip_grads_with_norm_(params, 2.5, torch.tensor(5.0))
+        self.assertAlmostEqual(float(torch.cat([params[0].grad, params[1].grad]).norm()), 2.5, places=5)
+        self.assertIsNone(params[2].grad)
+
+    def test_gradients_within_the_limit_are_unchanged(self):
+        params = self.params()
+        clip_grads_with_norm_(params, 10.0, torch.tensor(5.0))
+        self.assertEqual(params[0].grad.tolist(), [3.0, 0.0])
+        self.assertEqual(params[1].grad.tolist(), [0.0, 4.0])
+
+    def test_matches_pytorch_where_pytorch_has_it(self):
+        if not hasattr(torch.nn.utils, "clip_grads_with_norm_"):
+            self.skipTest("this PyTorch has no clip_grads_with_norm_")
+        for max_norm, total_norm in ((2.5, 5.0), (10.0, 5.0), (1.0, float("inf"))):
+            with self.subTest(max_norm=max_norm, total_norm=total_norm):
+                ours, theirs = self.params(), self.params()
+                clip_grads_with_norm_(ours, max_norm, torch.tensor(total_norm))
+                torch.nn.utils.clip_grads_with_norm_(theirs[:2], max_norm, torch.tensor(total_norm))
+                for p, q in zip(ours[:2], theirs[:2]):
+                    self.assertTrue(torch.equal(p.grad, q.grad))
 
 
 class TestNonFiniteLoss(unittest.TestCase):
@@ -377,14 +522,18 @@ class TestLoadCheckpoint(QuietLogs):
         return load_checkpoint(path, encoder, predictor, target, opt, scaler, is_anneal=is_anneal)
 
     def test_a_checkpoint_of_the_same_run_restores_everything(self):
-        encoder, predictor, target, opt, _, epoch = self.resume(self.save())
+        encoder, predictor, target, opt, _, epoch, _ = self.resume(self.save())
         self.assertEqual(epoch, 5)
         for a, b in zip(encoder.state_dict().values(), self.encoder.state_dict().values()):
             self.assertTrue(torch.equal(a, b))
         self.assertEqual(len(opt.state_dict()["state"]), len(self.opt.state_dict()["state"]))
 
     def test_a_cooldown_start_resets_the_epoch(self):
-        self.assertEqual(self.resume(self.save(), is_anneal=True)[-1], 0)
+        self.assertEqual(self.resume(self.save(), is_anneal=True)[5], 0)
+
+    def test_the_wandb_run_id_comes_back_and_is_none_when_absent(self):
+        self.assertEqual(self.resume(self.save(wandb_run_id="abc123"))[-1], "abc123")
+        self.assertIsNone(self.resume(self.save())[-1])
 
     def test_a_missing_tensor_fails(self):
         encoder = dict(self.encoder.state_dict())

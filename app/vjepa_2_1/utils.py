@@ -119,7 +119,8 @@ def load_checkpoint(
     is_anneal=False,
 ):
     """Resume training from a checkpoint of this trainer: model weights, optimizer and scaler
-    state, and the epoch (0 when a cooldown starts from `anneal_ckpt`).
+    state, and the epoch (0 when a cooldown starts from `anneal_ckpt`). Also returns the
+    wandb run id the checkpoint was logged under (`None` if it has none).
 
     Everything must match the run exactly. Upstream skipped missing tensors, kept the current
     weights for mis-shaped ones and started a fresh optimizer when its groups did not match,
@@ -159,6 +160,7 @@ def load_checkpoint(
     if scaler is not None:
         scaler.load_state_dict(checkpoint["scaler"])
     logger.info(f"Loaded optimizer and scaler state; resuming at epoch {epoch}.")
+    wandb_run_id = checkpoint.get("wandb_run_id")
     del checkpoint
 
     return (
@@ -168,6 +170,7 @@ def load_checkpoint(
         opt,
         scaler,
         epoch,
+        wandb_run_id,
     )
 
 
@@ -248,6 +251,118 @@ def select_load_path(latest_path, load_model, r_file, is_anneal, resume_anneal, 
             raise FileNotFoundError(f"`read_checkpoint` not found: {r_file}.")
         return r_file, resume_anneal
     return (latest_path if os.path.exists(latest_path) else None), resume_anneal
+
+
+def token_validity(clip_indices, tubelet_size, grid_size):
+    """Return 1.0 for tokens containing real frames and 0.0 for pure padding.
+
+    Padding frames use clip index `-1`. A tubelet is valid if it contains at
+    least one real frame.
+
+    Args:
+        clip_indices: frame indices [B, T], with `-1` for padding.
+
+    Returns:
+        Validity mask [B, T' * grid_size**2, 1].
+    """
+    # Change indices into Boolean mask: mask out padded frames (`-1`).
+    real = clip_indices >= 0
+    B, T = real.shape
+    if T % tubelet_size:
+        raise ValueError(
+            f"Clips of {T} frames do not split into tubelets of {tubelet_size}; "
+            "every `data.dataset_fpcs` entry must be a multiple of `data.tubelet_size`."
+        )
+    # Keep tubelets that contain at least one real frame.
+    real = real.view(B, T // tubelet_size, tubelet_size).any(dim=2)
+    return real.repeat_interleave(grid_size * grid_size, dim=1).unsqueeze(-1).float()
+
+
+def masked_l1_loss(z, h, loss_exp, valid=None, d_weights=None):
+    """Calculate the actual prediction loss between the predictor's prediction and the
+    target encoder's target: mean |z - h|^p / p over valid tokens. Optionally ignores
+    padded tokens and applies inverse distance weighting.
+
+    Args:
+        z, h: prediction and target embeddings [B, K, D].
+        valid: optional token-validity mask [B, K, 1].
+        d_weights: optional distance weights [B, K].
+
+    Returns:
+        Scalar prediction loss.
+    """
+    err = torch.abs(z - h) ** loss_exp
+    if d_weights is not None:
+        err = err * (1 / d_weights.unsqueeze(2))
+    if valid is None:
+        return torch.mean(err) / loss_exp
+    n = (valid.sum() * err.size(-1)).clamp(min=1)
+    return (err * valid).sum() / n / loss_exp
+
+
+def feature_spread(features, valid=None):
+    """Measure how different the target encoder's clips are from each other, to detect the
+    representation collapse that a falling loss can hide (features that barely differ are
+    easy to predict).
+
+    Args:
+        features: target features [B, N, D], or a list of them (one per clip length).
+        valid: matching token-validity masks [B, N, 1], or None to pool every token.
+
+    Returns:
+        (clip_cosine, effective_rank) as floats; `NaN` when there are fewer than two clips.
+    """
+    # Normalize input into a list.
+    if isinstance(features, torch.Tensor):
+        features, valid = [features], [valid]
+    if valid is None:
+        valid = [None] * len(features)
+    
+    # Each clip is mean-pooled over its valid tokens.
+    pooled = []
+    with torch.no_grad():
+        # Padded tokens are excluded.
+        for h, v in zip(features, valid):
+            h = h.detach().float()
+            if v is None:
+                pooled.append(h.mean(dim=1))
+            else:
+                v = v.detach().float()
+                pooled.append((h * v).sum(dim=1) / v.sum(dim=1).clamp(min=1))
+        # Values (clip cos & effective rank) depend on the number of clips, so compare
+        # runs with the same batch size.
+        pooled = torch.cat(pooled)
+        n = pooled.size(0)
+        if n < 2:
+            return float("nan"), float("nan")
+        # Clip cosine: mean cosine similarity between different clips; it rises towards `1`
+        # as every clip maps to the same features.
+        unit = F.normalize(pooled, dim=1)
+        sim = unit @ unit.T
+        clip_cosine = (sim.sum() - sim.diagonal().sum()) / (n * (n - 1))
+        # Effective rank: measures the number of meaningful independent directions the
+        # clip features span; exp of the entropy of the singular values of the centered
+        # pooled features. Ranges from 0 (all clips identical) to at most `num_clips - 1`.
+        s = torch.linalg.svdvals(pooled - pooled.mean(dim=0, keepdim=True))
+        if s.sum() <= 1e-6 * pooled.norm():
+            return float(clip_cosine), 0.0
+        p = s / s.sum()
+        p = p[p > 0]
+        effective_rank = torch.exp(-(p * p.log()).sum())
+    return float(clip_cosine), float(effective_rank)
+
+
+def clip_grads_with_norm_(parameters, max_norm, total_norm):
+    """Standard gradient clipping: scale gradients in place so their total norm does not
+    exceed `max_norm` for one training step. Uses the precomputed `total_norm` to determine
+    the scaling factor.
+    """
+    total_norm = torch.as_tensor(total_norm, dtype=torch.float32)
+    clip_coef = torch.clamp(max_norm / (total_norm + 1e-6), max=1.0)
+    with torch.no_grad():
+        for p in parameters:
+            if p.grad is not None:
+                p.grad.mul_(clip_coef.to(p.grad.device))
 
 
 def init_video_model(

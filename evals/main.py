@@ -11,10 +11,16 @@ import pprint
 import yaml
 
 from evals.scaffold import main as eval_main
-from src.utils.distributed import init_distributed
+from src.utils.distributed import close_distributed, init_distributed
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--val_only", action="store_true", help="only run eval", default=False)
+parser.add_argument(
+    "--test_only",
+    action="store_true",
+    default=False,
+    help="Score `experiment.data.dataset_test` with the epoch and head chosen on validation.",
+)
 parser.add_argument("--fname", type=str, help="name of config file to load", default="configs.yaml")
 parser.add_argument(
     "--devices",
@@ -64,6 +70,8 @@ def process_main(args, rank, fname, world_size, devices):
         params = yaml.load(y_file, Loader=yaml.FullLoader)
         if args.val_only:
             params["val_only"] = True
+        if args.test_only:
+            params["test_only"] = True
 
         if args.checkpoint:
             params["model_kwargs"]["checkpoint"] = args.checkpoint
@@ -88,6 +96,9 @@ def process_main(args, rank, fname, world_size, devices):
 
     # Launch the eval with loaded config
     eval_main(params["eval_name"], args_eval=params)
+
+    # The current process created the process group, so it also shuts it down (no-op if the app already did).
+    close_distributed()
 
 
 if __name__ == "__main__":

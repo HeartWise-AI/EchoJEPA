@@ -4,8 +4,7 @@ This document records the code, model, checkpoint and configuration used by the 
 initial pretraining experiments, so that another developer can reproduce both runs.
 The two runs are ViT-B pretraining **from random initialization** ("scratch") and
 **continued from the published EchoJEPA ViT-B checkpoint** ("continued").
-It answers issue #9. The data comes from issue #6. Training also requires the loader fix
-of issue #8, a separate PR; see [Prerequisite](#prerequisite-the-8-loader-fix).
+It answers issue #9. The data comes from issue #6.
 
 ## Decision
 
@@ -57,9 +56,14 @@ In `app/vjepa_2_1/train.py` and `utils.py`:
 6. **The context-loss ramp is configurable** (`model.lambda_start_iter` and
    `model.lambda_end_iter`). Upstream fixed it at steps 15k→30k, which were sized for
    runs of about 300k steps.
-7. **`data.persistent_workers` reaches the loader.** Upstream ignored it, so each rank
-   restarted its loader workers at every pass over the data.
-8. **Fixes.**
+7. **`data.persistent_workers` is now passed to the `DataLoader`.** Upstream ignored it, so each rank
+   restarted its loader workers on every pass over the dataset. **`data.in_order`** is also passed through (default: `true`). PyTorch 2.5, pinned by
+   `requirements.txt`, does not support `in_order`, so the loader warns and falls back to ordered batches. The pilot environment (`requirements-pilot.txt`) has it.
+8. **Padding is excluded from the loss.** Tokens whose tubelets contain only padding frames (clip index `-1`) are ignored in both prediction and context losses; the loss is averaged over valid tokens only. A tubelet is considered valid if it contains at least one real frame. With no padding, the loss matches upstream behavior. The log reports the fraction of valid tokens as `valid`. The trainer rejects `model.has_cls_first` because this mask does not match that token ordering.
+9. **W&B logging.** Logging uses the `meta.wandb_*` settings and `app/vjepa` helpers, and is disabled when `wandb_project` is `null`. It logs all-rank mean losses, context-loss weight, LR, WD, EMA momentum, gradient norm, valid-token and padded-frame fractions, timings, and memory. Checkpoints store the W&B run ID so restarts resume the same run; cooldown runs started from `anneal_ckpt` create a new run. Long-run diagnostics add:
+   - `optimization/grad_norm_max`: the maximum gradient norm since the previous log, preserving spikes between logging steps.
+   - `features/clip_cosine` and `features/effective_rank`: target-encoder feature-collapse diagnostics. Increasing cross-clip cosine similarity toward 1 together with effective rank falling toward 1 indicates that different clips are receiving nearly identical representations, even if the loss continues to decrease. Because both metrics depend on batch size, compare them against the run's initial logged values.
+10. **Fixes.**
    - The encoder width is read from the backbone; upstream failed for `vit_base`.
    - `normalize_nested` recursed one list level too far. It only runs with
      `model.normalize_predictor`, which is off here.
@@ -68,16 +72,16 @@ In `app/vjepa_2_1/train.py` and `utils.py`:
 
 In the shared launcher (`app/main.py`, also used by `app/vjepa`):
 
-9. **`python -m app.main` waits for every rank and exits non-zero if any fails.** Once a
+11. **`python -m app.main` waits for every rank and exits non-zero if any fails.** Once a
    rank fails, the others are stopped. Upstream started the ranks and returned success
    after launching the ranks, so downstream commands could run even when training had failed.
+12. **Each rank now destroys its process group when the application exits** (including `python -m evals.main`). Upstream left it open, so if rank 0 exited first, the remaining ranks could log NCCL `"Connection reset by peer"` errors even after a successful run.
+
+In the trainer, one additional feature is available but disabled in the shipped configs:
+
+13. **`optimization.clip_grad` optionally caps the total gradient norm** of the encoder and predictor before each optimizer step. Gradients above the threshold are scaled down, and `optimization/clipped_steps` reports how many steps were clipped since the previous log. Upstream V-JEPA and EchoJEPA do not use gradient clipping, so the shipped configs leave `clip_grad: null`. Although AdamW limits the effect of a single update, a large gradient spike can inflate its running second-moment estimate and reduce subsequent update sizes for many steps. If enabled, the cap should therefore target only clear outliers and sit several times above the run's typical gradient norm, which differs by training arm.
 
 Not used or not ported: the image branch (`img_data`, ImageNet), the Gram-loss options present in upstream cooldown configs but ignored by this trainer, and upstream’s V-JEPA 2.1 evaluation configs.
-
-### Prerequisite: the #8 loader fix
-
-Issue #6 retains low-FPS and short videos in the manifests; correct loading of those cases is handled separately by issue #8, so this PR does not change their loading behavior. Without #8, the shared loader fails on videos at 7 fps or below, causing the trainer to skip the entire batch, and pads short clips by repeating the final frame. It also logs manifest paths when datasets are created and when videos fail to load, which may identify patients. The #8 PR removes them; a failed video is reported by its
-manifest line instead. **Merge #8 before starting either run.** The trainer still does not mask padding-derived tokens from the loss; changing that would modify the training objective and should be decided separately.
 
 ## Architecture
 
@@ -192,18 +196,18 @@ differ only in `meta.init_checkpoint` and the cooldown configs only in
 | Clips | `dataset_fpcs: [16]` (the 2.1 trainer's frames-per-clip), `fps: 8`, 224 px, tubelet 2. |
 | Augmentation | Random resized crop with scale [0.5, 1.0] and aspect ratio [0.9, 1.1] (EchoJEPA's narrowed ranges); no flips, auto-augment, motion shift or random erasing. |
 | Masking | As in [Architecture](#architecture). |
-| Objective | Pretraining uses dense L1 prediction against the final encoder layer. Context loss starts disabled, ramps from 0 to 0.5 between steps 200 and 400, then stays at 0.5, with upstream-style distance weighting. Cooldown uses the same 0.5 context-loss weight from the start but does not use the pretraining distance weighting. |
+| Objective | Pretraining uses dense L1 prediction against the encoder’s final layer. The context-loss weight is 0 through step 200, ramps to 0.5 by step 400, then remains at 0.5, using upstream-style distance weighting. Cooldown uses a fixed context-loss weight of 0.5 from the start, without pretraining distance weighting. In both stages, tubelets containing only black padding frames (clip index `-1`) are excluded from the prediction and context losses, although the encoder can still attend to them as context. |
 | Batch / hardware | 64 per GPU × 4 GPUs = 256; bfloat16; activation checkpointing (without it, batch 64 does not fit a 48 GB GPU). |
 | Optimizer | AdamW, weight decay 0.04, EMA momentum 0.99925. LR 1e-5 → 4.375e-5 over 1.5 epochs (450 steps), then constant. Note: 4.375e-5 is EchoJEPA's 5.25e-4 at batch 3072 scaled linearly to 256 (Meta's ViT-B recipe uses 6e-4). The checkpoint's stored LR and batch (1.75e-4 at 1024) fit the same rule. |
 | Duration | Pretraining 13 epochs × 300 steps = 3,900 steps. Cooldown 3 × 300 = 900 steps, with the LR decaying linearly from 4.375e-5 to 1e-6. |
-| Seed | `meta.seed: 239` in both arms. Each pass is shuffled from `DistributedSampler`'s fixed seed (0, not `meta.seed`) and the number of the epoch in which the pass starts. The order does not depend on the model, so both arms see the same videos in the same order, unless a video fails to load or a run is restarted. Crops and masks come from the same distributions but are not guaranteed identical batch for batch: loader workers draw mask seeds from a shared counter in whatever order they run |
+| Seed | Both arms use `meta.seed: 239`. Data order comes from `DistributedSampler`, which uses its own fixed seed (`0`, not `meta.seed`) plus the epoch in which each pass begins. As a result, both arms normally see the same batches in the same pass, unless loading failures or restarts change the sequence. With `data.in_order: false`, workers return batches as soon as they are ready, so batch order within a pass may differ between arms. Crops and masks follow the same distributions but are not guaranteed to match batch-for-batch, because loader workers consume mask seeds from a shared counter in execution order. |
 
 Compared with upstream's `vitb16` configs, this recipe changes:
 
 - the data: echo `train.csv` instead of Kinetics-710, SSv2, HowTo100M and ImageNet;
 - the clips: 224 px at 8 fps instead of 256 px at 4 fps, and 16 frames in the cooldown
   instead of 64;
-- the objective: one distillation level instead of four;
+- the objective: one distillation level instead of four, with padding-only tokens excluded from the loss;
 - the augmentation: narrower ranges, no flips;
 - the schedule: an LR scaled to batch 256, and a far shorter duration.
 

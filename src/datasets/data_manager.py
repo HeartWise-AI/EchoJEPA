@@ -39,6 +39,7 @@ def init_data(
     persistent_workers=False,
     deterministic=True,
     log_dir=None,
+    in_order=True,
     img_size=336,
     miss_augment_prob=0.0,          # <<< NEW
     min_present=1,                  # <<< NEW
@@ -90,6 +91,7 @@ def init_data(
             rank=rank,
             deterministic=deterministic,
             log_dir=log_dir,
+            in_order=in_order,
         )
 
     elif data.lower() == "videogroupdataset":  

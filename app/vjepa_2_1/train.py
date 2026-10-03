@@ -22,22 +22,28 @@ import numpy as np
 import torch
 import torch.multiprocessing as mp
 import torch.nn.functional as F
+from app.vjepa.utils import grad_norm
 from app.vjepa_2_1.models.utils.masks_dist import compute_mask_distance
 from app.vjepa_2_1.models.utils.modules import Lambda_LinearWarmupHold
 from app.vjepa_2_1.transforms import make_transforms
 from app.vjepa_2_1.utils import (
+    clip_grads_with_norm_,
+    feature_spread,
     init_opt,
     init_video_model,
     load_checkpoint,
     load_pretrained_weights,
+    masked_l1_loss,
     normalize_nested,
     select_load_path,
+    token_validity,
 )
 from src.datasets.data_manager import init_data
 from src.masks.multiseq_multiblock3d import MaskCollator
 from src.masks.utils import apply_masks
-from src.utils.distributed import any_rank_failed, init_distributed
+from src.utils.distributed import any_rank_failed, global_sample_weighted_means, init_distributed
 from src.utils.logging import AverageMeter, CSVLogger, get_logger, gpu_timer
+from src.utils.wandb_logging import finish_wandb, init_wandb, log_input_clips, log_scalars
 from torch.nn.parallel import DistributedDataParallel
 
 
@@ -53,6 +59,9 @@ np.random.seed(_GLOBAL_SEED)
 torch.manual_seed(_GLOBAL_SEED)
 torch.backends.cudnn.benchmark = True
 
+# ImageNet mean/std, the transform's default; passed explicitly so logged clips are
+# denormalized with the statistics that normalized them.
+NORMALIZE = ((0.485, 0.456, 0.406), (0.229, 0.224, 0.225))
 
 logger = get_logger(__name__, force=True)
 
@@ -147,6 +156,12 @@ def main(args, resume_preempt=False):
     skip_batches = cfgs_meta.get("skip_batches", -1)
     use_sdpa = cfgs_meta.get("use_sdpa", False)
     sync_gc = cfgs_meta.get("sync_gc", False)
+    # wandb: as in `app/vjepa`. Enabled only when `wandb_project` (and `wandb_entity`) are set.
+    # Log `num_log_videos` input videos at the first step of the run, then log `num_log_videos`
+    # more every `log_video_freq` steps during that same epoch, if `log_video_freq > 0`.
+    wandb_enabled = bool(cfgs_meta.get("wandb_project", None))
+    log_video_freq = cfgs_meta.get("log_video_freq", 0)
+    num_log_videos = cfgs_meta.get("num_log_videos", 2)
     logger.info(f"LD_PRELOAD: {os.environ.get('LD_PRELOAD')}")
     which_dtype = cfgs_meta.get("dtype")
     logger.info(f"{which_dtype=}")
@@ -207,6 +222,8 @@ def main(args, resume_preempt=False):
     if n_output_distillation not in (1, 4):
         raise ValueError(f"model.n_output_distillation must be 1 or 4, got {n_output_distillation!r}.")
     levels_predictor = n_output_distillation
+    if has_cls_first:
+        raise NotImplementedError("Padding-mask alignment assumes the sequence contains no [CLS] token.")
 
     # -- DATA
     cfgs_data = args.get("data")
@@ -285,6 +302,11 @@ def main(args, resume_preempt=False):
     loss_reg_min_epoch = cfgs_opt.get("loss_reg_min_epoch", 50)
     if loss_reg_std_mult is not None:
         logger.info("Loss regulation activated")
+    # Maximum combined gradient norm for the encoder and predictor.
+    # `null` disables gradient clipping (upstream); otherwise larger gradients are scaled down to this value.
+    clip_grad = cfgs_opt.get("clip_grad", None)
+    if clip_grad is not None and not float(clip_grad) > 0:
+        raise ValueError(f"optimization.clip_grad must be a positive number or null, got {clip_grad!r}.")
     # ----------------------------------------------------------------------- #
 
     np.random.seed(seed)
@@ -477,6 +499,7 @@ def main(args, resume_preempt=False):
         auto_augment=use_aa,
         motion_shift=motion_shift,
         crop_size=crop_size,
+        normalize=NORMALIZE,
     )
 
     # -- init data-loaders/samplers
@@ -499,6 +522,7 @@ def main(args, resume_preempt=False):
         # so each rank recreated its workers on every dataset pass, adding
         # startup overhead each time.
         persistent_workers=cfgs_data.get("persistent_workers", False),
+        in_order=cfgs_data.get("in_order", True),
         log_dir=None,
     )
     try:
@@ -541,6 +565,8 @@ def main(args, resume_preempt=False):
     target_encoder = DistributedDataParallel(target_encoder)
     for p in target_encoder.parameters():
         p.requires_grad = False
+    # Trainable encoder and predictor parameters used for gradient-norm measurement and clipping.
+    trained_params = [p for m in (encoder, predictor) for p in m.parameters() if p.requires_grad]
 
     # -- momentum schedule
     momentum_scheduler = (
@@ -554,6 +580,12 @@ def main(args, resume_preempt=False):
     )
 
     start_epoch = 0
+    # Only a job that continues this run's own checkpoint reattaches to its wandb run;
+    # a cooldown starting from `anneal_ckpt` is a new run and gets a new wandb run.
+    resuming_training = False
+    checkpoint_run_id = None
+    # Set by `init_wandb` and saved in every checkpoint.
+    effective_wandb_run_id = None
     # -- load training checkpoint
     print("Loadind checkpoint from: ", load_path)
     # Upstream entered the checkpoint-loading branch whenever `latest.pth.tar` existed, even if
@@ -566,6 +598,7 @@ def main(args, resume_preempt=False):
             optimizer,
             scaler,
             start_epoch,
+            checkpoint_run_id,
         ) = load_checkpoint(
             r_path=load_path,
             encoder=encoder,
@@ -575,6 +608,7 @@ def main(args, resume_preempt=False):
             scaler=scaler,
             is_anneal=is_anneal and not resume_anneal,
         )
+        resuming_training = not is_anneal or resume_anneal
         if not is_anneal or resume_anneal:
             for _ in range(start_epoch * ipe):
                 scheduler.step()
@@ -595,6 +629,7 @@ def main(args, resume_preempt=False):
                 "batch_size": batch_size,
                 "world_size": world_size,
                 "lr": lr,
+                "wandb_run_id": effective_wandb_run_id,
             }
             _atomic_torch_save(save_dict, path)
 
@@ -620,8 +655,33 @@ def main(args, resume_preempt=False):
         gc.disable()
         gc.collect()
 
+    # Open the wandb run once setup has succeeded. Every rank votes, so a failure on one rank
+    # stops the whole job instead of leaving the other ranks waiting in a collective.
+    wandb_run, wandb_init_error = None, None
+    try:
+        wandb_run, effective_wandb_run_id = init_wandb(
+            cfgs_meta,
+            args,
+            rank,
+            folder,
+            resuming_training=resuming_training,
+            checkpoint_run_id=checkpoint_run_id,
+            # This trainer's checkpoints always hold the run id (None without wandb), so the
+            # `wandb_run_id.txt` fallback for older checkpoints never applies.
+            checkpoint_has_wandb_run_id=True,
+        )
+    except Exception as e:
+        wandb_init_error = e
+    if any_rank_failed(wandb_init_error is not None, device=device):
+        if wandb_init_error is not None:
+            raise wandb_init_error
+        raise RuntimeError("wandb initialization failed on another rank: aborting.")
+
     trailing_losses = []
     step_count = 0
+    # Since the last wandb log, track the largest gradient norm and the number of steps
+    # where clipping occurred (how many steps `clip_grad` scaled down).
+    grad_norm_max, clipped_steps = float("nan"), 0
 
     # -- TRAINING LOOP
     for epoch in range(start_epoch, num_epochs):
@@ -632,6 +692,8 @@ def main(args, resume_preempt=False):
         iter_time_meter = AverageMeter()
         gpu_time_meter = AverageMeter()
         data_elapsed_time_meter = AverageMeter()
+        valid_meter = AverageMeter()    # fraction of tokens not built from padding.
+        padded_meter = AverageMeter()   # fraction of frames that are black padding.
 
         for itr in range(ipe):
             itr_start_time = time.time()
@@ -663,7 +725,8 @@ def main(args, resume_preempt=False):
                 mask_meters[fpc].update(bs / batch_size)
 
             def load_clips():
-                all_clips, all_masks_enc, all_masks_pred = [], [], []
+                all_clips, all_masks_enc, all_masks_pred, all_valid = [], [], [], []
+                valid_frac, padded_frac = [], []
                 for fpc_sample in sample:
                     udata, masks_enc, masks_pred = fpc_sample
                     all_clips += [udata[0][0].to(device, non_blocking=True)]
@@ -673,14 +736,38 @@ def main(args, resume_preempt=False):
                     all_masks_pred += [
                         [m.to(device, non_blocking=True) for m in masks_pred]
                     ]
-                return all_clips, all_masks_enc, all_masks_pred
+                    # `udata[-1]`: stores the loader's `clip_indices`; padded black frames are marked as `-1`.
+                    # If no padding is present, all tokens are valid and the loss matches the upstream implementation.
+                    v = token_validity(udata[-1][0], tubelet_size, grid_size)
+                    # Measured on the CPU copy, so logging it never waits on the GPU.
+                    valid_frac += [v.mean(dim=(1, 2))]
+                    padded_frac += [(udata[-1][0] < 0).float().mean(dim=1)]
+                    all_valid += [v.to(device, non_blocking=True)]
+                valid_meter.update(float(torch.cat(valid_frac).mean()))
+                padded_meter.update(float(torch.cat(padded_frac).mean()))
+                return all_clips, all_masks_enc, all_masks_pred, all_valid
 
-            clips, masks_enc, masks_pred = load_clips()
+            clips, masks_enc, masks_pred, valid = load_clips()
             data_elapsed_time_ms = (time.time() - itr_start_time) * 1000.0
+
+            if wandb_run is not None and epoch == start_epoch:
+                if itr == 0 or (log_video_freq > 0 and itr % log_video_freq == 0):
+                    log_input_clips(
+                        wandb_run,
+                        clips,
+                        step=epoch * ipe + itr,
+                        normalize=NORMALIZE,
+                        num_videos=num_log_videos,
+                        # Report black padding frames (`clip_index == -1`) separately from repeated real frames.
+                        padded=[fpc_sample[0][-1][0] == -1 for fpc_sample in sample],
+                    )
 
             if sync_gc and (itr + 1) % GARBAGE_COLLECT_ITR_FREQ == 0:
                 logger.info("Running garbage collection...")
                 gc.collect()
+
+            # Every `log_freq` steps and at the end of each epoch: the same steps on every rank.
+            log_step = wandb_enabled and ((itr % log_freq == 0) or (itr == ipe - 1))
 
             def train_step():
                 _new_lr = scheduler.step()
@@ -724,7 +811,7 @@ def main(args, resume_preempt=False):
                             z_context = normalize_nested(z_context, embed_dim)
                     return z_pred, z_context
 
-                def loss_fn(z, h, masks_to_apply, cls_loss, d_weights):
+                def loss_fn(z, h, masks_to_apply, cls_loss, d_weights, valid):
                     if cls_loss:
                         h_cls = [hi[:, 0].unsqueeze(1) for hi in h]
                         h = [
@@ -748,29 +835,24 @@ def main(args, resume_preempt=False):
                             apply_masks(hi, mi, concat=False)
                             for hi, mi in zip(h, masks_to_apply)
                         ]
+                        # Gather padding weights with the same indices as the target
+                        # tokens, so each target retains its corresponding padding weight.
+                        v = [
+                            apply_masks(vi, mi, concat=False)
+                            for vi, mi in zip(valid, masks_to_apply)
+                        ]
+                        if d_weights is None:
+                            d_weights = [[None] * len(zi) for zi in z]
 
-                        if d_weights is not None:
-                            loss, n = 0, 0
-                            for zi, hi, d_i in zip(z, h, d_weights):
-                                for zij, hij, d_ij in zip(zi, hi, d_i):
-                                    loss_n = torch.abs(zij - hij) ** loss_exp * (
-                                        1 / d_ij.unsqueeze(2)
-                                    )
-                                    loss += torch.mean(loss_n) / loss_exp
-                                    n += 1
-                            loss /= n
-                            return loss
-                        else:
-                            loss, n = 0, 0
-                            for zi, hi in zip(z, h):
-                                for zij, hij in zip(zi, hi):
-                                    loss += (
-                                        torch.mean(torch.abs(zij - hij) ** loss_exp)
-                                        / loss_exp
-                                    )
-                                    n += 1
-                            loss /= n
-                            return loss
+                        loss, n = 0, 0
+                        for zi, hi, vi, d_i in zip(z, h, v, d_weights):
+                            for zij, hij, vij, d_ij in zip(zi, hi, vi, d_i):
+                                loss += masked_l1_loss(
+                                    zij, hij, loss_exp, valid=vij, d_weights=d_ij
+                                )
+                                n += 1
+                        loss /= n
+                        return loss
 
                 # Step 1. Forward
                 with torch.cuda.amp.autocast(dtype=dtype, enabled=mixed_precision):
@@ -778,9 +860,15 @@ def main(args, resume_preempt=False):
                     z_pred, z_context = forward_context(clips)
                     loss = 0
                     loss_pred = loss_fn(
-                        z_pred, h, masks_pred, cls_loss=has_cls_first, d_weights=None
+                        z_pred,
+                        h,
+                        masks_pred,
+                        cls_loss=has_cls_first,
+                        d_weights=None,
+                        valid=valid,
                     )
                     loss += loss_pred
+                    loss_context, lambda_value_step = None, 0.0
 
                     # Context loss
                     if predict_all:
@@ -792,13 +880,22 @@ def main(args, resume_preempt=False):
                         else:
                             d_weights = None
                         loss_context = loss_fn(
-                            z_context, h, masks_enc, cls_loss=False, d_weights=d_weights
+                            z_context,
+                            h,
+                            masks_enc,
+                            cls_loss=False,
+                            d_weights=d_weights,
+                            valid=valid,
                         )
                         if lambda_progressive:
                             lambda_value_step = lambda_sched.value(epoch * ipe + itr)
                         else:
                             lambda_value_step = lambda_value
                         loss += loss_context * lambda_value_step
+
+                # Measure how different the target encoder’s clip representations are from one another,
+                # but only compute this metric on steps that are being logged.
+                spread = feature_spread(h, valid) if log_step else (float("nan"), float("nan"))
 
                 _raise_if_non_finite_loss(loss, device)
 
@@ -820,12 +917,17 @@ def main(args, resume_preempt=False):
                             f"Loss {loss} is above bound {meanval} + {loss_reg_std_mult} * {stdval}. Skipping step."
                         )
 
+                _grad_norm = None
                 if run_step:
                     if mixed_precision:
                         scaler.scale(loss).backward()
                         scaler.unscale_(optimizer)
                     else:
                         loss.backward()
+                    # Unscaled gradients, before the optimizer applies them.
+                    _grad_norm = grad_norm(encoder, predictor)
+                    if clip_grad is not None:
+                        clip_grads_with_norm_(trained_params, clip_grad, _grad_norm)
                     if mixed_precision:
                         scaler.step(optimizer)
                         scaler.update()
@@ -846,11 +948,18 @@ def main(args, resume_preempt=False):
                     torch._foreach_mul_(params_k, m)
                     torch._foreach_add_(params_k, params_q, alpha=1 - m)
 
+                # For the logs: reading `loss` already synchronizes the step, so reading the others adds no extra wait.
                 return (
-                    float(loss),
+                    float(loss.detach()),
                     _new_lr,
                     _new_wd,
                     run_step,
+                    float(loss_pred.detach()),
+                    float("nan") if loss_context is None else float(loss_context.detach()),
+                    float(lambda_value_step),
+                    float("nan") if _grad_norm is None else float(_grad_norm),
+                    m,
+                    spread,
                 )
 
             (
@@ -858,7 +967,16 @@ def main(args, resume_preempt=False):
                 _new_lr,
                 _new_wd,
                 run_step,
+                loss_pred,
+                loss_context,
+                lambda_value_step,
+                _grad_norm,
+                _ema_m,
+                (clip_cosine, effective_rank),
             ), gpu_etime_ms = gpu_timer(train_step)
+            if not np.isnan(_grad_norm):        # `NaN` when the step was skipped
+                grad_norm_max = _grad_norm if np.isnan(grad_norm_max) else max(grad_norm_max, _grad_norm)
+                clipped_steps += int(clip_grad is not None and _grad_norm > clip_grad)
             iter_elapsed_time_ms = (time.time() - itr_start_time) * 1000.0
             loss_meter.update(loss)
             iter_time_meter.update(iter_elapsed_time_ms)
@@ -876,6 +994,56 @@ def main(args, resume_preempt=False):
                         raise RuntimeError(
                             "Loss is above bound for too many tries. Exiting."
                         )
+
+            # Log to wandb every `log_freq` steps and at each epoch end. All ranks join the reduction.
+            # Losses and data fractions are averages over all ranks; the gradient norm is already the
+            # same on every rank by DDP.
+            if log_step:
+                (
+                    (global_loss, _),
+                    (global_loss_avg, _),
+                    (global_loss_pred, _),
+                    (global_loss_context, _),
+                    (global_valid, _),
+                    (global_padded, _),
+                    (global_clip_cosine, _),
+                    (global_effective_rank, _),
+                ) = global_sample_weighted_means(
+                    [loss, loss_meter.avg, loss_pred, loss_context, valid_meter.val, padded_meter.val,
+                     clip_cosine, effective_rank],
+                    [1, loss_meter.count, 1, 1, 1, 1, 1, 1],
+                    device=device,
+                )
+                log_scalars(
+                    wandb_run,
+                    {
+                        "train/loss": global_loss,  # this step: prediction + weighted context loss.
+                        "train/loss_avg": global_loss_avg,  # running mean over the epoch so far.
+                        "train/loss_pred": global_loss_pred,
+                        "train/loss_context": global_loss_context,
+                        "train/lambda_context": lambda_value_step,  # weight of the context loss.
+                        "train/lr": _new_lr,
+                        "train/wd": _new_wd,
+                        "train/epoch": epoch + 1,
+                        "optimization/grad_norm": _grad_norm,  # encoder + predictor, unscaled.
+                        "optimization/grad_norm_max": grad_norm_max,  # largest since the last log.
+                        **({"optimization/clipped_steps": clipped_steps} if clip_grad is not None else {}),
+                        "optimization/ema_momentum": _ema_m,
+                        # Target-encoder features of this batch's clips, per GPU (mean over GPUs).
+                        "features/clip_cosine": global_clip_cosine,  # towards 1: clips look alike.
+                        "features/effective_rank": global_effective_rank,  # falling: fewer directions in use.
+                        "data/valid_token_frac": global_valid,  # tokens counted in the loss.
+                        "data/batch_padded_frame_frac": global_padded,  # black padding frames.
+                        "time/iter_ms": iter_elapsed_time_ms,
+                        "time/gpu_ms": gpu_etime_ms,
+                        "time/data_ms": data_elapsed_time_ms,
+                        "memory/max_allocated_mb": (
+                            torch.cuda.max_memory_allocated() / 1024.0**2 if torch.cuda.is_available() else 0.0
+                        ),
+                    },
+                    step=epoch * ipe + itr,
+                )
+                grad_norm_max, clipped_steps = float("nan"), 0
 
             # -- Logging
             def log_stats():
@@ -897,6 +1065,7 @@ def main(args, resume_preempt=False):
                         "[%d, %5d] loss: %.3f "
                         "masks: %s "
                         "[wd: %.2e] [lr: %.2e] "
+                        "[valid: %.2f] "
                         "[mem: %.2e] "
                         "[iter: %.1f ms] "
                         "[gpu: %.1f ms] "
@@ -915,6 +1084,7 @@ def main(args, resume_preempt=False):
                             + "]",
                             _new_wd,
                             _new_lr,
+                            valid_meter.avg,
                             torch.cuda.max_memory_allocated() / 1024.0**2,
                             iter_time_meter.avg,
                             gpu_time_meter.avg,
@@ -933,3 +1103,6 @@ def main(args, resume_preempt=False):
                 save_every_file = f"e{epoch + 1}.pth.tar"
                 save_every_path = os.path.join(folder, save_every_file)
                 save_checkpoint(epoch + 1, save_every_path)
+
+    # If training crashes, wandb closes the run automatically when the process exits.
+    finish_wandb(wandb_run)

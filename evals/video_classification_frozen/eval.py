@@ -17,15 +17,18 @@ try:
 except Exception:
     pass
 
+import json
 import logging
 import math
 import pprint
 
 import numpy as np
 import torch
+import torch.distributed as dist
 import torch.multiprocessing as mp
 import torch.nn.functional as F
 from torch.nn.parallel import DistributedDataParallel
+from torch.utils.data import default_collate
 
 from evals.video_classification_frozen.models import init_module
 from evals.video_classification_frozen.utils import make_transforms
@@ -36,8 +39,9 @@ from src.models.linear_pooler import LinearClassifier, LinearRegressor
 from src.models.linear_pooler import MLPClassifier, MLPRegressor
 
 from src.utils.checkpoint_loader import robust_checkpoint_loader
-from src.utils.distributed import AllReduce, init_distributed
+from src.utils.distributed import AllReduce, any_rank_failed, init_distributed
 from src.utils.logging import AverageMeter, CSVLogger
+from src.utils.wandb_logging import finish_wandb, init_wandb, log_scalars
 
 import os
 import tempfile  # <-- ADD THIS
@@ -107,6 +111,7 @@ def main(args_eval, resume_preempt=False):
     # 1. Top-level parameters
     set_override("OVERRIDE_TAG", args_eval, "tag")
     set_override("OVERRIDE_VAL_ONLY", args_eval, "val_only", bool)
+    set_override("OVERRIDE_TEST_ONLY", args_eval, "test_only", bool)
     set_override("OVERRIDE_PRED_PATH", args_eval, "predictions_save_path")
     set_override("OVERRIDE_CKPT", args_eval, "probe_checkpoint")
 
@@ -123,6 +128,7 @@ def main(args_eval, resume_preempt=False):
     # 3. Data parameters
     set_override("OVERRIDE_TRAIN_DATA", data, "dataset_train")
     set_override("OVERRIDE_VAL_DATA", data, "dataset_val")
+    set_override("OVERRIDE_TEST_DATA", data, "dataset_test")
     set_override("OVERRIDE_NUM_CLASSES", data, "num_classes", int)
     set_override("OVERRIDE_RES", data, "resolution", int)
 
@@ -141,6 +147,11 @@ def main(args_eval, resume_preempt=False):
     if val_only:
         logger.info("VAL ONLY")
     predictions_save_path = args_eval.get("predictions_save_path", None)
+
+    # -- TEST ONLY: score `dataset_test` once with the epoch and head chosen on validation.
+    test_only = args_eval.get("test_only", False)
+    if test_only and val_only:
+        raise ValueError("Choose one of `val_only` and `test_only`.")
 
     # -- EXPERIMENT
     pretrain_folder = args_eval.get("folder", None)
@@ -176,6 +187,9 @@ def main(args_eval, resume_preempt=False):
     num_classes = args_data.get("num_classes")
     train_data_path = [args_data.get("dataset_train")]
     val_data_path = [args_data.get("dataset_val")]
+    test_data_path = args_data.get("dataset_test")
+    if test_only and not test_data_path:
+        raise ValueError("`test_only` needs `experiment.data.dataset_test`.")
     resolution = args_data.get("resolution", 224)
     num_segments = args_data.get("num_segments", 1)
     frames_per_clip = args_data.get("frames_per_clip", 16)
@@ -236,8 +250,8 @@ def main(args_eval, resume_preempt=False):
     else:  
         latest_path = os.path.join(folder, "latest.pt")
 
-    # -- make csv_logger
-    if rank == 0:  
+    # -- make `csv_logger` (a test trains nothing, so it leaves the probe's log alone).
+    if rank == 0 and not test_only:
         if task_type == "regression":  
             csv_logger = CSVLogger(log_file, ("%d", "epoch"), ("%.5f", "train_mae"), ("%.5f", "val_mae"))
         else:  # classification  
@@ -382,8 +396,9 @@ def main(args_eval, resume_preempt=False):
 
     # -- load training checkpoint
     start_epoch = 0
-    if resume_checkpoint and os.path.exists(latest_path):
-        classifiers, optimizer, scaler, start_epoch = load_checkpoint(
+    history = {}
+    if resume_checkpoint and os.path.exists(latest_path) and not test_only:
+        classifiers, optimizer, scaler, start_epoch, history = load_checkpoint(
             device=device,
             r_path=latest_path,
             classifiers=classifiers,
@@ -394,6 +409,79 @@ def main(args_eval, resume_preempt=False):
         for _ in range(start_epoch * ipe):
             [s.step() for s in scheduler]
             [wds.step() for wds in wd_scheduler]
+
+    # wandb, as in pretraining: on when `meta.wandb_project` and `meta.wandb_entity` are set. A
+    # resumed probe reattaches to its run through the `wandb_run_id.txt` kept in its folder.
+    # Every rank votes, so a failure on one rank stops the whole job.
+    wandb_run, wandb_init_error = None, None
+    try:
+        # A test adds its result to the run of the probe it scores.
+        wandb_run, _ = init_wandb(args_eval.get("meta") or {}, args_eval, rank, folder,
+                                  resuming_training=start_epoch > 0 or test_only)
+    except Exception as e:
+        wandb_init_error = e
+    if any_rank_failed(wandb_init_error is not None, device=device):
+        if wandb_init_error is not None:
+            raise wandb_init_error
+        raise RuntimeError("wandb initialization failed on another rank: aborting.")
+    #Name each probe head using its optimizer setting (learning rate, weight decay).
+    head_names = [f"head{i}_lr{k['ref_lr']:g}_wd{k['ref_wd']:g}" for i, k in enumerate(opt_kwargs)]
+
+    if test_only:
+        # Only a finished probe is tested: its `best.pt` must have seen every epoch.
+        finished_path = os.path.join(folder, "latest.pt")
+        done = (torch.load(finished_path, map_location="cpu", weights_only=False, mmap=True)["epoch"]
+                if os.path.exists(finished_path) else 0)
+        if done < num_epochs:
+            raise RuntimeError(f"The probe has finished {done} of {num_epochs} epochs; test it once it is complete.")
+        test_loader, _ = make_dataloader(
+            dataset_type=dataset_type,
+            root_path=[test_data_path],
+            img_size=resolution,
+            frames_per_clip=frames_per_clip,
+            frame_step=frame_step,
+            num_segments=num_segments,
+            eval_duration=duration,
+            num_views_per_segment=num_views_per_segment,
+            allow_segment_overlap=True,
+            batch_size=batch_size,
+            world_size=world_size,
+            rank=rank,
+            training=False,
+            num_workers=num_workers,
+            normalization=normalization,
+        )
+        result = run_test(
+            device=device,
+            encoder=encoder,
+            classifiers=classifiers,
+            dataset=test_loader.dataset,
+            batch_size=batch_size,
+            num_workers=num_workers,
+            checkpoint_path=os.path.join(folder, "best.pt"),
+            task_type=task_type,
+            use_bfloat16=use_bfloat16,
+            target_mean=target_mean,
+            target_std=target_std,
+            head_names=head_names,
+            folder=folder,
+            rank=rank,
+            world_size=world_size,
+        )
+        if result is not None:
+            metric = "mae" if task_type == "regression" else "acc"
+            log_scalars(
+                wandb_run,
+                {
+                    **{f"probe/test_{k}": v for k, v in result["test"].items()},
+                    "probe/test_epoch": result["epoch"],
+                    "probe/test_head": result["head"],
+                    f"probe/test_val_{metric}": result[f"val_{metric}"],
+                },
+                step=num_epochs * ipe,
+            )
+        finish_wandb(wandb_run)
+        return
 
     # ---- per-head running stats ----
     best_per_head = None
@@ -457,15 +545,26 @@ def main(args_eval, resume_preempt=False):
     # TRAIN LOOP
     val_cnt = 0
     val_sum_scalar = 0.0
+
+    # Restore validation history when resuming, so `best.pt` is updated only if the current epoch
+    # outperforms every epoch seen before the interruption.
+    if start_epoch > 0 and history.get("best_epoch_per_head") is not None:
+        best_val_acc_scalar = float(history["best_val_acc"])
+        val_cnt = count_epochs = start_epoch
+        val_sum_scalar = float(history["mean_val_acc"]) * start_epoch
+        best_per_head = np.asarray(history["best_val_acc_per_head"], dtype=float)
+        min_per_head = np.asarray(history["min_val_acc_per_head"], dtype=float)
+        sum_per_head = np.asarray(history["mean_val_acc_per_head"], dtype=float) * start_epoch
+        best_epoch_per_head = np.asarray(history["best_epoch_per_head"], dtype=int)
     
     for epoch in range(start_epoch, num_epochs):
         logger.info("Epoch %d" % (epoch + 1))
         train_sampler.set_epoch(epoch)
 
         if val_only:
-            train_acc_scalar, _ = -1.0, None
+            train_acc_scalar, train_heads = -1.0, None
         else:
-            train_acc_scalar, _ = run_one_epoch(
+            train_acc_scalar, train_heads = run_one_epoch(
                 device=device,
                 training=True,
                 encoder=encoder,
@@ -559,7 +658,22 @@ def main(args_eval, resume_preempt=False):
         if rank == 0:
             csv_logger.log(epoch + 1, train_acc_scalar, val_acc_scalar)
 
+        # Log the best-performing head and each individual head to wandb, using the current
+        # optimizer-step count as the logging step.
+        metric = "mae" if task_type == "regression" else "acc"
+        payload = {
+            "probe/epoch": epoch + 1,
+            f"probe/val_{metric}": float(val_acc_scalar),
+            f"probe/val_{metric}_best": float(best_val_acc_scalar),
+            **{f"probe/val_{metric}/{h}": float(v) for h, v in zip(head_names, val_heads)},
+        }
+        if train_heads is not None:
+            payload[f"probe/train_{metric}"] = float(train_acc_scalar)
+            payload.update({f"probe/train_{metric}/{h}": float(v) for h, v in zip(head_names, train_heads)})
+        log_scalars(wandb_run, payload, step=(epoch + 1) * ipe)
+
         if val_only:
+            finish_wandb(wandb_run)
             return
 
         save_checkpoint(
@@ -573,6 +687,9 @@ def main(args_eval, resume_preempt=False):
             best_epoch_per_head,
             is_best=is_best,  # <--- PASS THE FLAG HERE
         )
+
+    # If the probe fails with an exception, wandb closes the run automatically when the process exits.
+    finish_wandb(wandb_run)
 
 
 def run_one_epoch(
@@ -769,6 +886,186 @@ def run_one_epoch(
     return scalar, _agg_metrics
 
 
+class _EachVideoOnce(torch.utils.data.Dataset):
+    """Some of a `VideoDataset`'s videos, each read once and returned with its index.
+    
+    This is a small wrapper dataset (test-only evaluation path) around the existing `VideoDataset`.
+    During final testing, every test video should be attempted exactly once. If a video cannot be loaded,
+    record that failure instead of silently replacing it with another random video (as in `VideoDataset`).
+    """
+
+    def __init__(self, dataset, indices):
+        # `self.dataset`: original `VideoDataset`, containing all test videos.
+        self.dataset, self.indices = dataset, list(indices)
+
+    def __len__(self):
+        return len(self.indices)
+
+    def __getitem__(self, i):
+        """Keep the original index so the code knows exactly which test row this prediction belongs to."""
+        index = self.indices[i]
+        try:
+            return index, self.dataset.get_item_video(index)
+        except Exception:
+            return index, None
+
+
+def _collate_loaded(batch):
+    """(indices, batch, failed indices) for a batch of `_EachVideoOnce` items. Separates the successful and failed ones."""
+    loaded = [(index, item) for index, item in batch if item]
+    failed = [index for index, item in batch if not item]
+    if not loaded:
+        return [], None, failed
+    return [index for index, _ in loaded], default_collate([item for _, item in loaded]), failed
+
+
+def run_test(
+    device,
+    encoder,
+    classifiers,
+    dataset,
+    batch_size,
+    num_workers,
+    checkpoint_path,
+    task_type,
+    use_bfloat16,
+    target_mean,
+    target_std,
+    head_names,
+    folder,
+    rank,
+    world_size,
+):
+    """Score the test split once, with the epoch and head chosen on validation.
+
+    `best.pt` is the epoch whose best head had the best validation score, and that head is
+    the one scored.
+    A video that fails to load is counted, not replaced.
+
+    Writes `test_metrics.json` and `test_predictions.csv` to `folder`. The predictions list
+    video paths, which can identify patients: keep them where the data is. Returns the
+    metrics on rank 0 and None on the other ranks.
+    """
+    from torch.amp import autocast
+
+    # First load the checkpoint onto CPU, then retrieves the validation score for every probe head
+    # and choose the best head using validation only.
+    checkpoint = robust_checkpoint_loader(checkpoint_path, map_location=torch.device("cpu"))
+    val_per_head = np.asarray(checkpoint["val_acc_per_head"], dtype=float)
+    head = int(val_per_head.argmin() if task_type == "regression" else val_per_head.argmax())
+    # Past DDP: each rank runs its own videos through the head.
+    classifier = getattr(classifiers[head], "module", classifiers[head])
+    # Load the selected head's weights from checkpoints.
+    classifier.load_state_dict({k.removeprefix("module."): v for k, v in checkpoint["classifiers"][head].items()})
+    # Put the probe into eval mode, so it turns off training-specific behavior such as dropout.
+    classifier.eval()
+    logger.info(f"Testing {head_names[head]} from epoch {checkpoint['epoch']} of {checkpoint_path}")
+
+    # Divide test videos among ranks so every test video belongs to exactly one rank.
+    # Each rank scores every `world_size`-th video, so every video is scored exactly once
+    # using the validation clips, transforms, and segment averaging.
+    loader = torch.utils.data.DataLoader(
+        _EachVideoOnce(dataset, range(rank, len(dataset), world_size)),
+        batch_size=batch_size,
+        num_workers=num_workers,
+        collate_fn=_collate_loaded,
+        pin_memory=True,
+    )
+    # Each rank independently accumulates these:
+    indices, labels, predictions, failed = [], [], [], []
+    # Process each batch.
+    for batch_indices, data, batch_failed in loader:
+        failed += batch_failed
+        # If every item in this batch failed, there's nothing to infer.
+        if data is None:
+            continue
+        # eval: run inference without gradients.
+        with torch.no_grad(), autocast("cuda", dtype=torch.bfloat16, enabled=use_bfloat16):
+            clips = [[dij.to(device, non_blocking=True) for dij in di] for di in data[0]]
+            clip_indices = [d.to(device, non_blocking=True) for d in data[2]]
+            # If multiple segments/views are evaluated, `encoder(...)`` returns multiple
+            # representations, so `outputs` contains several predictions for a video.
+            outputs = [classifier(o) for o in encoder(clips, clip_indices)]
+        # Averaged over segments and views, as in validation.
+        if task_type == "regression":
+            output = sum(o.float() for o in outputs) / len(outputs)
+        else:
+            output = sum(F.softmax(o.float(), dim=1) for o in outputs) / len(outputs)
+        indices += batch_indices
+        labels += data[1].tolist()
+        predictions += output.cpu().tolist()
+    # Gather results from all ranks.
+    local = (indices, labels, predictions, failed)
+    if dist.is_available() and dist.is_initialized() and world_size > 1:
+        gathered = [None] * world_size
+        dist.all_gather_object(gathered, local)
+    else:
+        gathered = [local]
+    # Avoids all GPUs independently writing the same output files.
+    if rank != 0:
+        return None
+    # Combine all rank results: flattens successful indices.
+    indices = [i for g in gathered for i in g[0]]
+    failed = sorted(i for g in gathered for i in g[3])
+
+    # Correctness check.
+    if len(set(indices)) != len(indices) or len(indices) + len(failed) != len(dataset):
+        raise RuntimeError(
+            f"Scored {len(indices)} and failed {len(failed)} of {len(dataset)} test videos: "
+            "every video should be scored or failed exactly once."
+        )
+    
+    # Ranks process videos interleaved -> Restore original dataset order, so each prediction
+    # remains matched with the correct video and label.
+    order = np.argsort(indices)
+    indices = np.asarray(indices)[order]
+    labels = np.asarray([x for g in gathered for x in g[1]], dtype=float).reshape(len(order), -1)[order]
+    predictions = np.asarray([x for g in gathered for x in g[2]], dtype=float).reshape(len(order), -1)[order]
+
+    import pandas as pd
+
+    # Build the prediction table.
+    table = {"video_path": [dataset.samples[i] for i in indices]}
+    if task_type == "regression":
+        t_mean = target_mean if target_mean is not None else 0.0
+        t_std = target_std if target_std is not None else 1.0
+        y, p = labels * t_std + t_mean, predictions * t_std + t_mean
+        err = p - y
+        metric = "mae"
+        test = {
+            "mae": float(np.abs(err).mean()),
+            "rmse": float(np.sqrt((err**2).mean())),
+            "r2": float(1.0 - (err**2).sum() / ((y - y.mean(axis=0)) ** 2).sum()),
+        }
+        table.update(label=y[:, 0], prediction=p[:, 0], abs_error=np.abs(err[:, 0]))
+    else:   # classification
+        predicted = predictions.argmax(axis=1)
+        metric = "acc"
+        test = {"acc": float(100.0 * (predicted == labels[:, 0]).mean())}
+        table.update(label=labels[:, 0].astype(int), prediction=predicted, confidence=predictions.max(axis=1))
+    # Add success/failure counts.
+    test.update(videos=len(indices), failed_videos=len(failed))
+
+    # Build the final result metadata: test score, how the tested model was selected, etc.
+    result = {
+        "selected_on": "validation",
+        "checkpoint": checkpoint_path,
+        "epoch": int(checkpoint["epoch"]),
+        "head": head,
+        "head_name": head_names[head],
+        f"val_{metric}": float(val_per_head[head]),
+        "test": test,
+        "failed_rows": failed,      # rows of the test list (dataset row indices), not paths.
+    }
+    pd.DataFrame(table).to_csv(os.path.join(folder, "test_predictions.csv"), index=False)
+    # Written last and atomically: its presence means the test finished.
+    tmp = os.path.join(folder, "test_metrics.json.tmp")
+    with open(tmp, "w") as f:
+        json.dump(result, f, indent=2)
+    os.replace(tmp, os.path.join(folder, "test_metrics.json"))
+    logger.info(f"Test {metric} {test[metric]:.3f} over {len(indices)} videos ({len(failed)} failed): {result}")
+    return result
+
 
 
 def load_checkpoint(device, r_path, classifiers, opt, scaler, val_only=False):
@@ -788,7 +1085,7 @@ def load_checkpoint(device, r_path, classifiers, opt, scaler, val_only=False):
                 checkpoint.get("mean_val_acc", "NA"),
             )
         logger.info(f"loaded pretrained classifier (val_only) with msg: {msg}")
-        return classifiers, opt, scaler, 0
+        return classifiers, opt, scaler, 0, {}
 
     epoch = int(checkpoint["epoch"])
     logger.info(f"loaded pretrained classifier from epoch {epoch} with msg: {msg}")
@@ -812,7 +1109,11 @@ def load_checkpoint(device, r_path, classifiers, opt, scaler, val_only=False):
         )
 
     logger.info(f"loaded optimizers from epoch {epoch}")
-    return classifiers, opt, scaler, epoch
+    # Keep the validation history so a resumed probe can continue from the previous run.
+    history_keys = ("mean_val_acc", "best_val_acc", "best_val_acc_per_head", "mean_val_acc_per_head",
+                    "min_val_acc_per_head", "best_epoch_per_head")
+    history = {k: checkpoint[k] for k in history_keys if k in checkpoint}
+    return classifiers, opt, scaler, epoch, history
 
 
 def load_pretrained(encoder, pretrained, checkpoint_key="target_encoder"):

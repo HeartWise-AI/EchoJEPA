@@ -171,7 +171,22 @@ held-out patients.
 
 The Visual EF probe needs label files with the EF of each video. Build them from
 `videos.csv` (column `label`), not from `val.csv` or `test.csv`, whose label is the
-placeholder `0`.
+placeholder `0`. `make_probe_manifests.py` does this for chosen views:
+
+```bash
+python data/make_probe_manifests.py --manifests <output_dir> --out-dir <probe_dir> --views A4C
+```
+
+It writes `train.csv`, `val.csv` and `test.csv` with one row per video, `<video_path>
+<z-scored EF>`, z-scored with the train split's mean and standard deviation. Those two
+values, saved in `probe_info.json`, are the probe config's `data.target_mean` and
+`data.target_std`.
+
+The probe trains on `train.csv` and picks its epoch and head on `val.csv`. `test.csv` is
+read once, after training, by `python -m evals.main --fname <probe config> --test_only`: it
+loads the best validation checkpoint from
+``best.pt``, scores each test video exactly once, and writes `test_metrics.json` (MAE, RMSE and R² in EF points, the epoch
+and head used) and `test_predictions.csv` (one row per video).
 
 ## Reusing the frozen manifests
 
@@ -199,7 +214,7 @@ Keep all of them outside this repository and never commit them:
 ## Tests
 
 ```bash
-python -m unittest tests.data.test_build_manifests
+python -m unittest tests.data.test_build_manifests tests.data.test_make_probe_manifests
 ```
 
 The tests use synthetic metadata and tiny generated videos only. They also check that no

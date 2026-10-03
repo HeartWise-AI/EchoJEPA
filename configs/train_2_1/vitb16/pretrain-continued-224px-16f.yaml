@@ -31,6 +31,7 @@ data:
   tubelet_size: 2
   num_workers: 16
   persistent_workers: true
+  in_order: false          # workers hand over batches as they finish; NAS stalls no longer block the step.
   pin_mem: true
 
 data_aug:
@@ -81,6 +82,12 @@ mask:
   - 1.0
 
 meta:
+  # Weights & Biases. Unset `wandb_project` to disable all wandb logging.
+  wandb_project: null
+  wandb_entity: mhi_ai
+  # wandb_run_name: null
+  # log_video_freq: 0         # 0: log input clips once, on the first iteration of each job.
+  # num_log_videos: 2
   dtype: bfloat16
   eval_freq: 100
   load_checkpoint: true         # resume from `latest.pth.tar` when present.
@@ -122,6 +129,7 @@ optimization:
   - 0.99925
   weight_decay: 0.04
   final_weight_decay: 0.04
+  clip_grad: null           # max total gradient norm; `null` = no clipping, as upstream.
   # Linear scaling as in the EchoJEPA configs. `final_lr` == `lr` holds the LR constant
   # after warmup; the decay is in cooldown.
   start_lr: 1.0e-5

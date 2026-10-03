@@ -24,6 +24,7 @@ import yaml
 
 from app import main as launcher
 from app.vjepa_2_1 import check_checkpoint, train
+from app.vjepa_2_1.utils import masked_l1_loss
 from src.masks.utils import apply_masks
 
 CONFIG_DIR = os.path.join(
@@ -324,12 +325,13 @@ class TestCheckCheckpoint(QuietLogs):
 
 class TestLossMatchesTheTrainer(unittest.TestCase):
     """check_checkpoint.loss_fn is a copy of the `loss_fn` closure in train.py's training
-    step; run both on the same tensors, in each of its three branches."""
+    step; run both on the same tensors, in each of its branches, with and without padding."""
 
     def trainer_loss_fn(self, loss_exp):
         source = inspect.getsource(train)
         node = next(n for n in ast.walk(ast.parse(source)) if isinstance(n, ast.FunctionDef) and n.name == "loss_fn")
-        namespace = {"torch": torch, "apply_masks": apply_masks, "loss_exp": loss_exp}
+        namespace = {"torch": torch, "apply_masks": apply_masks, "masked_l1_loss": masked_l1_loss,
+                     "loss_exp": loss_exp}
         exec(textwrap.dedent(ast.get_source_segment(source, node)), namespace)
         return namespace["loss_fn"]
 
@@ -342,18 +344,23 @@ class TestLossMatchesTheTrainer(unittest.TestCase):
         h = [torch.randn(batch, tokens, width, generator=g)]
         h_cls = [torch.randn(batch, tokens + 1, width, generator=g)]
         d_weights = [[1 + torch.rand(batch, n, generator=g) for n in sizes]]
+        real = [torch.ones(batch, tokens, 1)]
+        padded = [torch.ones(batch, tokens, 1)]
+        padded[0][1, tokens // 2:] = 0  # the second half of the second clip is padding
         for loss_exp in (1.0, 2.0):
             trainer = self.trainer_loss_fn(loss_exp)
             for name, args in (
-                ("plain", (z, h, masks, False, None)),
-                ("distance-weighted", (z, h, masks, False, d_weights)),
-                ("class token first", (z_cls, h_cls, masks, True, None)),
+                ("plain", (z, h, masks, False, None, real)),
+                ("distance-weighted", (z, h, masks, False, d_weights, real)),
+                ("class token first", (z_cls, h_cls, masks, True, None, real)),
+                ("plain, padded", (z, h, masks, False, None, padded)),
+                ("distance-weighted, padded", (z, h, masks, False, d_weights, padded)),
             ):
                 with self.subTest(branch=name, loss_exp=loss_exp):
-                    zi, hi, mi, cls_loss, d = args
+                    zi, hi, mi, cls_loss, d, v = args
                     self.assertTrue(torch.equal(
-                        check_checkpoint.loss_fn(zi, hi, mi, loss_exp, cls_loss=cls_loss, d_weights=d),
-                        trainer(zi, hi, mi, cls_loss=cls_loss, d_weights=d),
+                        check_checkpoint.loss_fn(zi, hi, mi, loss_exp, cls_loss=cls_loss, d_weights=d, valid=v),
+                        trainer(zi, hi, mi, cls_loss=cls_loss, d_weights=d, valid=v),
                     ))
 
 

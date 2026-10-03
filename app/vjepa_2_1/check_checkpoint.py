@@ -32,7 +32,14 @@ import torch
 import yaml
 
 from app.vjepa_2_1.models.utils.masks_dist import compute_mask_distance
-from app.vjepa_2_1.utils import init_video_model, load_pretrained_weights, normalize_and_concat, normalize_nested
+from app.vjepa_2_1.utils import (
+    init_video_model,
+    load_pretrained_weights,
+    masked_l1_loss,
+    normalize_and_concat,
+    normalize_nested,
+    token_validity,
+)
 from src.masks.multiseq_multiblock3d import MaskCollator
 from src.masks.utils import apply_masks
 from src.utils.checkpoint_loader import robust_checkpoint_loader
@@ -133,9 +140,10 @@ def count_parameters(model):
     }
 
 
-def loss_fn(z, h, masks_to_apply, loss_exp, cls_loss, d_weights):
+def loss_fn(z, h, masks_to_apply, loss_exp, cls_loss, d_weights, valid):
     """Match `train.py`'s training loss, using the provided `loss_exp`. Keep this in sync with the trainer,
-    since tests compare the two."""
+    since tests compare the two. `valid` identifies tokens that contain at least some real video data,
+    rather than tokens made entirely from padded frames."""
     if cls_loss:
         h_cls = [hi[:, 0].unsqueeze(1) for hi in h]
         h = [apply_masks(hi[:, 1:], mi, concat=False) for hi, mi in zip(h, masks_to_apply)]
@@ -147,16 +155,13 @@ def loss_fn(z, h, masks_to_apply, loss_exp, cls_loss, d_weights):
                 n += 1
         return loss / n
     h = [apply_masks(hi, mi, concat=False) for hi, mi in zip(h, masks_to_apply)]
+    v = [apply_masks(vi, mi, concat=False) for vi, mi in zip(valid, masks_to_apply)]
+    if d_weights is None:
+        d_weights = [[None] * len(zi) for zi in z]
     loss, n = 0, 0
-    if d_weights is not None:
-        for zi, hi, d_i in zip(z, h, d_weights):
-            for zij, hij, d_ij in zip(zi, hi, d_i):
-                loss += torch.mean(torch.abs(zij - hij) ** loss_exp * (1 / d_ij.unsqueeze(2))) / loss_exp
-                n += 1
-        return loss / n
-    for zi, hi in zip(z, h):
-        for zij, hij in zip(zi, hi):
-            loss += torch.mean(torch.abs(zij - hij) ** loss_exp) / loss_exp
+    for zi, hi, vi, d_i in zip(z, h, v, d_weights):
+        for zij, hij, vij, d_ij in zip(zi, hi, vi, d_i):
+            loss += masked_l1_loss(zij, hij, loss_exp, valid=vij, d_weights=d_ij)
             n += 1
     return loss / n
 
@@ -194,6 +199,8 @@ def masked_forward(cfg, encoder, predictor, target_encoder, seed=0, batch_size=2
         # Create fake training video.
         clips = [torch.randn(batch_size, 3, fpc, crop, crop)]
     masks_enc, masks_pred = [[m[0] for m in masks]], [[m[1] for m in masks]]
+    # Every frame of these clips is real, so every token counts in the loss.
+    valid = [token_validity(torch.arange(fpc).expand(batch_size, fpc), data["tubelet_size"], crop // data["patch_size"])]
     # Determine image vs. video mode.
     img_temporal_dim_size = cfgs_model.get("img_temporal_dim_size")
     modality = "image" if img_temporal_dim_size is not None and fpc == img_temporal_dim_size else "video"
@@ -209,8 +216,7 @@ def masked_forward(cfg, encoder, predictor, target_encoder, seed=0, batch_size=2
             z_pred = normalize_nested(z_pred, embed_dim)
             if predict_all:
                 z_context = normalize_nested(z_context, embed_dim)
-        loss_pred = loss_fn(z_pred, h, masks_pred, loss_exp, cls_loss=cfgs_model.get("has_cls_first", False),
-                            d_weights=None)
+        loss_pred = loss_fn(z_pred, h, masks_pred, loss_exp, cls_loss=cfgs_model.get("has_cls_first", False), d_weights=None, valid=valid)
         loss = {"prediction": float(loss_pred), "context": None, "context_weight": 0.0, "distance_weighted": False}
         total = loss_pred
         # `if predict_all`: `total = loss_pred + weight * loss_context`.
@@ -222,7 +228,7 @@ def masked_forward(cfg, encoder, predictor, target_encoder, seed=0, batch_size=2
                 d_weights = compute_mask_distance(
                     masks_pred, masks_enc, grid_size, cfgs_loss.get("offset_context_loss", False)
                 )
-            loss_context = loss_fn(z_context, h, masks_enc, loss_exp, cls_loss=False, d_weights=d_weights)
+            loss_context = loss_fn(z_context, h, masks_enc, loss_exp, cls_loss=False, d_weights=d_weights, valid=valid)
             # Use the final pretraining ramp weight, which is also the constant cooldown weight.
             weight = cfgs_model.get("lambda_value_vid", 0.0)
             total = loss_pred + weight * loss_context

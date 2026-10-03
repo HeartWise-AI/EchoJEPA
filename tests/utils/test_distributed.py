@@ -11,7 +11,7 @@ import torch
 import torch.distributed as dist
 import torch.multiprocessing as mp
 
-from src.utils.distributed import any_rank_failed, global_sample_weighted_means
+from src.utils.distributed import any_rank_failed, close_distributed, global_sample_weighted_means
 
 # (local mean loss, number of samples that mean covers) for each rank. The
 # sample counts are deliberately uneven, which is what separates a
@@ -91,6 +91,40 @@ def _empty_rank_worker(rank, world_size, port, queue):
         queue.put((rank, result))
     finally:
         dist.destroy_process_group()
+
+
+def _close_worker(rank, world_size, port, queue):
+    """Close the group the way the launchers do after the app returns."""
+    os.environ["MASTER_ADDR"] = "127.0.0.1"
+    os.environ["MASTER_PORT"] = port
+    dist.init_process_group(
+        backend="gloo",
+        rank=rank,
+        world_size=world_size,
+        timeout=timedelta(seconds=60),
+    )
+    close_distributed()
+    close_distributed()  # an app that already closed it, as app/vjepa does
+    queue.put((rank, dist.is_initialized()))
+
+
+@unittest.skipUnless(dist.is_available() and dist.is_gloo_available(), "requires torch.distributed with gloo")
+class TestCloseDistributed(unittest.TestCase):
+
+    def test_every_rank_closes_its_group(self):
+        world_size = 3
+        ctx = mp.get_context("spawn")
+        queue = ctx.Queue()
+
+        mp.spawn(_close_worker, args=(world_size, _free_port(), queue), nprocs=world_size, join=True)
+
+        results = dict(queue.get(timeout=60) for _ in range(world_size))
+        self.assertEqual(results, {rank: False for rank in range(world_size)})
+
+    def test_does_nothing_without_a_process_group(self):
+        self.assertFalse(dist.is_initialized())
+        close_distributed()
+        self.assertFalse(dist.is_initialized())
 
 
 @unittest.skipUnless(dist.is_available() and dist.is_gloo_available(), "requires torch.distributed with gloo")
