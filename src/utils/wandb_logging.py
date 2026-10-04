@@ -7,7 +7,6 @@ Help check the input pipeline bugs that can silently hurt training.
 Note: failures from logging are warned but shouldn't crash the training.
 """
 
-import json
 import os
 from logging import getLogger
 import torch
@@ -308,8 +307,9 @@ def log_regression_results(run, labels, predictions, ranges, step, prefix):
 
 def log_reference(run, name, kind, record):
     """Point the run at a file kept outside wandb, such as a checkpoint: `record` (its checksum
-    and what identifies it, no path) goes into the run's summary under `name/`, and into a
-    small artifact of type `kind` that holds only that record, not the file."""
+    and what identifies it, no path) goes into the run's summary under `name/`, and into the
+    metadata of an artifact of type `kind` that holds no file. An artifact file would not do:
+    wandb's manifest records where the file was staged on this machine."""
     # Logging is skipped if wandb is unavailable or no active run exists.
     if run is None or wandb is None:
         return
@@ -317,13 +317,7 @@ def log_reference(run, name, kind, record):
         # Copies every field in `record` into the wandb run summary.
         for key, value in record.items():
             run.summary[f"{name}/{key}"] = value
-        artifact = wandb.Artifact(f"{name}-{run.id}", type=kind, metadata=record)
-        # `reference.json`: metadata.
-        # `artifact`: contains only a small JSON description of the external file,
-        # not the checkpoint itself.
-        with artifact.new_file("reference.json") as f:
-            json.dump(record, f, indent=2)
-        run.log_artifact(artifact)
+        run.log_artifact(wandb.Artifact(f"{name}-{run.id}", type=kind, metadata=record))
     except Exception as e:
         logger.warning(f"Failed to log the {name} reference to wandb: {e}")
 

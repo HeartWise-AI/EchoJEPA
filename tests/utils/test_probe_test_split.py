@@ -233,7 +233,7 @@ class TestProbeTestSplit(QuietLogs):
         [artifact] = trained.artifacts
         self.assertEqual((artifact.type, artifact.metadata["sha256"], artifact.metadata["file"]),
                          ("probe-checkpoint", sha, "best.pt"))
-        self.assertEqual(json.loads(artifact.files["reference.json"]), artifact.metadata)
+        self.assertEqual(artifact.files, {})  # a file's manifest entry would record its local path
         self.assertFalse([v for v in artifact.metadata.values() if isinstance(v, str) and os.sep in v])
         tested = self.run_probe(cfg, test=True)
         self.assertEqual(tested.summary["probe_checkpoint/sha256"], sha)  # the test names the same file

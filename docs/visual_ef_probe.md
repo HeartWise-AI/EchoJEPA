@@ -57,7 +57,8 @@ resumed probe, and its test, rejoin that run.
   and the error by EF range, at the targets' level.
 - **The trained probe**: `probe_checkpoint/*` in the run summary (file name, SHA-256 of
   `best.pt`, its epoch and head, the head's validation MAE per study, and the encoder's SHA-256). Also a
-  `probe-checkpoint` artifact that holds only that record, not the file. Both are logged at the
+  `probe-checkpoint` artifact whose metadata holds that record. It has no file: wandb's
+  manifest of an artifact file records the path it was staged from on the machine. Both are logged at the
   end of training and again by the test.
 
 The run receives no filesystem path, video path, patient, study or accession identifier.
