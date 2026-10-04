@@ -216,8 +216,10 @@ class TestProbeWandb(QuietLogs):
             self.assertEqual(p["probe/val_failed_videos"], 0)
             # The cosine schedule has brought each head's learning rate down by the epoch's end.
             self.assertLess(p["probe/lr/head0_lr0.0001_wd0.01"], 1e-4)
-        self.assertEqual(run.logged[-1]["probe/val_mae_best"], min(p["probe/val_mae"] for p in run.logged))
-        best = min(run.logged, key=lambda p: p["probe/val_mae"])["probe/epoch"]
+        # Selected per study (the config has a video index).
+        self.assertEqual(run.logged[-1]["probe/val_study_mae_best"],
+                         min(p["probe/val_study_mae"] for p in run.logged))
+        best = min(run.logged, key=lambda p: p["probe/val_study_mae"])["probe/epoch"]
         self.assertEqual(run.logged[-1]["probe/best_epoch"], best)
 
     def test_the_config_records_the_run_without_paths(self):
@@ -265,7 +267,7 @@ class TestProbeWandb(QuietLogs):
         self.assertEqual(self.wandb.calls[1]["resume"], "must")
         self.assertEqual([p["probe/epoch"] for p in second.logged], [2])
         self.assertEqual(second.logged[0]["probe/best_epoch"], min(
-            (p for p in first.logged + second.logged), key=lambda p: p["probe/val_mae"])["probe/epoch"])
+            (p for p in first.logged + second.logged), key=lambda p: p["probe/val_study_mae"])["probe/epoch"])
 
     def test_without_a_project_nothing_is_logged(self):
         self.assertIsNone(self.run_probe(self.config(epochs=1, wandb=False)))

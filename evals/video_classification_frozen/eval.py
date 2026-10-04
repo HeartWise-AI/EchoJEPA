@@ -73,8 +73,14 @@ pp = pprint.PrettyPrinter(indent=4)
 
 # Which probe is considered "best," how multiple predictions are averaged, and how a continuous EF prediction
 # is turned into a reduced-EF classification.
-SELECTION = ("Select the epoch and probe head with the lowest per-video validation MAE; "
-             "after each epoch, every validation video is evaluated once by every head.")
+# `experiment.evaluation.selection` sets the level `best.pt` is selected at.
+SELECTION = {
+    "study": ("Select the epoch and probe head with the lowest per-study validation MAE (a study's prediction "
+              "is the mean of its videos'); after each epoch, every validation video is evaluated once by "
+              "every head."),
+    "video": ("Select the epoch and probe head with the lowest per-video validation MAE; "
+              "after each epoch, every validation video is evaluated once by every head."),
+}
 AGGREGATION = ("Video prediction: mean over all clips (num_segments x num_views_per_segment); "
                "study prediction: mean over all videos in the study.")
 THRESHOLD_RULE = ("predicted EF below the threshold is classified as reduced EF; the threshold is "
@@ -231,6 +237,19 @@ def main(args_eval, resume_preempt=False):
     low_ef_below = float(args_evaluation.get("low_ef_below", 40.0))
     ef_ranges = list(args_evaluation.get("ef_ranges", [30, 40, 50, 60]))
     targets = dict(args_evaluation.get("targets") or {})
+    # Use study-level results and targets when `video_index` provides study IDs; otherwise use video-level ones.
+    selection = args_evaluation.get("selection") or (
+        "study" if video_index_path and task_type == "regression" else "video")
+    if selection not in ("study", "video"):
+        raise ValueError(f"`experiment.evaluation.selection` is `study` or `video`, not {selection!r}.")
+    if selection == "study" and (task_type != "regression" or not video_index_path):
+        raise ValueError("Per-study selection is for regression and needs `experiment.data.video_index`.")
+    # Validation metric used to select `best.pt`, as reported in logs, wandb, and results.
+    # `val_only` evaluates the batch loop's per-video metric and does not save a checkpoint.
+    if task_type != "regression":
+        selected = "acc"
+    else:
+        selected = "study_mae" if selection == "study" and not val_only else "mae"
 
     # -- SEED: probe initialization, data order and augmentation.
     seed = int((args_eval.get("meta") or {}).get("seed", _GLOBAL_SEED))
@@ -286,7 +305,7 @@ def main(args_eval, resume_preempt=False):
     # -- make `csv_logger` (a test trains nothing, so it leaves the probe's log alone).
     if rank == 0 and not test_only:
         if task_type == "regression":  
-            csv_logger = CSVLogger(log_file, ("%d", "epoch"), ("%.5f", "train_mae"), ("%.5f", "val_mae"))
+            csv_logger = CSVLogger(log_file, ("%d", "epoch"), ("%.5f", "train_mae"), ("%.5f", f"val_{selected}"))
         else:  # classification  
             csv_logger = CSVLogger(log_file, ("%d", "epoch"), ("%.5f", "train_acc"), ("%.5f", "val_acc"))
 
@@ -471,6 +490,7 @@ def main(args_eval, resume_preempt=False):
                   "num_views_per_segment": num_views_per_segment, "normalization": normalization},
         "optimization": {"batch_size": batch_size, "num_epochs": num_epochs, "use_bfloat16": use_bfloat16,
                          "use_focal_loss": use_focal_loss, "multihead_kwargs": args_opt.get("multihead_kwargs")},
+        "selection": selection,
         "seed": seed,
         "world_size": world_size,
     }
@@ -506,7 +526,7 @@ def main(args_eval, resume_preempt=False):
     if rank == 0:
         run_info = describe_run(
             args_eval, checkpoint, manifests, fingerprint, video_index, seed, parameter_counts, opt_kwargs,
-            batch_size, world_size, num_epochs, low_ef_below, targets,
+            batch_size, world_size, num_epochs, low_ef_below, targets, selection,
         )
         if not test_only:
             save_run_record(folder, args_eval, run_info, fresh=start_epoch == 0)
@@ -595,7 +615,7 @@ def main(args_eval, resume_preempt=False):
 
     def save_checkpoint(epoch, mean_val_acc, best_val_acc,
                         val_heads, best_per_head, mean_per_head, min_per_head, best_epoch_per_head,
-                        best_epoch, is_best=False):
+                        best_epoch, is_best=False, val_scores=None):
         
         all_classifier_dicts = [c.state_dict() for c in classifiers]
         all_opt_dicts = [o.state_dict() for o in optimizer]
@@ -615,7 +635,9 @@ def main(args_eval, resume_preempt=False):
             "min_val_acc_per_head": np.asarray(min_per_head, dtype=float).tolist(),
             "best_epoch_per_head": np.asarray(best_epoch_per_head, dtype=int).tolist(),
             "best_epoch": best_epoch,    # the epoch saved as `best.pt`.
-            "selection": SELECTION,
+            "selection": SELECTION[selection],
+            "selection_metric": selected,       # what `val_acc_per_head` holds.
+            "val_scores_per_head": val_scores,  # every validation metric of the epoch, per head.
             "fingerprint": fingerprint,  # data and settings used to train the probe heads.
             "opt_grid": opt_kwargs,
         }
@@ -660,6 +682,8 @@ def main(args_eval, resume_preempt=False):
     val_studies = None
     if exact_val and video_index is not None:
         val_studies = provenance.study_ids(video_index, val_dataset.samples, "val")
+    elif selection == "study" and not val_only:
+        raise ValueError("Per-study selection needs a `VideoDataset` validation set, scored video by video.")
     elif not exact_val and not val_only:
         logger.warning("Validation uses the standard batch loop, so its metric may include duplicate videos "
                        "introduced by distributed-sampler padding.")
@@ -718,7 +742,7 @@ def main(args_eval, resume_preempt=False):
                 world_size=world_size,
                 studies=val_studies,
             )
-            val_heads = val["mae"]
+            val_heads = val[selected]
             val_acc_scalar = float(val_heads.min())
         else:
             val_acc_scalar, val_heads, _ = run_one_epoch(
@@ -803,10 +827,8 @@ def main(args_eval, resume_preempt=False):
         metric = "mae" if task_type == "regression" else "acc"
         payload = {
             "probe/epoch": epoch + 1,
-            f"probe/val_{metric}": float(val_acc_scalar),
-            f"probe/val_{metric}_best": float(best_val_acc_scalar),
+            f"probe/val_{selected}_best": float(best_val_acc_scalar),
             **({"probe/best_epoch": best_epoch} if best_epoch is not None else {}),
-            **{f"probe/val_{metric}/{h}": float(v) for h, v in zip(head_names, val_heads)},
             # End-of-epoch learning rate for each probe head.
             **{f"probe/lr/{h}": float(o.param_groups[0]["lr"]) for h, o in zip(head_names, optimizer)},
         }
@@ -815,13 +837,14 @@ def main(args_eval, resume_preempt=False):
             payload.update({f"probe/train_{metric}/{h}": float(v) for h, v in zip(head_names, train_heads)})
             payload["probe/train_loss"] = float(np.min(train_losses))
             payload.update({f"probe/train_loss/{h}": float(v) for h, v in zip(head_names, train_losses)})
-        if val is not None:
-            payload["probe/val_loss"] = float(val["loss"].min())
-            payload.update({f"probe/val_loss/{h}": float(v) for h, v in zip(head_names, val["loss"])})
+        if val is None:  # the batch loop: one metric per head.
+            val_scores = {metric: val_heads}
+        else:
+            val_scores = {key: val[key] for key in ("mae", "study_mae", "loss") if val[key] is not None}
             payload["probe/val_failed_videos"] = val["failed_videos"]
-            if val["study_mae"] is not None:
-                payload["probe/val_study_mae"] = float(val["study_mae"].min())
-                payload.update({f"probe/val_study_mae/{h}": float(v) for h, v in zip(head_names, val["study_mae"])})
+        for key, per_head in val_scores.items():
+            payload[f"probe/val_{key}"] = float(per_head.min())
+            payload.update({f"probe/val_{key}/{h}": float(v) for h, v in zip(head_names, per_head)})
         log_scalars(wandb_run, payload, step=(epoch + 1) * ipe)
 
         if val_only:
@@ -839,6 +862,7 @@ def main(args_eval, resume_preempt=False):
             best_epoch_per_head,
             best_epoch,
             is_best=is_best,
+            val_scores={key: np.asarray(v, dtype=float).tolist() for key, v in val_scores.items()},
         )
 
     # Reference the trained probe in wandb by the best checkpoint's checksum, epoch, and head,
@@ -1168,9 +1192,10 @@ def validate(device, encoder, classifiers, dataset, batch_size, num_workers, use
              target_std, rank, world_size, studies=None):
     """Validate every probe head for one epoch, scoring each video exactly once.
 
-    For each head, compute the per-video MAE in EF percentage points (used for probe selection),
-    the L1 loss on z-scored targets, and, when study IDs are provided, the per-study MAE. Also
-    report the numbers of successfully scored and failed videos.
+    For each head, compute the per-video MAE in EF percentage points, the L1 loss on z-scored
+    targets, and, when study IDs are provided, the per-study MAE; `experiment.evaluation.selection`
+    picks the one probe selection uses. Also report the numbers of successfully scored and failed
+    videos.
     """
     indices, labels, predictions, failed = score_videos(
         device, encoder, classifiers, dataset, batch_size, num_workers, use_bfloat16, "regression", rank,
@@ -1190,8 +1215,7 @@ def validate(device, encoder, classifiers, dataset, batch_size, num_workers, use
         # Compute the L1 loss in normalized target space.
         out["loss"].append(probe_metrics.smooth_l1(labels, p_z))
         if studies is not None:
-            # Compute study-level MAE.
-            # Note: per-video MAE is the selection metric; study MAE is additional evaluation information.
+            # Compute study-level MAE: each study's prediction is the mean of its videos'.
             per_study = probe_metrics.by_study(np.asarray(studies)[indices], y[:, 0], p[:, 0])
             out["study_mae"].append(float((per_study.prediction - per_study.label).abs().mean()))
     for key in ("mae", "loss", "study_mae"):
@@ -1282,18 +1306,19 @@ def run_test(
         return None
 
     metric = "mae" if regression else "acc"
+    selected = checkpoint.get("selection_metric", metric)
     paths = [dataset.samples[i] for i in indices]
     # Build the prediction table.
     table = {"video_path": paths}
     result = {
         "selected_on": "validation",
-        "selection": SELECTION,
+        "selection": checkpoint.get("selection", SELECTION["video"]),
         "checkpoint": checkpoint_path,
         "checkpoint_sha256": provenance.sha256(checkpoint_path),
         "epoch": int(checkpoint["epoch"]),
         "head": head,
         "head_name": head_names[head],
-        f"val_{metric}": float(val_per_head[head]),
+        f"val_{selected}": float(val_per_head[head]),
     }
     if regression:
         t_mean = target_mean if target_mean is not None else 0.0
@@ -1369,7 +1394,7 @@ def run_test(
 
     # Log metrics and identifier-free plots to wandb using the same target level (study or video).
     scalars = {"probe/test_epoch": result["epoch"], "probe/test_head": head,
-               f"probe/test_val_{metric}": result[f"val_{metric}"]}
+               f"probe/test_val_{selected}": result[f"val_{selected}"]}
     if regression:
         for block_level in ("video", "study"):
             if block_level in result["test"]:
@@ -1391,7 +1416,7 @@ def run_test(
 
 
 def describe_run(args_eval, checkpoint, manifests, fingerprint, video_index, seed, parameter_counts, opt_kwargs,
-                 batch_size, world_size, num_epochs, low_ef_below, targets):
+                 batch_size, world_size, num_epochs, low_ef_below, targets, selection):
     """Describe the probe run without filesystem paths, including the code version, encoder checkpoint and
     manifest identities, split sizes, seed, optimization, aggregation, selection, and target settings."""
     # Gets the current Git commit and whether the repository has uncommitted changes.
@@ -1429,7 +1454,7 @@ def describe_run(args_eval, checkpoint, manifests, fingerprint, video_index, see
             "heads": opt_kwargs,
         },
         "aggregation": AGGREGATION,
-        "selection": SELECTION,
+        "selection": SELECTION[selection],
         "low_ef_below": low_ef_below,
         "low_ef_threshold_rule": THRESHOLD_RULE,
         "targets": targets,
@@ -1498,13 +1523,14 @@ def checkpoint_reference(path, task_type, head_names, fingerprint, sha=None):
     val = np.asarray(saved["val_acc_per_head"], dtype=float)
     # Chooses the best head.
     head = int(val.argmin() if task_type == "regression" else val.argmax())
+    metric = "mae" if task_type == "regression" else "acc"
     return {
         "file": os.path.basename(path),
         "sha256": sha or provenance.sha256(path),
         "epoch": int(saved["epoch"]),
         "head": head,
         "head_name": head_names[head],
-        f"val_{'mae' if task_type == 'regression' else 'acc'}": float(val[head]),
+        f"val_{saved.get('selection_metric', metric)}": float(val[head]),
         "encoder_sha256": (fingerprint or {}).get("encoder_sha256"),
     }
 

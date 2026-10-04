@@ -17,9 +17,9 @@ data, and a ViT-B pretrained from scratch on our data
 | Settings | Six heads train side by side on the same frozen features, one per learning rate {1e-4, 5e-5} × weight decay {0.01, 0.1, 0.4}. AdamW, learning rate and weight decay on cosine schedules, no warmup, 20 epochs, batch 4 per GPU on 4 GPUs. |
 | Clips | Each video gives 2 clips of 16 frames (every second frame, 224 px), one at a random position in each half of the video. Training takes a loss step on each clip, with random augmentation. Validation and test average the 2 clips' predictions, without augmentation. |
 | Aggregation | A video's prediction is the mean over its clips. A study's prediction is the mean over its videos. Every video of a study carries the study's EF. |
-| Selection | After each epoch, every validation video is scored once by every head. The epoch and head with the lowest **per-video validation MAE** are kept in `best.pt`. This rule was fixed before any test result was seen. |
+| Selection | After each epoch, every validation video is scored once by every head. The epoch and head with the lowest **per-study validation MAE** are kept in `best.pt`, so selection matches the per-study results and targets (`evaluation.selection`: `study`, or `video` for per-video MAE). The pilot selected per video. |
 | Threshold | Reduced EF is a reference EF below 40. A predicted EF below the threshold flags it. The threshold maximises sensitivity + specificity − 1 over the validation studies (videos, when `targets.level` is `video`), scored with the selected head; ties go to the threshold closest to 40. |
-| Fingerprint | Every checkpoint saves the probe's fingerprint: the SHA-256 of the encoder checkpoint, of the train, validation and test manifests and of the video index; the EF normalization; and the settings: how the encoder is built (`model_kwargs` without the checkpoint path, so also which weights of the checkpoint are loaded and options such as `is_causal`), head, clips, optimization, seed and number of GPUs. A resumed probe must match `latest.pt`, and the test must match `best.pt`, the number of GPUs aside. Anything else stops the run, so a probe is never continued or tested with another encoder or other data. `dataset_test` is therefore set before training. |
+| Fingerprint | Every checkpoint saves the probe's fingerprint: the SHA-256 of the encoder checkpoint, of the train, validation and test manifests and of the video index; the EF normalization; and the settings: how the encoder is built (`model_kwargs` without the checkpoint path, so also which weights of the checkpoint are loaded and options such as `is_causal`), head, clips, optimization, selection rule, seed and number of GPUs. A resumed probe must match `latest.pt`, and the test must match `best.pt`, the number of GPUs aside. Anything else stops the run, so a probe is never continued or tested with another encoder or other data. `dataset_test` is therefore set before training. |
 | Manifests | Before training, each manifest is checked against the video index: a video the index lacks or files under another split stops the run. The test manifest is checked the same way before the test. |
 | Test | Run once, after the last epoch (`--test_only`). It refuses an unfinished probe, and a probe that already has `test_metrics.json`. Each test video is scored exactly once; a video that fails to load is counted, not replaced. |
 | Metrics | Per study (primary) and per video: MAE and Pearson r (primary), RMSE, R² and bias (mean of prediction − reference), in EF points. For EF < 40: AUROC, AUPRC, and sensitivity and specificity at the validation threshold. Error and bias by reference EF range: < 30, 30–40, 40–50, 50–60, ≥ 60. |
@@ -37,9 +37,9 @@ A probe writes to `<folder>/video_classification_frozen/<tag>/`:
 | File | Contents |
 |---|---|
 | `params-probe.yaml`, `run_info.json` | The full config, and the run's record: code commit, encoder checkpoint and manifest checksums, normalization, split sizes, seed, parameter counts, settings, selection rule and targets. Written when the probe starts; a resumed probe keeps them. |
-| `log_r0.csv` | Per epoch: training MAE and validation MAE of the best head. |
-| `latest.pt`, `epoch_NNN.pt`, `best.pt` | The six heads with their optimizer states and the probe's fingerprint. `best.pt` also holds the validation MAE of every head and the epoch it was saved at. About 2 GB each for ViT-B. |
-| `test_metrics.json` | Epoch and head tested, the SHA-256 of `best.pt`, the threshold and the level it was chosen at, validation and test metrics per study and per video, error by EF range, targets met, and the run record of the test. |
+| `log_r0.csv` | Per epoch: training MAE and the validation MAE selection uses (`val_study_mae`), of the best head. |
+| `latest.pt`, `epoch_NNN.pt`, `best.pt` | The six heads with their optimizer states and the probe's fingerprint. Each also holds every head's validation MAE per study and per video for its epoch; `best.pt` is the epoch selected. About 2 GB each for ViT-B. |
+| `test_metrics.json` | Epoch and head tested, the validation MAE they were selected on, the SHA-256 of `best.pt`, the threshold and the level it was chosen at, validation and test metrics per study and per video, error by EF range, targets met, and the run record of the test. |
 | `test_predictions.csv`, `val_predictions.csv` | One row per video: path, study, reference and predicted EF. **Paths and study IDs can identify patients: these files stay with the data.** |
 
 ## Weights & Biases
@@ -50,13 +50,13 @@ resumed probe, and its test, rejoin that run.
 - **Config**: the probe config with every path cut to a file name, and `run_info`, as in
   `run_info.json`.
 - **Each epoch**: training and validation MAE and loss, validation MAE per study, learning
-  rate, the best validation MAE and its epoch, and the number of validation videos that failed
-  to load. Each value is logged for every head, and for the best head.
+  rate, the best validation MAE per study so far (`probe/val_study_mae_best`) and its epoch, and
+  the number of validation videos that failed to load. Each value is logged for every head, and for the best head.
 - **Test**: every test metric (`probe/test/study_*`, `probe/test/video_*`), the threshold and
   the targets met. Also a predicted-versus-reference scatter plot, the residual distribution
   and the error by EF range, at the targets' level.
 - **The trained probe**: `probe_checkpoint/*` in the run summary (file name, SHA-256 of
-  `best.pt`, its epoch and head, the head's validation MAE, and the encoder's SHA-256). Also a
+  `best.pt`, its epoch and head, the head's validation MAE per study, and the encoder's SHA-256). Also a
   `probe-checkpoint` artifact that holds only that record, not the file. Both are logged at the
   end of training and again by the test.
 
@@ -91,7 +91,7 @@ command is run again.
 |---|---|
 | [`tests/utils/test_probe_metrics.py`](../tests/utils/test_probe_metrics.py) | Metrics on cases worked out by hand: MAE, RMSE, R², Pearson r, study aggregation, AUROC with ties, AUPRC, sensitivity and specificity, the threshold rule, ranges. |
 | [`tests/utils/test_probe_protocol.py`](../tests/utils/test_probe_protocol.py) | Metrics weighted by every video (7 errors of 1 and one of 9 give 2.0, not 5.0); validation scoring each video once, on one rank and on two; encoder weights unchanged after training; a trainable encoder refused; the head's output shape; the launcher failing with a rank. |
-| [`tests/utils/test_probe_test_split.py`](../tests/utils/test_probe_test_split.py) | The test uses the epoch and head chosen on validation, study-level metrics, the threshold from validation, failed videos counted, unfinished and already-tested probes refused, the validation record across a resume. A probe resumed or tested with another encoder, encoder setting (`checkpoint_key`, `is_causal`), normalization or manifest refused, as is one without a fingerprint; the record a probe started with kept; a train manifest listing validation videos refused; the wandb reference to `best.pt`; targets per video, with the threshold chosen on validation videos. |
+| [`tests/utils/test_probe_test_split.py`](../tests/utils/test_probe_test_split.py) | The test uses the epoch and head chosen on validation: per study, or per video when configured, with validation scores where the two rules disagree; a probe not tested under the other rule; study-level metrics, the threshold from validation, failed videos counted, unfinished and already-tested probes refused, the validation record across a resume. A probe resumed or tested with another encoder, encoder setting (`checkpoint_key`, `is_causal`), normalization or manifest refused, as is one without a fingerprint; the record a probe started with kept; a train manifest listing validation videos refused; the wandb reference to `best.pt`; targets per video, with the threshold chosen on validation videos. |
 | [`tests/utils/test_probe_wandb.py`](../tests/utils/test_probe_wandb.py) | What each epoch logs, the run record, no path in the config, the privacy settings, resume. |
 | [`tests/utils/test_probe_smoke.py`](../tests/utils/test_probe_smoke.py) | End to end on a small fixture of real videos: manifests, the video loader, two epochs and the test. Two runs with the same seed give the same probe and numbers. |
 | [`tests/data/test_make_probe_manifests.py`](../tests/data/test_make_probe_manifests.py) | View selection, z-scoring, exclusion counts, the patient-leakage check, the video index. |

@@ -143,7 +143,7 @@ class TestProbeSmoke(QuietLogs):
         self.assertEqual(first["run_info"]["parameters"]["probe_heads"], len(GRID))
 
         # Same seed, same probe and the same numbers (NaN for empty EF ranges, so compare as JSON).
-        for key in ("epoch", "head", "val_mae", "low_ef_threshold", "val", "test", "test_by_reference_range",
+        for key in ("epoch", "head", "val_study_mae", "low_ef_threshold", "val", "test", "test_by_reference_range",
                     "targets"):
             self.assertEqual(json.dumps(first[key], sort_keys=True), json.dumps(second[key], sort_keys=True), key)
         for a, b in zip(first_best["classifiers"], second_best["classifiers"]):

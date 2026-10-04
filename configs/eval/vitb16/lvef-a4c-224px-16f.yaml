@@ -48,6 +48,7 @@ experiment:
     video_index: /your_probe_manifests/video_index.csv  # each video's study and patient, for study-level metrics.
 
   evaluation:
+    selection: study                              # `best.pt`: the epoch and head with the lowest val MAE per study.
     low_ef_below: 40                              # reduced EF: a reference EF below 40.
     ef_ranges: [30, 40, 50, 60]                   # error by reference EF range: <30, 30-40, ..., >=60.
     targets:                                      # reference targets per study.

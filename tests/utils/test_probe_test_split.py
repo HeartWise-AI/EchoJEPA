@@ -54,7 +54,8 @@ class TestProbeTestSplit(QuietLogs):
         result = self.result(cfg)
         self.assertEqual((result["epoch"], result["head"]), (best["epoch"], head))
         self.assertEqual(best["best_epoch"], best["epoch"])
-        self.assertEqual(result["val_mae"], best["val_acc_per_head"][head])
+        self.assertEqual(best["selection_metric"], "study_mae")  # with a video index
+        self.assertEqual(result["val_study_mae"], best["val_acc_per_head"][head])
         self.assertEqual(result["checkpoint_sha256"], probe.provenance.sha256(os.path.join(folder, "best.pt")))
         self.assertEqual((result["test"]["videos"], result["test"]["failed_videos"]), (TEST_VIDEOS, 0))
 
@@ -262,6 +263,59 @@ class TestProbeTestSplit(QuietLogs):
         self.assertEqual((reduced["threshold"], reduced["sensitivity"], reduced["specificity"]),
                          (threshold, sens, spec))
 
+    # -- Selection.
+
+    def train_with_scores(self, selection, tag):
+        """Train two epochs whose validation scores are set: per video, the first epoch's first head
+        is best; per study, the second epoch's second head."""
+        scores = iter([(np.array([3.0, 4.0]), np.array([5.0, 4.5])),
+                       (np.array([3.5, 3.8]), np.array([4.2, 4.0]))])
+
+        def validate(**_):
+            mae, study_mae = next(scores)
+            return {"mae": mae, "loss": mae / 10, "study_mae": study_mae, "videos": 5, "failed_videos": 0}
+
+        cfg = self.config(epochs=2)
+        cfg["tag"] = tag
+        cfg["experiment"]["evaluation"]["selection"] = selection
+        with mock.patch.object(probe, "validate", side_effect=validate):
+            run = self.run_probe(cfg)
+        best = torch.load(os.path.join(self.folder(cfg), "best.pt"), map_location="cpu", weights_only=False)
+        return cfg, run, best
+
+    def test_the_probe_is_selected_per_study(self):
+        cfg, run, best = self.train_with_scores("study", "per-study")
+        self.assertEqual((best["epoch"], best["selection_metric"]), (2, "study_mae"))
+        self.assertEqual(best["val_acc_per_head"], [4.2, 4.0])
+        self.assertEqual(best["val_scores_per_head"]["mae"], [3.5, 3.8])  # kept, not selected on
+        self.assertEqual(run.logged[-1]["probe/val_study_mae_best"], 4.0)
+        self.assertEqual([p["probe/val_mae"] for p in run.logged], [3.0, 3.5])
+
+        # The rule is part of the probe: it is not tested under the other one.
+        per_video = dict(cfg, experiment={**cfg["experiment"], "evaluation": {
+            **cfg["experiment"]["evaluation"], "selection": "video"}})
+        with self.assertRaisesRegex(ValueError, "another settings.selection"):
+            self.run_probe(per_video, test=True)
+        tested = self.run_probe(cfg, test=True)
+        result = self.result(cfg)
+        self.assertEqual((result["epoch"], result["head"], result["val_study_mae"]), (2, 1, 4.0))
+        self.assertIn("per-study validation MAE", result["selection"])
+        self.assertEqual(tested.summary["probe_checkpoint/val_study_mae"], 4.0)
+
+    def test_the_probe_can_be_selected_per_video(self):
+        cfg, _, best = self.train_with_scores("video", "per-video")
+        self.assertEqual((best["epoch"], best["selection_metric"], best["val_acc_per_head"]),
+                         (1, "mae", [3.0, 4.0]))
+        self.run_probe(cfg, test=True)
+        result = self.result(cfg)
+        self.assertEqual((result["epoch"], result["head"], result["val_mae"]), (1, 0, 3.0))
+
+    def test_per_study_selection_needs_the_video_index(self):
+        cfg = self.config(epochs=1, index=False)
+        cfg["experiment"]["evaluation"] = {"selection": "study"}
+        with self.assertRaisesRegex(ValueError, "Per-study selection"):
+            self.run_probe(cfg)
+
     def test_a_resumed_probe_keeps_its_best_epoch(self):
         # Scripted validation: epoch 1 is the best; epoch 2, run after a restart, is worse.
         val = iter([np.array([5.0, 6.0]), np.array([7.0, 8.0])])
@@ -283,7 +337,7 @@ class TestProbeTestSplit(QuietLogs):
         best = torch.load(os.path.join(self.folder(cfg), "best.pt"), map_location="cpu", weights_only=False)
         self.assertEqual((best["epoch"], best["best_epoch"]), (1, 1))
         [logged] = resumed.logged
-        self.assertEqual(logged["probe/val_mae_best"], 5.0)
+        self.assertEqual(logged["probe/val_study_mae_best"], 5.0)
         self.assertEqual(logged["probe/best_epoch"], 1)
 
 
