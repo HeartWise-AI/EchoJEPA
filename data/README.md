@@ -180,13 +180,14 @@ python data/make_probe_manifests.py --manifests <output_dir> --out-dir <probe_di
 It writes `train.csv`, `val.csv` and `test.csv` with one row per video, `<video_path>
 <z-scored EF>`, z-scored with the train split's mean and standard deviation. Those two
 values, saved in `probe_info.json`, are the probe config's `data.target_mean` and
-`data.target_std`.
+`data.target_std`. Videos with missing EF or EF outside (0, 100] are excluded and counted by split in `probe_info.json` under `excluded`. The script stops if any patient appears in more than one split. `video_index.csv` records each video's path, split, study, and patient. The probe reads it through `data.video_index` for study-level metrics. Since it lists paths and identifiers, it should be stored with the data, like the manifests.
 
 The probe trains on `train.csv` and picks its epoch and head on `val.csv`. `test.csv` is
 read once, after training, by `python -m evals.main --fname <probe config> --test_only`: it
-loads the best validation checkpoint from
-``best.pt``, scores each test video exactly once, and writes `test_metrics.json` (MAE, RMSE and R² in EF points, the epoch
-and head used) and `test_predictions.csv` (one row per video).
+loads the best validation checkpoint from `best.pt`, scores each test video exactly once,
+and writes `test_metrics.json` and `test_predictions.csv` (one row per video). The protocol,
+the metrics and how to reproduce a run are in
+[`docs/visual_ef_probe.md`](../docs/visual_ef_probe.md).
 
 ## Reusing the frozen manifests
 

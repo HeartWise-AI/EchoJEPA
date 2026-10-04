@@ -4,12 +4,15 @@
 # LICENSE file in the root directory of this source tree.
 
 import argparse
+import functools
 import multiprocessing as mp
 import os
 import pprint
+import sys
 
 import yaml
 
+from app.main import launch
 from evals.scaffold import main as eval_main
 from src.utils.distributed import close_distributed, init_distributed
 
@@ -101,6 +104,14 @@ def process_main(args, rank, fname, world_size, devices):
     close_distributed()
 
 
+def launch_ranks(args):
+    """Run one process per device, as `app.main` does: once a rank fails the others are stopped,
+    and the command exits non-zero, so a failed probe never looks like a finished one."""
+    failed = launch(args.fname, args.devices, target=functools.partial(process_main, args))
+    if failed:
+        sys.exit(f"Evaluation failed on rank(s) {failed}; the other ranks were stopped.")
+
+
 if __name__ == "__main__":
     args = parser.parse_args()
     if args.debugmode:
@@ -117,7 +128,5 @@ if __name__ == "__main__":
         else:
             process_main(args=args, rank=0, fname=args.fname, world_size=1, devices=["cuda:0"])
     else:
-        num_gpus = len(args.devices)
         mp.set_start_method("spawn")
-        for rank in range(num_gpus):
-            mp.Process(target=process_main, args=(args, rank, args.fname, num_gpus, args.devices)).start()
+        launch_ranks(args)

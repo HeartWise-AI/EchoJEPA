@@ -17,19 +17,25 @@ try:
 except Exception:
     pass
 
+import copy
 import json
 import logging
 import math
 import pprint
+import random
 
 import numpy as np
+import pandas as pd
 import torch
+import yaml
 import torch.distributed as dist
 import torch.multiprocessing as mp
 import torch.nn.functional as F
 from torch.nn.parallel import DistributedDataParallel
 from torch.utils.data import default_collate
 
+from evals.video_classification_frozen import metrics as probe_metrics
+from evals.video_classification_frozen import provenance
 from evals.video_classification_frozen.models import init_module
 from evals.video_classification_frozen.utils import make_transforms
 from src.datasets.data_manager import init_data
@@ -39,9 +45,9 @@ from src.models.linear_pooler import LinearClassifier, LinearRegressor
 from src.models.linear_pooler import MLPClassifier, MLPRegressor
 
 from src.utils.checkpoint_loader import robust_checkpoint_loader
-from src.utils.distributed import AllReduce, any_rank_failed, init_distributed
+from src.utils.distributed import AllReduceSum, any_rank_failed, init_distributed
 from src.utils.logging import AverageMeter, CSVLogger
-from src.utils.wandb_logging import finish_wandb, init_wandb, log_scalars
+from src.utils.wandb_logging import finish_wandb, init_wandb, log_reference, log_regression_results, log_scalars
 
 import os
 import tempfile  # <-- ADD THIS
@@ -64,6 +70,17 @@ torch.manual_seed(_GLOBAL_SEED)
 torch.backends.cudnn.benchmark = True
 
 pp = pprint.PrettyPrinter(indent=4)
+
+# Which probe is considered "best," how multiple predictions are averaged, and how a continuous EF prediction
+# is turned into a reduced-EF classification.
+SELECTION = ("Select the epoch and probe head with the lowest per-video validation MAE; "
+             "after each epoch, every validation video is evaluated once by every head.")
+AGGREGATION = ("Video prediction: mean over all clips (num_segments x num_views_per_segment); "
+               "study prediction: mean over all videos in the study.")
+THRESHOLD_RULE = ("predicted EF below the threshold is classified as reduced EF; the threshold is "
+                  "chosen on the validation set to maximize sensitivity + specificity - 1, using "
+                  "study-level predictions for study-level targets and video-level predictions for "
+                  "video-level targets; ties are resolved by choosing the threshold closest to the EF cutoff.")
 
 # --- INSERT THIS CLASS IN eval.py ---
 class FocalLoss(torch.nn.Module):
@@ -165,6 +182,10 @@ def main(args_eval, resume_preempt=False):
     module_name = args_pretrain.get("module_name")
     args_model = args_pretrain.get("pretrain_kwargs")
     args_wrapper = args_pretrain.get("wrapper_kwargs")
+    # Copy the encoder construction settings (checkpoint weights and options) before
+    # model initialization can modify them; these settings form part of the probe fingerprint.
+    encoder_settings = copy.deepcopy(
+        {"module_name": module_name, "pretrain_kwargs": args_model, "wrapper_kwargs": args_wrapper})
 
     args_exp = args_eval.get("experiment")
 
@@ -201,6 +222,18 @@ def main(args_eval, resume_preempt=False):
     # --- NEW: Get Mean/Std from config ---
     target_mean = args_data.get("target_mean", None)
     target_std = args_data.get("target_std", None)
+    # Maps each video to its study and patient (`data/make_probe_manifests.py`): needed for
+    # study-level metrics and the patient-leakage check.
+    video_index_path = args_data.get("video_index", None)
+
+    # -- EVALUATION (regression): reduced EF is a reference EF below `low_ef_below`.
+    args_evaluation = args_exp.get("evaluation") or {}
+    low_ef_below = float(args_evaluation.get("low_ef_below", 40.0))
+    ef_ranges = list(args_evaluation.get("ef_ranges", [30, 40, 50, 60]))
+    targets = dict(args_evaluation.get("targets") or {})
+
+    # -- SEED: probe initialization, data order and augmentation.
+    seed = int((args_eval.get("meta") or {}).get("seed", _GLOBAL_SEED))
 
     # -- OPTIMIZATION
     args_opt = args_exp.get("optimization")
@@ -256,6 +289,19 @@ def main(args_eval, resume_preempt=False):
             csv_logger = CSVLogger(log_file, ("%d", "epoch"), ("%.5f", "train_mae"), ("%.5f", "val_mae"))
         else:  # classification  
             csv_logger = CSVLogger(log_file, ("%d", "epoch"), ("%.5f", "train_acc"), ("%.5f", "val_acc"))
+
+    # Seed all randomness before probe initialization, data ordering, and augmentation.
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+
+    # Study-level targets require the video index, so reject invalid configurations
+    # before training rather than failing later during evaluation.
+    if targets.get("level", "study") not in ("study", "video"):
+        raise ValueError(f"`experiment.evaluation.targets.level` is `study` or `video`, not {targets['level']!r}.")
+    if targets.get("level", "study") == "study" and targets and not video_index_path:
+        raise ValueError("`experiment.evaluation.targets` are per study: set `experiment.data.video_index`.")
+    video_index = provenance.load_video_index(video_index_path) if video_index_path else None
 
     # Initialize model
 
@@ -394,6 +440,45 @@ def main(args_eval, resume_preempt=False):
         use_bfloat16=use_bfloat16,
     )
 
+    # Train only the probe; keep the encoder frozen and exclude its parameters from the optimizers.
+    if any(p.requires_grad for p in encoder.parameters()):
+        raise RuntimeError("The encoder must be frozen: some of its parameters require gradients.")
+    frozen = {id(p) for p in encoder.parameters()}
+    if any(id(p) in frozen for o in optimizer for g in o.param_groups for p in g["params"]):
+        raise RuntimeError("An optimizer holds encoder parameters: only the probe may be trained.")
+    per_head = sum(p.numel() for p in classifiers[0].parameters() if p.requires_grad)
+    parameter_counts = {
+        "encoder_frozen": sum(p.numel() for p in encoder.parameters()),
+        "probe_heads": len(classifiers),
+        "probe_trainable_per_head": per_head,
+        "probe_trainable_total": per_head * len(classifiers),
+    }
+
+    # Each manifest must contain only videos from its assigned split to prevent data leakage between
+    # training, validation, and test sets.
+    if video_index is not None:
+        check_split(video_index, val_loader.dataset, "val")
+        if not test_only and not val_only:
+            check_split(video_index, train_loader.dataset, "train")
+
+    # Fingerprint the probe configuration (encoder checkpoint, manifests, normalization, and settings)
+    # and require resumed or test runs to match it.
+    settings = {
+        "encoder": encoder_settings,
+        "classifier": dict(args_classifier),
+        "clips": {"dataset_type": dataset_type, "resolution": resolution, "frames_per_clip": frames_per_clip,
+                  "frame_step": frame_step, "clip_duration": duration, "num_segments": num_segments,
+                  "num_views_per_segment": num_views_per_segment, "normalization": normalization},
+        "optimization": {"batch_size": batch_size, "num_epochs": num_epochs, "use_bfloat16": use_bfloat16,
+                         "use_focal_loss": use_focal_loss, "multihead_kwargs": args_opt.get("multihead_kwargs")},
+        "seed": seed,
+        "world_size": world_size,
+    }
+    manifests = {"train": args_data.get("dataset_train"), "val": args_data.get("dataset_val"),
+                 "test": test_data_path, "video_index": video_index_path}
+    fingerprint = shared_fingerprint(rank, world_size, device, checkpoint, manifests,
+                                     {"target_mean": target_mean, "target_std": target_std}, settings)
+
     # -- load training checkpoint
     start_epoch = 0
     history = {}
@@ -406,6 +491,8 @@ def main(args_eval, resume_preempt=False):
             scaler=scaler,
             val_only=val_only,
         )
+        if not val_only:
+            provenance.check_fingerprint(history.get("fingerprint"), fingerprint, f"The probe in {folder}")
         for _ in range(start_epoch * ipe):
             [s.step() for s in scheduler]
             [wds.step() for wds in wd_scheduler]
@@ -413,11 +500,24 @@ def main(args_eval, resume_preempt=False):
     # wandb, as in pretraining: on when `meta.wandb_project` and `meta.wandb_entity` are set. A
     # resumed probe reattaches to its run through the `wandb_run_id.txt` kept in its folder.
     # Every rank votes, so a failure on one rank stops the whole job.
+    # Record run provenance on rank 0, including the code, encoder, manifests, settings, and
+    # encoder-checkpoint hash; save it with the probe and log it to wandb without local paths.
+    run_info = None
+    if rank == 0:
+        run_info = describe_run(
+            args_eval, checkpoint, manifests, fingerprint, video_index, seed, parameter_counts, opt_kwargs,
+            batch_size, world_size, num_epochs, low_ef_below, targets,
+        )
+        if not test_only:
+            save_run_record(folder, args_eval, run_info, fresh=start_epoch == 0)
+
     wandb_run, wandb_init_error = None, None
     try:
-        # A test adds its result to the run of the probe it scores.
-        wandb_run, _ = init_wandb(args_eval.get("meta") or {}, args_eval, rank, folder,
-                                  resuming_training=start_epoch > 0 or test_only)
+        # Add test results to the wandb run of the probe being evaluated.
+        wandb_run, _ = init_wandb(args_eval.get("meta") or {},
+                                  {**provenance.public_config(args_eval), "run_info": run_info}, rank, folder,
+                                  resuming_training=start_epoch > 0 or test_only,
+                                  settings=provenance.PRIVATE_WANDB_SETTINGS)
     except Exception as e:
         wandb_init_error = e
     if any_rank_failed(wandb_init_error is not None, device=device):
@@ -434,6 +534,10 @@ def main(args_eval, resume_preempt=False):
                 if os.path.exists(finished_path) else 0)
         if done < num_epochs:
             raise RuntimeError(f"The probe has finished {done} of {num_epochs} epochs; test it once it is complete.")
+        # Score the test set only once to prevent test results from influencing model selection.
+        if os.path.exists(os.path.join(folder, "test_metrics.json")):
+            raise RuntimeError("This probe has already been tested (`test_metrics.json` exists); repeat testing only "
+                               "if the previous evaluation was invalid.")
         test_loader, _ = make_dataloader(
             dataset_type=dataset_type,
             root_path=[test_data_path],
@@ -451,11 +555,14 @@ def main(args_eval, resume_preempt=False):
             num_workers=num_workers,
             normalization=normalization,
         )
-        result = run_test(
+        if video_index is not None:
+            check_split(video_index, test_loader.dataset, "test")
+        run_test(
             device=device,
             encoder=encoder,
             classifiers=classifiers,
             dataset=test_loader.dataset,
+            val_dataset=val_loader.dataset,
             batch_size=batch_size,
             num_workers=num_workers,
             checkpoint_path=os.path.join(folder, "best.pt"),
@@ -467,19 +574,15 @@ def main(args_eval, resume_preempt=False):
             folder=folder,
             rank=rank,
             world_size=world_size,
+            video_index=video_index,
+            low_ef_below=low_ef_below,
+            ef_ranges=ef_ranges,
+            targets=targets,
+            run_info=run_info,
+            wandb_run=wandb_run,
+            step=num_epochs * ipe,
+            fingerprint=fingerprint,
         )
-        if result is not None:
-            metric = "mae" if task_type == "regression" else "acc"
-            log_scalars(
-                wandb_run,
-                {
-                    **{f"probe/test_{k}": v for k, v in result["test"].items()},
-                    "probe/test_epoch": result["epoch"],
-                    "probe/test_head": result["head"],
-                    f"probe/test_val_{metric}": result[f"val_{metric}"],
-                },
-                step=num_epochs * ipe,
-            )
         finish_wandb(wandb_run)
         return
 
@@ -492,7 +595,7 @@ def main(args_eval, resume_preempt=False):
 
     def save_checkpoint(epoch, mean_val_acc, best_val_acc,
                         val_heads, best_per_head, mean_per_head, min_per_head, best_epoch_per_head,
-                        is_best=False):  # <--- ADD THIS PARAMETER
+                        best_epoch, is_best=False):
         
         all_classifier_dicts = [c.state_dict() for c in classifiers]
         all_opt_dicts = [o.state_dict() for o in optimizer]
@@ -511,6 +614,9 @@ def main(args_eval, resume_preempt=False):
             "mean_val_acc_per_head": np.asarray(mean_per_head, dtype=float).tolist(),
             "min_val_acc_per_head": np.asarray(min_per_head, dtype=float).tolist(),
             "best_epoch_per_head": np.asarray(best_epoch_per_head, dtype=int).tolist(),
+            "best_epoch": best_epoch,    # the epoch saved as `best.pt`.
+            "selection": SELECTION,
+            "fingerprint": fingerprint,  # data and settings used to train the probe heads.
             "opt_grid": opt_kwargs,
         }
         
@@ -545,6 +651,18 @@ def main(args_eval, resume_preempt=False):
     # TRAIN LOOP
     val_cnt = 0
     val_sum_scalar = 0.0
+    best_epoch = None
+
+    # For regression with a `VideoDataset`, `validate()` scores every validation video once with
+    # every probe head; other datasets, classification, and `val_only` use the standard batch loop.
+    val_dataset = getattr(val_loader, "dataset", None)
+    exact_val = task_type == "regression" and not val_only and hasattr(val_dataset, "get_item_video")
+    val_studies = None
+    if exact_val and video_index is not None:
+        val_studies = provenance.study_ids(video_index, val_dataset.samples, "val")
+    elif not exact_val and not val_only:
+        logger.warning("Validation uses the standard batch loop, so its metric may include duplicate videos "
+                       "introduced by distributed-sampler padding.")
 
     # Restore validation history when resuming, so `best.pt` is updated only if the current epoch
     # outperforms every epoch seen before the interruption.
@@ -556,15 +674,16 @@ def main(args_eval, resume_preempt=False):
         min_per_head = np.asarray(history["min_val_acc_per_head"], dtype=float)
         sum_per_head = np.asarray(history["mean_val_acc_per_head"], dtype=float) * start_epoch
         best_epoch_per_head = np.asarray(history["best_epoch_per_head"], dtype=int)
-    
+        best_epoch = history.get("best_epoch")
+
     for epoch in range(start_epoch, num_epochs):
         logger.info("Epoch %d" % (epoch + 1))
         train_sampler.set_epoch(epoch)
 
         if val_only:
-            train_acc_scalar, train_heads = -1.0, None
+            train_acc_scalar, train_heads, train_losses = -1.0, None, None
         else:
-            train_acc_scalar, train_heads = run_one_epoch(
+            train_acc_scalar, train_heads, train_losses = run_one_epoch(
                 device=device,
                 training=True,
                 encoder=encoder,
@@ -583,24 +702,43 @@ def main(args_eval, resume_preempt=False):
                 target_std=target_std,
             )
 
-        val_acc_scalar, val_heads = run_one_epoch(
-            device=device,
-            training=False,
-            encoder=encoder,
-            classifiers=classifiers,
-            scaler=scaler,
-            optimizer=optimizer,
-            scheduler=scheduler,
-            wd_scheduler=wd_scheduler,
-            data_loader=val_loader,
-            use_bfloat16=use_bfloat16,
-            use_focal_loss=use_focal_loss,
-            val_only=val_only,
-            predictions_save_path=predictions_save_path,
-            task_type=task_type,
-            target_mean=target_mean,
-            target_std=target_std,
-        )
+        val = None
+        if exact_val:
+            val = validate(
+                device=device,
+                encoder=encoder,
+                classifiers=classifiers,
+                dataset=val_dataset,
+                batch_size=batch_size,
+                num_workers=num_workers,
+                use_bfloat16=use_bfloat16,
+                target_mean=target_mean,
+                target_std=target_std,
+                rank=rank,
+                world_size=world_size,
+                studies=val_studies,
+            )
+            val_heads = val["mae"]
+            val_acc_scalar = float(val_heads.min())
+        else:
+            val_acc_scalar, val_heads, _ = run_one_epoch(
+                device=device,
+                training=False,
+                encoder=encoder,
+                classifiers=classifiers,
+                scaler=scaler,
+                optimizer=optimizer,
+                scheduler=scheduler,
+                wd_scheduler=wd_scheduler,
+                data_loader=val_loader,
+                use_bfloat16=use_bfloat16,
+                use_focal_loss=use_focal_loss,
+                val_only=val_only,
+                predictions_save_path=predictions_save_path,
+                task_type=task_type,
+                target_mean=target_mean,
+                target_std=target_std,
+            )
 
         # ---- update scalar running stats ----
         val_cnt += 1
@@ -620,6 +758,8 @@ def main(args_eval, resume_preempt=False):
             if float(val_acc_scalar) > best_val_acc_scalar:
                 best_val_acc_scalar = float(val_acc_scalar)
                 is_best = True
+        if is_best:
+            best_epoch = epoch + 1
 
         # ---- update per-head running stats ----
         count_epochs += 1
@@ -665,11 +805,23 @@ def main(args_eval, resume_preempt=False):
             "probe/epoch": epoch + 1,
             f"probe/val_{metric}": float(val_acc_scalar),
             f"probe/val_{metric}_best": float(best_val_acc_scalar),
+            **({"probe/best_epoch": best_epoch} if best_epoch is not None else {}),
             **{f"probe/val_{metric}/{h}": float(v) for h, v in zip(head_names, val_heads)},
+            # End-of-epoch learning rate for each probe head.
+            **{f"probe/lr/{h}": float(o.param_groups[0]["lr"]) for h, o in zip(head_names, optimizer)},
         }
         if train_heads is not None:
             payload[f"probe/train_{metric}"] = float(train_acc_scalar)
             payload.update({f"probe/train_{metric}/{h}": float(v) for h, v in zip(head_names, train_heads)})
+            payload["probe/train_loss"] = float(np.min(train_losses))
+            payload.update({f"probe/train_loss/{h}": float(v) for h, v in zip(head_names, train_losses)})
+        if val is not None:
+            payload["probe/val_loss"] = float(val["loss"].min())
+            payload.update({f"probe/val_loss/{h}": float(v) for h, v in zip(head_names, val["loss"])})
+            payload["probe/val_failed_videos"] = val["failed_videos"]
+            if val["study_mae"] is not None:
+                payload["probe/val_study_mae"] = float(val["study_mae"].min())
+                payload.update({f"probe/val_study_mae/{h}": float(v) for h, v in zip(head_names, val["study_mae"])})
         log_scalars(wandb_run, payload, step=(epoch + 1) * ipe)
 
         if val_only:
@@ -685,8 +837,16 @@ def main(args_eval, resume_preempt=False):
             mean_per_head,
             min_per_head,
             best_epoch_per_head,
-            is_best=is_best,  # <--- PASS THE FLAG HERE
+            best_epoch,
+            is_best=is_best,
         )
+
+    # Reference the trained probe in wandb by the best checkpoint's checksum, epoch, and head,
+    # without uploading the local checkpoint file.
+    best_path = os.path.join(folder, "best.pt")
+    if rank == 0 and not val_only and os.path.exists(best_path):
+        log_reference(wandb_run, "probe_checkpoint", "probe-checkpoint",
+                      checkpoint_reference(best_path, task_type, head_names, fingerprint))
 
     # If the probe fails with an exception, wandb closes the run automatically when the process exits.
     finish_wandb(wandb_run)
@@ -726,6 +886,8 @@ def run_one_epoch(
         else:
             criterion = torch.nn.CrossEntropyLoss()
         top1_meters = [AverageMeter() for _ in classifiers]
+    # Weight each metric by its number of labels so smaller batches contribute proportionally less than full batches.
+    loss_meters = [AverageMeter() for _ in classifiers]
     
     all_predictions = []
     all_video_paths = []
@@ -773,28 +935,33 @@ def run_one_epoch(
         else:
             losses = [[criterion(o, labels) for o in coutputs] for coutputs in outputs]
             
-        # Compute metrics based on task type
+        # Compute metrics based on task type: sums over this batch on every rank, added up across
+        # ranks in one all-reduce, then divided by the number of labels they cover.
         with torch.no_grad():
             if task_type == "regression":
                 outputs = [sum([o for o in coutputs]) / len(coutputs) for coutputs in outputs]
-                
-                # 1. Calculate Normalized MAE (Standard Deviations)
-                mae_errors = [F.l1_loss(o.squeeze().float(), labels.squeeze()) for o in outputs]
-                mae_errors = [float(AllReduce.apply(mae)) for mae in mae_errors]
-                
-                # 2. Convert to Real MAE for LOGGING
-                # --- CHANGE THIS BLOCK ---
-                t_std = target_std if target_std is not None else 1.0
-                mae_errors = [mae * t_std for mae in mae_errors]
-
-                for meter, mae in zip(metric_meters, mae_errors):
-                    meter.update(mae)
+                # Absolute error of the z-scored targets, summed over the batch.
+                scores = [(o.float() - labels).abs().sum() for o in outputs]
             else:  # classification
                 outputs = [sum([F.softmax(o, dim=1) for o in coutputs]) / len(coutputs) for coutputs in outputs]
-                top1_accs = [100.0 * coutputs.max(dim=1).indices.eq(labels).sum() / batch_size for coutputs in outputs]
-                top1_accs = [float(AllReduce.apply(t1a)) for t1a in top1_accs]
-                for t1m, t1a in zip(top1_meters, top1_accs):
-                    t1m.update(t1a)
+                # Correct predictions in the batch.
+                scores = [coutputs.max(dim=1).indices.eq(labels).sum().float() for coutputs in outputs]
+            count = float(labels.numel())
+            # Scale each head's mean loss by the label count to obtain its batch loss sum.
+            loss_sums = [sum(l.detach().float() for l in li) / len(li) * count for li in losses]
+            totals = AllReduceSum.apply(torch.stack([torch.tensor(count, device=device), *scores, *loss_sums]))
+            totals = totals.cpu().tolist()
+            n, scores, loss_sums = totals[0], totals[1:1 + len(outputs)], totals[1 + len(outputs):]
+            if task_type == "regression":
+                # Convert normalized MAE to EF percentage points using the training-set target standard deviation.
+                t_std = target_std if target_std is not None else 1.0
+                for meter, total in zip(metric_meters, scores):
+                    meter.update(total / n * t_std, n=n)
+            else:
+                for t1m, total in zip(top1_meters, scores):
+                    t1m.update(100.0 * total / n, n=n)
+            for meter, total in zip(loss_meters, loss_sums):
+                meter.update(total / n, n=n)
                     
             if val_only and predictions_save_path is not None:
                 for i, pred in enumerate(outputs[0]):
@@ -882,8 +1049,9 @@ def run_one_epoch(
         df.to_csv(predictions_save_path, index=False)
         logger.info(f"Saved {len(all_predictions)} predictions to {predictions_save_path}")
 
+    _agg_metrics = np.array([m.avg for m in (metric_meters if task_type == "regression" else top1_meters)])
     scalar = float(_agg_metrics.min()) if task_type == "regression" else float(_agg_metrics.max())
-    return scalar, _agg_metrics
+    return scalar, _agg_metrics, np.array([m.avg for m in loss_meters])
 
 
 class _EachVideoOnce(torch.utils.data.Dataset):
@@ -919,6 +1087,130 @@ def _collate_loaded(batch):
     return [index for index, _ in loaded], default_collate([item for _, item in loaded]), failed
 
 
+def score_videos(device, encoder, heads, dataset, batch_size, num_workers, use_bfloat16, task_type, rank,
+                 world_size):
+    """Score every video in `dataset` exactly once with each probe head. Each rank processes every
+    `world_size`-th video, avoiding duplicate samples from distributed-sampler padding. Videos that
+    fail to load are recorded as failures rather than replaced. Each video's prediction is the mean
+    over its clips; for classification, softmax probabilities are averaged.
+
+    Results are gathered across all ranks so every rank uses the same complete set of predictions
+    for subsequent decisions.
+
+    Returns (indices, labels, predictions, failed): the dataset rows scored, in dataset order;
+    their labels [N, targets]; the predictions [heads, N, outputs]; the rows that failed.
+    """
+    from torch.amp import autocast
+
+    # After leaving DDP, ranks may process different numbers of videos, so probe heads
+    # must not perform cross-rank synchronization.
+    modules = [getattr(h, "module", h) for h in heads]
+    for m in modules:
+        m.eval()
+    loader = torch.utils.data.DataLoader(
+        _EachVideoOnce(dataset, range(rank, len(dataset), world_size)),
+        batch_size=batch_size,
+        num_workers=num_workers,
+        collate_fn=_collate_loaded,
+        pin_memory=True,
+    )
+    indices, labels, predictions, failed = [], [], [[] for _ in modules], []
+    for batch_indices, data, batch_failed in loader:
+        failed += batch_failed
+        # If every item in this batch failed, there's nothing to infer.
+        if data is None:
+            continue
+        with torch.no_grad(), autocast("cuda", dtype=torch.bfloat16, enabled=use_bfloat16):
+            clips = [[dij.to(device, non_blocking=True) for dij in di] for di in data[0]]
+            clip_indices = [d.to(device, non_blocking=True) for d in data[2]]
+            # Compute one encoder representation per clip (segments x views), then reuse those
+            # representations across all probe heads.
+            features = encoder(clips, clip_indices)
+            outputs = [[m(f) for f in features] for m in modules]
+        for head_predictions, outs in zip(predictions, outputs):
+            if task_type == "regression":
+                output = sum(o.float() for o in outs) / len(outs)
+            else:
+                output = sum(F.softmax(o.float(), dim=1) for o in outs) / len(outs)
+            head_predictions += output.cpu().tolist()
+        indices += batch_indices
+        labels += data[1].tolist()
+
+    local = (indices, labels, predictions, failed)
+    if dist.is_available() and dist.is_initialized() and world_size > 1:
+        gathered = [None] * world_size
+        dist.all_gather_object(gathered, local)
+    else:
+        gathered = [local]
+    indices = [i for g in gathered for i in g[0]]
+    failed = sorted(i for g in gathered for i in g[3])
+    # Correctness check.
+    if len(set(indices)) != len(indices) or len(indices) + len(failed) != len(dataset):
+        raise RuntimeError(
+            f"Scored {len(indices)} and failed {len(failed)} of {len(dataset)} videos: "
+            "every video should be scored or failed exactly once."
+        )
+    if not indices:
+        raise RuntimeError(f"None of the {len(dataset)} videos could be loaded.")
+    # Ranks process videos interleaved: restore dataset order so each prediction remains aligned
+    # with its corresponding video and label.
+    order = np.argsort(indices)
+    n = len(order)
+    labels = np.asarray([x for g in gathered for x in g[1]], dtype=float).reshape(n, -1)[order]
+    predictions = np.stack([
+        np.asarray([x for g in gathered for x in g[2][h]], dtype=float).reshape(n, -1)[order]
+        for h in range(len(modules))
+    ])
+    return np.asarray(indices)[order], labels, predictions, failed
+
+
+def validate(device, encoder, classifiers, dataset, batch_size, num_workers, use_bfloat16, target_mean,
+             target_std, rank, world_size, studies=None):
+    """Validate every probe head for one epoch, scoring each video exactly once.
+
+    For each head, compute the per-video MAE in EF percentage points (used for probe selection),
+    the L1 loss on z-scored targets, and, when study IDs are provided, the per-study MAE. Also
+    report the numbers of successfully scored and failed videos.
+    """
+    indices, labels, predictions, failed = score_videos(
+        device, encoder, classifiers, dataset, batch_size, num_workers, use_bfloat16, "regression", rank,
+        world_size,
+    )
+    t_mean = target_mean if target_mean is not None else 0.0
+    t_std = target_std if target_std is not None else 1.0
+    y = labels * t_std + t_mean
+    out = {"mae": [], "loss": [], "study_mae": [] if studies is not None else None,
+           "videos": len(indices), "failed_videos": len(failed)}
+    # Loops over probe heads.
+    for p_z in predictions:
+        # Converts the head's normalized EF predictions back into actual EF values.
+        p = p_z * t_std + t_mean
+        # Compute per-video MAE.
+        out["mae"].append(float(np.abs(p - y).mean()))
+        # Compute the L1 loss in normalized target space.
+        out["loss"].append(probe_metrics.smooth_l1(labels, p_z))
+        if studies is not None:
+            # Compute study-level MAE.
+            # Note: per-video MAE is the selection metric; study MAE is additional evaluation information.
+            per_study = probe_metrics.by_study(np.asarray(studies)[indices], y[:, 0], p[:, 0])
+            out["study_mae"].append(float((per_study.prediction - per_study.label).abs().mean()))
+    for key in ("mae", "loss", "study_mae"):
+        if out[key] is not None:
+            out[key] = np.asarray(out[key])
+    return out
+
+
+def _scalars(prefix, block):
+    """Extract numeric values from a metrics block and flatten them into wandb keys under `prefix`."""
+    out = {}
+    for key, value in block.items():
+        if isinstance(value, dict):
+            out.update(_scalars(prefix, value))
+        elif isinstance(value, (int, float)) and not isinstance(value, bool):
+            out[f"{prefix}_{key}"] = value
+    return out
+
+
 def run_test(
     device,
     encoder,
@@ -935,25 +1227,42 @@ def run_test(
     folder,
     rank,
     world_size,
+    val_dataset=None,
+    video_index=None,
+    low_ef_below=40.0,
+    ef_ranges=(30, 40, 50, 60),
+    targets=None,
+    run_info=None,
+    wandb_run=None,
+    step=0,
+    fingerprint=None,
 ):
     """Score the test split once, with the epoch and head chosen on validation.
 
     `best.pt` is the epoch whose best head had the best validation score, and that head is
-    the one scored.
-    A video that fails to load is counted, not replaced.
+    the one scored. For regression, first rescore the validation split with the selected head
+    to determine the reduced-EF threshold at the target level (study or video), then apply that
+    fixed threshold to the test set. A video that fails to load is counted, not replaced.
 
-    Writes `test_metrics.json` and `test_predictions.csv` to `folder`. The predictions list
-    video paths, which can identify patients: keep them where the data is. Returns the
-    metrics on rank 0 and None on the other ranks.
+    Write `test_metrics.json` and `test_predictions.csv` to `folder`; for regression, also write
+    `val_predictions.csv`. The predictions list video paths, which can identify patients: keep
+    them where the data is. Only de-identified metrics and plots are logged to wandb.
+    
+    Require the fingerprint stored in `best.pt` to match the encoder, data, and evaluation
+    settings used for testing, except for the number of GPUs.
+    
+    Returns the metrics on rank 0 and `None` on the other ranks.
     """
-    from torch.amp import autocast
-
-    # First load the checkpoint onto CPU, then retrieves the validation score for every probe head
+    # First load the checkpoint onto CPU, then retrieve the validation score for every probe head
     # and choose the best head using validation only.
     checkpoint = robust_checkpoint_loader(checkpoint_path, map_location=torch.device("cpu"))
+    if fingerprint is not None:
+        # Every rank checks the same two fingerprints, so all ranks stop together.
+        provenance.check_fingerprint(checkpoint.get("fingerprint"), fingerprint, checkpoint_path,
+                                     ignore=("settings.world_size",))
     val_per_head = np.asarray(checkpoint["val_acc_per_head"], dtype=float)
     head = int(val_per_head.argmin() if task_type == "regression" else val_per_head.argmax())
-    # Past DDP: each rank runs its own videos through the head.
+    # Outside DDP, each rank independently runs its assigned videos through the probe head.
     classifier = getattr(classifiers[head], "module", classifiers[head])
     # Load the selected head's weights from checkpoints.
     classifier.load_state_dict({k.removeprefix("module."): v for k, v in checkpoint["classifiers"][head].items()})
@@ -961,111 +1270,243 @@ def run_test(
     classifier.eval()
     logger.info(f"Testing {head_names[head]} from epoch {checkpoint['epoch']} of {checkpoint_path}")
 
-    # Divide test videos among ranks so every test video belongs to exactly one rank.
-    # Each rank scores every `world_size`-th video, so every video is scored exactly once
-    # using the validation clips, transforms, and segment averaging.
-    loader = torch.utils.data.DataLoader(
-        _EachVideoOnce(dataset, range(rank, len(dataset), world_size)),
-        batch_size=batch_size,
-        num_workers=num_workers,
-        collate_fn=_collate_loaded,
-        pin_memory=True,
-    )
-    # Each rank independently accumulates these:
-    indices, labels, predictions, failed = [], [], [], []
-    # Process each batch.
-    for batch_indices, data, batch_failed in loader:
-        failed += batch_failed
-        # If every item in this batch failed, there's nothing to infer.
-        if data is None:
-            continue
-        # eval: run inference without gradients.
-        with torch.no_grad(), autocast("cuda", dtype=torch.bfloat16, enabled=use_bfloat16):
-            clips = [[dij.to(device, non_blocking=True) for dij in di] for di in data[0]]
-            clip_indices = [d.to(device, non_blocking=True) for d in data[2]]
-            # If multiple segments/views are evaluated, `encoder(...)`` returns multiple
-            # representations, so `outputs` contains several predictions for a video.
-            outputs = [classifier(o) for o in encoder(clips, clip_indices)]
-        # Averaged over segments and views, as in validation.
-        if task_type == "regression":
-            output = sum(o.float() for o in outputs) / len(outputs)
-        else:
-            output = sum(F.softmax(o.float(), dim=1) for o in outputs) / len(outputs)
-        indices += batch_indices
-        labels += data[1].tolist()
-        predictions += output.cpu().tolist()
-    # Gather results from all ranks.
-    local = (indices, labels, predictions, failed)
-    if dist.is_available() and dist.is_initialized() and world_size > 1:
-        gathered = [None] * world_size
-        dist.all_gather_object(gathered, local)
-    else:
-        gathered = [local]
+    def score(split_dataset):
+        return score_videos(device, encoder, [classifier], split_dataset, batch_size, num_workers, use_bfloat16,
+                            task_type, rank, world_size)
+
+    regression = task_type == "regression"
+    val_scored = score(val_dataset) if regression and val_dataset is not None else None
+    indices, labels, predictions, failed = score(dataset)
     # Avoids all GPUs independently writing the same output files.
     if rank != 0:
         return None
-    # Combine all rank results: flattens successful indices.
-    indices = [i for g in gathered for i in g[0]]
-    failed = sorted(i for g in gathered for i in g[3])
 
-    # Correctness check.
-    if len(set(indices)) != len(indices) or len(indices) + len(failed) != len(dataset):
-        raise RuntimeError(
-            f"Scored {len(indices)} and failed {len(failed)} of {len(dataset)} test videos: "
-            "every video should be scored or failed exactly once."
-        )
-    
-    # Ranks process videos interleaved -> Restore original dataset order, so each prediction
-    # remains matched with the correct video and label.
-    order = np.argsort(indices)
-    indices = np.asarray(indices)[order]
-    labels = np.asarray([x for g in gathered for x in g[1]], dtype=float).reshape(len(order), -1)[order]
-    predictions = np.asarray([x for g in gathered for x in g[2]], dtype=float).reshape(len(order), -1)[order]
-
-    import pandas as pd
-
+    metric = "mae" if regression else "acc"
+    paths = [dataset.samples[i] for i in indices]
     # Build the prediction table.
-    table = {"video_path": [dataset.samples[i] for i in indices]}
-    if task_type == "regression":
-        t_mean = target_mean if target_mean is not None else 0.0
-        t_std = target_std if target_std is not None else 1.0
-        y, p = labels * t_std + t_mean, predictions * t_std + t_mean
-        err = p - y
-        metric = "mae"
-        test = {
-            "mae": float(np.abs(err).mean()),
-            "rmse": float(np.sqrt((err**2).mean())),
-            "r2": float(1.0 - (err**2).sum() / ((y - y.mean(axis=0)) ** 2).sum()),
-        }
-        table.update(label=y[:, 0], prediction=p[:, 0], abs_error=np.abs(err[:, 0]))
-    else:   # classification
-        predicted = predictions.argmax(axis=1)
-        metric = "acc"
-        test = {"acc": float(100.0 * (predicted == labels[:, 0]).mean())}
-        table.update(label=labels[:, 0].astype(int), prediction=predicted, confidence=predictions.max(axis=1))
-    # Add success/failure counts.
-    test.update(videos=len(indices), failed_videos=len(failed))
-
-    # Build the final result metadata: test score, how the tested model was selected, etc.
+    table = {"video_path": paths}
     result = {
         "selected_on": "validation",
+        "selection": SELECTION,
         "checkpoint": checkpoint_path,
+        "checkpoint_sha256": provenance.sha256(checkpoint_path),
         "epoch": int(checkpoint["epoch"]),
         "head": head,
         "head_name": head_names[head],
         f"val_{metric}": float(val_per_head[head]),
-        "test": test,
-        "failed_rows": failed,      # rows of the test list (dataset row indices), not paths.
     }
+    if regression:
+        t_mean = target_mean if target_mean is not None else 0.0
+        t_std = target_std if target_std is not None else 1.0
+        y, p = labels[:, 0] * t_std + t_mean, predictions[0][:, 0] * t_std + t_mean
+        # Use the same target level (study or video) for the EF-range table and plots.
+        targets = dict(targets or {})
+        level = targets.get("level") or ("study" if video_index is not None else "video")
+        if level == "study" and video_index is None:
+            raise ValueError("Study-level results need `experiment.data.video_index`.")
+        test_studies = None
+        if video_index is not None:
+            table["study_id"] = provenance.study_ids(video_index, paths, "test")
+            test_studies = probe_metrics.by_study(table["study_id"], y, p)
+
+        # The reduced-EF threshold comes from validation, at the level the targets use.
+        threshold, val_block = None, None
+        if val_scored is not None:
+            v_indices, v_labels, v_predictions, v_failed = val_scored
+            v_paths = [val_dataset.samples[i] for i in v_indices]
+            vy, vp = v_labels[:, 0] * t_std + t_mean, v_predictions[0][:, 0] * t_std + t_mean
+            val_table = {"video_path": v_paths, "label": vy, "prediction": vp}
+            val_studies, val_block = None, {}
+            if video_index is not None:
+                val_table["study_id"] = provenance.study_ids(video_index, v_paths, "val")
+                val_studies = probe_metrics.by_study(val_table["study_id"], vy, vp)
+            chosen_on = val_studies if level == "study" else pd.DataFrame({"label": vy, "prediction": vp})
+            threshold = probe_metrics.youden_threshold(chosen_on.label, chosen_on.prediction, low_ef_below)
+            if val_studies is not None:
+                val_block["study"] = probe_metrics.summarize(val_studies.label, val_studies.prediction,
+                                                             low_ef_below, threshold)
+            val_block.update(video=probe_metrics.summarize(vy, vp, low_ef_below, threshold),
+                             videos=len(v_indices), failed_videos=len(v_failed))
+            pd.DataFrame(val_table).to_csv(os.path.join(folder, "val_predictions.csv"), index=False)
+
+        test = {"video": probe_metrics.summarize(y, p, low_ef_below, threshold)}
+        if test_studies is not None:
+            test["study"] = probe_metrics.summarize(test_studies.label, test_studies.prediction, low_ef_below,
+                                                    threshold)
+        test.update(videos=len(indices), failed_videos=len(failed))
+        if test_studies is not None:
+            test["studies"] = int(len(test_studies))
+        ranged = test_studies if level == "study" else pd.DataFrame({"label": y, "prediction": p})
+        by_range = probe_metrics.by_range(ranged.label, ranged.prediction, ef_ranges)
+
+        met = {}
+        if "mae_below" in targets:
+            met["mae"] = bool(test[level]["mae"] < targets["mae_below"])
+        if "auroc_above" in targets:
+            met["auroc"] = bool(test[level]["reduced_ef"]["auroc"] > targets["auroc_above"])
+        result.update(
+            aggregation=AGGREGATION,
+            low_ef_threshold={"rule": THRESHOLD_RULE, "below": low_ef_below, "level": level, "value": threshold},
+            val=val_block,
+            test=test,
+            test_by_reference_range={"level": level, "rows": by_range},
+            targets={**targets, "level": level, "met": met},
+        )
+        table.update(label=y, prediction=p, abs_error=np.abs(p - y))
+    else:   # classification
+        predicted = predictions[0].argmax(axis=1)
+        result["test"] = {"acc": float(100.0 * (predicted == labels[:, 0]).mean()),
+                          "videos": len(indices), "failed_videos": len(failed)}
+        table.update(label=labels[:, 0].astype(int), prediction=predicted, confidence=predictions[0].max(axis=1))
+    result.update(run_info=run_info, failed_rows=failed)  # rows of the test list (dataset row indices), not paths.
+
     pd.DataFrame(table).to_csv(os.path.join(folder, "test_predictions.csv"), index=False)
     # Written last and atomically: its presence means the test finished.
     tmp = os.path.join(folder, "test_metrics.json.tmp")
     with open(tmp, "w") as f:
         json.dump(result, f, indent=2)
     os.replace(tmp, os.path.join(folder, "test_metrics.json"))
-    logger.info(f"Test {metric} {test[metric]:.3f} over {len(indices)} videos ({len(failed)} failed): {result}")
+
+    # Log metrics and identifier-free plots to wandb using the same target level (study or video).
+    scalars = {"probe/test_epoch": result["epoch"], "probe/test_head": head,
+               f"probe/test_val_{metric}": result[f"val_{metric}"]}
+    if regression:
+        for block_level in ("video", "study"):
+            if block_level in result["test"]:
+                scalars.update(_scalars(f"probe/test/{block_level}", result["test"][block_level]))
+        if threshold is not None:
+            scalars["probe/test/threshold"] = threshold
+        scalars.update({f"probe/test/target_met_{k}": float(v) for k, v in met.items()})
+    else:
+        scalars["probe/test/video_acc"] = result["test"]["acc"]
+    log_scalars(wandb_run, scalars, step=step)
+    if regression:
+        log_regression_results(wandb_run, ranged.label, ranged.prediction, by_range, step, f"probe/test/{level}")
+    # Reference the tested checkpoint by checksum, matching the reference recorded at the end of training.
+    log_reference(wandb_run, "probe_checkpoint", "probe-checkpoint",
+                  checkpoint_reference(checkpoint_path, task_type, head_names, fingerprint,
+                                       sha=result["checkpoint_sha256"]))
+    logger.info(f"Test of {head_names[head]} (epoch {result['epoch']}): {json.dumps(result['test'])}")
     return result
 
+
+def describe_run(args_eval, checkpoint, manifests, fingerprint, video_index, seed, parameter_counts, opt_kwargs,
+                 batch_size, world_size, num_epochs, low_ef_below, targets):
+    """Describe the probe run without filesystem paths, including the code version, encoder checkpoint and
+    manifest identities, split sizes, seed, optimization, aggregation, selection, and target settings."""
+    # Gets the current Git commit and whether the repository has uncommitted changes.
+    commit, dirty = provenance.git_state()
+    files = {}
+    # For each manifest file, records only the filename, its SHA-256 hash from the fingerprint, and the
+    # number of non-empty rows.
+    for name, path in manifests.items():
+        if path and os.path.exists(path):
+            with open(path) as f:
+                rows = sum(1 for line in f if line.strip())
+            files[name] = {"file": os.path.basename(path), "sha256": fingerprint["manifests_sha256"][name],
+                           "rows": rows}
+    meta = args_eval.get("meta") or {}
+    
+    # Returned dictionary: a run provenance record.
+    return {
+        "experiment": meta.get("wandb_run_name") or args_eval.get("tag"),
+        "git_commit": commit,
+        "git_dirty": dirty,
+        "seed": seed,
+        "encoder_checkpoint": {"file": os.path.basename(checkpoint), "sha256": fingerprint["encoder_sha256"]},
+        "normalization": fingerprint["normalization"],
+        "manifests": files,
+        "splits": provenance.split_counts(video_index) if video_index is not None else None,
+        "parameters": parameter_counts,
+        "optimization": {
+            "optimizer": "AdamW",
+            "lr_schedule": "linear warmup from start_lr, then cosine to final_lr",
+            "weight_decay_schedule": "cosine from weight_decay to final_weight_decay",
+            "epochs": num_epochs,
+            "batch_size_per_gpu": batch_size,
+            "world_size": world_size,
+            "global_batch_size": batch_size * world_size,
+            "heads": opt_kwargs,
+        },
+        "aggregation": AGGREGATION,
+        "selection": SELECTION,
+        "low_ef_below": low_ef_below,
+        "low_ef_threshold_rule": THRESHOLD_RULE,
+        "targets": targets,
+    }
+
+
+def save_run_record(folder, args_eval, run_info, fresh):
+    """Save the probe's original configuration and run metadata in its output folder.
+
+    For a fresh run, write `params-probe.yaml` and `run_info.json`. For a resumed run, preserve the
+    original files and warn if the current configuration differs in settings not covered by the
+    fingerprint (e.g., `num_workers`)."""
+    # `params-probe.yaml`: contains the full original config, including paths.
+    path = os.path.join(folder, "params-probe.yaml")
+    text = yaml.safe_dump(args_eval, sort_keys=False)
+    # `fresh`: determines whether this is a new probe or a resumed one.
+    if not fresh and os.path.exists(path):
+        with open(path) as f:
+            if f.read() != text:
+                logger.warning(f"The config differs from the one this probe started with; {path} keeps "
+                               "the original.")
+        return
+    with open(path, "w") as f:
+        f.write(text)
+    # `run_info.json`: contains the cleaner path-free summary created by `describe_run()`.
+    with open(os.path.join(folder, "run_info.json"), "w") as f:
+        json.dump(run_info, f, indent=2)
+
+
+def check_split(index, dataset, split):
+    """Validate that every manifest video exists in the video index and belongs to the expected split."""
+    samples = getattr(dataset, "samples", None)
+    if samples is None:
+        raise ValueError(f"The {split} dataset lists no samples to check against the video index.")
+    provenance.study_ids(index, samples, split)
+
+
+def shared_fingerprint(rank, world_size, device, checkpoint, manifests, normalization, settings):
+    """The probe's fingerprint (`provenance.fingerprint`), hashed on rank 0 and sent to every
+    rank, so all ranks take the same decision from it. A failure on rank 0 stops every rank."""
+    current, error = None, None
+    # Only rank 0 computes the fingerprint.
+    if rank == 0:
+        try:
+            current = provenance.fingerprint(checkpoint, manifests, normalization, settings)
+        except Exception as e:
+            error = e
+    # Failure is communicated to all ranks.
+    if any_rank_failed(error is not None, device=device):
+        if error is not None:
+            raise error
+        raise RuntimeError("Computing the probe's fingerprint failed on rank 0.")
+    shared = [current]
+    if dist.is_available() and dist.is_initialized() and world_size > 1:
+        # Rank 0 sends the fingerprint to all other ranks.
+        dist.broadcast_object_list(shared, src=0)
+    return shared[0]
+
+
+def checkpoint_reference(path, task_type, head_names, fingerprint, sha=None):
+    """Describe a saved probe without its filesystem path using its file name, SHA-256,
+    epoch, validation-selected head and score, and encoder checkpoint identity."""
+    # Loads the checkpoint.
+    saved = torch.load(path, map_location="cpu", weights_only=False, mmap=True)
+    # Gets the validation score of every head.
+    val = np.asarray(saved["val_acc_per_head"], dtype=float)
+    # Chooses the best head.
+    head = int(val.argmin() if task_type == "regression" else val.argmax())
+    return {
+        "file": os.path.basename(path),
+        "sha256": sha or provenance.sha256(path),
+        "epoch": int(saved["epoch"]),
+        "head": head,
+        "head_name": head_names[head],
+        f"val_{'mae' if task_type == 'regression' else 'acc'}": float(val[head]),
+        "encoder_sha256": (fingerprint or {}).get("encoder_sha256"),
+    }
 
 
 def load_checkpoint(device, r_path, classifiers, opt, scaler, val_only=False):
@@ -1111,7 +1552,7 @@ def load_checkpoint(device, r_path, classifiers, opt, scaler, val_only=False):
     logger.info(f"loaded optimizers from epoch {epoch}")
     # Keep the validation history so a resumed probe can continue from the previous run.
     history_keys = ("mean_val_acc", "best_val_acc", "best_val_acc_per_head", "mean_val_acc_per_head",
-                    "min_val_acc_per_head", "best_epoch_per_head")
+                    "min_val_acc_per_head", "best_epoch_per_head", "best_epoch", "fingerprint")
     history = {k: checkpoint[k] for k in history_keys if k in checkpoint}
     return classifiers, opt, scaler, epoch, history
 

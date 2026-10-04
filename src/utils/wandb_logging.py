@@ -7,6 +7,7 @@ Help check the input pipeline bugs that can silently hurt training.
 Note: failures from logging are warned but shouldn't crash the training.
 """
 
+import json
 import os
 from logging import getLogger
 import torch
@@ -33,6 +34,7 @@ def init_wandb(
     resuming_training=False,
     checkpoint_run_id=None,
     checkpoint_has_wandb_run_id=False,
+    settings=None,
 ):
     """Initialize a wandb experiment run on rank 0 only.
 
@@ -47,6 +49,8 @@ def init_wandb(
             the `wandb_run_id.txt` for checkpoints written before that field existed.
         checkpoint_has_wandb_run_id: whether the resumed checkpoint contains the
             run-id field. An explicit None must not fall back to a stale text file.
+        settings: optional `wandb.Settings` fields (a dict), e.g. to keep console output and
+            system metadata out of the run.
 
     Returns (run, effective_run_id).
     `run`: actual live wandb object. None when wandb is not configured/available, 
@@ -111,6 +115,7 @@ def init_wandb(
             resume="must" if run_id else "never",
             dir=folder,
             config=args,
+            **({"settings": settings} if settings is not None else {}),
         )
     except Exception as e:
         if run_id is not None:
@@ -270,6 +275,57 @@ def log_scalars(run, metrics, step):
         run.log({**metrics, STEP_METRIC: step})
     except Exception as e:
         logger.warning(f"Failed to log scalars to wandb: {e}")
+
+
+def log_regression_results(run, labels, predictions, ranges, step, prefix):
+    """Log a predicted-vs-reference scatter plot, residual histogram, and error-by-reference-range table.
+
+    Prediction-reference pairs contain no identifiers and are sorted by reference value, preventing
+    individual points from being traced back to their source records.
+    """
+    if run is None or wandb is None:
+        return
+    try:
+        pairs = sorted(zip((float(v) for v in labels), (float(v) for v in predictions)))
+        points = wandb.Table(columns=["reference", "predicted"], data=[list(p) for p in pairs])
+        table = wandb.Table(columns=["range", "n", "mae", "bias"],
+                            data=[[r["range"], r["n"], r["mae"], r["bias"]] for r in ranges])
+        run.log({
+            f"{prefix}/predicted_vs_reference": wandb.plot.scatter(
+                points, "reference", "predicted", title="Predicted vs reference EF"
+            ),
+            # Residual = p - y. Residual=0: exact prediction; residual>0: model overestimates EF;
+            # residual<0: model underestimates EF.
+            f"{prefix}/residuals": wandb.Histogram([p - y for y, p in pairs]),
+            f"{prefix}/by_reference_range": table,
+            # Associates the result with the project's explicit `train/global_step` metric rather
+            # than wandb's implicit step.
+            STEP_METRIC: step,
+        })
+    except Exception as e:
+        logger.warning(f"Failed to log regression results to wandb: {e}")
+
+
+def log_reference(run, name, kind, record):
+    """Point the run at a file kept outside wandb, such as a checkpoint: `record` (its checksum
+    and what identifies it, no path) goes into the run's summary under `name/`, and into a
+    small artifact of type `kind` that holds only that record, not the file."""
+    # Logging is skipped if wandb is unavailable or no active run exists.
+    if run is None or wandb is None:
+        return
+    try:
+        # Copies every field in `record` into the wandb run summary.
+        for key, value in record.items():
+            run.summary[f"{name}/{key}"] = value
+        artifact = wandb.Artifact(f"{name}-{run.id}", type=kind, metadata=record)
+        # `reference.json`: metadata.
+        # `artifact`: contains only a small JSON description of the external file,
+        # not the checkpoint itself.
+        with artifact.new_file("reference.json") as f:
+            json.dump(record, f, indent=2)
+        run.log_artifact(artifact)
+    except Exception as e:
+        logger.warning(f"Failed to log the {name} reference to wandb: {e}")
 
 
 def finish_wandb(run):

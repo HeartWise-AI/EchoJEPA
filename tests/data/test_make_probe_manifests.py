@@ -77,13 +77,44 @@ class TestMakeProbeManifests(unittest.TestCase):
         self.assertEqual(len(dataset.samples), 2)
         self.assertTrue(all(isinstance(label, float) for label in dataset.labels))
 
-    def test_a_video_without_label_is_refused(self):
+    def edit_videos(self, edit):
         path = os.path.join(self.manifests, "videos.csv")
         videos = pd.read_csv(path)
-        videos.loc[0, "label"] = np.nan
+        edit(videos)
         videos.to_csv(path, index=False)
-        with self.assertRaisesRegex(ValueError, "no EF label"):
+
+    def test_videos_without_a_valid_ef_are_left_out_and_counted(self):
+        def edit(videos):
+            videos.loc[0, "label"] = np.nan  # s1, A4C, train
+            videos.loc[videos.study_id == "s4", "label"] = 120.0  # val: 2 A4C videos
+        self.edit_videos(edit)
+        self.run_main()
+        self.assertEqual(len(self.read("train")), 4)
+        self.assertEqual(len(self.read("val")), 0)
+        with open(os.path.join(self.out, "probe_info.json")) as f:
+            info = json.load(f)
+        self.assertEqual(info["excluded"]["train"], {"missing_label": 1, "invalid_label": 0})
+        self.assertEqual(info["excluded"]["val"], {"missing_label": 0, "invalid_label": 2})
+        self.assertEqual(info["excluded"]["test"], {"missing_label": 0, "invalid_label": 0})
+
+    def test_a_patient_in_two_splits_is_refused(self):
+        def edit(videos):
+            videos.loc[videos.study_id == "s4", "patient_id"] = "p1"  # p1 is a train patient
+        self.edit_videos(edit)
+        with self.assertRaisesRegex(ValueError, "1 patients appear in more than one split"):
             self.run_main()
+
+    def test_the_video_index_gives_each_video_its_split_study_and_patient(self):
+        self.run_main()
+        index = pd.read_csv(os.path.join(self.out, "video_index.csv"), dtype=str)
+        self.assertEqual(list(index.columns), ["split", "video_path", "study_id", "patient_id"])
+        for split in ("train", "val", "test"):
+            self.assertEqual(index[index.split == split].video_path.tolist(), self.read(split).path.tolist())
+        self.assertEqual(index.set_index("video_path").loc["/synthetic/p4/s4/0000.mp4"].tolist(), ["val", "s4", "p4"])
+        with open(os.path.join(self.out, "probe_info.json")) as f:
+            info = json.load(f)
+        self.assertEqual(info["outputs"]["video_index.csv"]["rows"], 9)  # 5 + 2 + 2 A4C videos
+        self.assertEqual(info["patients_in_several_splits"], 0)
 
     def test_output_folder_rules(self):
         with self.assertRaisesRegex(SystemExit, "inside the code repository"):

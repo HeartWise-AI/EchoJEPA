@@ -1,11 +1,13 @@
 # configs/eval/vitb16/lvef-a4c-224px-16f.yaml
 #
 # Frozen attentive probe for LVEF regression on A4C videos using a pretrained V-JEPA 2.1 ViT-B encoder.
-# Validation selects the best probe; `--test_only` evaluates it on the held-out test set.
+# Validation selects the best probe; `--test_only` evaluates it on the held-out test set. The test runs
+# once: it refuses a probe that already has `test_metrics.json`.
 #
 # Results go to `<folder>/video_classification_frozen/<tag>/`. Once the probe has finished,
 # `python -m evals.main --fname <this config> --test_only` scores `dataset_test` with the epoch and
 # head chosen on validation (`best.pt`) and writes `test_metrics.json` and `test_predictions.csv`.
+# Protocol, metrics and reproduction: `docs/visual_ef_probe.md`.
 
 app: vjepa
 eval_name: video_classification_frozen
@@ -18,6 +20,7 @@ num_workers: 8
 resume_checkpoint: true
 
 meta:
+  seed: 0                                         # probe initialization, data order and augmentation.
   wandb_project: null
   wandb_entity: mhi_ai
   # wandb_run_name: null
@@ -42,6 +45,15 @@ experiment:
     num_views_per_segment: 1
     target_mean: null                             # from `probe_info.json`.
     target_std: null                              # from `probe_info.json`.
+    video_index: /your_probe_manifests/video_index.csv  # each video's study and patient, for study-level metrics.
+
+  evaluation:
+    low_ef_below: 40                              # reduced EF: a reference EF below 40.
+    ef_ranges: [30, 40, 50, 60]                   # error by reference EF range: <30, 30-40, ..., >=60.
+    targets:                                      # reference targets per study.
+      level: study
+      mae_below: 5.0
+      auroc_above: 0.95
 
   optimization:
     batch_size: 4                                 # per GPU.
