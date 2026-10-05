@@ -7,6 +7,7 @@ that nothing is logged without a project, and the test's plots."""
 
 import contextlib
 import io
+import json
 import os
 import tempfile
 import unittest
@@ -243,6 +244,18 @@ class TestProbeWandb(QuietLogs):
         best = min(run.logged, key=lambda p: p["probe/val_study_mae"])["probe/epoch"]
         self.assertEqual(run.logged[-1]["probe/best_epoch"], best)
 
+    def test_relative_paths_are_cut_to_their_last_component(self):
+        cfg = {"folder": "patient_123/run", "experiment": {"data": {
+            "dataset_train": "data/patient_123/train.csv", "video_index": "../sensitive/video_index.csv",
+            "dataset_val": "val.csv"}}, "other": "./patient_9/x", "home": "~/patient_9/y",
+            "windows": "C:\\patients\\p1\\a.csv", "lists": ["rel/a.csv", "/abs/b.csv"],
+            "module_name": "evals.video_classification_frozen.modelcustom.vjepa_2_1_encoder", "tag": "lvef-a4c"}
+        self.assertEqual(provenance.public_config(cfg), {
+            "folder": "run", "experiment": {"data": {"dataset_train": "train.csv", "video_index": "video_index.csv",
+                                                     "dataset_val": "val.csv"}},
+            "other": "x", "home": "y", "windows": "a.csv", "lists": ["a.csv", "b.csv"],
+            "module_name": "evals.video_classification_frozen.modelcustom.vjepa_2_1_encoder", "tag": "lvef-a4c"})
+
     def test_the_config_records_the_run_without_paths(self):
         self.run_probe(self.config(epochs=1))
         [call] = self.wandb.calls
@@ -293,6 +306,20 @@ class TestProbeWandb(QuietLogs):
     def test_without_a_project_nothing_is_logged(self):
         self.assertIsNone(self.run_probe(self.config(epochs=1, wandb=False)))
         self.assertEqual(self.wandb.calls, [])
+
+    def test_a_regression_probe_needs_its_normalization(self):
+        for mean, std, message in ((None, 10.0, "Set `experiment.data.target_mean`"),
+                                   (55.0, 0.0, "standard deviation positive")):
+            cfg = self.config(epochs=1)
+            cfg["experiment"]["data"].update(target_mean=mean, target_std=std)
+            with self.subTest(mean=mean, std=std), self.assertRaisesRegex(ValueError, message):
+                self.run_probe(cfg)
+
+    def test_the_normalization_matches_the_manifests_probe_info(self):
+        with open(os.path.join(self.tmp, "probe_info.json"), "w") as f:
+            json.dump({"target_mean": 55.0, "target_std": 9.0}, f)  # next to the train manifest
+        with self.assertRaisesRegex(ValueError, "differ from the probe_info.json"):
+            self.run_probe(self.config(epochs=1))  # target_std 10.0
 
     def test_study_targets_need_the_video_index(self):
         cfg = self.config(epochs=1, index=False)

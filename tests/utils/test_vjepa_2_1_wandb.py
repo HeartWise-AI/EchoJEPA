@@ -119,6 +119,21 @@ class TestTrainerWandb(QuietLogs):
             train.main(cfg)
         return self.wandb.runs[-1] if self.wandb.runs else None
 
+    def test_the_run_config_holds_no_path(self):
+        cfg = config(os.path.join(self.tmp, "pretrain"))
+        self.run_trainer(cfg)
+        sent = self.wandb.calls[0]["config"]
+        self.assertEqual(sent["folder"], "pretrain")  # its folder name, not where it is
+
+        def strings(value):
+            if isinstance(value, dict):
+                return [s for v in value.values() for s in strings(v)]
+            if isinstance(value, list):
+                return [s for v in value for s in strings(v)]
+            return [value] if isinstance(value, str) else []
+
+        self.assertFalse([s for s in strings(sent) if "/" in s or self.tmp in s])
+
     def test_the_shipped_configs_upload_no_input_clips(self):
         run = self.run_trainer(config(os.path.join(self.tmp, "pretrain")))  # `num_log_videos: 0`, as shipped
         self.assertTrue(run.logged)

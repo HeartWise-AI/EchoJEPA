@@ -5,6 +5,7 @@ CPU with a tiny V-JEPA 2.1 encoder, synthetic clips and a fake wandb."""
 
 import json
 import os
+import shutil
 from unittest import mock
 
 import numpy as np
@@ -18,6 +19,34 @@ from tests.utils import test_probe_wandb as probe_wandb
 from tests.utils.test_vjepa_2_1_utils import QuietLogs
 
 TEST_VIDEOS = probe_wandb.VIDEOS["test"]
+
+
+def scripted(scores):
+    """`validate`, with the per-study MAE that selects the probe taken from `scores`, one row of
+    head scores per epoch."""
+    rows = iter(scores)
+    validate = probe.validate
+
+    def scored(*args, **kwargs):
+        return dict(validate(*args, **kwargs), study_mae=np.asarray(next(rows), dtype=float))
+
+    return scored
+
+
+def failing_save(epoch, name, error):
+    """`save_atomically`, raising `error` at the file `name` of epoch `epoch`: before writing it
+    (an `OSError`, as a full disk) or after (an interruption)."""
+    save = probe.save_atomically
+
+    def saving(obj, path):
+        at = obj["epoch"] == epoch and os.path.basename(path) == name
+        if at and error is OSError:
+            raise OSError("No space left on device")
+        save(obj, path)
+        if at:
+            raise error
+
+    return saving
 
 
 class TestProbeTestSplit(QuietLogs):
@@ -154,6 +183,67 @@ class TestProbeTestSplit(QuietLogs):
         with open(os.path.join(self.folder(cfg), "test_metrics.json")) as f:
             self.assertEqual(f.read(), first)
 
+    # -- Checkpoints: `latest.pt` records an epoch only once that epoch's files are written, and
+    #    the test takes `best.pt` only if it is the epoch `latest.pt` records as the best.
+
+    def load(self, cfg, name):
+        return torch.load(os.path.join(self.folder(cfg), name), map_location="cpu", weights_only=False)
+
+    def test_a_checkpoint_is_replaced_whole_or_not_at_all(self):
+        path = os.path.join(self.tmp, "latest.pt")
+        probe.save_atomically({"epoch": 1}, path)
+
+        def partial(obj, f):
+            with open(f, "wb") as out:
+                out.write(b"PK")
+            raise OSError("No space left on device")
+
+        with mock.patch.object(probe.torch, "save", side_effect=partial), self.assertRaises(OSError):
+            probe.save_atomically({"epoch": 2}, path)
+        self.assertEqual(torch.load(path, weights_only=True)["epoch"], 1)
+
+    def test_an_epoch_whose_best_pt_was_not_saved_is_trained_again(self):
+        cfg = self.config(epochs=2)
+        with mock.patch.object(probe, "validate", side_effect=scripted([[5, 6], [1, 2]])), \
+                mock.patch.object(probe, "save_atomically", side_effect=failing_save(2, "best.pt", OSError)), \
+                self.assertRaises(OSError):
+            self.run_probe(cfg)
+        latest = self.load(cfg, "latest.pt")
+        self.assertEqual((latest["epoch"], latest["best_epoch"], self.load(cfg, "best.pt")["epoch"]), (1, 1, 1))
+        with self.assertRaisesRegex(RuntimeError, "finished 1 of 2 epochs"):
+            self.run_probe(cfg, test=True)
+
+        with mock.patch.object(probe, "validate", side_effect=scripted([[1, 2]])):
+            self.run_probe(cfg)  # epoch 2 again
+        self.run_probe(cfg, test=True)
+        self.assertEqual((self.result(cfg)["epoch"], self.result(cfg)["head"]), (2, 0))
+
+    def test_a_best_pt_the_checkpoint_does_not_record_is_restored_on_resume(self):
+        cfg = self.config(epochs=2)
+        stopped = probe_wandb.Interrupted
+        with mock.patch.object(probe, "validate", side_effect=scripted([[5, 6], [1, 2]])), \
+                mock.patch.object(probe, "save_atomically", side_effect=failing_save(2, "best.pt", stopped)), \
+                self.assertRaises(stopped):
+            self.run_probe(cfg)  # stopped between epoch 2's `best.pt` and its `latest.pt`
+        self.assertEqual((self.load(cfg, "latest.pt")["best_epoch"], self.load(cfg, "best.pt")["epoch"]), (1, 2))
+
+        # Trained again, epoch 2 now scores worse than epoch 1 (GPU runs are not bit-exact).
+        with mock.patch.object(probe, "validate", side_effect=scripted([[7, 8]])):
+            self.run_probe(cfg)
+        self.assertEqual((self.load(cfg, "latest.pt")["best_epoch"], self.load(cfg, "best.pt")["epoch"]), (1, 1))
+        self.run_probe(cfg, test=True)
+        self.assertEqual((self.result(cfg)["epoch"], self.result(cfg)["val_study_mae"]), (1, 5.0))
+
+    def test_a_best_pt_other_than_the_selected_epoch_is_not_tested(self):
+        cfg = self.config(epochs=2)
+        with mock.patch.object(probe, "validate", side_effect=scripted([[5, 6], [1, 2]])):
+            self.run_probe(cfg)
+        folder = self.folder(cfg)
+        shutil.copyfile(os.path.join(folder, "epoch_001.pt"), os.path.join(folder, "best.pt"))
+        with self.assertRaisesRegex(RuntimeError, "holds epoch 1, but training selected epoch 2"):
+            self.run_probe(cfg, test=True)
+        self.assertFalse(os.path.exists(os.path.join(folder, "test_metrics.json")))
+
     # -- A probe is continued and tested only with what it was trained on.
 
     def replace_encoder(self, key="target_encoder"):
@@ -208,6 +298,29 @@ class TestProbeTestSplit(QuietLogs):
             self.assertIn("wandb_run_name: first", f.read())
         with open(os.path.join(folder, "run_info.json")) as f:
             self.assertEqual(f.read(), started)
+
+    def test_a_probe_is_continued_and_tested_only_under_its_protocol(self):
+        cfg = self.config(epochs=2)
+        probe_wandb.TestProbeWandb.interrupted(self, cfg, after=1)
+        latest = os.path.join(self.folder(cfg), "latest.pt")
+        saved = torch.load(latest, map_location="cpu", weights_only=False)
+        self.assertEqual(saved["fingerprint"]["settings"]["protocol"], probe.PROTOCOL)
+        later = probe.PROTOCOL["version"] + 1
+        with mock.patch.dict(probe.PROTOCOL, version=later), \
+                self.assertRaisesRegex(ValueError, "another settings.protocol.version"):
+            self.run_probe(cfg)
+        # As the code before the protocol was recorded (random evaluation clips) saved it.
+        del saved["fingerprint"]["settings"]["protocol"]
+        torch.save(saved, latest)
+        with self.assertRaisesRegex(ValueError, "another settings.protocol than .* an earlier protocol"):
+            self.run_probe(cfg)
+
+        finished = dict(self.config(epochs=1), tag="finished")
+        self.run_probe(finished)
+        with mock.patch.dict(probe.PROTOCOL, version=later), \
+                self.assertRaisesRegex(ValueError, "another settings.protocol.version"):
+            self.run_probe(finished, test=True)
+        self.assertFalse(os.path.exists(os.path.join(self.folder(finished), "test_metrics.json")))
 
     def test_a_probe_without_a_fingerprint_is_not_tested(self):
         cfg = self.config(epochs=1)

@@ -27,6 +27,27 @@ except ImportError:
 # epoch-boundary resume.
 STEP_METRIC = "train/global_step"
 
+# Config keys whose values are filesystem paths, whatever their form (relative ones included).
+PATH_KEYS = frozenset({
+    "folder", "checkpoint", "probe_checkpoint", "predictions_save_path", "subset_file", "log_dir",
+    "datasets", "dataset_train", "dataset_val", "dataset_test", "video_index",
+    "init_checkpoint", "read_checkpoint", "anneal_ckpt",
+})
+
+
+def public_config(value, key=None):
+    """The config with every filesystem path cut to its last component (a file or folder name), for
+    wandb, which must not receive paths: any value under a key of `PATH_KEYS`, and any string that
+    is absolute, starts with `~` or `.`, or contains a path separator."""
+    if isinstance(value, dict):
+        return {k: public_config(v, k) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [public_config(v, key) for v in value]
+    if isinstance(value, str) and (key in PATH_KEYS or os.path.isabs(value) or value.startswith(("~", "."))
+                                   or "/" in value or "\\" in value):
+        return os.path.basename(value.replace("\\", "/").rstrip("/"))
+    return value
+
 def init_wandb(
     cfgs_meta,
     args,
@@ -41,7 +62,8 @@ def init_wandb(
 
     Args:
         cfgs_meta: the `meta` block of the training config.
-        args: the full config, recorded as the run's config.
+        args: the full config, recorded as the run's config with its paths cut to file and
+            folder names (`public_config`).
         rank: distributed rank; only rank 0 opens a run.
         folder: the run's checkpoint folder, also used as the wandb dir.
         resuming_training: True only when this job is continuing an existing training run.
@@ -115,7 +137,7 @@ def init_wandb(
             # "never": keeps fresh jobs fresh.
             resume="must" if run_id else "never",
             dir=folder,
-            config=args,
+            config=public_config(args),
             **({"settings": settings} if settings is not None else {}),
         )
     except Exception as e:

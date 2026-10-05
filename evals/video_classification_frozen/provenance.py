@@ -12,6 +12,8 @@ import subprocess
 
 import pandas as pd
 
+from src.utils.wandb_logging import public_config  # noqa: F401  (the probe's callers import it from here)
+
 # Finds the repository root, to be later used by `git_state()`.
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -27,6 +29,7 @@ PRIVATE_WANDB_SETTINGS = {
 }
 
 INDEX_COLUMNS = ("split", "video_path", "study_id", "patient_id")
+SPLITS = ("train", "val", "test")
 
 
 def sha256(path, chunk=1 << 20):
@@ -82,7 +85,9 @@ def check_fingerprint(saved, current, what, ignore=()):
                          "against it: start the probe in a new folder.")
     diffs = differences(saved, current, ignore)
     if diffs:
-        raise ValueError(f"{what} was trained with another {', '.join(diffs)} than this config gives: "
+        protocol = (" (`settings.protocol` comes from the code: the probe was trained under an earlier "
+                    "protocol)" if any(d.startswith("settings.protocol") for d in diffs) else "")
+        raise ValueError(f"{what} was trained with another {', '.join(diffs)} than this config gives{protocol}: "
                          "a probe is continued and tested only as it was trained. Start a new folder "
                          "for a new probe.")
 
@@ -107,24 +112,12 @@ def git_state():
         return "unknown", None
 
 
-def public_config(value):
-    """Return a wandb-safe copy of the config with absolute paths reduced to file names.
-    This prevents local filesystem paths from being sent to wandb."""
-    # Recursive: handles nested dictionaries/lists/tuples.
-    if isinstance(value, dict):
-        return {k: public_config(v) for k, v in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [public_config(v) for v in value]
-    if isinstance(value, str) and (os.path.isabs(value) or value.startswith("~")):
-        return os.path.basename(value.rstrip("/"))
-    return value
-
-
 def load_video_index(path):
     """Load and validate the video index produced by `data/make_probe_manifests.py`: one row per video
     with its split, study and patient, indexed by video path.
 
-    Raises an error if a video appears more than once or if a patient appears in more than one split.
+    Raises an error if a row lacks a value, a split is not train, val or test, a video appears more
+    than once, or a patient appears in more than one split.
     """
     # Reads everything as strings to prevent accidentally converting numeric identifiers.
     index = pd.read_csv(path, dtype={c: str for c in INDEX_COLUMNS})
@@ -132,6 +125,15 @@ def load_video_index(path):
     missing = [c for c in INDEX_COLUMNS if c not in index.columns]
     if missing:
         raise ValueError(f"The video index {os.path.basename(path)} lacks the columns {missing}.")
+    # Every row needs all four values: a missing patient would escape the leakage check below
+    # (groupby drops it). Splits are train, val and test.
+    empty = {c: int((index[c].isna() | (index[c].str.strip() == "")).sum()) for c in INDEX_COLUMNS}
+    empty = {c: n for c, n in empty.items() if n}
+    if empty:
+        raise ValueError(f"The video index has rows without a value in {empty}.")
+    unknown = sorted(set(index.split) - set(SPLITS))
+    if unknown:
+        raise ValueError(f"The video index has unknown splits {unknown}; expected {list(SPLITS)}.")
     # Duplicate video check: a particular video must appear only once.
     if index.video_path.duplicated().any():
         raise ValueError(f"The video index lists {int(index.video_path.duplicated().sum())} videos twice.")

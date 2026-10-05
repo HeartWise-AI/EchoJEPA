@@ -7,18 +7,21 @@ and a launcher that fails when a rank fails."""
 
 import os
 import sys
+import tempfile
 import unittest
 from datetime import timedelta
 from types import SimpleNamespace
 from unittest import mock
 
 import numpy as np
+import pandas as pd
 import torch
 import torch.distributed as dist
 import torch.multiprocessing as mp
 
 from evals import main as eval_launcher
 from evals.video_classification_frozen import eval as probe
+from evals.video_classification_frozen import provenance
 from src.models.attentive_pooler import AttentiveRegressor
 from tests.utils import test_probe_wandb as probe_wandb
 from tests.utils.test_vjepa_2_1_utils import QuietLogs, _free_port
@@ -221,6 +224,31 @@ class TestEvalLauncher(unittest.TestCase):
     def test_a_failed_rank_fails_the_command(self):
         with self.assertRaisesRegex(SystemExit, r"rank\(s\) \[1\]"):
             self.launch("1")
+
+
+class TestVideoIndex(unittest.TestCase):
+    """The video index the leakage check relies on: every row complete, known splits only."""
+
+    ROWS = [("train", "a.mp4", "s1", "p1"), ("val", "b.mp4", "s2", "p2"), ("test", "c.mp4", "s3", "p3")]
+
+    def load(self, rows):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "video_index.csv")
+            pd.DataFrame(rows, columns=provenance.INDEX_COLUMNS).to_csv(path, index=False)
+            return provenance.load_video_index(path)
+
+    def test_a_complete_index_loads(self):
+        self.assertEqual(list(self.load(self.ROWS).index), ["a.mp4", "b.mp4", "c.mp4"])
+
+    def test_a_row_without_a_patient_is_refused(self):
+        # Two videos without a patient, in train and validation: groupby would drop both, unchecked.
+        rows = self.ROWS + [("train", "d.mp4", "s4", None), ("val", "e.mp4", "s5", " ")]
+        with self.assertRaisesRegex(ValueError, "without a value in {'patient_id': 2}"):
+            self.load(rows)
+
+    def test_an_unknown_split_is_refused(self):
+        with self.assertRaisesRegex(ValueError, "unknown splits \\['validation'\\]"):
+            self.load(self.ROWS + [("validation", "d.mp4", "s4", "p4")])
 
 
 if __name__ == "__main__":

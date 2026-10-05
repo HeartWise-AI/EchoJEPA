@@ -12,6 +12,7 @@ import yaml
 
 from app.vjepa_2_1.utils import init_video_model
 from evals.video_classification_frozen.modelcustom import vjepa_2_1_encoder
+from src.models.attentive_pooler import AttentiveRegressor
 from tests.utils.test_vjepa_2_1_baseline import shipped
 from tests.utils.test_vjepa_2_1_utils import QuietLogs
 
@@ -54,6 +55,23 @@ class TestVJEPA21EvalEncoder(QuietLogs):
         self.assertEqual(tuple(outputs[0].shape), (2, 2 * 2 * 2, 192))  # 2 tubelets x 2 x 2 patches
         self.assertTrue(torch.allclose(outputs[0], expected, atol=1e-6))
         self.assertEqual(model.embed_dim, 192)
+
+    def test_a_videos_clips_become_one_token_sequence_for_the_probe(self):
+        # The probe's 2 segments x 1 view: each clip is embedded on its own, and the tokens of both
+        # are concatenated along time into one sequence, which the head pools into one prediction.
+        model = self.load().eval()
+        clips = [torch.randn(2, 3, 4, 32, 32), torch.randn(2, 3, 4, 32, 32)]
+        with torch.no_grad():
+            outputs = model([[c] for c in clips])
+            each = [self.encoder.backbone.eval()(c) for c in clips]
+        self.assertEqual(len(outputs), 1)  # one sequence per spatial view, not one per clip
+        self.assertTrue(torch.allclose(outputs[0], torch.cat(each, dim=1), atol=1e-6))
+        torch.manual_seed(0)
+        head = AttentiveRegressor(embed_dim=192, num_heads=4, depth=1, num_targets=1).eval()
+        with torch.no_grad():
+            joint, mean_of_clips = head(outputs[0]), (head(each[0]) + head(each[1])) / 2
+        self.assertEqual(tuple(joint.shape), (2, 1))
+        self.assertFalse(torch.allclose(joint, mean_of_clips))  # attentive pooling, not a mean over clips
 
     def test_an_encoder_built_differently_fails_to_load(self):
         with self.assertRaises(RuntimeError):

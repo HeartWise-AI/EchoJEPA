@@ -23,6 +23,7 @@ import logging
 import math
 import pprint
 import random
+import shutil
 
 import numpy as np
 import pandas as pd
@@ -81,12 +82,22 @@ SELECTION = {
     "video": ("Select the epoch and probe head with the lowest per-video validation MAE; "
               "after each epoch, every validation video is evaluated once by every head."),
 }
-AGGREGATION = ("Video prediction: mean over all clips (num_segments x num_views_per_segment); "
-               "study prediction: mean over all videos in the study.")
+AGGREGATION = ("Video prediction: the encoder embeds each of the video's num_segments clips, their tokens are "
+               "concatenated along time, and the attentive probe pools them into one prediction (averaged over "
+               "num_views_per_segment spatial views); study prediction: mean over all videos in the study.")
 THRESHOLD_RULE = ("predicted EF below the threshold is classified as reduced EF; the threshold is "
                   "chosen on the validation set to maximize sensitivity + specificity - 1, using "
                   "study-level predictions for study-level targets and video-level predictions for "
                   "video-level targets; ties are resolved by choosing the threshold closest to the EF cutoff.")
+# How the clips of each split are drawn and batched (`make_dataloader`). The fingerprint holds it, so a
+# probe is continued and tested only under the protocol it was trained with. Raise the version whenever
+# the code changes how the probe is trained or evaluated in a way these fields do not describe.
+# Version 1, the code before this field, also drew random clip positions in evaluation.
+PROTOCOL = {
+    "version": 2,
+    "train": {"clip_positions": "random", "drop_last": True},
+    "evaluation": {"clip_positions": "fixed", "drop_last": False},
+}
 
 # --- INSERT THIS CLASS IN eval.py ---
 class FocalLoss(torch.nn.Module):
@@ -228,6 +239,8 @@ def main(args_eval, resume_preempt=False):
     # --- NEW: Get Mean/Std from config ---
     target_mean = args_data.get("target_mean", None)
     target_std = args_data.get("target_std", None)
+    if task_type == "regression":
+        check_normalization(target_mean, target_std, args_data.get("dataset_train"))
     # Maps each video to its study and patient (`data/make_probe_manifests.py`): needed for
     # study-level metrics and the patient-leakage check.
     video_index_path = args_data.get("video_index", None)
@@ -449,6 +462,9 @@ def main(args_eval, resume_preempt=False):
     )
     ipe = len(train_loader)
     logger.info(f"Dataloader created... iterations per epoch: {ipe}")
+    if ipe == 0 and not (test_only or val_only):
+        raise ValueError(f"The training manifest gives no full batch of {batch_size} on each of {world_size} GPUs: "
+                         "nothing to train on.")
 
     # -- optimizer and scheduler
     optimizer, scaler, scheduler, wd_scheduler = init_opt(
@@ -491,6 +507,7 @@ def main(args_eval, resume_preempt=False):
         "optimization": {"batch_size": batch_size, "num_epochs": num_epochs, "use_bfloat16": use_bfloat16,
                          "use_focal_loss": use_focal_loss, "multihead_kwargs": args_opt.get("multihead_kwargs")},
         "selection": selection,
+        "protocol": copy.deepcopy(PROTOCOL),
         "seed": seed,
         "world_size": world_size,
     }
@@ -548,12 +565,8 @@ def main(args_eval, resume_preempt=False):
     head_names = [f"head{i}_lr{k['ref_lr']:g}_wd{k['ref_wd']:g}" for i, k in enumerate(opt_kwargs)]
 
     if test_only:
-        # Only a finished probe is tested: its `best.pt` must have seen every epoch.
-        finished_path = os.path.join(folder, "latest.pt")
-        done = (torch.load(finished_path, map_location="cpu", weights_only=False, mmap=True)["epoch"]
-                if os.path.exists(finished_path) else 0)
-        if done < num_epochs:
-            raise RuntimeError(f"The probe has finished {done} of {num_epochs} epochs; test it once it is complete.")
+        # Only a finished probe is tested, with the epoch its training selected.
+        check_finished(folder, num_epochs)
         # Score the test set only once to prevent test results from influencing model selection.
         if os.path.exists(os.path.join(folder, "test_metrics.json")):
             raise RuntimeError("This probe has already been tested (`test_metrics.json` exists); repeat testing only "
@@ -619,6 +632,7 @@ def main(args_eval, resume_preempt=False):
         
         all_classifier_dicts = [c.state_dict() for c in classifiers]
         all_opt_dicts = [o.state_dict() for o in optimizer]
+        rng_states = gather_rng_states(world_size)  # on every rank, before rank 0 saves.
 
         save_dict = {
             "classifiers": all_classifier_dicts,
@@ -639,23 +653,19 @@ def main(args_eval, resume_preempt=False):
             "selection_metric": selected,       # what `val_acc_per_head` holds.
             "val_scores_per_head": val_scores,  # every validation metric of the epoch, per head.
             "fingerprint": fingerprint,  # data and settings used to train the probe heads.
+            "rng_states": rng_states,  # each rank's random number state, for an exact resume.
             "opt_grid": opt_kwargs,
         }
         
         if rank == 0:
-            # 1. Always save latest
-            _latest_path = os.path.join(folder, "latest.pt")
-            torch.save(save_dict, _latest_path)
-
-            # 2. Save per-epoch snapshot
-            epoch_path = os.path.join(folder, f"epoch_{epoch:03d}.pt")
-            torch.save(save_dict, epoch_path)
-            
-            # 3. --- NEW: Save BEST checkpoint ---
+            # The epoch's snapshot, then `best.pt` if the epoch is the best, and `latest.pt` last: a
+            # run stopped in between leaves `latest.pt` at the previous epoch, which is trained again.
+            save_atomically(save_dict, os.path.join(folder, f"epoch_{epoch:03d}.pt"))
             if is_best:
                 best_path = os.path.join(folder, "best.pt")
-                torch.save(save_dict, best_path)
+                save_atomically(save_dict, best_path)
                 logger.info(f"Generated new best model: {best_path}")
+            save_atomically(save_dict, os.path.join(folder, "latest.pt"))
 
     # ---- per-head running stats ----
     best_per_head = None
@@ -699,6 +709,18 @@ def main(args_eval, resume_preempt=False):
         sum_per_head = np.asarray(history["mean_val_acc_per_head"], dtype=float) * start_epoch
         best_epoch_per_head = np.asarray(history["best_epoch_per_head"], dtype=int)
         best_epoch = history.get("best_epoch")
+        if rank == 0 and best_epoch is not None:
+            restore_best(folder, best_epoch)
+
+    # Continue each rank's random number streams where the interrupted run saved them, so the
+    # resumed probe draws the same data order, augmentation and clip positions as an
+    # uninterrupted one (the loader's workers are re-created, and re-seeded, every epoch).
+    if start_epoch > 0 and not val_only:
+        if history.get("rng_states"):
+            set_rng_state(history["rng_states"][rank])
+        else:
+            logger.warning("The checkpoint has no random number state: the resumed run draws other data "
+                           "orders and augmentations than an uninterrupted one.")
 
     for epoch in range(start_epoch, num_epochs):
         logger.info("Epoch %d" % (epoch + 1))
@@ -1147,8 +1169,8 @@ def score_videos(device, encoder, heads, dataset, batch_size, num_workers, use_b
         with torch.no_grad(), autocast("cuda", dtype=torch.bfloat16, enabled=use_bfloat16):
             clips = [[dij.to(device, non_blocking=True) for dij in di] for di in data[0]]
             clip_indices = [d.to(device, non_blocking=True) for d in data[2]]
-            # Compute one encoder representation per clip (segments x views), then reuse those
-            # representations across all probe heads.
+            # One token sequence per spatial view, holding the tokens of all the video's clips
+            # (`ClipAggregation`), reused by every probe head.
             features = encoder(clips, clip_indices)
             outputs = [[m(f) for f in features] for m in modules]
         for head_predictions, outs in zip(predictions, outputs):
@@ -1454,6 +1476,7 @@ def describe_run(args_eval, checkpoint, manifests, fingerprint, video_index, see
             "heads": opt_kwargs,
         },
         "aggregation": AGGREGATION,
+        "protocol": PROTOCOL,
         "selection": SELECTION[selection],
         "low_ef_below": low_ef_below,
         "low_ef_threshold_rule": THRESHOLD_RULE,
@@ -1484,6 +1507,55 @@ def save_run_record(folder, args_eval, run_info, fresh):
         json.dump(run_info, f, indent=2)
 
 
+def check_normalization(mean, std, train_manifest):
+    """Refuse a regression probe without a usable EF normalization: the probe manifests hold
+    z-scored EF, so a missing mean or standard deviation would report z-scores as EF points. When
+    the train manifest's folder holds the `probe_info.json` written with it, the two must agree."""
+    try:
+        mean, std = float(mean), float(std)
+    except (TypeError, ValueError):
+        raise ValueError("Set `experiment.data.target_mean` and `target_std` (from the manifests' "
+                         "probe_info.json).") from None
+    if not (math.isfinite(mean) and math.isfinite(std) and std > 0):
+        raise ValueError(f"`experiment.data.target_mean` and `target_std` must be finite and the standard "
+                         f"deviation positive, not {mean} and {std}.")
+    info_path = os.path.join(os.path.dirname(train_manifest), "probe_info.json") if train_manifest else None
+    if info_path and os.path.exists(info_path):
+        with open(info_path) as f:
+            info = json.load(f)
+        if not (math.isclose(mean, info["target_mean"], rel_tol=1e-9)
+                and math.isclose(std, info["target_std"], rel_tol=1e-9)):
+            raise ValueError(f"`target_mean` / `target_std` ({mean}, {std}) differ from the probe_info.json next "
+                             f"to the train manifest ({info['target_mean']}, {info['target_std']}).")
+
+
+def gather_rng_states(world_size):
+    """Every rank's random number state (Python, NumPy, Torch CPU and CUDA), in rank order, held in
+    tensors and plain values so `torch.load(weights_only=True)` reads it back."""
+    kind, keys, pos, has_gauss, cached = np.random.get_state()
+    state = {"python": random.getstate(),
+             "numpy": {"kind": kind, "keys": torch.from_numpy(keys.astype(np.int64)), "pos": int(pos),
+                       "has_gauss": int(has_gauss), "cached_gaussian": float(cached)},
+             "torch": torch.get_rng_state(),
+             "cuda": torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None}
+    if dist.is_available() and dist.is_initialized() and world_size > 1:
+        states = [None] * world_size
+        dist.all_gather_object(states, state)
+        return states
+    return [state]
+
+
+def set_rng_state(state):
+    """Restore one rank's random number state saved by `gather_rng_states`."""
+    random.setstate(tuple(tuple(v) if isinstance(v, list) else v for v in state["python"]))
+    n = state["numpy"]
+    np.random.set_state((n["kind"], n["keys"].numpy().astype(np.uint32), n["pos"], n["has_gauss"],
+                         n["cached_gaussian"]))
+    torch.set_rng_state(state["torch"])
+    if state.get("cuda") is not None and torch.cuda.is_available():
+        torch.cuda.set_rng_state_all(state["cuda"])
+
+
 def check_split(index, dataset, split):
     """Validate that every manifest video exists in the video index and belongs to the expected split."""
     samples = getattr(dataset, "samples", None)
@@ -1512,6 +1584,50 @@ def shared_fingerprint(rank, world_size, device, checkpoint, manifests, normaliz
         # Rank 0 sends the fingerprint to all other ranks.
         dist.broadcast_object_list(shared, src=0)
     return shared[0]
+
+
+def save_atomically(obj, path):
+    """`torch.save` to a temporary file renamed to `path`: `path` holds the old or the new
+    checkpoint, never part of one."""
+    tmp = f"{path}.tmp"
+    torch.save(obj, tmp)
+    os.replace(tmp, path)
+
+
+def check_finished(folder, num_epochs):
+    """Refuse to test a probe that has not finished training, or whose `best.pt` is not the epoch
+    `latest.pt` records as the best (by epoch and validation score)."""
+    def saved(name):
+        path = os.path.join(folder, name)
+        return torch.load(path, map_location="cpu", weights_only=False, mmap=True) if os.path.exists(path) else {}
+
+    latest = saved("latest.pt")
+    done = latest.get("epoch", 0)
+    if done < num_epochs:
+        raise RuntimeError(f"The probe has finished {done} of {num_epochs} epochs; test it once it is complete.")
+    best = saved("best.pt")
+    recorded = (latest.get("best_epoch"), latest.get("best_val_acc"))
+    if (best.get("epoch"), best.get("best_val_acc")) != recorded:
+        raise RuntimeError(f"`best.pt` holds epoch {best.get('epoch')}, but training selected epoch {recorded[0]} "
+                           f"(validation {recorded[1]}): the folder does not hold the selected probe.")
+
+
+def restore_best(folder, best_epoch):
+    """Before training resumes, make `best.pt` the best epoch `latest.pt` records. They differ when a
+    run stopped after saving an epoch's `best.pt` and before its `latest.pt`: that epoch is trained
+    again, and `best.pt` goes back to the recorded best epoch, copied from its snapshot."""
+    best_path = os.path.join(folder, "best.pt")
+    if (os.path.exists(best_path)
+            and torch.load(best_path, map_location="cpu", weights_only=False, mmap=True)["epoch"] == best_epoch):
+        return
+    snapshot = os.path.join(folder, f"epoch_{best_epoch:03d}.pt")
+    if not os.path.exists(snapshot):
+        logger.warning(f"`best.pt` is not epoch {best_epoch}, the best epoch the checkpoint records, and that "
+                       "epoch's snapshot is not in the folder: `--test_only` will refuse this probe.")
+        return
+    shutil.copyfile(snapshot, f"{best_path}.tmp")
+    os.replace(f"{best_path}.tmp", best_path)
+    logger.warning(f"`best.pt` held an epoch the checkpoint does not record; restored epoch {best_epoch}.")
 
 
 def checkpoint_reference(path, task_type, head_names, fingerprint, sha=None):
@@ -1578,7 +1694,7 @@ def load_checkpoint(device, r_path, classifiers, opt, scaler, val_only=False):
     logger.info(f"loaded optimizers from epoch {epoch}")
     # Keep the validation history so a resumed probe can continue from the previous run.
     history_keys = ("mean_val_acc", "best_val_acc", "best_val_acc_per_head", "mean_val_acc_per_head",
-                    "min_val_acc_per_head", "best_epoch_per_head", "best_epoch", "fingerprint")
+                    "min_val_acc_per_head", "best_epoch_per_head", "best_epoch", "fingerprint", "rng_states")
     history = {k: checkpoint[k] for k in history_keys if k in checkpoint}
     return classifiers, opt, scaler, epoch, history
 
@@ -1647,6 +1763,9 @@ def make_dataloader(
         normalize=normalization,
     )
 
+    # Training: a random clip position in each segment, and each GPU's last incomplete batch
+    # dropped. Evaluation: the start of each segment, every time, and every video kept.
+    sampling = PROTOCOL["train" if training else "evaluation"]
     data_loader, data_sampler = init_data(
         data=dataset_type,
         root_path=root_path,
@@ -1660,7 +1779,8 @@ def make_dataloader(
         num_clips=num_segments,
         allow_clip_overlap=allow_segment_overlap,
         num_workers=num_workers,
-        drop_last=False,
+        random_clip_sampling=sampling["clip_positions"] == "random",
+        drop_last=sampling["drop_last"],
         subset_file=subset_file,
     )
     return data_loader, data_sampler

@@ -3,7 +3,8 @@
 """An end-to-end smoke run of the frozen Visual EF probe on a small fixture, on CPU: tiny real
 videos in the issue #6 manifest layout, `data/make_probe_manifests.py`, the real video loader,
 a tiny V-JEPA 2.1 encoder, two probe epochs and the test. Run twice with the same seed, it gives
-the same probe and the same numbers."""
+the same probe and the same numbers, and so does a run interrupted after its first epoch and
+resumed. Evaluation reads the same frames every time; training drops a last incomplete batch."""
 
 import contextlib
 import io
@@ -20,7 +21,7 @@ import torch
 
 from app.vjepa_2_1.utils import init_video_model
 from evals.video_classification_frozen import eval as probe
-from tests.utils.test_probe_wandb import GRID
+from tests.utils.test_probe_wandb import GRID, Interrupted, stop_after
 from tests.utils.test_vjepa_2_1_eval_encoder import OPTIONS
 from tests.utils.test_vjepa_2_1_utils import QuietLogs
 
@@ -116,11 +117,16 @@ class TestProbeSmoke(QuietLogs):
             },
         }
 
-    def train_and_test(self, name):
-        cfg = self.config(os.path.join(self.tmp, name))
+    @contextlib.contextmanager
+    def on_cpu(self):
         with mock.patch("torch.cuda.is_available", return_value=False), \
                 mock.patch("torch.cuda.max_memory_allocated", return_value=0), \
                 mock.patch.object(probe.mp, "set_start_method"):
+            yield
+
+    def train_and_test(self, name):
+        cfg = self.config(os.path.join(self.tmp, name))
+        with self.on_cpu():
             probe.main(dict(cfg))
             probe.main(dict(cfg, test_only=True))
         folder = os.path.join(cfg["folder"], "video_classification_frozen", cfg["tag"])
@@ -149,6 +155,57 @@ class TestProbeSmoke(QuietLogs):
         for a, b in zip(first_best["classifiers"], second_best["classifiers"]):
             for name in a:
                 self.assertTrue(torch.equal(a[name], b[name]), name)
+
+
+    def test_a_resumed_probe_continues_as_an_uninterrupted_one(self):
+        def train(name, interrupt):
+            cfg = self.config(os.path.join(self.tmp, name))
+            with self.on_cpu():
+                if interrupt:  # killed after epoch 1, then the same command again
+                    with mock.patch.object(probe, "run_one_epoch", side_effect=stop_after(1, probe.run_one_epoch)), \
+                            self.assertRaises(Interrupted):
+                        probe.main(dict(cfg))
+                probe.main(dict(cfg))
+            folder = os.path.join(cfg["folder"], "video_classification_frozen", cfg["tag"])
+            with open(os.path.join(folder, "log_r0.csv")) as f:
+                log = f.read()
+            return log, torch.load(os.path.join(folder, "latest.pt"), map_location="cpu", weights_only=False)
+
+        log, latest = train("uninterrupted", interrupt=False)
+        resumed_log, resumed = train("resumed", interrupt=True)
+        self.assertEqual(resumed_log, log)  # the same training and validation MAE in both epochs
+        self.assertEqual(resumed["val_acc_per_head"], latest["val_acc_per_head"])
+        for a, b in zip(latest["classifiers"], resumed["classifiers"]):
+            for name in a:
+                self.assertTrue(torch.equal(a[name], b[name]), name)
+
+    def loader(self, split, training, batch_size=1):
+        loader, _ = probe.make_dataloader(
+            root_path=[os.path.join(self.probe_dir, f"{split}.csv")], batch_size=batch_size, world_size=1, rank=0,
+            img_size=CROP, frames_per_clip=FRAMES, frame_step=2, num_segments=2, training=training, num_workers=0,
+        )
+        return loader
+
+    def test_evaluation_reads_the_same_frames_every_time(self):
+        # 24-frame videos in 2 segments of 12: room for a clip of 4 frames x 2 at 5 positions.
+        val = self.loader("val", training=False).dataset
+        first = [c.tolist() for c in val.get_item_video(0)[2]]
+        self.assertEqual([c.tolist() for c in val.get_item_video(0)[2]], first)
+        self.assertEqual([c[0] for c in first], [0, 12])  # the start of each segment
+        train = self.loader("train", training=True).dataset
+        draws = {tuple(c[0] for c in train.get_item_video(0)[2]) for _ in range(20)}
+        self.assertGreater(len(draws), 1)  # training still samples positions
+
+    def test_training_drops_a_last_incomplete_batch_and_evaluation_keeps_every_video(self):
+        # 6 validation videos in batches of 4.
+        self.assertEqual(len(self.loader("val", training=False, batch_size=4)), 2)
+        self.assertEqual(len(self.loader("val", training=True, batch_size=4)), 1)
+
+    def test_a_training_manifest_without_a_full_batch_is_refused(self):
+        cfg = self.config(os.path.join(self.tmp, "too-few"))
+        cfg["experiment"]["optimization"]["batch_size"] = 16  # 8 training videos
+        with self.on_cpu(), self.assertRaisesRegex(ValueError, "no full batch"):
+            probe.main(cfg)
 
 
 if __name__ == "__main__":
