@@ -3,7 +3,7 @@
 """The frozen probe's wandb logging (`evals/video_classification_frozen/eval.py`), on CPU with a
 tiny V-JEPA 2.1 encoder, synthetic clips and a fake wandb: what each epoch logs, what the run's
 config holds (and that it holds no filesystem path), that a resumed probe reattaches to its run,
-and that nothing is logged without a project."""
+that nothing is logged without a project, and the test's plots."""
 
 import contextlib
 import io
@@ -13,6 +13,7 @@ import unittest
 from types import SimpleNamespace
 from unittest import mock
 
+import numpy as np
 import pandas as pd
 import torch
 
@@ -126,14 +127,34 @@ class ProbeFakeWandb(FakeWandb):
             self.files[name] = buffer.getvalue()
 
     class Table:
-        def __init__(self, columns, data):
-            self.columns, self.data = columns, data
+        # wandb keeps a Table in an artifact whose manifest records a local path: the probe logs none.
+        def __init__(self, *args, **kwargs):
+            raise AssertionError("The probe must not log a wandb.Table.")
 
-    plot = SimpleNamespace(scatter=lambda table, x, y, title=None: ("scatter", table, x, y))
+    class Image:
+        def __init__(self, data, caption=None):
+            self.data, self.caption = np.asarray(data), caption
 
     @staticmethod
     def Histogram(values):
         return ("histogram", list(values))
+
+
+class TestTestPlots(unittest.TestCase):
+
+    def test_the_scatter_plot_draws_each_pair_where_it_belongs(self):
+        image = wandb_logging.scatter_image([20.0], [80.0])
+        self.assertEqual((image.shape, image.dtype), ((480, 480, 3), np.uint8))
+        left, right, top, bottom = 44, 468, 12, 444  # the plot area of a 480-pixel image
+        x, y = round(left + 0.2 * (right - left)), round(bottom - 0.8 * (bottom - top))
+        r, g, b = image[y, x].astype(int)
+        self.assertGreater(b, r)  # the point, in blue
+        x, y = round(left + 0.7 * (right - left)), round(bottom - 0.3 * (bottom - top))
+        self.assertTrue((image[y, x] == 255).all())  # no point (and no grid line) there
+
+    def test_range_labels_become_wandb_keys(self):
+        self.assertEqual([wandb_logging.range_key(r) for r in ("< 30", "30-40", ">= 60")],
+                         ["below_30", "30_to_40", "60_and_above"])
 
 
 class TestProbeWandb(QuietLogs):

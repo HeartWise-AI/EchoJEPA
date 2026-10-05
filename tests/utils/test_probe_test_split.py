@@ -13,6 +13,7 @@ import torch
 
 from evals.video_classification_frozen import eval as probe
 from evals.video_classification_frozen import metrics
+from src.utils import wandb_logging
 from tests.utils import test_probe_wandb as probe_wandb
 from tests.utils.test_vjepa_2_1_utils import QuietLogs
 
@@ -73,10 +74,18 @@ class TestProbeTestSplit(QuietLogs):
         self.assertEqual(scalars["probe/test/study_mae"], result["test"]["study"]["mae"])
         self.assertEqual(scalars["probe/test/study_auroc"], result["test"]["study"]["reduced_ef"]["auroc"])
         self.assertEqual(scalars["probe/test_head"], head)
-        points = plots["probe/test/study/predicted_vs_reference"][1]
-        self.assertEqual(points.columns, ["reference", "predicted"])
-        self.assertEqual(len(points.data), result["test"]["studies"])
-        self.assertEqual(points.data, sorted(points.data))  # sorted by value, not by record
+        image = plots["probe/test/study/predicted_vs_reference"]  # an image, not a wandb.Table
+        self.assertEqual(image.data.shape, (480, 480, 3))
+        self.assertEqual(image.caption, f"Predicted vs reference EF, n = {result['test']['studies']}")
+        self.assertEqual(len(plots["probe/test/study/residuals"][1]), result["test"]["studies"])
+        by_range = {k.removeprefix("probe/test/study/by_reference_range/"): v for k, v in plots.items()
+                    if k.startswith("probe/test/study/by_reference_range/")}
+        rows = {wandb_logging.range_key(r["range"]): r for r in result["test_by_reference_range"]["rows"]}
+        self.assertEqual(sum(v for k, v in by_range.items() if k.endswith("/n")), result["test"]["studies"])
+        for key, row in rows.items():
+            self.assertEqual(by_range[f"{key}/n"], row["n"])
+            if row["n"]:
+                self.assertEqual((by_range[f"{key}/mae"], by_range[f"{key}/bias"]), (row["mae"], row["bias"]))
 
     def test_study_metrics_and_a_threshold_chosen_on_validation(self):
         cfg = self.config(epochs=1)

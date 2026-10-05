@@ -53,8 +53,9 @@ resumed probe, and its test, rejoin that run.
   rate, the best validation MAE per study so far (`probe/val_study_mae_best`) and its epoch, and
   the number of validation videos that failed to load. Each value is logged for every head, and for the best head.
 - **Test**: every test metric (`probe/test/study_*`, `probe/test/video_*`), the threshold and
-  the targets met. Also a predicted-versus-reference scatter plot, the residual distribution
-  and the error by EF range, at the targets' level.
+  the targets met. Also, at the targets' level, a predicted-versus-reference scatter plot (an
+  image), the residual histogram, and the error by EF range as values
+  (`probe/test/study/by_reference_range/<range>/{n,mae,bias}`).
 - **The trained probe**: `probe_checkpoint/*` in the run summary (file name, SHA-256 of
   `best.pt`, its epoch and head, the head's validation MAE per study, and the encoder's SHA-256). Also a
   `probe-checkpoint` artifact whose metadata holds that record. It has no file: wandb's
@@ -63,8 +64,9 @@ resumed probe, and its test, rejoin that run.
 
 The run receives no filesystem path, video path, patient, study or accession identifier.
 Console output, system metadata (command line, working directory, host), the git remote and
-the package list are not sent. The commit is recorded in `run_info`. The scatter plot's points
-have no identifier and are sorted by value.
+the package list are not sent. The commit is recorded in `run_info`. The scatter plot is an
+image whose points have no identifier or order. Nothing is logged as a wandb Table: wandb keeps
+each Table in an artifact whose manifest records the folder it was staged from on the machine.
 
 ## Reproduce
 

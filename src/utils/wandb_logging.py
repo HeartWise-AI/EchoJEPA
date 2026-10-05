@@ -9,6 +9,8 @@ Note: failures from logging are warned but shouldn't crash the training.
 
 import os
 from logging import getLogger
+
+import numpy as np
 import torch
 
 # This file can print warning/info.
@@ -276,31 +278,77 @@ def log_scalars(run, metrics, step):
         logger.warning(f"Failed to log scalars to wandb: {e}")
 
 
-def log_regression_results(run, labels, predictions, ranges, step, prefix):
-    """Log a predicted-vs-reference scatter plot, residual histogram, and error-by-reference-range table.
+def scatter_image(reference, predicted, low=0.0, high=100.0, size=480):
+    """A predicted-versus-reference scatter plot as an RGB array (`size` x `size`): one point per
+    pair, the identity line, and a grid every 20 EF points. The points carry no identifier and no
+    order."""
+    from PIL import Image, ImageDraw
 
-    Prediction-reference pairs contain no identifiers and are sorted by reference value, preventing
-    individual points from being traced back to their source records.
+    left, right, top, bottom = 44, size - 12, 12, size - 36  # the plot area, in pixels
+
+    def to_px(values, start, end):
+        return start + (np.clip(np.asarray(values, dtype=float), low, high) - low) / (high - low) * (end - start)
+
+    image = Image.new("RGB", (size, size), "white")
+    draw = ImageDraw.Draw(image)
+    for tick in np.arange(low, high + 1e-9, 20):
+        x, y = float(to_px(tick, left, right)), float(to_px(tick, bottom, top))
+        draw.line([(x, bottom), (x, top)], fill=(230, 230, 230))
+        draw.line([(left, y), (right, y)], fill=(230, 230, 230))
+        draw.text((x - 6, bottom + 4), f"{tick:g}", fill="black")
+        draw.text((left - 24, y - 6), f"{tick:g}", fill="black")
+    draw.line([(left, bottom), (right, top)], fill=(150, 150, 150))  # predicted = reference.
+    draw.rectangle([left, top, right, bottom], outline="black")
+
+    points = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    dots = ImageDraw.Draw(points)
+    for x, y in zip(to_px(reference, left, right), to_px(predicted, bottom, top)):
+        dots.ellipse([x - 2, y - 2, x + 2, y + 2], fill=(31, 119, 180, 110))
+    image = Image.alpha_composite(image.convert("RGBA"), points).convert("RGB")
+    draw = ImageDraw.Draw(image)
+    draw.text(((left + right) / 2 - 45, size - 16), "reference EF (%)", fill="black")
+    draw.text((left + 6, top + 4), "predicted EF (%)", fill="black")
+    return np.asarray(image)
+
+
+def range_key(name):
+    """A wandb key for an EF range label of `metrics.by_range`: "< 30" -> "below_30",
+    "30-40" -> "30_to_40", ">= 60" -> "60_and_above"."""
+    if name.startswith("< "):
+        return f"below_{name[2:]}"
+    if name.startswith(">= "):
+        return f"{name[3:]}_and_above"
+    return name.replace("-", "_to_")
+
+
+def log_regression_results(run, labels, predictions, ranges, step, prefix):
+    """Log a predicted-vs-reference scatter plot (an image), the residual histogram, and the error
+    by reference EF range (`prefix/by_reference_range/<range>/{n,mae,bias}`).
+
+    No wandb Table: wandb keeps each Table in an artifact whose manifest records the folder the
+    table was staged from on this machine, a filesystem path. Images and histograms hold values
+    only, and neither carries an identifier or the order of the records.
     """
     if run is None or wandb is None:
         return
     try:
-        pairs = sorted(zip((float(v) for v in labels), (float(v) for v in predictions)))
-        points = wandb.Table(columns=["reference", "predicted"], data=[list(p) for p in pairs])
-        table = wandb.Table(columns=["range", "n", "mae", "bias"],
-                            data=[[r["range"], r["n"], r["mae"], r["bias"]] for r in ranges])
-        run.log({
-            f"{prefix}/predicted_vs_reference": wandb.plot.scatter(
-                points, "reference", "predicted", title="Predicted vs reference EF"
+        y = np.asarray(labels, dtype=float)
+        p = np.asarray(predictions, dtype=float)
+        payload = {
+            f"{prefix}/predicted_vs_reference": wandb.Image(
+                scatter_image(y, p), caption=f"Predicted vs reference EF, n = {len(y)}"
             ),
-            # Residual = p - y. Residual=0: exact prediction; residual>0: model overestimates EF;
-            # residual<0: model underestimates EF.
-            f"{prefix}/residuals": wandb.Histogram([p - y for y, p in pairs]),
-            f"{prefix}/by_reference_range": table,
+            # Residual = prediction - reference: above 0 the model overestimates EF.
+            f"{prefix}/residuals": wandb.Histogram(p - y),
             # Associates the result with the project's explicit `train/global_step` metric rather
             # than wandb's implicit step.
             STEP_METRIC: step,
-        })
+        }
+        for row in ranges:
+            for stat in ("n", "mae", "bias"):
+                if np.isfinite(row[stat]):  # an empty range has no errors.
+                    payload[f"{prefix}/by_reference_range/{range_key(row['range'])}/{stat}"] = row[stat]
+        run.log(payload)
     except Exception as e:
         logger.warning(f"Failed to log regression results to wandb: {e}")
 
