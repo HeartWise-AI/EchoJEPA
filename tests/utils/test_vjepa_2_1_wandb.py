@@ -119,9 +119,16 @@ class TestTrainerWandb(QuietLogs):
             train.main(cfg)
         return self.wandb.runs[-1] if self.wandb.runs else None
 
+    def test_the_shipped_configs_upload_no_input_clips(self):
+        run = self.run_trainer(config(os.path.join(self.tmp, "pretrain")))  # `num_log_videos: 0`, as shipped
+        self.assertTrue(run.logged)
+        self.assertFalse([k for p in run.logged for k in p if k.startswith("train/input_clips")])
+
     def test_a_run_logs_its_inputs_losses_and_padding(self):
         folder = os.path.join(self.tmp, "pretrain")
-        run = self.run_trainer(config(folder))
+        cfg = config(folder)
+        cfg["meta"]["num_log_videos"] = 2  # input clips on, as the trainer's default
+        run = self.run_trainer(cfg)
         self.assertEqual(self.wandb.calls[0]["resume"], "never")
         self.assertTrue(run.finished)
 

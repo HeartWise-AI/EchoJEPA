@@ -63,6 +63,8 @@ In `app/vjepa_2_1/train.py` and `utils.py`:
 9. **W&B logging.** Logging uses the `meta.wandb_*` settings and `app/vjepa` helpers, and is disabled when `wandb_project` is `null`. It logs all-rank mean losses, context-loss weight, LR, WD, EMA momentum, gradient norm, valid-token and padded-frame fractions, timings, and memory. Checkpoints store the W&B run ID so restarts resume the same run; cooldown runs started from `anneal_ckpt` create a new run. Long-run diagnostics add:
    - `optimization/grad_norm_max`: the maximum gradient norm since the previous log, preserving spikes between logging steps.
    - `features/clip_cosine` and `features/effective_rank`: target-encoder feature-collapse diagnostics. Increasing cross-clip cosine similarity toward 1 together with effective rank falling toward 1 indicates that different clips are receiving nearly identical representations, even if the loss continues to decrease. Because both metrics depend on batch size, compare them against the run's initial logged values.
+
+   No input clips are uploaded: the 2.1 configs set `meta.num_log_videos: 0` (the trainer's default is 2, as in `app/vjepa`), because issue #13 requires visual examples to be reviewed and anonymized before upload.
 10. **Fixes.**
    - The encoder width is read from the backbone; upstream failed for `vit_base`.
    - `normalize_nested` recursed one list level too far. It only runs with
@@ -181,8 +183,8 @@ epoch counter 60, past this config's 13 epochs, instead of starting fresh. The t
 refuses `read_checkpoint` together with `init_checkpoint`, in a cooldown, and without
 `meta.load_checkpoint: true`.
 
-The 2.1 trainer has no W&B logging, so no W&B run is created or resumed. Its logs are
-`folder/log_r<rank>.csv` (one per GPU) and stdout.
+With `meta.wandb_project` unset, the 2.1 trainer creates or resumes no W&B run, and its logs
+are `folder/log_r<rank>.csv` (one per GPU) and stdout.
 
 ## Shared configuration
 

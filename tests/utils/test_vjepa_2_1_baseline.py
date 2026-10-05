@@ -169,6 +169,12 @@ class TestShippedConfigs(unittest.TestCase):
                 self.assertEqual((cfg["data"]["patch_size"], cfg["data"]["tubelet_size"]), (16, 2))
                 self.assertEqual(len(cfg["mask"]), 2)  # 2 mask tokens in the predictor
 
+    def test_no_input_clips_are_uploaded(self):
+        # #13: visual examples are reviewed and anonymized before any upload.
+        for name, cfg in self.every_config():
+            with self.subTest(config=name):
+                self.assertEqual(cfg["meta"]["num_log_videos"], 0)
+
     def test_paths_are_placeholders(self):
         for name, cfg in self.every_config():
             for key, value in flatten(cfg).items():

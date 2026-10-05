@@ -86,8 +86,9 @@ meta:
   wandb_project: null
   wandb_entity: mhi_ai
   # wandb_run_name: null
-  # log_video_freq: 0         # 0: log input clips once, on the first iteration of each job.
-  # num_log_videos: 2
+  # No input clips are uploaded: #13 requires visual examples to be reviewed and anonymized first.
+  num_log_videos: 0         # clips logged at the first iteration of each job (the trainer's default is 2).
+  # log_video_freq: 0       # with num_log_videos > 0: also every that many iterations of the first epoch.
   dtype: bfloat16
   eval_freq: 100
   load_checkpoint: true         # resume from `latest.pth.tar` when present.
