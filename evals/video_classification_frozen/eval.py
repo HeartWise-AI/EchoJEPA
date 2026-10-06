@@ -506,6 +506,8 @@ def main(args_eval, resume_preempt=False):
                   "num_views_per_segment": num_views_per_segment, "normalization": normalization},
         "optimization": {"batch_size": batch_size, "num_epochs": num_epochs, "use_bfloat16": use_bfloat16,
                          "use_focal_loss": use_focal_loss, "multihead_kwargs": args_opt.get("multihead_kwargs")},
+        "evaluation": {"low_ef_below": low_ef_below, "ef_ranges": list(ef_ranges),
+                       "targets": copy.deepcopy(targets)},
         "selection": selection,
         "protocol": copy.deepcopy(PROTOCOL),
         "seed": seed,

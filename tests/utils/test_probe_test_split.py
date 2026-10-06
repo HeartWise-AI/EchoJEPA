@@ -284,6 +284,34 @@ class TestProbeTestSplit(QuietLogs):
         with self.assertRaisesRegex(ValueError, "another manifests_sha256.val"):
             self.run_probe(cfg)
 
+    def test_a_probe_is_tested_only_with_its_evaluation_rules(self):
+        cfg = self.config(epochs=1)
+        self.run_probe(cfg)
+        saved = self.load(cfg, "best.pt")
+        self.assertEqual(
+            saved["fingerprint"]["settings"]["evaluation"],
+            {
+                "low_ef_below": 40.0,
+                "ef_ranges": [30, 40, 50, 60],
+                "targets": cfg["experiment"]["evaluation"]["targets"],
+            },
+        )
+
+        changes = (
+            ("low_ef_below", 50, "settings.evaluation.low_ef_below"),
+            ("ef_ranges", [35, 45, 55], "settings.evaluation.ef_ranges"),
+            ("targets", {"level": "study", "mae_below": 4.0, "auroc_above": 0.95},
+             "settings.evaluation.targets.mae_below"),
+        )
+        for key, value, difference in changes:
+            with self.subTest(key=key):
+                changed = self.config(epochs=1)
+                changed["experiment"]["evaluation"][key] = value
+                with self.assertRaisesRegex(ValueError, f"another {difference}"):
+                    self.run_probe(changed, test=True)
+
+        self.assertFalse(os.path.exists(os.path.join(self.folder(cfg), "test_metrics.json")))
+
     def test_resuming_keeps_the_record_the_probe_started_with(self):
         cfg = self.config(epochs=2)
         cfg["meta"]["wandb_run_name"] = "first"
