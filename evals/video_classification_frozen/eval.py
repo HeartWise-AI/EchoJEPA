@@ -659,15 +659,7 @@ def main(args_eval, resume_preempt=False):
             "opt_grid": opt_kwargs,
         }
         
-        if rank == 0:
-            # The epoch's snapshot, then `best.pt` if the epoch is the best, and `latest.pt` last: a
-            # run stopped in between leaves `latest.pt` at the previous epoch, which is trained again.
-            save_atomically(save_dict, os.path.join(folder, f"epoch_{epoch:03d}.pt"))
-            if is_best:
-                best_path = os.path.join(folder, "best.pt")
-                save_atomically(save_dict, best_path)
-                logger.info(f"Generated new best model: {best_path}")
-            save_atomically(save_dict, os.path.join(folder, "latest.pt"))
+        _save_probe_checkpoints(save_dict, folder, is_best, rank, device)
 
     # ---- per-head running stats ----
     best_per_head = None
@@ -1607,9 +1599,40 @@ def shared_fingerprint(rank, world_size, device, checkpoint, manifests, normaliz
 def save_atomically(obj, path):
     """`torch.save` to a temporary file renamed to `path`: `path` holds the old or the new
     checkpoint, never part of one."""
-    tmp = f"{path}.tmp"
-    torch.save(obj, tmp)
-    os.replace(tmp, path)
+    directory = os.path.dirname(os.path.abspath(path))
+    fd, tmp = tempfile.mkstemp(prefix=f".{os.path.basename(path)}.", suffix=".tmp", dir=directory)
+    os.close(fd)
+    try:
+        torch.save(obj, tmp)
+        os.replace(tmp, path)
+    finally:
+        try:
+            os.unlink(tmp)
+        except FileNotFoundError:
+            pass
+
+
+def _save_probe_checkpoints(save_dict, folder, is_best, rank, device):
+    """Save on rank 0, then make every rank stop if any checkpoint write failed."""
+    error = None
+    if rank == 0:
+        try:
+            # The epoch snapshot, then `best.pt` when selected, and `latest.pt` last: an
+            # interrupted epoch leaves `latest.pt` at the previous completed epoch.
+            epoch = save_dict["epoch"]
+            save_atomically(save_dict, os.path.join(folder, f"epoch_{epoch:03d}.pt"))
+            if is_best:
+                best_path = os.path.join(folder, "best.pt")
+                save_atomically(save_dict, best_path)
+                logger.info(f"Generated new best model: {best_path}")
+            save_atomically(save_dict, os.path.join(folder, "latest.pt"))
+        except Exception as exc:
+            error = exc
+
+    if any_rank_failed(error is not None, device=device):
+        if error is not None:
+            raise error
+        raise RuntimeError("Rank 0 could not save the probe checkpoint; stopping every rank.")
 
 
 def check_finished(folder, num_epochs):

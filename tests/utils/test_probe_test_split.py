@@ -189,7 +189,17 @@ class TestProbeTestSplit(QuietLogs):
     def load(self, cfg, name):
         return torch.load(os.path.join(self.folder(cfg), name), map_location="cpu", weights_only=False)
 
-    def test_a_checkpoint_is_replaced_whole_or_not_at_all(self):
+    def test_a_successful_checkpoint_write_atomically_replaces_the_previous_one(self):
+        path = os.path.join(self.tmp, "latest.pt")
+        probe.save_atomically({"epoch": 1}, path)
+        real_replace = os.replace
+        with mock.patch.object(probe.os, "replace", wraps=real_replace) as replace:
+            probe.save_atomically({"epoch": 2}, path)
+
+        replace.assert_called_once()
+        self.assertEqual(torch.load(path, weights_only=True)["epoch"], 2)
+
+    def test_a_failed_checkpoint_write_preserves_the_previous_one_and_cleans_up(self):
         path = os.path.join(self.tmp, "latest.pt")
         probe.save_atomically({"epoch": 1}, path)
 
@@ -201,6 +211,26 @@ class TestProbeTestSplit(QuietLogs):
         with mock.patch.object(probe.torch, "save", side_effect=partial), self.assertRaises(OSError):
             probe.save_atomically({"epoch": 2}, path)
         self.assertEqual(torch.load(path, weights_only=True)["epoch"], 1)
+        prefix = f".{os.path.basename(path)}."
+        self.assertFalse([name for name in os.listdir(os.path.dirname(path))
+                          if name.startswith(prefix) and name.endswith(".tmp")])
+
+    def test_a_rank_zero_save_failure_stops_every_rank(self):
+        device = torch.device("cpu")
+        saved = {"epoch": 1}
+        with mock.patch.object(probe, "save_atomically", side_effect=OSError("No space left")), \
+                mock.patch.object(probe, "any_rank_failed",
+                                  side_effect=lambda failed, device: failed) as vote, \
+                self.assertRaisesRegex(OSError, "No space left"):
+            probe._save_probe_checkpoints(saved, self.tmp, False, rank=0, device=device)
+        vote.assert_called_once_with(True, device=device)
+
+        with mock.patch.object(probe, "save_atomically") as save, \
+                mock.patch.object(probe, "any_rank_failed", return_value=True) as vote, \
+                self.assertRaisesRegex(RuntimeError, "stopping every rank"):
+            probe._save_probe_checkpoints(saved, self.tmp, False, rank=1, device=device)
+        save.assert_not_called()
+        vote.assert_called_once_with(False, device=device)
 
     def test_an_epoch_whose_best_pt_was_not_saved_is_trained_again(self):
         cfg = self.config(epochs=2)
