@@ -947,10 +947,6 @@ def run_one_epoch(
 
     from torch.amp import autocast
     for itr, data in enumerate(iterator):
-        if training:
-            [s.step() for s in scheduler]
-            [wds.step() for wds in wd_scheduler]
-
         with autocast("cuda", dtype=torch.bfloat16, enabled=use_bfloat16):
         # with torch.cuda.amp.autocast(dtype=torch.float16, enabled=use_bfloat16):
             # Load data and put on GPU
@@ -980,6 +976,11 @@ def run_one_epoch(
             losses = [[criterion(o.float(), labels) for o in coutputs] for coutputs in outputs]
         else:
             losses = [[criterion(o, labels) for o in coutputs] for coutputs in outputs]
+
+        if training:
+            _raise_if_non_finite_probe_loss(losses, device)
+            [s.step() for s in scheduler]
+            [wds.step() for wds in wd_scheduler]
             
         # Compute metrics based on task type: sums over this batch on every rank, added up across
         # ranks in one all-reduce, then divided by the number of labels they cover.
@@ -1098,6 +1099,21 @@ def run_one_epoch(
     _agg_metrics = np.array([m.avg for m in (metric_meters if task_type == "regression" else top1_meters)])
     scalar = float(_agg_metrics.min()) if task_type == "regression" else float(_agg_metrics.max())
     return scalar, _agg_metrics, np.array([m.avg for m in loss_meters])
+
+
+def _raise_if_non_finite_probe_loss(losses, device):
+    """Stop every rank before training state changes when any probe loss is non-finite."""
+    local_failure = any(
+        not bool(torch.isfinite(loss.detach()).all().item())
+        for head_losses in losses
+        for loss in head_losses
+    )
+    if any_rank_failed(local_failure, device=device):
+        if local_failure:
+            raise FloatingPointError("Non-finite probe loss; stopping all ranks before optimizer update.")
+        raise FloatingPointError(
+            "Another rank produced a non-finite probe loss; stopping all ranks before optimizer update."
+        )
 
 
 class _EachVideoOnce(torch.utils.data.Dataset):

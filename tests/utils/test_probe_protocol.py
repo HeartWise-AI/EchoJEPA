@@ -5,6 +5,7 @@ label (a short last batch counts for its size), validation that scores each vide
 once across ranks, an encoder that never changes while the probe learns, the head's output,
 and a launcher that fails when a rank fails."""
 
+import copy
 import os
 import sys
 import tempfile
@@ -71,6 +72,14 @@ class Step:
         pass
 
 
+class CountingStep:
+    def __init__(self):
+        self.calls = 0
+
+    def step(self):
+        self.calls += 1
+
+
 class TestBatchMetricsAreExact(unittest.TestCase):
     """Seven labels with error 1 and one with error 9: the MAE is 16 / 8 = 2.0. Weighting the
     batch of 7 and the batch of 1 equally would give (1 + 9) / 2 = 5.0."""
@@ -104,6 +113,54 @@ class TestBatchMetricsAreExact(unittest.TestCase):
             task_type="regression", target_mean=55.0, target_std=10.0,
         )
         self.assertAlmostEqual(best, 20.0)
+
+
+class TestNonFiniteProbeLoss(unittest.TestCase):
+
+    def test_a_remote_failure_stops_a_rank_with_finite_losses(self):
+        losses = [[torch.tensor(1.0)]]
+        with mock.patch.object(probe, "any_rank_failed", return_value=True) as vote:
+            with self.assertRaisesRegex(FloatingPointError, "Another rank"):
+                probe._raise_if_non_finite_probe_loss(losses, CPU)
+
+        vote.assert_called_once_with(False, device=CPU)
+
+    def test_nan_and_infinities_leave_probe_optimizer_and_schedules_unchanged(self):
+        for value in (float("nan"), float("inf"), float("-inf")):
+            with self.subTest(value=value):
+                head = ConstantHead()
+                head.bias.data.fill_(1.0)
+                optimizer = torch.optim.AdamW(head.parameters(), lr=0.1)
+
+                # Populate AdamW's moments so any optimizer mutation is observable.
+                head.bias.square().sum().backward()
+                optimizer.step()
+                optimizer.zero_grad(set_to_none=True)
+
+                probe_before = copy.deepcopy(head.state_dict())
+                optimizer_before = copy.deepcopy(optimizer.state_dict())
+                scheduler, wd_scheduler = CountingStep(), CountingStep()
+
+                with self.assertRaisesRegex(FloatingPointError, "Non-finite probe loss"):
+                    probe.run_one_epoch(
+                        device=CPU,
+                        training=True,
+                        encoder=clip_features,
+                        classifiers=[head],
+                        scaler=[None],
+                        optimizer=[optimizer],
+                        scheduler=[scheduler],
+                        wd_scheduler=[wd_scheduler],
+                        data_loader=[batch([value])],
+                        use_bfloat16=False,
+                        task_type="regression",
+                        target_mean=0.0,
+                        target_std=1.0,
+                    )
+
+                torch.testing.assert_close(head.state_dict(), probe_before, rtol=0, atol=0)
+                torch.testing.assert_close(optimizer.state_dict(), optimizer_before, rtol=0, atol=0)
+                self.assertEqual((scheduler.calls, wd_scheduler.calls), (0, 0))
 
 
 def validate(dataset, rank=0, world_size=1, studies=None):
