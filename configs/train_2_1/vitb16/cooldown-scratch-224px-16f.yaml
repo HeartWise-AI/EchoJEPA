@@ -85,7 +85,7 @@ meta:
   wandb_entity: mhi_ai
   # wandb_run_name: null
   # No input clips are uploaded: #13 requires visual examples to be reviewed and anonymized first.
-  num_log_videos: 0         # clips logged at the first iteration of each job (the trainer's default is 2).
+  num_log_videos: 0         # opt in with a positive value only after clips are reviewed and anonymized.
   # log_video_freq: 0       # with num_log_videos > 0: also every that many iterations of the first epoch.
   dtype: bfloat16
   eval_freq: 100

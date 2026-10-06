@@ -143,10 +143,17 @@ class TestTrainerWandb(QuietLogs):
         self.assertTrue(run.logged)
         self.assertFalse([k for p in run.logged for k in p if k.startswith("train/input_clips")])
 
+    def test_input_clip_uploads_are_opt_in(self):
+        cfg = config(os.path.join(self.tmp, "pretrain"))
+        cfg["meta"].pop("num_log_videos", None)
+        run = self.run_trainer(cfg)
+        self.assertTrue(run.logged)
+        self.assertFalse([k for p in run.logged for k in p if k.startswith("train/input_clips")])
+
     def test_a_run_logs_its_inputs_losses_and_padding(self):
         folder = os.path.join(self.tmp, "pretrain")
         cfg = config(folder)
-        cfg["meta"]["num_log_videos"] = 2  # input clips on, as the trainer's default
+        cfg["meta"]["num_log_videos"] = 2  # explicitly opt in to logging reviewed clips.
         run = self.run_trainer(cfg)
         self.assertEqual(self.wandb.calls[0]["resume"], "never")
         self.assertTrue(run.finished)

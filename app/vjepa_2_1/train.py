@@ -167,7 +167,9 @@ def main(args, resume_preempt=False):
     # more every `log_video_freq` steps during that same epoch, if `log_video_freq > 0`.
     wandb_enabled = bool(cfgs_meta.get("wandb_project", None))
     log_video_freq = cfgs_meta.get("log_video_freq", 0)
-    num_log_videos = cfgs_meta.get("num_log_videos", 2)
+    # Input clips may contain protected data. Upload none unless a reviewed configuration
+    # explicitly opts in with a positive value.
+    num_log_videos = cfgs_meta.get("num_log_videos", 0)
     logger.info(f"LD_PRELOAD: {os.environ.get('LD_PRELOAD')}")
     which_dtype = cfgs_meta.get("dtype")
     logger.info(f"{which_dtype=}")

@@ -64,7 +64,7 @@ In `app/vjepa_2_1/train.py` and `utils.py`:
    - `optimization/grad_norm_max`: the maximum gradient norm since the previous log, preserving spikes between logging steps.
    - `features/clip_cosine` and `features/effective_rank`: target-encoder feature-collapse diagnostics. Increasing cross-clip cosine similarity toward 1 together with effective rank falling toward 1 indicates that different clips are receiving nearly identical representations, even if the loss continues to decrease. Because both metrics depend on batch size, compare them against the run's initial logged values.
 
-   No input clips are uploaded: the 2.1 configs set `meta.num_log_videos: 0` (the trainer's default is 2, as in `app/vjepa`), because issue #13 requires visual examples to be reviewed and anonymized before upload.
+   No input clips are uploaded by default. The 2.1 configs explicitly set `meta.num_log_videos: 0` as a reminder; use a positive value only after visual examples have been reviewed and anonymized, as required by issue #13.
 10. **Fixes.**
    - The encoder width is read from the backbone; upstream failed for `vit_base`.
    - `normalize_nested` recursed one list level too far. It only runs with
