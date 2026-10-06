@@ -12,21 +12,13 @@ import subprocess
 
 import pandas as pd
 
-from src.utils.wandb_logging import public_config  # noqa: F401  (the probe's callers import it from here)
+from src.utils.wandb_logging import (  # noqa: F401  (the probe's callers import these from here)
+    PRIVATE_WANDB_SETTINGS,
+    public_config,
+)
 
 # Finds the repository root, to be later used by `git_state()`.
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-# wandb settings for the probe: deliberately prevent wandb from automatically uploading potentially
-# sensitive local-environment information. The commit is recorded in the run's config instead.
-PRIVATE_WANDB_SETTINGS = {
-    "console": "off",
-    "x_disable_meta": True,
-    "disable_git": True,
-    "save_code": False,
-    "disable_code": True,
-    "x_save_requirements": False,
-}
 
 INDEX_COLUMNS = ("split", "video_path", "study_id", "patient_id")
 SPLITS = ("train", "val", "test")

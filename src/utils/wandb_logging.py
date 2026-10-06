@@ -27,6 +27,18 @@ except ImportError:
 # epoch-boundary resume.
 STEP_METRIC = "train/global_step"
 
+# Prevent wandb from automatically uploading local-environment information that may contain
+# filesystem paths or other sensitive infrastructure details. Callers still record the explicit,
+# path-sanitized experiment configuration and metrics.
+PRIVATE_WANDB_SETTINGS = {
+    "console": "off",
+    "x_disable_meta": True,
+    "disable_git": True,
+    "save_code": False,
+    "disable_code": True,
+    "x_save_requirements": False,
+}
+
 # Config keys whose values are filesystem paths, whatever their form (relative ones included).
 PATH_KEYS = frozenset({
     "folder", "checkpoint", "probe_checkpoint", "predictions_save_path", "subset_file", "log_dir",

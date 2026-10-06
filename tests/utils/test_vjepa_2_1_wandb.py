@@ -1,8 +1,8 @@
 # tests/utils/test_vjepa_2_1_wandb.py
 
 """The V-JEPA 2.1 trainer's wandb logging, on CPU with a fake wandb: what one short run logs,
-that a restart reattaches to its run, and that a cooldown starting from `anneal_ckpt` opens
-a new one."""
+that private environment capture is disabled, that a restart reattaches to its run, and that a
+cooldown starting from `anneal_ckpt` opens a new one."""
 
 import os
 import tempfile
@@ -133,6 +133,10 @@ class TestTrainerWandb(QuietLogs):
             return [value] if isinstance(value, str) else []
 
         self.assertFalse([s for s in strings(sent) if "/" in s or self.tmp in s])
+
+    def test_the_run_disables_private_environment_capture(self):
+        self.run_trainer(config(os.path.join(self.tmp, "pretrain")))
+        self.assertEqual(self.wandb.calls[0]["settings"], wandb_logging.PRIVATE_WANDB_SETTINGS)
 
     def test_the_shipped_configs_upload_no_input_clips(self):
         run = self.run_trainer(config(os.path.join(self.tmp, "pretrain")))  # `num_log_videos: 0`, as shipped

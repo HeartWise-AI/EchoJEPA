@@ -43,7 +43,13 @@ from src.masks.multiseq_multiblock3d import MaskCollator
 from src.masks.utils import apply_masks
 from src.utils.distributed import any_rank_failed, global_sample_weighted_means, init_distributed
 from src.utils.logging import AverageMeter, CSVLogger, get_logger, gpu_timer
-from src.utils.wandb_logging import finish_wandb, init_wandb, log_input_clips, log_scalars
+from src.utils.wandb_logging import (
+    PRIVATE_WANDB_SETTINGS,
+    finish_wandb,
+    init_wandb,
+    log_input_clips,
+    log_scalars,
+)
 from torch.nn.parallel import DistributedDataParallel
 
 
@@ -669,6 +675,7 @@ def main(args, resume_preempt=False):
             # This trainer's checkpoints always hold the run id (None without wandb), so the
             # `wandb_run_id.txt` fallback for older checkpoints never applies.
             checkpoint_has_wandb_run_id=True,
+            settings=PRIVATE_WANDB_SETTINGS,
         )
     except Exception as e:
         wandb_init_error = e
