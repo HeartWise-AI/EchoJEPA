@@ -786,6 +786,18 @@ class TestLinkEfLabels(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "PACS and video metadata"):
             quiet(lel.link, reports, pacs, videos, min_id_agreement=0.5)
 
+    def test_link_checks_a_study_on_its_complete_rows(self):
+        # A row with only the study id (no patient, date or path), listed before the study's
+        # complete row, neither fails the check nor supplies the patient or date.
+        reports, pacs, videos = self.tables()
+        videos = videos.astype({"patient_id": "string", "study_date": "string"})  # as stream_videos returns them
+        bare = pd.DataFrame({"patient_id": [pd.NA], "study_id": ["1.2.999.1"], "study_date": [pd.NA],
+                             "video_path": [None]}).astype({"patient_id": "string", "study_date": "string"})
+        out = quiet(lel.link, reports, pacs, pd.concat([bare, videos], ignore_index=True),
+                    min_id_agreement=0.5, check_path_layout=True)
+        self.assertEqual(out.study_id.tolist(), ["1.2.999.1"])
+        self.assertEqual(out[["patient_id", "study_date"]].values.tolist(), [["0000001", "20200101"]])
+
     def test_stage_1_needs_the_study_date_column(self):
         with tempfile.TemporaryDirectory() as tmp:
             metadata, _, config_path, _ = cli_inputs(tmp, n_patients=6)

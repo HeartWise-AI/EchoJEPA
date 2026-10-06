@@ -47,10 +47,13 @@ class CSVLogger(object):
         self.types = []
         mode = kwargs.get("mode", "+a")
         self.delim = kwargs.get("delim", ",")
-        # -- print headers
+        # Print headers only once; resumed runs append rows under the existing header.
+        write_header = "w" in mode or not os.path.exists(self.fname) or os.path.getsize(self.fname) == 0
         with open(self.fname, mode) as f:
             for i, v in enumerate(argv, 1):
                 self.types.append(v[0])
+                if not write_header:
+                    continue
                 if i < len(argv):
                     print(v[1], end=self.delim, file=f)
                 else:

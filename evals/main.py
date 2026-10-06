@@ -4,17 +4,26 @@
 # LICENSE file in the root directory of this source tree.
 
 import argparse
+import functools
 import multiprocessing as mp
 import os
 import pprint
+import sys
 
 import yaml
 
+from app.main import launch
 from evals.scaffold import main as eval_main
-from src.utils.distributed import init_distributed
+from src.utils.distributed import close_distributed, init_distributed
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--val_only", action="store_true", help="only run eval", default=False)
+parser.add_argument(
+    "--test_only",
+    action="store_true",
+    default=False,
+    help="Score `experiment.data.dataset_test` with the epoch and head chosen on validation.",
+)
 parser.add_argument("--fname", type=str, help="name of config file to load", default="configs.yaml")
 parser.add_argument(
     "--devices",
@@ -64,6 +73,8 @@ def process_main(args, rank, fname, world_size, devices):
         params = yaml.load(y_file, Loader=yaml.FullLoader)
         if args.val_only:
             params["val_only"] = True
+        if args.test_only:
+            params["test_only"] = True
 
         if args.checkpoint:
             params["model_kwargs"]["checkpoint"] = args.checkpoint
@@ -89,6 +100,17 @@ def process_main(args, rank, fname, world_size, devices):
     # Launch the eval with loaded config
     eval_main(params["eval_name"], args_eval=params)
 
+    # The current process created the process group, so it also shuts it down (no-op if the app already did).
+    close_distributed()
+
+
+def launch_ranks(args):
+    """Run one process per device, as `app.main` does: once a rank fails the others are stopped,
+    and the command exits non-zero, so a failed probe never looks like a finished one."""
+    failed = launch(args.fname, args.devices, target=functools.partial(process_main, args))
+    if failed:
+        sys.exit(f"Evaluation failed on rank(s) {failed}; the other ranks were stopped.")
+
 
 if __name__ == "__main__":
     args = parser.parse_args()
@@ -106,7 +128,5 @@ if __name__ == "__main__":
         else:
             process_main(args=args, rank=0, fname=args.fname, world_size=1, devices=["cuda:0"])
     else:
-        num_gpus = len(args.devices)
         mp.set_start_method("spawn")
-        for rank in range(num_gpus):
-            mp.Process(target=process_main, args=(args, rank, args.fname, num_gpus, args.devices)).start()
+        launch_ranks(args)

@@ -5,6 +5,7 @@
 # LICENSE file in the root directory of this source tree.
 
 import contextlib
+import inspect
 import math
 import os
 import pathlib
@@ -103,6 +104,7 @@ def make_videodataset(
     persistent_workers=True,
     deterministic=True,
     log_dir=None,
+    in_order=True,
 ):
     dataset = VideoDataset(
         data_paths=data_paths,
@@ -154,6 +156,17 @@ def make_videodataset(
     )
     if num_workers > 0:
         dl_kwargs["prefetch_factor"] = 1  # safe default; change as needed
+        # Set `in_order=False` to allow workers to yield batches as soon as they are ready, avoiding
+        # stalls from slow storage. Keep ordered loading for evaluation/inference when output order
+        # must match the input CSV.
+        # Older PyTorch releases (requirements allow any torch>=2) have no `in_order`, so it is
+        # passed only when unordered loading is requested and the installed version supports it.
+        if not in_order:
+            if "in_order" in inspect.signature(torch.utils.data.DataLoader).parameters:
+                dl_kwargs["in_order"] = False
+            else:
+                logger.warning("`in_order=False` ignored: this PyTorch DataLoader has no `in_order`, "
+                               "so batches are delivered in order.")
 
     if deterministic:
         data_loader = torch.utils.data.DataLoader(**dl_kwargs)

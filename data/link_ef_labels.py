@@ -101,7 +101,12 @@ def link(reports, pacs, videos, min_id_agreement, check_path_layout=False):
     if (per_study.n_patients > 1).any() or (per_study.n_dates > 1).any():
         raise ValueError("A study ID is associated with multiple patients or study dates in the video metadata.")
     # After keeping studies that have only one patient and date, we can now pick one representative video row to retrieve.
-    first = videos.drop_duplicates("study_id").set_index("study_id")
+    # Prefer a representative row with both patient and date, since rows missing either cannot confirm the study link.
+    # If no such row exists, the study will fail validation below.
+    complete = videos.patient_id.notna() & videos.study_date.notna()
+    if not complete.all():
+        print(f"[meta]   {(~complete).sum()} video rows lack a patient or date; their studies are checked on complete rows.")
+    first = pd.concat([videos[complete], videos[~complete]]).drop_duplicates("study_id").set_index("study_id")
 
     # Second-hop join to video metadata.
     j = linked.join(first[["patient_id", "study_date"]], on="study_id", how="inner")

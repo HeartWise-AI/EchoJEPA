@@ -56,6 +56,17 @@ def init_distributed(port=37129, rank_and_world_size=(None, None)):
     return world_size, rank
 
 
+def close_distributed():
+    """Synchronize all ranks, then destroy the process group.
+
+    Prevents one rank from closing the shared coordination store before other ranks finish.
+    No-op if distributed processing is not initialized.
+    """
+    if dist.is_available() and dist.is_initialized():
+        dist.barrier()
+        dist.destroy_process_group()
+
+
 class AllGather(torch.autograd.Function):
 
     @staticmethod

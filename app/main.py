@@ -13,7 +13,7 @@ from pathlib import Path
 import yaml
 
 from app.scaffold import main as app_main
-from src.utils.distributed import init_distributed
+from src.utils.distributed import close_distributed, init_distributed
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--fname", type=str, help="name of config file to load", default="configs.yaml")
@@ -73,6 +73,9 @@ def process_main(rank, fname, world_size, devices):
 
     # Launch the app with loaded config
     app_main(params["app"], args=params)
+
+    # The current process created the process group, so it also shuts it down (no-op if the app already did).
+    close_distributed()
 
 
 def launch(fname, devices, target=process_main):

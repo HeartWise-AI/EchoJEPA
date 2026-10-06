@@ -9,6 +9,8 @@ Note: failures from logging are warned but shouldn't crash the training.
 
 import os
 from logging import getLogger
+
+import numpy as np
 import torch
 
 # This file can print warning/info.
@@ -25,6 +27,39 @@ except ImportError:
 # epoch-boundary resume.
 STEP_METRIC = "train/global_step"
 
+# Prevent wandb from automatically uploading local-environment information that may contain
+# filesystem paths or other sensitive infrastructure details. Callers still record the explicit,
+# path-sanitized experiment configuration and metrics.
+PRIVATE_WANDB_SETTINGS = {
+    "console": "off",
+    "x_disable_meta": True,
+    "disable_git": True,
+    "save_code": False,
+    "disable_code": True,
+    "x_save_requirements": False,
+}
+
+# Config keys whose values are filesystem paths, whatever their form (relative ones included).
+PATH_KEYS = frozenset({
+    "folder", "checkpoint", "probe_checkpoint", "predictions_save_path", "subset_file", "log_dir",
+    "datasets", "dataset_train", "dataset_val", "dataset_test", "video_index",
+    "init_checkpoint", "read_checkpoint", "anneal_ckpt",
+})
+
+
+def public_config(value, key=None):
+    """The config with every filesystem path cut to its last component (a file or folder name), for
+    wandb, which must not receive paths: any value under a key of `PATH_KEYS`, and any string that
+    is absolute, starts with `~` or `.`, or contains a path separator."""
+    if isinstance(value, dict):
+        return {k: public_config(v, k) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [public_config(v, key) for v in value]
+    if isinstance(value, str) and (key in PATH_KEYS or os.path.isabs(value) or value.startswith(("~", "."))
+                                   or "/" in value or "\\" in value):
+        return os.path.basename(value.replace("\\", "/").rstrip("/"))
+    return value
+
 def init_wandb(
     cfgs_meta,
     args,
@@ -33,12 +68,14 @@ def init_wandb(
     resuming_training=False,
     checkpoint_run_id=None,
     checkpoint_has_wandb_run_id=False,
+    settings=None,
 ):
     """Initialize a wandb experiment run on rank 0 only.
 
     Args:
         cfgs_meta: the `meta` block of the training config.
-        args: the full config, recorded as the run's config.
+        args: the full config, recorded as the run's config with its paths cut to file and
+            folder names (`public_config`).
         rank: distributed rank; only rank 0 opens a run.
         folder: the run's checkpoint folder, also used as the wandb dir.
         resuming_training: True only when this job is continuing an existing training run.
@@ -47,6 +84,8 @@ def init_wandb(
             the `wandb_run_id.txt` for checkpoints written before that field existed.
         checkpoint_has_wandb_run_id: whether the resumed checkpoint contains the
             run-id field. An explicit None must not fall back to a stale text file.
+        settings: optional `wandb.Settings` fields (a dict), e.g. to keep console output and
+            system metadata out of the run.
 
     Returns (run, effective_run_id).
     `run`: actual live wandb object. None when wandb is not configured/available, 
@@ -110,7 +149,8 @@ def init_wandb(
             # "never": keeps fresh jobs fresh.
             resume="must" if run_id else "never",
             dir=folder,
-            config=args,
+            config=public_config(args),
+            **({"settings": settings} if settings is not None else {}),
         )
     except Exception as e:
         if run_id is not None:
@@ -270,6 +310,98 @@ def log_scalars(run, metrics, step):
         run.log({**metrics, STEP_METRIC: step})
     except Exception as e:
         logger.warning(f"Failed to log scalars to wandb: {e}")
+
+
+def scatter_image(reference, predicted, low=0.0, high=100.0, size=480):
+    """A predicted-versus-reference scatter plot as an RGB array (`size` x `size`): one point per
+    pair, the identity line, and a grid every 20 EF points. The points carry no identifier and no
+    order."""
+    from PIL import Image, ImageDraw
+
+    left, right, top, bottom = 44, size - 12, 12, size - 36  # the plot area, in pixels
+
+    def to_px(values, start, end):
+        return start + (np.clip(np.asarray(values, dtype=float), low, high) - low) / (high - low) * (end - start)
+
+    image = Image.new("RGB", (size, size), "white")
+    draw = ImageDraw.Draw(image)
+    for tick in np.arange(low, high + 1e-9, 20):
+        x, y = float(to_px(tick, left, right)), float(to_px(tick, bottom, top))
+        draw.line([(x, bottom), (x, top)], fill=(230, 230, 230))
+        draw.line([(left, y), (right, y)], fill=(230, 230, 230))
+        draw.text((x - 6, bottom + 4), f"{tick:g}", fill="black")
+        draw.text((left - 24, y - 6), f"{tick:g}", fill="black")
+    draw.line([(left, bottom), (right, top)], fill=(150, 150, 150))  # predicted = reference.
+    draw.rectangle([left, top, right, bottom], outline="black")
+
+    points = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    dots = ImageDraw.Draw(points)
+    for x, y in zip(to_px(reference, left, right), to_px(predicted, bottom, top)):
+        dots.ellipse([x - 2, y - 2, x + 2, y + 2], fill=(31, 119, 180, 110))
+    image = Image.alpha_composite(image.convert("RGBA"), points).convert("RGB")
+    draw = ImageDraw.Draw(image)
+    draw.text(((left + right) / 2 - 45, size - 16), "reference EF (%)", fill="black")
+    draw.text((left + 6, top + 4), "predicted EF (%)", fill="black")
+    return np.asarray(image)
+
+
+def range_key(name):
+    """A wandb key for an EF range label of `metrics.by_range`: "< 30" -> "below_30",
+    "30-40" -> "30_to_40", ">= 60" -> "60_and_above"."""
+    if name.startswith("< "):
+        return f"below_{name[2:]}"
+    if name.startswith(">= "):
+        return f"{name[3:]}_and_above"
+    return name.replace("-", "_to_")
+
+
+def log_regression_results(run, labels, predictions, ranges, step, prefix):
+    """Log a predicted-vs-reference scatter plot (an image), the residual histogram, and the error
+    by reference EF range (`prefix/by_reference_range/<range>/{n,mae,bias}`).
+
+    No wandb Table: wandb keeps each Table in an artifact whose manifest records the folder the
+    table was staged from on this machine, a filesystem path. Images and histograms hold values
+    only, and neither carries an identifier or the order of the records.
+    """
+    if run is None or wandb is None:
+        return
+    try:
+        y = np.asarray(labels, dtype=float)
+        p = np.asarray(predictions, dtype=float)
+        payload = {
+            f"{prefix}/predicted_vs_reference": wandb.Image(
+                scatter_image(y, p), caption=f"Predicted vs reference EF, n = {len(y)}"
+            ),
+            # Residual = prediction - reference: above 0 the model overestimates EF.
+            f"{prefix}/residuals": wandb.Histogram(p - y),
+            # Associates the result with the project's explicit `train/global_step` metric rather
+            # than wandb's implicit step.
+            STEP_METRIC: step,
+        }
+        for row in ranges:
+            for stat in ("n", "mae", "bias"):
+                if np.isfinite(row[stat]):  # an empty range has no errors.
+                    payload[f"{prefix}/by_reference_range/{range_key(row['range'])}/{stat}"] = row[stat]
+        run.log(payload)
+    except Exception as e:
+        logger.warning(f"Failed to log regression results to wandb: {e}")
+
+
+def log_reference(run, name, kind, record):
+    """Point the run at a file kept outside wandb, such as a checkpoint: `record` (its checksum
+    and what identifies it, no path) goes into the run's summary under `name/`, and into the
+    metadata of an artifact of type `kind` that holds no file. An artifact file would not do:
+    wandb's manifest records where the file was staged on this machine."""
+    # Logging is skipped if wandb is unavailable or no active run exists.
+    if run is None or wandb is None:
+        return
+    try:
+        # Copies every field in `record` into the wandb run summary.
+        for key, value in record.items():
+            run.summary[f"{name}/{key}"] = value
+        run.log_artifact(wandb.Artifact(f"{name}-{run.id}", type=kind, metadata=record))
+    except Exception as e:
+        logger.warning(f"Failed to log the {name} reference to wandb: {e}")
 
 
 def finish_wandb(run):
