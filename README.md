@@ -84,6 +84,14 @@ conda activate vjepa2-312
 pip install .  # or `pip install -e .` for development mode
 ```
 
+### RADAR caption pilot
+
+The Labelbox bootstrap for the RADAR caption pilot is isolated under
+[`tools/labelbox`](tools/labelbox/README.md). Its setup script safely creates or
+reuses the empty video project and pilot dataset without uploading clinical data
+or attaching cloud storage. See the linked guide for installation, dry-run and
+applied commands, credential handling, and the handoff to the caption workflow.
+
 ### Pretraining
 
 Pretraining can also be run locally or distributed. Pretraining and cooldown training phases are run with the same command using different configs. These sample commands launch initial training of a ViT-L model on [MIMIC-IV-ECHO](https://physionet.org/content/mimic-iv-echo/0.1/), a dataset of 525K echocardiograms which can be accessed through PhysioNet.
