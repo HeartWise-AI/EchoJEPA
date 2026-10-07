@@ -20,6 +20,9 @@ dev = [
     "isort==5.13.2",
     "pyarrow",
 ]
+labelbox = [
+    "labelbox>=7.12,<8",
+]
 
 [tool.uv]
 # EchoJEPA is run from its checkout. Sync the environment without installing a
