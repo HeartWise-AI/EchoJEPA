@@ -44,4 +44,6 @@ jobs:
         env:
           OMP_NUM_THREADS: "1"
           WANDB_MODE: disabled
-        run: python -m unittest discover -s tests -p 'test_*.py' -v
+        run: |
+          python -m unittest discover -s tests -p 'test_*.py' -v
+          python -m unittest discover -s tools/labelbox/tests -p 'test_*.py' -v
