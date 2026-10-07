@@ -6,7 +6,10 @@ from contextlib import redirect_stderr, redirect_stdout
 from dataclasses import dataclass
 
 from tools.labelbox.create_pilot_project import (
+    DATASET_DESCRIPTION,
+    PROJECT_DESCRIPTION,
     AmbiguousResourceError,
+    IncompatibleResourceError,
     LabelboxPilotClient,
     ensure_pilot_resources,
     main,
@@ -17,6 +20,11 @@ from tools.labelbox.create_pilot_project import (
 class FakeResource:
     name: str
     uid: str
+    description: str = ""
+    media_type: str = "video"
+    data_row_count: int = 0
+    row_count: int = 0
+    iam_integration: object | None = None
 
 
 class FakeClient:
@@ -42,6 +50,12 @@ class FakeClient:
         resource = FakeResource(name=name, uid="dataset-created")
         self.datasets.append(resource)
         return resource
+
+    def validate_project(self, project):
+        return None
+
+    def validate_dataset(self, dataset):
+        return None
 
 
 class FakeField:
@@ -135,6 +149,18 @@ class EnsurePilotResourcesTests(unittest.TestCase):
 
         self.assertEqual(client.created, [])
 
+    def test_validates_an_existing_dataset_before_creating_a_missing_project(self):
+        class RejectingClient(FakeClient):
+            def validate_dataset(self, dataset):
+                raise IncompatibleResourceError("unsafe dataset")
+
+        client = RejectingClient(datasets=[FakeResource("RADAR Caption Pilot Dataset", "dataset-existing")])
+
+        with self.assertRaises(IncompatibleResourceError):
+            ensure_pilot_resources(client)
+
+        self.assertEqual(client.created, [])
+
 
 class LabelboxPilotClientTests(unittest.TestCase):
     def setUp(self):
@@ -183,6 +209,50 @@ class LabelboxPilotClientTests(unittest.TestCase):
                 ),
             ],
         )
+
+    def test_accepts_only_an_empty_tagged_video_project(self):
+        valid = FakeResource(
+            "pilot project",
+            "project-id",
+            description=PROJECT_DESCRIPTION,
+        )
+        self.client.validate_project(valid)
+
+        for change in (
+            {"media_type": "image"},
+            {"data_row_count": 1},
+            {"description": "another workflow"},
+        ):
+            fields = {"description": PROJECT_DESCRIPTION, **change}
+            invalid = FakeResource(
+                "pilot project",
+                "project-id",
+                **fields,
+            )
+            with self.subTest(change=change), self.assertRaises(IncompatibleResourceError):
+                self.client.validate_project(invalid)
+
+    def test_accepts_only_an_empty_tagged_dataset_without_iam(self):
+        valid = FakeResource(
+            "pilot dataset",
+            "dataset-id",
+            description=DATASET_DESCRIPTION,
+        )
+        self.client.validate_dataset(valid)
+
+        for change in (
+            {"row_count": 1},
+            {"iam_integration": object()},
+            {"description": "another workflow"},
+        ):
+            fields = {"description": DATASET_DESCRIPTION, **change}
+            invalid = FakeResource(
+                "pilot dataset",
+                "dataset-id",
+                **fields,
+            )
+            with self.subTest(change=change), self.assertRaises(IncompatibleResourceError):
+                self.client.validate_dataset(invalid)
 
 
 class MainTests(unittest.TestCase):

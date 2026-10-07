@@ -34,9 +34,17 @@ class PilotClient(Protocol):
 
     def create_dataset(self, name: str, description: str) -> RemoteResource: ...
 
+    def validate_project(self, project: RemoteResource) -> None: ...
+
+    def validate_dataset(self, dataset: RemoteResource) -> None: ...
+
 
 class AmbiguousResourceError(RuntimeError):
     """Raised when a name identifies more than one Labelbox resource."""
+
+
+class IncompatibleResourceError(RuntimeError):
+    """Raised when a same-name resource is unsafe to reuse for this pilot."""
 
 
 @dataclass(frozen=True)
@@ -101,6 +109,18 @@ class LabelboxPilotClient:
             iam_integration=None,
         )
 
+    def validate_project(self, project: RemoteResource) -> None:
+        if (
+            project.media_type != self._video_media_type
+            or project.data_row_count != 0
+            or project.description != PROJECT_DESCRIPTION
+        ):
+            raise IncompatibleResourceError("The same-name project is not an empty pilot video project.")
+
+    def validate_dataset(self, dataset: RemoteResource) -> None:
+        if dataset.row_count != 0 or dataset.iam_integration is not None or dataset.description != DATASET_DESCRIPTION:
+            raise IncompatibleResourceError("The same-name dataset is not an empty, unconnected pilot dataset.")
+
 
 def _validate_unique(resources: Sequence[RemoteResource], kind: str, name: str) -> None:
     if len(resources) > 1:
@@ -129,6 +149,13 @@ def ensure_pilot_resources(
     datasets = list(client.find_datasets(dataset_name))
     _validate_unique(projects, "project", project_name)
     _validate_unique(datasets, "dataset", dataset_name)
+
+    # Validate every existing resource before the first write. A unique name
+    # alone does not prove that a resource belongs to this pilot.
+    if projects:
+        client.validate_project(projects[0])
+    if datasets:
+        client.validate_dataset(datasets[0])
 
     if projects:
         project = _result(projects[0], created=False)

@@ -12,10 +12,11 @@ approved.
 - a video project named `RADAR Caption Pilot`; and
 - a dataset named `RADAR Caption Pilot Dataset`.
 
-It searches for both exact names before writing. An existing unique match is reused,
-a missing resource is created, and duplicate matches stop the command before it
-creates anything. The dataset is created with no IAM storage integration; approved
-storage can be connected later.
+It searches for both exact names before writing. An existing match is reused only if
+its description identifies this bootstrap, the project is an empty video project,
+and the dataset is empty with no IAM storage integration. Missing resources are
+created. Duplicate or incompatible matches stop the command before it creates
+anything. Approved storage can be connected later.
 
 The script does **not** invite users, assign roles, define an ontology, connect cloud
 storage, upload videos, preload captions, or create labeling batches. Complete access
@@ -80,6 +81,10 @@ Running the command again reuses those identifiers rather than creating duplicat
 If an API operation fails, the command returns a non-zero status and prints only the
 exception type. It intentionally omits the server message because that message could
 contain credentials, storage locations, or other sensitive details.
+
+An `AmbiguousResourceError` or `IncompatibleResourceError` means the same-name
+resources must be inspected in Labelbox. Rename or remove resources belonging to
+another workflow; do not delete or repurpose them without confirming ownership.
 
 Custom non-sensitive names can be supplied when a separate sandbox is required:
 
