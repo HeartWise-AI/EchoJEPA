@@ -1,5 +1,6 @@
 import io
 import logging
+import sys
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from dataclasses import dataclass
@@ -224,13 +225,17 @@ class MainTests(unittest.TestCase):
 
     def test_apply_sanitizes_api_errors(self):
         secret = "secret-test-key"
+        stdout = io.StringIO()
         stderr = io.StringIO()
+        previous_log_disable = logging.root.manager.disable
 
         def fail(_):
             logging.getLogger("labelbox-test").error("server rejected %s at /sensitive/path", secret)
+            print(f"server rejected {secret} at /sensitive/path")
+            print(f"server rejected {secret} at /sensitive/path", file=sys.stderr)
             raise RuntimeError(f"server rejected {secret} at /sensitive/path")
 
-        with redirect_stderr(stderr):
+        with redirect_stdout(stdout), redirect_stderr(stderr):
             status = main(
                 ["--apply"],
                 environ={"LABELBOX_API_KEY": secret},
@@ -238,9 +243,11 @@ class MainTests(unittest.TestCase):
             )
 
         self.assertEqual(status, 1)
+        self.assertEqual(stdout.getvalue(), "")
         self.assertEqual(stderr.getvalue(), "Labelbox setup failed (RuntimeError).\n")
         self.assertNotIn(secret, stderr.getvalue())
         self.assertNotIn("/sensitive/path", stderr.getvalue())
+        self.assertEqual(logging.root.manager.disable, previous_log_disable)
 
     def test_rejects_control_characters_in_resource_names(self):
         stderr = io.StringIO()

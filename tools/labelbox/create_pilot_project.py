@@ -6,6 +6,7 @@ import argparse
 import logging
 import os
 import sys
+from contextlib import redirect_stderr, redirect_stdout
 from dataclasses import dataclass
 from typing import Callable, Mapping, Protocol, Sequence
 
@@ -202,11 +203,13 @@ def main(
         # Third-party API errors may include request or storage details. Keep
         # the operation silent and emit a sanitized result below.
         logging.disable(logging.CRITICAL)
-        result = ensure_pilot_resources(
-            client_factory(api_key),
-            project_name=args.project_name,
-            dataset_name=args.dataset_name,
-        )
+        with open(os.devnull, "w") as discarded_output:
+            with redirect_stdout(discarded_output), redirect_stderr(discarded_output):
+                result = ensure_pilot_resources(
+                    client_factory(api_key),
+                    project_name=args.project_name,
+                    dataset_name=args.dataset_name,
+                )
     except Exception as exc:
         # API errors can contain request details. Keep logs safe and actionable
         # without reproducing server messages, credentials, or storage paths.
