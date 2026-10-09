@@ -15,7 +15,7 @@ The Labelbox review form captures the following for every clip. The metrics use 
 
 | Item | Answers |
 |---|---|
-| **Uninterpretable clip?** | no; yes, with a reason (image quality, crop or zoom, modality, other) |
+| **Uninterpretable clip?** | no; yes, with a reason (image quality, crop, zoom or outside the square, modality, other) |
 | **View correct?** | yes; no, with the correct view class; unsure; not applicable (uninterpretable clip) |
 | **Caption supported?** | yes: every statement is supported; no: at least one statement is not supported or is wrong; unsure: nothing is wrong, but at least one statement cannot be confirmed; not applicable |
 | **Missing information?** | no; yes, with the missing concepts, plus free text for anything the ontology has no concept for; not applicable |
@@ -31,6 +31,12 @@ review step, if the project has one, is not part of the medical review.
 A statement is one of the structured claims of the candidate caption (see
 [What a caption claims](ontology_v1.md#what-a-caption-claims)): the acquisition mode, a structure's visibility, or a
 finding with its value. The view is judged by "View correct?" and is not counted again as a statement.
+
+Statements are judged inside the square outline drawn on each clip, the part of the image the model uses (see the
+[labeling instructions](labeling_instructions_v1.md#what-you-review)). A statement that only the area outside the
+square shows is unconfirmed, with the reason "crop, zoom or outside the square", not unsupported. The rates below
+therefore measure captions against what the model sees, and an unsupported statement is a caption error, not a crop
+effect.
 
 ## Which reviews count
 

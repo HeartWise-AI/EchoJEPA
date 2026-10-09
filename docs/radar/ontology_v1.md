@@ -190,7 +190,7 @@ The reasons a reviewer can give when a clip, or one concept in it, cannot be jud
 | Reason | English | French |
 |---|---|---|
 | `quality` | Image quality | Qualité d'image |
-| `crop` | Crop or zoom | Cadrage ou zoom |
+| `crop` | Crop, zoom or outside the square | Cadrage, zoom ou hors du carré |
 | `modality` | Modality | Modalité |
 | `other` | Other | Autre |
 <!-- END GENERATED: limitations -->
@@ -222,6 +222,8 @@ The code that generates captions, uploads clips and imports reviews is outside i
 contract, it must:
 
 - upload clips only under an approved ontology (`require_approval` in `app/radar/approval.py`);
+- draw on every uploaded clip the square the model uses (its evaluation crop: shorter side resized to 256, center
+  crop of 224, mapped back to the clip's pixels), and record that square with the clip;
 - record with each clip the ontology tag and the candidate caption's view, acquisition mode and statements, and
   preload the candidate caption as the answer to "corrected caption" (the form itself cannot hold a per-clip default);
 - count a review as valid only when `review_problems` in `app/radar/review_rules.py` finds nothing: every required
@@ -391,3 +393,6 @@ for is made in the approved files before their content commit (see [approval_v1.
    `mild_to_moderate` regurgitation is left unassigned; PanEcho "mild" effusion as "small"; PA systolic pressure as
    only related to RVSP; EchoPrime's reported EF as the same quantity as the visual estimate; and every EchoPrime
    binary task kept as only related, because its phrases also match negated, possible or borderline mentions.
+6. **Field of view.** Reviewers judge statements inside the square the model uses, with the rest of the clip as
+   context. A statement that only the area outside the square shows is unconfirmed ("crop, zoom or outside the
+   square"), not unsupported, so the pilot's error rates count caption errors and not crop effects.

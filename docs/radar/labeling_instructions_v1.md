@@ -14,18 +14,23 @@ what this clip actually supports.
 Next to the clip you also see the structures its view usually shows (the "expected structures"). They are a prior to
 help you, not something the caption claims.
 
+The clip shows a **square outline**: the part of the image the model uses. Judge every statement on what is inside
+the square. The rest of the image is context, for example to recognize the view. A statement that only the area
+outside the square shows is unconfirmed, with the reason "crop, zoom or outside the square" (see
+[Uncertainty](#uncertainty)).
+
 The terms used below:
 
 - **Statement:** one thing the caption says, besides the view: the acquisition mode, a structure being visible, or a
   finding with its value ("Insuffisance mitrale : modérée", "Insuffisance mitrale : absente").
-- **Supported:** this clip shows it, at the stated value or severity.
+- **Supported:** this clip shows it inside the square, at the stated value or severity.
 - **Unconfirmed:** this clip does not let you decide (see [Uncertainty](#uncertainty)).
 
 The ontology behind the form, with every view, structure and finding, is in [ontology_v1.md](ontology_v1.md).
 
 ## How to work through a clip
 
-1. Watch the whole loop, more than once if needed.
+1. Watch the whole loop, more than once if needed, and locate the square: the statements are judged inside it.
 2. Decide whether the clip can be interpreted at all (question 1).
 3. Check the view (question 2).
 4. Go through the caption statement by statement: supported, unsupported (question 5) or unconfirmed (question 6).
@@ -38,12 +43,12 @@ The ontology behind the form, with every view, structure and finding, is in [ont
 <!-- BEGIN GENERATED: review_form -->
 | # | Question | Id | Required | Answers |
 |---|---|---|---|---|
-| 1 | Is this clip uninterpretable? | `uninterpretable_clip` | yes | `no` No, the clip can be interpreted; `yes` Yes, it is uninterpretable → Reason: Image quality, Crop or zoom, Modality, Other |
+| 1 | Is this clip uninterpretable? | `uninterpretable_clip` | yes | `no` No, the clip can be interpreted; `yes` Yes, it is uninterpretable → Reason: Image quality, Crop, zoom or outside the square, Modality, Other |
 | 2 | Is the stated view correct? | `view_correct` | yes | `yes` Yes; `no` No → Correct view (one of the view classes); `unsure` Unsure; `not_applicable` Not applicable: uninterpretable clip |
 | 3 | Apart from the view, is everything the caption states supported by this clip? | `caption_supported` | yes | `yes` Yes, every statement is supported; `no` No, at least one statement is not supported or is wrong; `unsure` Unsure: nothing is wrong, but at least one statement cannot be confirmed; `not_applicable` Not applicable: uninterpretable clip |
 | 4 | Does the caption leave out visible, clinically relevant information? | `missing_information` | yes | `no` No; `yes` Yes → Missing concepts (the statements below) + Other missing information (not in the ontology) (free text); `not_applicable` Not applicable: uninterpretable clip |
 | 5 | Apart from the view, does the caption state anything this clip does not support (unsupported or hallucinated information)? | `unsupported_information` | yes | `no` No; `yes` Yes → Unsupported or wrong statements (the statements below), each: Not shown or contradicted by the clip (hallucinated) / Present, but the value or severity is wrong; `not_applicable` Not applicable: uninterpretable clip |
-| 6 | Statements that cannot be confirmed from this clip (leave empty if none) | `unconfirmed_statements` | no | the statements below, each: Reason (Visible, but I am not sure / Image quality / Crop or zoom / Modality / Other) |
+| 6 | Statements that cannot be confirmed from this clip (leave empty if none) | `unconfirmed_statements` | no | the statements below, each: Reason (Visible, but I am not sure / Image quality / Crop, zoom or outside the square / Modality / Other) |
 | 7 | The caption as it should read (preloaded with the candidate caption) | `corrected_caption` | yes | free text |
 | 8 | Comments (no patient details) | `comments` | no | free text |
 <!-- END GENERATED: review_form -->
@@ -102,7 +107,7 @@ here.
 
 ### Supported, not supported, wrong value
 
-- **Supported:** you can see it in this clip, at the stated value or severity, as you would grade it visually.
+- **Supported:** you can see it inside the square, at the stated value or severity, as you would grade it visually.
 - **Not supported (hallucinated):** the clip does not show it, or contradicts it. Flag it under question 5 with
   "not shown or contradicted".
 - **Wrong value:** the finding is there but its value or severity is wrong (for example severe instead of moderate).
@@ -116,7 +121,9 @@ When you cannot decide whether a statement is supported, do not guess. List it u
 
 - **uncertain:** the finding is visible but you cannot judge it with confidence (for example an eccentric jet whose
   grade you cannot tell);
-- **image quality, crop or zoom, modality, other:** something about the clip prevents the judgment.
+- **image quality, crop, zoom or outside the square, modality, other:** something about the clip prevents the
+  judgment. A statement that only the area outside the square shows is unconfirmed with "crop, zoom or outside the
+  square": the clip shows it, but not where the model looks, so do not flag it as unsupported.
 
 If nothing in the caption is wrong but at least one statement is unconfirmed, answer question 3 "unsure". A statement
 is either unsupported or unconfirmed, never both. For the view, answer "unsure" when you cannot tell the class.
@@ -124,8 +131,8 @@ is either unsupported or unconfirmed, never both. For the view, answer "unsure" 
 ### Absent findings
 
 A caption may state that a finding is absent ("Insuffisance mitrale : absente"). Judge it like any other statement:
-it is supported only if this clip could show the finding (right view, right modality, the structure in the sector)
-and it is not there. If the clip could not show it, the statement is unconfirmed, not supported.
+it is supported only if this clip could show the finding (right view, right modality, the structure inside the
+square) and it is not there. If the clip could not show it, the statement is unconfirmed, not supported.
 
 A finding that is absent and not mentioned in the caption is not missing information.
 
@@ -134,20 +141,22 @@ A finding that is absent and not mentioned in the caption is not missing informa
 The expected structures are a prior, not a claim. An expected structure that is not visible in this clip is neither
 missing information nor an error, unless the caption states it is visible: then that statement is not supported.
 
-If a structure is only partly visible, it counts as visible when you can identify it with confidence; otherwise list
-the statement as unconfirmed (crop or zoom).
+If a structure is only partly visible, or lies partly or wholly outside the square, it counts as visible only when
+you can identify it with confidence inside the square; otherwise list the statement as unconfirmed (crop, zoom or
+outside the square).
 
 ### Missing information
 
-Answer "yes" to question 4 only for information that is visible in this clip and clinically relevant, and that the
-caption leaves out. Tick the matching statements; use the free-text field for anything the list does not have.
-Do not list measurements (TAPSE, RVSP, PISA…), what only other clips show, or absent findings.
+Answer "yes" to question 4 only for information that is visible inside the square and clinically relevant, and that
+the caption leaves out. Tick the matching statements; use the free-text field for anything the list does not have.
+Do not list measurements (TAPSE, RVSP, PISA…), what only other clips or only the area outside the square show, or
+absent findings.
 
 ### Uninterpretable clips
 
 Answer "yes" to question 1 only when nothing in the caption can be judged: severe artifacts, wrong modality for the
-whole caption, a crop that leaves nothing identifiable. Give the reason, answer "not applicable" to questions 2 to 5,
-and leave the corrected caption unchanged (it is ignored).
+whole caption, a crop or a square that leaves nothing identifiable. Give the reason, answer "not applicable" to
+questions 2 to 5, and leave the corrected caption unchanged (it is ignored).
 
 If only part of the caption cannot be judged, the clip is interpretable: use the unconfirmed statements. An
 interpretable clip never answers "not applicable": when you cannot decide, answer "unsure" where the question
@@ -280,7 +289,7 @@ The clips are synthetic, described in words.
   - Apart from the view, is everything the caption states supported by this clip? **Unsure: nothing is wrong, but at least one statement cannot be confirmed**
   - Does the caption leave out visible, clinically relevant information? **No**
   - Apart from the view, does the caption state anything this clip does not support (unsupported or hallucinated information)? **No**
-  - Statements that cannot be confirmed from this clip (leave empty if none): **Mitral regurgitation: Crop or zoom**
+  - Statements that cannot be confirmed from this clip (leave empty if none): **Mitral regurgitation: Crop, zoom or outside the square**
 
 - **Corrected caption:** "Coupe apicale 4 cavités (A4C), Doppler couleur."
 - **Why:** An absence is judged like any other finding: it is supported only if the clip could show the regurgitation. Here the color box misses the mitral valve, so the statement cannot be confirmed (crop) and leaves the corrected caption.
@@ -302,7 +311,24 @@ The clips are synthetic, described in words.
 - **Corrected caption:** "Coupe apicale 4 cavités zoomée (A4C_ZOOM), mode B. Valve mitrale visible."
 - **Why:** The expected structures of a view are only a prior: an expected structure that is not visible is neither missing nor wrong, unless the caption says it is visible. Here it does, so the statement is not supported.
 
-### 7. Uncertain grade
+### 7. Finding visible only outside the square
+
+- **Clip (synthetic):** Apical 4-chamber B-mode loop; a small pericardial effusion runs along the right-ventricular free wall, at the left edge of the image and outside the square; inside the square, the left ventricle is well seen.
+- **Classifier view and acquisition:** `A4C`, B-mode
+- **Candidate caption:** "Coupe apicale 4 cavités (A4C), mode B. Ventricule gauche visible. Épanchement péricardique : de faible abondance."
+- **Answers:**
+
+  - Is this clip uninterpretable? **No, the clip can be interpreted**
+  - Is the stated view correct? **Yes**
+  - Apart from the view, is everything the caption states supported by this clip? **Unsure: nothing is wrong, but at least one statement cannot be confirmed**
+  - Does the caption leave out visible, clinically relevant information? **No**
+  - Apart from the view, does the caption state anything this clip does not support (unsupported or hallucinated information)? **No**
+  - Statements that cannot be confirmed from this clip (leave empty if none): **Pericardial effusion: Crop, zoom or outside the square**
+
+- **Corrected caption:** "Coupe apicale 4 cavités (A4C), mode B. Ventricule gauche visible."
+- **Why:** Statements are judged inside the square, the part of the image the model uses. The effusion is real and visible in the clip, but only outside the square: the statement cannot be confirmed (crop, zoom or outside the square), it is not flagged as unsupported, and it leaves the corrected caption. The left ventricle, visible inside the square, stays.
+
+### 8. Uncertain grade
 
 - **Clip (synthetic):** Apical 4-chamber color Doppler loop; an eccentric tricuspid jet, partly out of plane.
 - **Classifier view and acquisition:** `A4C`, color Doppler
@@ -319,7 +345,7 @@ The clips are synthetic, described in words.
 - **Corrected caption:** "Coupe apicale 4 cavités (A4C), Doppler couleur."
 - **Why:** The regurgitation is visible but its grade cannot be judged from this clip: "uncertain", never a guessed yes or no. A statement that cannot be confirmed leaves the corrected caption.
 
-### 8. Wrong acquisition mode
+### 9. Wrong acquisition mode
 
 - **Clip (synthetic):** Apical 4-chamber B-mode loop, without color Doppler.
 - **Classifier view and acquisition:** `A4C`, color Doppler
@@ -336,7 +362,7 @@ The clips are synthetic, described in words.
 - **Corrected caption:** "Coupe apicale 4 cavités (A4C), mode B."
 - **Why:** The acquisition mode is a statement too, and here it is wrong. Mitral regurgitation cannot be judged without color Doppler, so it cannot be confirmed (modality). A clip can have both unsupported and unconfirmed statements.
 
-### 9. Acquisition mode that cannot be confirmed
+### 10. Acquisition mode that cannot be confirmed
 
 - **Clip (synthetic):** Apical 4-chamber loop with cropped edges: the color scale and the outline of any color box are outside the image, and the few colored pixels in the left ventricle could be color Doppler or noise; the left ventricle is well seen.
 - **Classifier view and acquisition:** `A4C`, color Doppler
@@ -348,12 +374,12 @@ The clips are synthetic, described in words.
   - Apart from the view, is everything the caption states supported by this clip? **Unsure: nothing is wrong, but at least one statement cannot be confirmed**
   - Does the caption leave out visible, clinically relevant information? **No**
   - Apart from the view, does the caption state anything this clip does not support (unsupported or hallucinated information)? **No**
-  - Statements that cannot be confirmed from this clip (leave empty if none): **Acquisition mode: Crop or zoom**
+  - Statements that cannot be confirmed from this clip (leave empty if none): **Acquisition mode: Crop, zoom or outside the square**
 
 - **Corrected caption:** "Coupe apicale 4 cavités (A4C), acquisition indéterminée. Ventricule gauche visible."
 - **Why:** The acquisition mode is a statement, and here it cannot be confirmed (crop): it is listed under question 6 and question 3 is "unsure". The corrected caption keeps its form: instead of dropping the mode, it writes "acquisition indéterminée" (unknown acquisition). The left ventricle is visible whatever the mode, so its statement stays.
 
-### 10. Wrong view
+### 11. Wrong view
 
 - **Clip (synthetic):** Apical 5-chamber color Doppler loop (LV outflow tract and aortic valve visible); mild mitral regurgitation.
 - **Classifier view and acquisition:** `A4C`, color Doppler
@@ -370,7 +396,7 @@ The clips are synthetic, described in words.
 - **Corrected caption:** "Coupe apicale 5 cavités (A5C), Doppler couleur. Insuffisance mitrale : légère."
 - **Why:** The view is judged on its own: "no" and the right class. The statements are judged as written; the corrected caption gives the right view.
 
-### 11. Uncertain view
+### 12. Uncertain view
 
 - **Clip (synthetic):** Apical color Doppler loop between a 4- and a 5-chamber view: the LV outflow tract appears in some beats only; mild mitral regurgitation.
 - **Classifier view and acquisition:** `A4C`, color Doppler
@@ -387,7 +413,7 @@ The clips are synthetic, described in words.
 - **Corrected caption:** "Coupe indéterminée, Doppler couleur. Insuffisance mitrale : légère."
 - **Why:** When the view class cannot be decided, answer "unsure": do not pick a class at random, and do not use OTHER, which is for off-axis or non-standard clips. The statements are judged as written. The corrected caption replaces the view with "Coupe indéterminée" (undetermined view); the classifier's class stays recorded with the clip.
 
-### 12. Uninterpretable clip
+### 13. Uninterpretable clip
 
 - **Clip (synthetic):** Subcostal B-mode loop; major artifacts, no identifiable structure.
 - **Classifier view and acquisition:** `SUBCOSTAL`, B-mode

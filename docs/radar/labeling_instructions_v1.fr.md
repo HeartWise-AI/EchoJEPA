@@ -16,12 +16,17 @@ du clip peuvent montrer. Elles ne sont pas validées : votre relecture décide d
 À côté du clip figurent aussi les structures que sa coupe montre habituellement (les « structures attendues »). C'est
 un a priori pour vous aider, pas une affirmation de la légende.
 
+Le clip montre un **contour carré** : la partie de l'image qu'utilise le modèle. Jugez chaque énoncé d'après ce qui
+se trouve dans le carré. Le reste de l'image sert de contexte, par exemple pour reconnaître la coupe. Un énoncé que
+seule la zone hors du carré montre est impossible à vérifier, avec la raison « cadrage, zoom ou hors du carré » (voir
+[Incertitude](#incertitude)).
+
 Termes utilisés ci-dessous :
 
 - **Énoncé :** une chose que dit la légende, en dehors de la coupe : le mode d'acquisition, la visibilité d'une
   structure, ou une constatation avec sa valeur (« Insuffisance mitrale : modérée », « Insuffisance mitrale :
   absente »).
-- **Étayé :** ce clip le montre, avec la valeur ou la sévérité indiquée.
+- **Étayé :** ce clip le montre dans le carré, avec la valeur ou la sévérité indiquée.
 - **Impossible à vérifier :** ce clip ne permet pas de trancher (voir [Incertitude](#incertitude)).
 
 L'ontologie sur laquelle repose le formulaire, avec chaque coupe, structure et constatation, est décrite dans
@@ -29,7 +34,7 @@ L'ontologie sur laquelle repose le formulaire, avec chaque coupe, structure et c
 
 ## Déroulement pour un clip
 
-1. Regarder toute la boucle, plusieurs fois si nécessaire.
+1. Regarder toute la boucle, plusieurs fois si nécessaire, et repérer le carré : les énoncés se jugent dans le carré.
 2. Décider si le clip est interprétable (question 1).
 3. Vérifier la coupe (question 2).
 4. Parcourir la légende énoncé par énoncé : étayé, non étayé (question 5) ou impossible à vérifier (question 6).
@@ -42,12 +47,12 @@ L'ontologie sur laquelle repose le formulaire, avec chaque coupe, structure et c
 <!-- BEGIN GENERATED: review_form -->
 | # | Question | Id | Obligatoire | Réponses |
 |---|---|---|---|---|
-| 1 | Ce clip est-il ininterprétable ? | `uninterpretable_clip` | oui | `no` Non, le clip est interprétable; `yes` Oui, il est ininterprétable → Raison : Qualité d'image, Cadrage ou zoom, Modalité, Autre |
+| 1 | Ce clip est-il ininterprétable ? | `uninterpretable_clip` | oui | `no` Non, le clip est interprétable; `yes` Oui, il est ininterprétable → Raison : Qualité d'image, Cadrage, zoom ou hors du carré, Modalité, Autre |
 | 2 | La coupe indiquée est-elle correcte ? | `view_correct` | oui | `yes` Oui; `no` Non → Coupe correcte (une des classes de coupe); `unsure` Incertain; `not_applicable` Sans objet : clip ininterprétable |
 | 3 | En dehors de la coupe, tout ce que la légende affirme est-il étayé par ce clip ? | `caption_supported` | oui | `yes` Oui, chaque énoncé est étayé; `no` Non, au moins un énoncé n'est pas étayé ou est faux; `unsure` Incertain : rien n'est faux, mais au moins un énoncé est impossible à vérifier; `not_applicable` Sans objet : clip ininterprétable |
 | 4 | La légende omet-elle une information visible et cliniquement pertinente ? | `missing_information` | oui | `no` Non; `yes` Oui → Concepts manquants (les énoncés ci-dessous) + Autre information manquante (hors ontologie) (texte libre); `not_applicable` Sans objet : clip ininterprétable |
 | 5 | En dehors de la coupe, la légende affirme-t-elle quelque chose que ce clip n'étaye pas (information non étayée ou hallucinée) ? | `unsupported_information` | oui | `no` Non; `yes` Oui → Énoncés non étayés ou faux (les énoncés ci-dessous), chacun : Non montré ou contredit par le clip (halluciné) / Présent, mais valeur ou sévérité fausse; `not_applicable` Sans objet : clip ininterprétable |
-| 6 | Énoncés impossibles à vérifier sur ce clip (laisser vide s'il n'y en a aucun) | `unconfirmed_statements` | non | les énoncés ci-dessous, chacun : Raison (Visible, mais je ne suis pas certain / Qualité d'image / Cadrage ou zoom / Modalité / Autre) |
+| 6 | Énoncés impossibles à vérifier sur ce clip (laisser vide s'il n'y en a aucun) | `unconfirmed_statements` | non | les énoncés ci-dessous, chacun : Raison (Visible, mais je ne suis pas certain / Qualité d'image / Cadrage, zoom ou hors du carré / Modalité / Autre) |
 | 7 | La légende telle qu'elle devrait se lire (préremplie avec la légende proposée) | `corrected_caption` | oui | texte libre |
 | 8 | Commentaires (aucune information sur le patient) | `comments` | non | texte libre |
 <!-- END GENERATED: review_form -->
@@ -106,7 +111,7 @@ ici.
 
 ### Étayé, non étayé, valeur fausse
 
-- **Étayé :** vous le voyez sur ce clip, avec la valeur ou la sévérité indiquée, telle que vous l'évalueriez
+- **Étayé :** vous le voyez dans le carré, avec la valeur ou la sévérité indiquée, telle que vous l'évalueriez
   visuellement.
 - **Non étayé (halluciné) :** le clip ne le montre pas, ou le contredit. Signalez-le à la question 5 avec « non
   montré ou contredit ».
@@ -122,7 +127,9 @@ Quand vous ne pouvez pas décider si un énoncé est étayé, ne devinez pas. In
 
 - **incertain :** la constatation est visible mais vous ne pouvez pas la juger avec assurance (par exemple un jet
   excentré dont le grade est indéterminable) ;
-- **qualité d'image, cadrage ou zoom, modalité, autre :** quelque chose dans le clip empêche de juger.
+- **qualité d'image, cadrage, zoom ou hors du carré, modalité, autre :** quelque chose dans le clip empêche de juger.
+  Un énoncé que seule la zone hors du carré montre est impossible à vérifier, avec « cadrage, zoom ou hors du carré » :
+  le clip le montre, mais pas là où regarde le modèle ; ne le signalez pas comme non étayé.
 
 Si rien n'est faux dans la légende mais qu'au moins un énoncé est impossible à vérifier, répondez « incertain » à la
 question 3. Un énoncé est soit non étayé, soit impossible à vérifier, jamais les deux. Pour la coupe, répondez
@@ -132,7 +139,7 @@ question 3. Un énoncé est soit non étayé, soit impossible à vérifier, jama
 
 Une légende peut affirmer qu'une constatation est absente (« Insuffisance mitrale : absente »). Jugez-la comme tout
 autre énoncé : elle n'est étayée que si ce clip pouvait montrer la constatation (bonne coupe, bonne modalité,
-structure dans le secteur) et qu'elle est absente. Si le clip ne pouvait pas la montrer, l'énoncé est impossible à
+structure dans le carré) et qu'elle est absente. Si le clip ne pouvait pas la montrer, l'énoncé est impossible à
 vérifier, pas étayé.
 
 Une constatation absente et non mentionnée dans la légende n'est pas une information manquante.
@@ -143,21 +150,22 @@ Les structures attendues sont un a priori, pas une affirmation. Une structure at
 n'est ni une information manquante ni une erreur, sauf si la légende affirme qu'elle est visible : cet énoncé est
 alors non étayé.
 
-Une structure partiellement visible compte comme visible si vous pouvez l'identifier avec assurance ; sinon,
-indiquez l'énoncé comme impossible à vérifier (cadrage ou zoom).
+Une structure partiellement visible, ou située en partie ou en totalité hors du carré, ne compte comme visible que si
+vous pouvez l'identifier avec assurance dans le carré ; sinon, indiquez l'énoncé comme impossible à vérifier (cadrage,
+zoom ou hors du carré).
 
 ### Information manquante
 
-Répondez « oui » à la question 4 seulement pour une information visible sur ce clip, cliniquement pertinente, que la
-légende omet. Cochez les énoncés correspondants ; utilisez le champ de texte libre pour ce que la liste ne contient
-pas. N'indiquez pas les mesures (TAPSE, PSVD, PISA…), ce que seuls d'autres clips montrent, ni les constatations
-absentes.
+Répondez « oui » à la question 4 seulement pour une information visible dans le carré, cliniquement pertinente, que
+la légende omet. Cochez les énoncés correspondants ; utilisez le champ de texte libre pour ce que la liste ne contient
+pas. N'indiquez pas les mesures (TAPSE, PSVD, PISA…), ce que seuls d'autres clips ou seule la zone hors du carré
+montrent, ni les constatations absentes.
 
 ### Clips ininterprétables
 
 Répondez « oui » à la question 1 seulement quand rien dans la légende ne peut être jugé : artefacts majeurs, modalité
-inadaptée à toute la légende, cadrage ne laissant rien d'identifiable. Donnez la raison, répondez « sans objet » aux
-questions 2 à 5 et laissez la légende corrigée inchangée (elle est ignorée).
+inadaptée à toute la légende, cadrage ou carré ne laissant rien d'identifiable. Donnez la raison, répondez
+« sans objet » aux questions 2 à 5 et laissez la légende corrigée inchangée (elle est ignorée).
 
 Si seule une partie de la légende ne peut pas être jugée, le clip est interprétable : utilisez les énoncés impossibles
 à vérifier. Un clip interprétable ne reçoit jamais la réponse « sans objet » : si vous ne pouvez pas trancher,
@@ -296,7 +304,7 @@ Les clips sont synthétiques, décrits en mots.
   - En dehors de la coupe, tout ce que la légende affirme est-il étayé par ce clip ? **Incertain : rien n'est faux, mais au moins un énoncé est impossible à vérifier**
   - La légende omet-elle une information visible et cliniquement pertinente ? **Non**
   - En dehors de la coupe, la légende affirme-t-elle quelque chose que ce clip n'étaye pas (information non étayée ou hallucinée) ? **Non**
-  - Énoncés impossibles à vérifier sur ce clip (laisser vide s'il n'y en a aucun) : **Insuffisance mitrale : Cadrage ou zoom**
+  - Énoncés impossibles à vérifier sur ce clip (laisser vide s'il n'y en a aucun) : **Insuffisance mitrale : Cadrage, zoom ou hors du carré**
 
 - **Légende corrigée :** « Coupe apicale 4 cavités (A4C), Doppler couleur. »
 - **Pourquoi :** Une absence s'évalue comme toute constatation : elle n'est étayée que si le clip pouvait montrer la fuite. Ici le Doppler ne couvre pas la valve mitrale, donc l'énoncé est impossible à vérifier (cadrage) et sort de la légende corrigée.
@@ -318,7 +326,24 @@ Les clips sont synthétiques, décrits en mots.
 - **Légende corrigée :** « Coupe apicale 4 cavités zoomée (A4C_ZOOM), mode B. Valve mitrale visible. »
 - **Pourquoi :** Les structures attendues pour une coupe ne sont qu'un a priori : une structure attendue mais absente n'est ni manquante ni fausse, sauf si la légende affirme qu'elle est visible. Ici elle l'affirme, donc l'énoncé n'est pas étayé.
 
-### 7. Grade incertain
+### 7. Constatation visible seulement hors du carré
+
+- **Clip (synthétique) :** Coupe apicale 4 cavités en mode B ; un petit épanchement péricardique longe la paroi libre du ventricule droit, au bord gauche de l'image, hors du carré ; dans le carré, le ventricule gauche est bien vu.
+- **Coupe et acquisition du classifieur :** `A4C`, mode B
+- **Légende proposée :** « Coupe apicale 4 cavités (A4C), mode B. Ventricule gauche visible. Épanchement péricardique : de faible abondance. »
+- **Réponses :**
+
+  - Ce clip est-il ininterprétable ? **Non, le clip est interprétable**
+  - La coupe indiquée est-elle correcte ? **Oui**
+  - En dehors de la coupe, tout ce que la légende affirme est-il étayé par ce clip ? **Incertain : rien n'est faux, mais au moins un énoncé est impossible à vérifier**
+  - La légende omet-elle une information visible et cliniquement pertinente ? **Non**
+  - En dehors de la coupe, la légende affirme-t-elle quelque chose que ce clip n'étaye pas (information non étayée ou hallucinée) ? **Non**
+  - Énoncés impossibles à vérifier sur ce clip (laisser vide s'il n'y en a aucun) : **Épanchement péricardique : Cadrage, zoom ou hors du carré**
+
+- **Légende corrigée :** « Coupe apicale 4 cavités (A4C), mode B. Ventricule gauche visible. »
+- **Pourquoi :** Les énoncés se jugent dans le carré, la partie de l'image qu'utilise le modèle. L'épanchement est réel et visible sur le clip, mais seulement hors du carré : l'énoncé est impossible à vérifier (cadrage, zoom ou hors du carré), il n'est pas signalé comme non étayé, et il sort de la légende corrigée. Le ventricule gauche, visible dans le carré, reste.
+
+### 8. Grade incertain
 
 - **Clip (synthétique) :** Coupe apicale 4 cavités en Doppler couleur ; jet tricuspide excentré, en partie hors du plan de coupe.
 - **Coupe et acquisition du classifieur :** `A4C`, Doppler couleur
@@ -335,7 +360,7 @@ Les clips sont synthétiques, décrits en mots.
 - **Légende corrigée :** « Coupe apicale 4 cavités (A4C), Doppler couleur. »
 - **Pourquoi :** La fuite est visible mais son grade ne peut pas être jugé sur ce clip : « incertain », jamais oui ou non au hasard. Un énoncé impossible à vérifier sort de la légende corrigée.
 
-### 8. Mode d'acquisition faux
+### 9. Mode d'acquisition faux
 
 - **Clip (synthétique) :** Coupe apicale 4 cavités en mode B, sans Doppler couleur.
 - **Coupe et acquisition du classifieur :** `A4C`, Doppler couleur
@@ -352,7 +377,7 @@ Les clips sont synthétiques, décrits en mots.
 - **Légende corrigée :** « Coupe apicale 4 cavités (A4C), mode B. »
 - **Pourquoi :** Le mode d'acquisition est lui aussi un énoncé : ici il est faux. La fuite mitrale ne peut pas être jugée sans Doppler couleur, elle est donc impossible à vérifier (modalité). Un clip peut avoir à la fois des énoncés non étayés et des énoncés impossibles à vérifier.
 
-### 9. Mode d'acquisition impossible à vérifier
+### 10. Mode d'acquisition impossible à vérifier
 
 - **Clip (synthétique) :** Coupe apicale 4 cavités aux bords coupés : l'échelle couleur et le contour d'une éventuelle boîte couleur sont hors de l'image, et les rares pixels colorés dans le ventricule gauche peuvent être du Doppler couleur ou du bruit ; le ventricule gauche est bien visible.
 - **Coupe et acquisition du classifieur :** `A4C`, Doppler couleur
@@ -364,12 +389,12 @@ Les clips sont synthétiques, décrits en mots.
   - En dehors de la coupe, tout ce que la légende affirme est-il étayé par ce clip ? **Incertain : rien n'est faux, mais au moins un énoncé est impossible à vérifier**
   - La légende omet-elle une information visible et cliniquement pertinente ? **Non**
   - En dehors de la coupe, la légende affirme-t-elle quelque chose que ce clip n'étaye pas (information non étayée ou hallucinée) ? **Non**
-  - Énoncés impossibles à vérifier sur ce clip (laisser vide s'il n'y en a aucun) : **Mode d'acquisition : Cadrage ou zoom**
+  - Énoncés impossibles à vérifier sur ce clip (laisser vide s'il n'y en a aucun) : **Mode d'acquisition : Cadrage, zoom ou hors du carré**
 
 - **Légende corrigée :** « Coupe apicale 4 cavités (A4C), acquisition indéterminée. Ventricule gauche visible. »
 - **Pourquoi :** Le mode d'acquisition est un énoncé : ici il est impossible à vérifier (cadrage), il est donc listé à la question 6 et la question 3 reçoit « incertain ». La légende corrigée garde sa forme : au lieu de supprimer le mode, elle écrit « acquisition indéterminée ». Le ventricule gauche est visible quel que soit le mode, son énoncé reste.
 
-### 10. Coupe fausse
+### 11. Coupe fausse
 
 - **Clip (synthétique) :** Coupe apicale 5 cavités en Doppler couleur (chambre de chasse et valve aortique visibles) ; insuffisance mitrale légère.
 - **Coupe et acquisition du classifieur :** `A4C`, Doppler couleur
@@ -386,7 +411,7 @@ Les clips sont synthétiques, décrits en mots.
 - **Légende corrigée :** « Coupe apicale 5 cavités (A5C), Doppler couleur. Insuffisance mitrale : légère. »
 - **Pourquoi :** La coupe se juge à part : « non » et la bonne classe. Les énoncés se jugent tels qu'ils sont écrits ; la légende corrigée donne la bonne coupe.
 
-### 11. Coupe incertaine
+### 12. Coupe incertaine
 
 - **Clip (synthétique) :** Coupe apicale en Doppler couleur, entre 4 et 5 cavités : la chambre de chasse du ventricule gauche n'apparaît que sur certains battements ; insuffisance mitrale légère.
 - **Coupe et acquisition du classifieur :** `A4C`, Doppler couleur
@@ -403,7 +428,7 @@ Les clips sont synthétiques, décrits en mots.
 - **Légende corrigée :** « Coupe indéterminée, Doppler couleur. Insuffisance mitrale : légère. »
 - **Pourquoi :** Quand la classe de coupe ne peut pas être tranchée, répondre « incertain » : ne pas choisir une classe au hasard, ni OTHER, réservée aux coupes hors axe ou non standard. Les énoncés se jugent tels qu'ils sont écrits. La légende corrigée remplace la coupe par « Coupe indéterminée » ; la classe du classifieur reste enregistrée avec le clip.
 
-### 12. Clip ininterprétable
+### 13. Clip ininterprétable
 
 - **Clip (synthétique) :** Coupe sous-costale en mode B ; artefacts majeurs, aucune structure identifiable.
 - **Coupe et acquisition du classifieur :** `SUBCOSTAL`, mode B

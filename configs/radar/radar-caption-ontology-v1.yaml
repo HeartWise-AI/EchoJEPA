@@ -243,7 +243,7 @@ acquisition_labels:
 # Why a clip, or one concept in it, cannot be judged. The review form's reason options are built from this list.
 assessment_limitations:
   quality: {fr: Qualité d'image, en: Image quality}
-  crop: {fr: Cadrage ou zoom, en: Crop or zoom}
+  crop: {fr: "Cadrage, zoom ou hors du carré", en: "Crop, zoom or outside the square"}
   modality: {fr: Modalité, en: Modality}
   other: {fr: Autre, en: Other}
 

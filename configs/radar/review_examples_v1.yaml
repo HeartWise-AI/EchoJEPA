@@ -149,6 +149,34 @@ examples:
         The expected structures of a view are only a prior: an expected structure that is not visible is neither
         missing nor wrong, unless the caption says it is visible. Here it does, so the statement is not supported.
 
+  - id: outside_the_square
+    title: {fr: Constatation visible seulement hors du carré, en: Finding visible only outside the square}
+    clip:
+      fr: Coupe apicale 4 cavités en mode B ; un petit épanchement péricardique longe la paroi libre du ventricule
+        droit, au bord gauche de l'image, hors du carré ; dans le carré, le ventricule gauche est bien vu.
+      en: Apical 4-chamber B-mode loop; a small pericardial effusion runs along the right-ventricular free wall, at the
+        left edge of the image and outside the square; inside the square, the left ventricle is well seen.
+    view: A4C
+    acquisition: bmode
+    statements: {lv_visible: true, pericardial_effusion: small}
+    caption: "Coupe apicale 4 cavités (A4C), mode B. Ventricule gauche visible. Épanchement péricardique : de faible abondance."
+    review:
+      answers: {uninterpretable_clip: "no", view_correct: "yes", caption_supported: unsure, missing_information: "no",
+                unsupported_information: "no"}
+      unconfirmed: {pericardial_effusion: crop}
+    corrected_caption: "Coupe apicale 4 cavités (A4C), mode B. Ventricule gauche visible."
+    why:
+      fr: >-
+        Les énoncés se jugent dans le carré, la partie de l'image qu'utilise le modèle. L'épanchement est réel et
+        visible sur le clip, mais seulement hors du carré : l'énoncé est impossible à vérifier (cadrage, zoom ou hors
+        du carré), il n'est pas signalé comme non étayé, et il sort de la légende corrigée. Le ventricule gauche,
+        visible dans le carré, reste.
+      en: >-
+        Statements are judged inside the square, the part of the image the model uses. The effusion is real and
+        visible in the clip, but only outside the square: the statement cannot be confirmed (crop, zoom or outside
+        the square), it is not flagged as unsupported, and it leaves the corrected caption. The left ventricle,
+        visible inside the square, stays.
+
   - id: uncertain_grade
     title: {fr: Grade incertain, en: Uncertain grade}
     clip:
