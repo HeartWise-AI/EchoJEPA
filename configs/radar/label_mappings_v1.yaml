@@ -1,0 +1,369 @@
+# configs/radar/label_mappings_v1.yaml
+#
+# How the DeepECHO, EchoPrime and PanEcho label sets relate to `radar-caption-ontology-v1` (shared clinical
+# ontology). Every label of every source is listed (a unit test checks this against the vendored assets),
+# with one of these relations:
+#
+#   exact        same definition. A view maps to one view; a task class maps to one value; a regression task has
+#                the concept's unit.
+#   grouped      same concept, coarser labels: a view class covers several views, or a task class covers several
+#                values (PanEcho's Moderate|Severe). A prediction never becomes one precise value. Values that no
+#                class covers are listed under `unassigned`.
+#   transformed  same quantity after a stated conversion (`transform`), from the source `unit`.
+#   related      informative about `concepts` but not the same quantity or definition, or too uncertain to imply a
+#                value (a phrase match that may be negated). No value is ever derived; the source classes are listed
+#                under `classes` all the same.
+#   unmapped     No matching concept exists in ontology. `structures` and `reason` say what it is about and why it
+#                is left out.
+#
+# Task classes map to the ontology values they represent. For numeric concepts, a class maps to a range defined
+# by a lower bound {at_least: x}, an upper bound {below: y}, or both. `also_related` lists additional concepts
+# that the label provides information about without assigning them specific values.
+# Once the ontology is approved, any change to this file needs a new version and a new approval.
+
+schema: radar-label-mappings
+version: 1
+ontology: radar-caption-ontology-v1
+
+sources:
+  deepecho_views:
+    kind: view
+    description: DeepECHO view classifier classes (the archive's `predicted_class`). They are the ontology's views.
+    vocabulary: configs/radar/radar-caption-ontology-v1.yaml (views)
+    labels:
+      A2C: {relation: exact, views: [A2C]}
+      A2C_LV: {relation: exact, views: [A2C_LV]}
+      A2C_ZOOM: {relation: exact, views: [A2C_ZOOM]}
+      A3C: {relation: exact, views: [A3C]}
+      A3C_LV: {relation: exact, views: [A3C_LV]}
+      A3C_ZOOM: {relation: exact, views: [A3C_ZOOM]}
+      A4C: {relation: exact, views: [A4C]}
+      A4C_LV: {relation: exact, views: [A4C_LV]}
+      A4C_ZOOM: {relation: exact, views: [A4C_ZOOM]}
+      A5C: {relation: exact, views: [A5C]}
+      A5C_ZOOM: {relation: exact, views: [A5C_ZOOM]}
+      PLAX: {relation: exact, views: [PLAX]}
+      PLAX_DEEP: {relation: exact, views: [PLAX_DEEP]}
+      PLAX_ZOOM: {relation: exact, views: [PLAX_ZOOM]}
+      PSAX: {relation: exact, views: [PSAX]}
+      PSAX_AV: {relation: exact, views: [PSAX_AV]}
+      RVINF: {relation: exact, views: [RVINF]}
+      SUBCOSTAL: {relation: exact, views: [SUBCOSTAL]}
+      SUPRASTERNAL: {relation: exact, views: [SUPRASTERNAL]}
+      OTHER: {relation: exact, views: [OTHER]}
+
+  echoprime_views:
+    kind: view
+    description: >-
+      EchoPrime's coarse view classes. Doppler clips have classes of their own; whether the other classes exclude
+      color clips is not documented, so their acquisition is `unspecified`. EchoPrime has no RV inflow class, and
+      which class its classifier gives RVINF clips is unknown.
+    vocabulary: evals/video_classification_frozen/modelcustom/EchoPrime/utils/utils.py (COARSE_VIEWS)
+    labels:
+      A2C: {relation: grouped, views: [apical_2c], acquisitions: unspecified}
+      A3C: {relation: grouped, views: [apical_3c], acquisitions: unspecified}
+      A4C: {relation: grouped, views: [apical_4c], acquisitions: unspecified}
+      A5C: {relation: grouped, views: [apical_5c], acquisitions: unspecified}
+      Apical_Doppler:
+        relation: grouped
+        views: [apical_4c, apical_5c, apical_2c, apical_3c]
+        acquisitions: [color_flow, spectral_doppler]
+        notes: Any apical Doppler clip. The view cannot be narrowed down to one apical view.
+      Doppler_Parasternal_Long:
+        {relation: grouped, views: [parasternal_long], acquisitions: [color_flow, spectral_doppler]}
+      Doppler_Parasternal_Short:
+        relation: grouped
+        views: [parasternal_short, parasternal_short_av]
+        acquisitions: [color_flow, spectral_doppler]
+      Parasternal_Long: {relation: grouped, views: [parasternal_long], acquisitions: unspecified}
+      Parasternal_Short:
+        {relation: grouped, views: [parasternal_short, parasternal_short_av], acquisitions: unspecified}
+      SSN: {relation: exact, views: [SUPRASTERNAL], acquisitions: unspecified}
+      Subcostal: {relation: exact, views: [SUBCOSTAL], acquisitions: unspecified}
+
+  echoprime_findings:
+    kind: task
+    description: >-
+      EchoPrime's study-level report findings. A binary task is `positive` when one of its phrases appears in its
+      report section, as a case-insensitive substring without negation handling: "No evidence of severe mitral
+      regurgitation" is positive for mitral regurgitation. A phrase match is not a verified statement about the
+      study, so no binary task implies a value: each is related to its concept, and its notes say what its phrases
+      state. `negative` only means that no phrase matched. A regression task is missing (not zero) when no phrase
+      matches.
+    vocabulary: evals/video_classification_frozen/modelcustom/EchoPrime/assets/per_section.json
+    labels:
+      pacemaker:
+        relation: related
+        concepts: [pacing_lead]
+        classes: [positive, negative]
+        notes: >-
+          The phrases are "pacer" and "pacemaker", which also match other words ("spacer").
+      impella:
+        relation: related
+        concepts: [mechanical_circulatory_support]
+        classes: [positive, negative]
+        notes: The phrase states that an Impella catheter is seen.
+      tavr:
+        relation: related
+        concepts: [aortic_valve_prosthesis]
+        classes: [positive, negative]
+        notes: The phrase states a bioprosthetic stent-valve in the aortic position.
+      mitraclip:
+        relation: related
+        concepts: [mitral_valve_device]
+        classes: [positive, negative]
+        notes: The phrases state one or two MitraClips on the mitral leaflets.
+      aortic_root_dilation:
+        relation: related
+        concepts: [aortic_root_dilation]
+        classes: [positive, negative]
+        notes: The phrases state moderate or severe aortic root dilation.
+      bicuspid_aov_morphology:
+        relation: related
+        concepts: [bicuspid_aortic_valve]
+        classes: [positive, negative]
+        notes: >-
+          The phrases state a bicuspid aortic valve, including a "possible" one.
+      aortic_stenosis:
+        relation: related
+        concepts: [aortic_stenosis]
+        classes: [positive, negative]
+        notes: The phrases state moderate or severe aortic stenosis.
+      tricuspid_stenosis:
+        relation: related
+        concepts: [tricuspid_stenosis]
+        classes: [positive, negative]
+        notes: The phrases state moderate or severe tricuspid stenosis.
+      aortic_regurgitation:
+        relation: related
+        concepts: [aortic_regurgitation]
+        classes: [positive, negative]
+        notes: The phrases state moderate or severe aortic regurgitation (moderate to severe included).
+      dilated_ivc:
+        relation: related
+        concepts: [ivc_dilation]
+        classes: [positive, negative]
+        notes: >-
+          The phrases state a dilated IVC or any IVC diameter starting with 2 or 3 cm, which includes normal diameters.
+      left_atrium_dilation:
+        relation: related
+        concepts: [la_size]
+        classes: [positive, negative]
+        notes: The phrases state a moderately or severely dilated left atrium.
+      ejection_fraction:
+        relation: exact
+        concept: lv_ejection_fraction
+        unit: "%"
+        notes: The reported EF, whatever the method; the v1 concept is the visual estimate of the same quantity.
+      mitral_annular_calcification:
+        relation: related
+        concepts: [mitral_annular_calcification]
+        classes: [positive, negative]
+        notes: The phrases state moderate or severe mitral annular calcification.
+      mitral_stenosis:
+        relation: related
+        concepts: [mitral_stenosis]
+        classes: [positive, negative]
+        notes: The phrases state moderate or severe mitral stenosis.
+      mitral_regurgitation:
+        relation: related
+        concepts: [mitral_regurgitation]
+        classes: [positive, negative]
+        notes: The phrases state moderate or severe mitral regurgitation (moderate to severe included).
+      pericardial_effusion:
+        relation: related
+        concepts: [pericardial_effusion]
+        classes: [positive, negative]
+        notes: The phrases state a moderate or larger pericardial effusion, or tamponade.
+      pulmonary_artery_pressure_continuous:
+        relation: related
+        concepts: [rv_systolic_pressure]
+        unit: mmHg
+        notes: >-
+          PA systolic pressure equals RV systolic pressure only without pulmonic stenosis or RV outflow obstruction.
+      right_atrium_dilation:
+        relation: related
+        concepts: [ra_size]
+        classes: [positive, negative]
+        notes: The phrases state a moderately or severely dilated right atrium.
+      rv_systolic_function_depressed:
+        relation: related
+        concepts: [rv_systolic_function]
+        classes: [positive, negative]
+        notes: The phrases state moderately or severely depressed RV systolic function.
+      right_ventricle_dilation:
+        relation: related
+        concepts: [rv_size]
+        classes: [positive, negative]
+        notes: The phrases state a moderately or severely dilated right ventricle.
+      tricuspid_valve_regurgitation:
+        relation: related
+        concepts: [tricuspid_regurgitation]
+        classes: [positive, negative]
+        notes: The phrases state moderate or severe tricuspid regurgitation (moderate to severe included).
+      pulmonic_valve_regurgitation:
+        relation: related
+        concepts: [pulmonic_regurgitation]
+        classes: [positive, negative]
+        notes: The phrases state moderate or severe pulmonic regurgitation (moderate to severe included).
+      elevated_left_atrial_pressure:
+        relation: related
+        concepts: [elevated_la_pressure]
+        classes: [positive, negative]
+        notes: >-
+          The phrase is "elevated left atrial pressure".
+      wall_motion_hypokinesis:
+        relation: related
+        concepts: [lv_regional_wall_motion]
+        classes: [positive, negative]
+        notes: >-
+          The phrase is "hypokinesis" anywhere in the wall-motion section; the worst segment may also be worse.
+      atrial_septum_hypertrophy:
+        relation: related
+        concepts: [atrial_septal_hypertrophy]
+        classes: [positive, negative]
+        notes: The phrases state moderate or severe lipomatous hypertrophy of the atrial septum.
+
+  panecho_tasks:
+    kind: task
+    description: >-
+      PanEcho's study-level tasks, with their class names. A `|` inside a class name joins grades PanEcho merged.
+      PanEcho has no view labels.
+    vocabulary: evals/video_classification_frozen/modelcustom/PanEcho/content/tasks.pkl
+    labels:
+      pericardial-effusion:
+        relation: grouped
+        concept: pericardial_effusion
+        classes: {mild_mod_severe: [small, moderate, large], none_trace: [none, trivial]}
+        notes: PanEcho's "mild" effusion is taken to be the v1 "small" grade.
+      EF: {relation: exact, concept: lv_ejection_fraction, unit: "%"}
+      GLS:
+        relation: transformed
+        concept: lv_global_longitudinal_strain
+        unit: "%"
+        transform: GLS = -1 x output (PanEcho outputs the magnitude).
+      LVEDV: {relation: related, concepts: [lv_size], unit: mL}
+      LVESV: {relation: related, concepts: [lv_ejection_fraction], unit: mL}
+      LVSV:
+        relation: unmapped
+        structures: [left_ventricle]
+        unit: mL
+        reason: Stroke volume (volumetric or Doppler); v1 has no caption concept for it.
+      LVSize:
+        relation: grouped
+        concept: lv_size
+        classes:
+          Mildly Increased: [mild]
+          Moderately|Severely Increased: [moderate, severe]
+          Normal: [normal]
+      LVWallThickness-increased-any:
+        relation: grouped
+        concept: lv_wall_thickness
+        classes: {Increased: [mild, moderate, severe], Normal: [none]}
+      LVWallThickness-increased-modsev:
+        relation: grouped
+        concept: lv_wall_thickness
+        classes: {Moderately|severely increased: [moderate, severe], Normal or mildly increased: [none, mild]}
+      LVSystolicFunction:
+        relation: grouped
+        concept: lv_systolic_function
+        classes:
+          Mildly Decreased: [mildly_reduced]
+          Moderately|Severely Decreased: [moderately_reduced, severely_reduced]
+          Normal|Hyperdynamic: [normal, hyperdynamic]
+      LVWallMotionAbnormalities:
+        relation: grouped
+        concept: lv_regional_wall_motion
+        classes: {None: [normal], Present: [hypokinetic, akinetic, dyskinetic, aneurysmal]}
+      IVSd: {relation: related, concepts: [lv_wall_thickness], unit: cm}
+      LVPWd: {relation: related, concepts: [lv_wall_thickness], unit: cm}
+      LVIDs: {relation: related, concepts: [lv_size, lv_systolic_function], unit: cm}
+      LVIDd: {relation: related, concepts: [lv_size], unit: cm}
+      LVOTDiam:
+        relation: unmapped
+        structures: [left_ventricular_outflow_tract]
+        unit: cm
+        reason: A caliper measurement for the continuity equation; v1 has no caption concept for it.
+      LVDiastolicFunction:
+        relation: grouped
+        concept: lv_diastolic_function
+        classes: {Mild|Indeterminate: [grade_1, indeterminate], Moderate|Severe: [grade_2, grade_3], Normal: [normal]}
+      E|EAvg: {relation: related, concepts: [lv_diastolic_function, elevated_la_pressure], unit: ratio}
+      RVSP: {relation: exact, concept: rv_systolic_pressure, unit: mmHg}
+      RVSize:
+        relation: grouped
+        concept: rv_size
+        classes:
+          Mildly Increased: [mild]
+          Moderately|Severely Increased: [moderate, severe]
+          Normal: [normal]
+      RVSystolicFunction:
+        relation: grouped
+        concept: rv_systolic_function
+        classes:
+          Decreased: [mildly_reduced, moderately_reduced, severely_reduced]
+          Normal: [normal, hyperdynamic]
+      RVIDd: {relation: related, concepts: [rv_size], unit: cm}
+      TAPSE:
+        relation: transformed
+        concept: tapse
+        unit: cm
+        transform: TAPSE (mm) = 10 x output (cm).
+      RVSVel: {relation: related, concepts: [rv_systolic_function], unit: cm/s}
+      LASize:
+        relation: grouped
+        concept: la_size
+        classes: {Mildly Dilated: [mild], Moderately|Severely Dilated: [moderate, severe], Normal: [normal]}
+      LAIDs2D: {relation: related, concepts: [la_size], unit: cm}
+      LAVol: {relation: related, concepts: [la_size], unit: mL}
+      RASize:
+        relation: grouped
+        concept: ra_size
+        classes: {Dilated: [mild, moderate, severe], Normal: [normal]}
+      RADimensionM-L(cm): {relation: related, concepts: [ra_size], unit: cm}
+      AVStructure:
+        relation: exact
+        concept: bicuspid_aortic_valve
+        classes: {Bicuspid: [true], Normal: [false]}
+      AVStenosis:
+        relation: grouped
+        concept: aortic_stenosis
+        classes: {Mild|Moderate: [mild, moderate], None: [none], Severe: [severe]}
+      AVPkVel(m|s): {relation: exact, concept: aortic_valve_peak_velocity, unit: m/s}
+      AVRegurg:
+        relation: grouped
+        concept: aortic_regurgitation
+        classes: {Mild: [mild], Moderate|Severe: [moderate, moderate_to_severe, severe], None|Trace: [none, trace]}
+        unassigned: [mild_to_moderate]
+      LVOT20mmHg:
+        relation: related
+        concepts: [lvot_obstruction]
+        classes: ["0.0", "1.0"]
+        notes: >-
+          PanEcho's label is an LV outflow peak gradient of at least 20 mmHg; the v1 concept is the report's
+          statement of obstruction, which may use another threshold.
+      MVStenosis:
+        relation: grouped
+        concept: mitral_stenosis
+        classes: {Mild|Moderate|Severe: [mild, moderate, severe], None: [none]}
+      MVRegurgitation:
+        relation: grouped
+        concept: mitral_regurgitation
+        classes: {Mild: [mild], Moderate|Severe: [moderate, moderate_to_severe, severe], None|Trace: [none, trace]}
+        unassigned: [mild_to_moderate]
+      TVRegurgitation:
+        relation: grouped
+        concept: tricuspid_regurgitation
+        classes: {Mild: [mild], Moderate|Severe: [moderate, moderate_to_severe, severe], None|Trace: [none, trace]}
+        unassigned: [mild_to_moderate]
+      TVPkGrad:
+        relation: transformed
+        concept: tr_peak_velocity
+        unit: mmHg
+        transform: velocity (m/s) = sqrt(gradient / 4), the simplified Bernoulli equation.
+      RAP-8-or-higher:
+        relation: grouped
+        concept: ra_pressure
+        classes: {"1.0": {at_least: 8}, "0.0": {below: 8}}
+        also_related: [ivc_dilation, ivc_collapse]
+      AORoot: {relation: related, concepts: [aortic_root_dilation], unit: cm}

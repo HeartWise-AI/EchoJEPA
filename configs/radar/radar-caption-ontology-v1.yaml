@@ -1,0 +1,1232 @@
+# configs/radar/radar-caption-ontology-v1.yaml
+#
+# RADAR caption ontology, v1: defines the clinical concepts that may appear in view-specific echocardiography
+# captions. Concepts are derived from PanEcho tasks, EchoPrime report sections, and ICM report-export fields.
+# Their relationships to the original labels are defined in `label_mappings_v1.yaml`.
+#
+# Concepts are divided into two categories:
+#   - structure_visibility: whether an anatomical structure is visible in a clip (e.g., the mitral valve).
+#   - finding: whether a clinical observation is supported by the clip (e.g., severe mitral regurgitation).
+# Structure visibility does not imply disease, and a diagnosis in a clinical report does not establish its
+# visibility in an individual clip.
+#
+# Evidence and caption generation:
+#   - `potentially_visible_in`: a relevance prior based on view and acquisition category, not proof that a
+#     concept is visible. Candidate captions require reviewer validation.
+#   - `required_modality`: acquisition categories capable of providing evidence; any one listed category
+#     is sufficient.
+#   - `evidence: measurement`: values requiring calipers, tracing, or spectral measurements that cannot
+#     be confirmed by visual inspection alone. These are excluded from captions and recorded as explicit gaps.
+#
+# Numeric validation:
+#   - min/max define physiologically plausible ranges.
+#   - Placeholder values (e.g., 0 meaning "not measured") outside these ranges are flagged rather than treated
+#     as valid measurements.
+#
+# Report extraction:
+#   - columns: structured ICM report-export fields, parsed as numeric values or predefined scales.
+#   - text_fields: free-text report fields searched using `phrase_hints` (case- and accent-insensitive word prefixes)
+#     and acronyms (case-sensitive whole-word matches).
+#   - scales: value aliases that must be verified against actual column distributions before extraction results are trusted.
+#
+# The tag `<name>-v<version>` (radar-caption-ontology-v1) is recorded by captions, reviews and checkpoints. Once a
+# version is approved, any change to this file needs a new version and a new approval.
+
+schema: radar-caption-ontology
+name: radar-caption-ontology
+version: 1
+languages: [fr, en]
+
+# The view taxonomy is the DeepECHO view classifier's classes (the archive's `predicted_class`), in its order.
+# `window` is the acoustic window; `variant` says how the clip departs from the standard view. The descriptions say
+# what the standard view shows: a clip of a class may still miss a structure (zoom, depth, off-axis, image quality),
+# which is why every structure prior below has to be confirmed by a reviewer.
+views:
+  A2C:
+    window: apical
+    variant: standard
+    labels: {fr: Coupe apicale 2 cavités, en: Apical 2-chamber view}
+    description:
+      fr: Ventricule gauche, oreillette gauche et valve mitrale vus de l'apex ; les cavités droites sont exclues.
+      en: Left ventricle, left atrium and mitral valve seen from the apex; the right heart is excluded.
+  A2C_LV:
+    window: apical
+    variant: lv_focused
+    labels: {fr: Coupe apicale 2 cavités centrée sur le VG, en: "Apical 2-chamber view, LV-focused"}
+    description:
+      fr: Coupe apicale 2 cavités dont la profondeur et le secteur sont réglés sur le ventricule gauche.
+      en: Apical 2-chamber view with depth and sector set on the left ventricle.
+  A2C_ZOOM:
+    window: apical
+    variant: zoomed
+    labels: {fr: Coupe apicale 2 cavités zoomée, en: "Apical 2-chamber view, zoomed"}
+    description:
+      fr: Coupe apicale 2 cavités agrandie, souvent sur la valve mitrale ; une partie de la coupe peut sortir du
+        secteur.
+      en: Magnified apical 2-chamber view, often on the mitral valve; part of the view may be outside the sector.
+  A3C:
+    window: apical
+    variant: standard
+    labels: {fr: Coupe apicale 3 cavités, en: Apical 3-chamber view}
+    description:
+      fr: Coupe apicale grand axe ; ventricule gauche, oreillette gauche, valve mitrale, chambre de chasse et valve
+        aortique.
+      en: Apical long-axis view; left ventricle, left atrium, mitral valve, LV outflow tract and aortic valve.
+  A3C_LV:
+    window: apical
+    variant: lv_focused
+    labels: {fr: Coupe apicale 3 cavités centrée sur le VG, en: "Apical 3-chamber view, LV-focused"}
+    description:
+      fr: Coupe apicale 3 cavités dont la profondeur et le secteur sont réglés sur le ventricule gauche.
+      en: Apical 3-chamber view with depth and sector set on the left ventricle.
+  A3C_ZOOM:
+    window: apical
+    variant: zoomed
+    labels: {fr: Coupe apicale 3 cavités zoomée, en: "Apical 3-chamber view, zoomed"}
+    description:
+      fr: Coupe apicale 3 cavités agrandie, souvent sur les valves mitrale ou aortique ; une partie de la coupe peut
+        sortir du secteur.
+      en: Magnified apical 3-chamber view, often on the mitral or aortic valve; part of the view may be outside the
+        sector.
+  A4C:
+    window: apical
+    variant: standard
+    labels: {fr: Coupe apicale 4 cavités, en: Apical 4-chamber view}
+    description:
+      fr: Les quatre cavités vues de l'apex, avec les valves mitrale et tricuspide et le septum interauriculaire.
+      en: All four chambers seen from the apex, with the mitral and tricuspid valves and the interatrial septum.
+  A4C_LV:
+    window: apical
+    variant: lv_focused
+    labels: {fr: Coupe apicale 4 cavités centrée sur le VG, en: "Apical 4-chamber view, LV-focused"}
+    description:
+      fr: Coupe apicale 4 cavités réglée sur le ventricule gauche ; les cavités droites peuvent être en partie hors
+        champ.
+      en: Apical 4-chamber view set on the left ventricle; the right heart may be partly outside the sector.
+  A4C_ZOOM:
+    window: apical
+    variant: zoomed
+    labels: {fr: Coupe apicale 4 cavités zoomée, en: "Apical 4-chamber view, zoomed"}
+    description:
+      fr: Coupe apicale 4 cavités agrandie, souvent sur une valve ou une cavité ; une partie de la coupe peut sortir
+        du secteur.
+      en: Magnified apical 4-chamber view, often on one valve or chamber; part of the view may be outside the sector.
+  A5C:
+    window: apical
+    variant: standard
+    labels: {fr: Coupe apicale 5 cavités, en: Apical 5-chamber view}
+    description:
+      fr: Coupe apicale 4 cavités basculée vers l'avant pour montrer la chambre de chasse du VG et la valve aortique.
+      en: Apical 4-chamber view tilted anteriorly to show the LV outflow tract and the aortic valve.
+  A5C_ZOOM:
+    window: apical
+    variant: zoomed
+    labels: {fr: Coupe apicale 5 cavités zoomée, en: "Apical 5-chamber view, zoomed"}
+    description:
+      fr: Coupe apicale 5 cavités agrandie, souvent sur la chambre de chasse ou la valve aortique.
+      en: Magnified apical 5-chamber view, often on the LV outflow tract or the aortic valve.
+  PLAX:
+    window: parasternal
+    variant: standard
+    labels: {fr: Coupe parasternale grand axe, en: Parasternal long-axis view}
+    description:
+      fr: Voie d'éjection du VD, ventricule gauche, oreillette gauche, valves mitrale et aortique, racine aortique.
+      en: RV outflow tract, left ventricle, left atrium, mitral and aortic valves, aortic root.
+  PLAX_DEEP:
+    window: parasternal
+    variant: deep
+    labels: {fr: Coupe parasternale grand axe profonde, en: "Parasternal long-axis view, deep"}
+    description:
+      fr: Coupe parasternale grand axe avec une profondeur augmentée, montrant aussi les structures en arrière du
+        cœur (aorte descendante, espaces péricardique et pleural).
+      en: Parasternal long-axis view with increased depth, also showing structures behind the heart (descending
+        aorta, pericardial and pleural spaces).
+  PLAX_ZOOM:
+    window: parasternal
+    variant: zoomed
+    labels: {fr: Coupe parasternale grand axe zoomée, en: "Parasternal long-axis view, zoomed"}
+    description:
+      fr: Coupe parasternale grand axe agrandie, souvent sur la valve aortique, la racine aortique ou la valve mitrale.
+      en: Magnified parasternal long-axis view, often on the aortic valve, aortic root or mitral valve.
+  PSAX:
+    window: parasternal
+    variant: standard
+    labels: {fr: Coupe parasternale petit axe, en: Parasternal short-axis view}
+    description:
+      fr: Ventricule gauche en petit axe, au niveau mitral, des piliers ou de l'apex.
+      en: Left ventricle in short axis, at the mitral, papillary-muscle or apical level.
+  PSAX_AV:
+    window: parasternal
+    variant: standard
+    labels: {fr: Coupe parasternale petit axe aortique, en: Parasternal short-axis view at the aortic valve}
+    description:
+      fr: Petit axe au niveau de la valve aortique ; oreillettes, septum interauriculaire, valve tricuspide, voie
+        d'éjection du VD et valve pulmonaire.
+      en: Short axis at the aortic valve level; atria, interatrial septum, tricuspid valve, RV outflow tract and
+        pulmonic valve.
+  RVINF:
+    window: parasternal
+    variant: standard
+    labels: {fr: Coupe de la voie d'entrée du VD, en: Right ventricular inflow view}
+    description:
+      fr: Oreillette droite, valve tricuspide et ventricule droit, depuis la fenêtre parasternale.
+      en: Right atrium, tricuspid valve and right ventricle, from the parasternal window.
+  SUBCOSTAL:
+    window: subcostal
+    variant: standard
+    labels: {fr: Coupe sous-costale, en: Subcostal view}
+    description:
+      fr: Coupes sous-costales, dont la coupe 4 cavités et la veine cave inférieure, regroupées dans une seule classe.
+      en: Subcostal views, including the four-chamber view and the inferior vena cava, grouped in one class.
+  SUPRASTERNAL:
+    window: suprasternal
+    variant: standard
+    labels: {fr: Coupe sus-sternale, en: Suprasternal view}
+    description:
+      fr: Crosse aortique depuis la fenêtre sus-sternale.
+      en: Aortic arch from the suprasternal window.
+  OTHER:
+    window: unclassified
+    variant: unclassified
+    labels: {fr: Coupe non classée, en: Unclassified view}
+    description:
+      fr: Clip que le classifieur n'a attribué à aucune coupe de la liste (hors axe, non standard ou non cardiaque).
+        Aucun a priori de structure ni de constatation.
+      en: A clip the classifier did not assign to a listed view (off-axis, non-standard or not cardiac). No structure
+        or finding prior.
+
+view_windows: [apical, parasternal, subcostal, suprasternal, unclassified]
+view_variants: [standard, lv_focused, zoomed, deep, unclassified]
+
+# Every view except OTHER belongs to exactly one group. Priors and multi-view requirements name groups or views.
+view_groups:
+  apical_4c: [A4C, A4C_LV, A4C_ZOOM]
+  apical_5c: [A5C, A5C_ZOOM]
+  apical_2c: [A2C, A2C_LV, A2C_ZOOM]
+  apical_3c: [A3C, A3C_LV, A3C_ZOOM]
+  parasternal_long: [PLAX, PLAX_DEEP, PLAX_ZOOM]
+  parasternal_short: [PSAX]
+  parasternal_short_av: [PSAX_AV]
+  rv_inflow: [RVINF]
+  subcostal: [SUBCOSTAL]
+  suprasternal: [SUPRASTERNAL]
+
+acquisition_categories: [bmode, color_flow, spectral_doppler, mmode, other, unknown]
+
+# The cardiac-structure taxonomy. Every concept names the structures it is about. A structure has at most one
+# visibility concept; the views where it may be seen are that concept's prior.
+structures:
+  left_ventricle: {category: chamber, labels: {fr: Ventricule gauche, en: Left ventricle}}
+  right_ventricle: {category: chamber, labels: {fr: Ventricule droit, en: Right ventricle}}
+  left_atrium: {category: chamber, labels: {fr: Oreillette gauche, en: Left atrium}}
+  right_atrium: {category: chamber, labels: {fr: Oreillette droite, en: Right atrium}}
+  interatrial_septum: {category: septum, labels: {fr: Septum interauriculaire, en: Interatrial septum}}
+  mitral_valve: {category: valve, labels: {fr: Valve mitrale, en: Mitral valve}}
+  aortic_valve: {category: valve, labels: {fr: Valve aortique, en: Aortic valve}}
+  tricuspid_valve: {category: valve, labels: {fr: Valve tricuspide, en: Tricuspid valve}}
+  pulmonic_valve: {category: valve, labels: {fr: Valve pulmonaire, en: Pulmonic valve}}
+  left_ventricular_outflow_tract:
+    category: outflow_tract
+    labels: {fr: Chambre de chasse du ventricule gauche, en: Left ventricular outflow tract}
+  aortic_root: {category: great_vessel, labels: {fr: Racine aortique, en: Aortic root}}
+  pericardium: {category: pericardium, labels: {fr: Péricarde, en: Pericardium}}
+  inferior_vena_cava: {category: systemic_vein, labels: {fr: Veine cave inférieure, en: Inferior vena cava}}
+
+structure_categories: [chamber, septum, valve, outflow_tract, great_vessel, pericardium, systemic_vein]
+
+acquisition_labels:
+  fr: {bmode: mode B, color_flow: Doppler couleur, spectral_doppler: Doppler spectral, mmode: mode M,
+       other: acquisition autre, unknown: acquisition indéterminée}
+  en: {bmode: B-mode, color_flow: color Doppler, spectral_doppler: spectral Doppler, mmode: M-mode,
+       other: other acquisition, unknown: unknown acquisition}
+
+# Why a clip, or one concept in it, cannot be judged. The review form's reason options are built from this list.
+assessment_limitations:
+  quality: {fr: Qualité d'image, en: Image quality}
+  crop: {fr: "Cadrage, zoom ou hors du carré", en: "Crop, zoom or outside the square"}
+  modality: {fr: Modalité, en: Modality}
+  other: {fr: Autre, en: Other}
+
+# The Labelbox review form. Question and answer ids are what Labelbox exports carry; the pilot metrics
+# (docs/radar/pilot_metrics_v1.md) are defined on them. `detail` names what the form asks after an answer:
+#   limitation    a reason from assessment_limitations;
+#   correct_view  the right view class;
+#   missing       the missing concepts, plus free text for anything the ontology has no concept for;
+#   unsupported   the unsupported statements, each "not supported" or "wrong value";
+#   unconfirmed   (on the checklist) each unconfirmed statement with a reason.
+# Statements are the acquisition mode plus every concept a caption can state: the visibility concepts and the
+# findings judged visually. The view is not a statement: question 2 judges it, and questions 3 and 5 judge the other
+# statements only. Questions 2 to 5 answer `not_applicable` when the clip is uninterpretable.
+review:
+  questions:
+    - id: uninterpretable_clip
+      type: radio
+      required: true
+      text: {fr: "Ce clip est-il ininterprétable ?", en: "Is this clip uninterpretable?"}
+      answers:
+        - {id: "no", labels: {fr: "Non, le clip est interprétable", en: "No, the clip can be interpreted"}}
+        - id: "yes"
+          labels: {fr: "Oui, il est ininterprétable", en: "Yes, it is uninterpretable"}
+          detail: limitation
+    - id: view_correct
+      type: radio
+      required: true
+      text: {fr: "La coupe indiquée est-elle correcte ?", en: "Is the stated view correct?"}
+      answers:
+        - {id: "yes", labels: {fr: Oui, en: "Yes"}}
+        - {id: "no", labels: {fr: Non, en: "No"}, detail: correct_view}
+        - {id: unsure, labels: {fr: Incertain, en: Unsure}}
+        - id: not_applicable
+          labels: &not_applicable {fr: "Sans objet : clip ininterprétable", en: "Not applicable: uninterpretable clip"}
+    - id: caption_supported
+      type: radio
+      required: true
+      text:
+        fr: "En dehors de la coupe, tout ce que la légende affirme est-il étayé par ce clip ?"
+        en: "Apart from the view, is everything the caption states supported by this clip?"
+      answers:
+        - {id: "yes", labels: {fr: "Oui, chaque énoncé est étayé", en: "Yes, every statement is supported"}}
+        - id: "no"
+          labels:
+            fr: "Non, au moins un énoncé n'est pas étayé ou est faux"
+            en: "No, at least one statement is not supported or is wrong"
+        - id: unsure
+          labels:
+            fr: "Incertain : rien n'est faux, mais au moins un énoncé est impossible à vérifier"
+            en: "Unsure: nothing is wrong, but at least one statement cannot be confirmed"
+        - {id: not_applicable, labels: *not_applicable}
+    - id: missing_information
+      type: radio
+      required: true
+      text:
+        fr: "La légende omet-elle une information visible et cliniquement pertinente ?"
+        en: "Does the caption leave out visible, clinically relevant information?"
+      answers:
+        - {id: "no", labels: {fr: Non, en: "No"}}
+        - {id: "yes", labels: {fr: Oui, en: "Yes"}, detail: missing}
+        - {id: not_applicable, labels: *not_applicable}
+    - id: unsupported_information
+      type: radio
+      required: true
+      text:
+        fr: >-
+          En dehors de la coupe, la légende affirme-t-elle quelque chose que ce clip n'étaye pas (information non
+          étayée ou hallucinée) ?
+        en: >-
+          Apart from the view, does the caption state anything this clip does not support (unsupported or
+          hallucinated information)?
+      answers:
+        - {id: "no", labels: {fr: Non, en: "No"}}
+        - {id: "yes", labels: {fr: Oui, en: "Yes"}, detail: unsupported}
+        - {id: not_applicable, labels: *not_applicable}
+    - id: unconfirmed_statements
+      type: checklist
+      required: false
+      detail: unconfirmed
+      text:
+        fr: "Énoncés impossibles à vérifier sur ce clip (laisser vide s'il n'y en a aucun)"
+        en: Statements that cannot be confirmed from this clip (leave empty if none)
+    - id: corrected_caption
+      type: text
+      required: true
+      text:
+        fr: "La légende telle qu'elle devrait se lire (préremplie avec la légende proposée)"
+        en: The caption as it should read (preloaded with the candidate caption)
+    - id: comments
+      type: text
+      required: false
+      text: {fr: "Commentaires (aucune information sur le patient)", en: "Comments (no patient details)"}
+  detail_labels:
+    limitation: {fr: Raison, en: Reason}
+    correct_view: {fr: Coupe correcte, en: Correct view}
+    missing: {fr: Concepts manquants, en: Missing concepts}
+    missing_other:
+      {fr: "Autre information manquante (hors ontologie)", en: "Other missing information (not in the ontology)"}
+    unsupported: {fr: Énoncés non étayés ou faux, en: Unsupported or wrong statements}
+    unsupported_kind: {fr: Type, en: Kind}
+    unconfirmed_reason: {fr: Raison, en: Reason}
+  unsupported_kinds:
+    not_supported:
+      fr: Non montré ou contredit par le clip (halluciné)
+      en: Not shown or contradicted by the clip (hallucinated)
+    wrong_value: {fr: "Présent, mais valeur ou sévérité fausse", en: "Present, but the value or severity is wrong"}
+  # Reasons for an unconfirmed statement, followed by the assessment limitations.
+  unconfirmed_reasons:
+    uncertain: {fr: "Visible, mais je ne suis pas certain", en: "Visible, but I am not sure"}
+  acquisition_statement: {fr: "Mode d'acquisition", en: Acquisition mode}
+  # What a corrected caption says in place of the view when the reviewer cannot tell it (question 2 "unsure"). It is
+  # not a view class: OTHER keeps its meaning (off-axis or non-standard). An acquisition mode the reviewer cannot
+  # tell is written with the label of `unknown`.
+  undetermined_view: {fr: Coupe indéterminée, en: Undetermined view}
+
+# Ordered scales. `aliases` map normalized report values (lower case, accents removed) to scale values. Aliases made
+# only of digits and signs ("3") are matched against whole structured column values only, never inside text.
+# The ICM "Referring MR/AR/TR/PR Grade" columns mix encodings (0, 0.5, 1, 2, 3, words such as "Trace", and date-like
+# strings), so v1 maps no numeric grade code: such values stay unmapped (reported, never read as "none" or zero)
+# until the encoding is confirmed with the ICM team and added here under a new ontology version.
+# `negated_value` is the value a negated mention ("pas d'insuffisance mitrale") gives; without it, a negated mention
+# stays unresolved. `unranked` values are valid values outside the order: they are no grade, so no severity.
+scales:
+  regurgitation:
+    values: [none, trace, mild, mild_to_moderate, moderate, moderate_to_severe, severe]
+    negated_value: none
+    labels:
+      fr: {none: absente, trace: minime (trace), mild: légère, mild_to_moderate: légère à modérée, moderate: modérée,
+           moderate_to_severe: modérée à sévère, severe: sévère}
+      en: {none: none, trace: trace, mild: mild, mild_to_moderate: mild to moderate, moderate: moderate,
+           moderate_to_severe: moderate to severe, severe: severe}
+    aliases:
+      none: [aucune, absente, absence, none, absent]
+      trace: [trace, traces, minime, trivial, physiologique]
+      mild: [legere, leger, mild]
+      mild_to_moderate: [legere a moderee, legere-moderee, mild to moderate, mild-moderate]
+      moderate: [moderee, modere, moderate]
+      moderate_to_severe: [moderee a severe, moderee-severe, moderate to severe, moderate-severe]
+      severe: [severe, importante, massive]
+  stenosis:
+    values: [none, mild, moderate, severe]
+    negated_value: none
+    labels:
+      fr: {none: absente, mild: légère, moderate: modérée, severe: sévère}
+      en: {none: none, mild: mild, moderate: moderate, severe: severe}
+    aliases:
+      none: [aucune, absente, absence, none]
+      mild: [legere, leger, mild]
+      moderate: [moderee, modere, moderate]
+      severe: [severe, serre, critique, critical]
+  dilation:
+    values: [normal, mild, moderate, severe]
+    negated_value: normal
+    labels:
+      fr: {normal: normale, mild: légèrement augmentée, moderate: modérément augmentée, severe: sévèrement augmentée}
+      en: {normal: normal, mild: mildly increased, moderate: moderately increased, severe: severely increased}
+    aliases:
+      normal: [normal, taille normale, non dilate, dimensions normales]
+      mild: [legerement dilat, legere dilatation, leger, mildly, mild]
+      moderate: [moderement dilat, moderee, modere, moderately, moderate]
+      severe: [severement dilat, severe, importante, tres dilat, severely, marked]
+  hypertrophy:
+    values: [none, mild, moderate, severe]
+    negated_value: none
+    labels:
+      fr: {none: absente, mild: légère, moderate: modérée, severe: sévère}
+      en: {none: none, mild: mild, moderate: moderate, severe: severe}
+    aliases:
+      none: [absente, aucune, absence, none, normale, normal]
+      mild: [legere, leger, mild]
+      moderate: [moderee, modere, moderate]
+      severe: [severe, importante, marked]
+  systolic_function:
+    values: [hyperdynamic, normal, mildly_reduced, moderately_reduced, severely_reduced]
+    labels:
+      fr: {hyperdynamic: hyperdynamique, normal: normale, mildly_reduced: légèrement diminuée,
+           moderately_reduced: modérément diminuée, severely_reduced: sévèrement diminuée}
+      en: {hyperdynamic: hyperdynamic, normal: normal, mildly_reduced: mildly reduced,
+           moderately_reduced: moderately reduced, severely_reduced: severely reduced}
+    aliases:
+      hyperdynamic: [hyperdynami, hyperkine, hypercontractil]
+      normal: [normale, normal, preservee, conservee, preserved]
+      mildly_reduced: [legerement diminu, legerement reduit, legerement abaiss, legerement altere,
+                       dysfonction legere, mildly]
+      moderately_reduced: [moderement diminu, moderement reduit, moderement abaiss, moderement altere,
+                           dysfonction moderee, moderately]
+      severely_reduced: [severement diminu, severement reduit, severement abaiss, severement altere,
+                         dysfonction severe, effondree, severely]
+  diastolic_function:
+    values: [normal, grade_1, grade_2, grade_3, indeterminate]
+    unranked: [indeterminate]  # the grade could not be determined; it is not worse than grade_3
+    labels:
+      fr: {normal: normale, grade_1: dysfonction de grade I, grade_2: dysfonction de grade II,
+           grade_3: dysfonction de grade III, indeterminate: indéterminée}
+      en: {normal: normal, grade_1: grade I dysfunction, grade_2: grade II dysfunction,
+           grade_3: grade III dysfunction, indeterminate: indeterminate}
+    aliases:
+      normal: [normale, normal]
+      grade_1: [grade 1, grade i, trouble de la relaxation, relaxation anormale, impaired relaxation]
+      grade_2: [grade 2, grade ii, pseudonormal]
+      grade_3: [grade 3, grade iii, restrictif, restrictive]
+      indeterminate: [indetermin, indeterminate]
+  wall_motion:
+    # Worst segment. The digits assume the standard wall-motion score (1 normal ... 5 aneurysmal); the WMS columns'
+    # actual encoding is not verified yet and must be checked before extraction from them is trusted.
+    values: [normal, hypokinetic, akinetic, dyskinetic, aneurysmal]
+    negated_value: normal
+    labels:
+      fr: {normal: normale, hypokinetic: hypokinésie, akinetic: akinésie, dyskinetic: dyskinésie,
+           aneurysmal: anévrisme}
+      en: {normal: normal, hypokinetic: hypokinesis, akinetic: akinesis, dyskinetic: dyskinesis,
+           aneurysmal: aneurysm}
+    aliases:
+      normal: [normale, normal, normokine, "1"]
+      hypokinetic: [hypokine, hypokinesis, "2"]
+      akinetic: [akine, akinesis, "3"]
+      dyskinetic: [dyskine, dyskinesis, "4"]
+      aneurysmal: [anevrism, aneurysm, "5"]
+  effusion:
+    values: [none, trivial, small, moderate, large]
+    negated_value: none
+    labels:
+      fr: {none: absent, trivial: minime, small: de faible abondance, moderate: de moyenne abondance,
+           large: de grande abondance}
+      en: {none: none, trivial: trivial, small: small, moderate: moderate, large: large}
+    aliases:
+      none: [absent, aucun, none]
+      trivial: [minime, trivial, lame]
+      small: [faible abondance, petit, small, leger]
+      moderate: [moyenne abondance, modere, moderate]
+      large: [grande abondance, important, abondant, large, tamponnade]
+
+# Free-text negation cues, searched shortly before a phrase hint in the same sentence.
+negation_cues: [pas de, pas d, absence de, absence d, aucun, aucune, sans, ni, no, without, not]
+
+concepts:
+  # ------------------------------------------------------------------ structure visibility
+  - id: lv_visible
+    labels: {fr: Ventricule gauche visible, en: Left ventricle visible}
+    structures: [left_ventricle]
+    kind: structure_visibility
+    value: {type: boolean}
+    evidence: visual
+    required_modality: [bmode, color_flow]
+    potentially_visible_in:
+      - views: [apical_4c, apical_2c, apical_3c, apical_5c, parasternal_long, parasternal_short, SUBCOSTAL]
+        acquisitions: [bmode, color_flow]
+    notes: Visibility only. Says nothing about LV size or function.
+
+  - id: rv_visible
+    labels: {fr: Ventricule droit visible, en: Right ventricle visible}
+    structures: [right_ventricle]
+    kind: structure_visibility
+    value: {type: boolean}
+    evidence: visual
+    required_modality: [bmode, color_flow]
+    potentially_visible_in:
+      - views: [apical_4c, apical_5c, parasternal_long, parasternal_short, PSAX_AV, RVINF, SUBCOSTAL]
+        acquisitions: [bmode, color_flow]
+
+  - id: la_visible
+    labels: {fr: Oreillette gauche visible, en: Left atrium visible}
+    structures: [left_atrium]
+    kind: structure_visibility
+    value: {type: boolean}
+    evidence: visual
+    required_modality: [bmode, color_flow]
+    potentially_visible_in:
+      - views: [apical_4c, apical_2c, apical_3c, apical_5c, parasternal_long, PSAX_AV, SUBCOSTAL]
+        acquisitions: [bmode, color_flow]
+
+  - id: ra_visible
+    labels: {fr: Oreillette droite visible, en: Right atrium visible}
+    structures: [right_atrium]
+    kind: structure_visibility
+    value: {type: boolean}
+    evidence: visual
+    required_modality: [bmode, color_flow]
+    potentially_visible_in:
+      - views: [apical_4c, apical_5c, PSAX_AV, RVINF, SUBCOSTAL]
+        acquisitions: [bmode, color_flow]
+
+  - id: mitral_valve_visible
+    labels: {fr: Valve mitrale visible, en: Mitral valve visible}
+    structures: [mitral_valve]
+    kind: structure_visibility
+    value: {type: boolean}
+    evidence: visual
+    required_modality: [bmode, color_flow]
+    potentially_visible_in:
+      - views: [apical_4c, apical_2c, apical_3c, apical_5c, parasternal_long, parasternal_short]
+        acquisitions: [bmode, color_flow]
+    notes: Visibility only; distinct from mitral_regurgitation, mitral_stenosis and mitral_valve_device.
+
+  - id: aortic_valve_visible
+    labels: {fr: Valve aortique visible, en: Aortic valve visible}
+    structures: [aortic_valve]
+    kind: structure_visibility
+    value: {type: boolean}
+    evidence: visual
+    required_modality: [bmode, color_flow]
+    potentially_visible_in:
+      - views: [apical_5c, apical_3c, parasternal_long, PSAX_AV]
+        acquisitions: [bmode, color_flow]
+
+  - id: tricuspid_valve_visible
+    labels: {fr: Valve tricuspide visible, en: Tricuspid valve visible}
+    structures: [tricuspid_valve]
+    kind: structure_visibility
+    value: {type: boolean}
+    evidence: visual
+    required_modality: [bmode, color_flow]
+    potentially_visible_in:
+      - views: [apical_4c, apical_5c, PSAX_AV, RVINF, SUBCOSTAL]
+        acquisitions: [bmode, color_flow]
+
+  - id: pulmonic_valve_visible
+    labels: {fr: Valve pulmonaire visible, en: Pulmonic valve visible}
+    structures: [pulmonic_valve]
+    kind: structure_visibility
+    value: {type: boolean}
+    evidence: visual
+    required_modality: [bmode, color_flow]
+    potentially_visible_in:
+      - views: [PSAX_AV, SUBCOSTAL]
+        acquisitions: [bmode, color_flow]
+
+  - id: aortic_root_visible
+    labels: {fr: Racine aortique visible, en: Aortic root visible}
+    structures: [aortic_root]
+    kind: structure_visibility
+    value: {type: boolean}
+    evidence: visual
+    required_modality: [bmode, color_flow]
+    potentially_visible_in:
+      - views: [parasternal_long, apical_5c, apical_3c, PSAX_AV, SUPRASTERNAL]
+        acquisitions: [bmode, color_flow]
+
+  - id: interatrial_septum_visible
+    labels: {fr: Septum interauriculaire visible, en: Interatrial septum visible}
+    structures: [interatrial_septum]
+    kind: structure_visibility
+    value: {type: boolean}
+    evidence: visual
+    required_modality: [bmode, color_flow]
+    potentially_visible_in:
+      - views: [apical_4c, PSAX_AV, SUBCOSTAL]
+        acquisitions: [bmode, color_flow]
+
+  - id: pericardium_visible
+    labels: {fr: Péricarde visible, en: Pericardium visible}
+    structures: [pericardium]
+    kind: structure_visibility
+    value: {type: boolean}
+    evidence: visual
+    required_modality: [bmode]
+    potentially_visible_in:
+      - views: [apical_4c, apical_2c, apical_3c, parasternal_long, parasternal_short, SUBCOSTAL]
+        acquisitions: [bmode]
+
+  - id: ivc_visible
+    labels: {fr: Veine cave inférieure visible, en: Inferior vena cava visible}
+    structures: [inferior_vena_cava]
+    kind: structure_visibility
+    value: {type: boolean}
+    evidence: visual
+    required_modality: [bmode, color_flow, mmode]
+    potentially_visible_in:
+      - views: [SUBCOSTAL]
+        acquisitions: [bmode, color_flow, mmode]
+
+  # ------------------------------------------------------------------ left ventricle
+  - id: lv_systolic_function
+    labels: {fr: Fonction systolique ventriculaire gauche, en: Left ventricular systolic function}
+    structures: [left_ventricle]
+    kind: finding
+    value: {type: ordinal, scale: systolic_function}
+    evidence: visual
+    required_modality: [bmode]
+    potentially_visible_in:
+      - views: [apical_4c, apical_2c, apical_3c, parasternal_long, parasternal_short, SUBCOSTAL]
+        acquisitions: [bmode]
+    report_sources:
+      text_fields: [Left ventricule findings, Report conclusions findings]
+      phrase_hints: [fonction systolique ventriculaire gauche, fonction systolique du ventricule gauche,
+                     fonction systolique du vg, fonction ventriculaire gauche, dysfonction systolique,
+                     left ventricular systolic function, lv systolic function]
+      acronyms: [FEVG]
+
+  - id: lv_ejection_fraction
+    labels: {fr: Fraction d'éjection VG (estimation visuelle), en: LV ejection fraction (visual estimate)}
+    structures: [left_ventricle]
+    kind: finding
+    value: {type: numeric, unit: "%", min: 5, max: 90}
+    evidence: visual
+    required_modality: [bmode]
+    potentially_visible_in:
+      - views: [apical_4c, apical_2c]
+        acquisitions: [bmode]
+    requires_views_from: [apical_4c, apical_2c]
+    report_sources:
+      columns:
+        - {name: Visually Estimated EF, parse: numeric}
+    notes: A visual estimate integrates apical 4- and 2-chamber views; one clip supports it only partly.
+
+  - id: lv_size
+    labels: {fr: Taille du ventricule gauche, en: Left ventricular size}
+    structures: [left_ventricle]
+    kind: finding
+    value: {type: ordinal, scale: dilation}
+    evidence: visual
+    required_modality: [bmode]
+    potentially_visible_in:
+      - views: [apical_4c, apical_2c, parasternal_long, parasternal_short]
+        acquisitions: [bmode]
+    report_sources:
+      text_fields: [Left ventricule findings, Report conclusions findings]
+      phrase_hints: [ventricule gauche dilate, dilatation du ventricule gauche, dilatation ventriculaire gauche,
+                     taille du ventricule gauche, left ventricular dilation, left ventricle is dilated]
+      acronyms: [VG dilaté]
+
+  - id: lv_wall_thickness
+    labels: {fr: Hypertrophie ventriculaire gauche, en: Left ventricular hypertrophy}
+    structures: [left_ventricle]
+    kind: finding
+    value: {type: ordinal, scale: hypertrophy}
+    evidence: visual
+    required_modality: [bmode]
+    potentially_visible_in:
+      - views: [parasternal_long, parasternal_short, apical_4c]
+        acquisitions: [bmode]
+    report_sources:
+      text_fields: [Left ventricule findings, Report conclusions findings]
+      phrase_hints: [hypertrophie ventriculaire gauche, hypertrophie du ventricule gauche, hypertrophie septale,
+                     hypertrophie concentrique, left ventricular hypertrophy]
+      acronyms: [HVG]
+
+  - id: lv_regional_wall_motion
+    labels: {fr: Cinétique segmentaire du VG (segment le plus atteint), en: LV regional wall motion (worst segment)}
+    structures: [left_ventricle]
+    kind: finding
+    value: {type: ordinal, scale: wall_motion}
+    evidence: visual
+    required_modality: [bmode]
+    potentially_visible_in:
+      - views: [apical_4c, apical_2c, apical_3c, parasternal_short]
+        acquisitions: [bmode]
+    requires_views_from: [apical_4c, apical_2c, apical_3c]
+    report_sources:
+      columns:
+        # The exact WMS column names are not checked yet; the pattern matches every segment column.
+        - {pattern: "WMS*", parse: scale, aggregate: worst}
+      text_fields: [Left ventricule findings]
+      phrase_hints: [hypokinesie, akinesie, dyskinesie, anevrisme apical, trouble de la cinetique segmentaire,
+                     anomalie de la cinetique segmentaire, wall motion abnormality]
+    notes: The 17 segments are seen across apical 4-, 2- and 3-chamber views; a single clip covers some segments.
+
+  - id: lv_diastolic_function
+    labels: {fr: Fonction diastolique du VG, en: LV diastolic function}
+    structures: [left_ventricle]
+    kind: finding
+    value: {type: ordinal, scale: diastolic_function}
+    evidence: measurement
+    required_modality: [spectral_doppler]
+    potentially_visible_in:
+      - views: [apical_4c]
+        acquisitions: [spectral_doppler]
+    report_sources:
+      text_fields: [Left ventricule findings, Report conclusions findings]
+      phrase_hints: [fonction diastolique, profil de remplissage, diastolic function]
+    notes: Graded from mitral inflow and tissue Doppler; spectral Doppler stills are not in the video corpus.
+
+  - id: lvot_obstruction
+    labels: {fr: Obstruction de la chambre de chasse du VG, en: LV outflow tract obstruction}
+    structures: [left_ventricular_outflow_tract]
+    kind: finding
+    value: {type: boolean}
+    evidence: measurement
+    required_modality: [spectral_doppler]
+    potentially_visible_in:
+      - views: [apical_5c, apical_3c]
+        acquisitions: [spectral_doppler]
+    report_sources:
+      text_fields: [Left ventricule findings, Report conclusions findings]
+      phrase_hints: [obstruction de la chambre de chasse, obstruction intraventriculaire, gradient intraventriculaire,
+                     lvot obstruction]
+      acronyms: [SAM]
+
+  - id: lv_global_longitudinal_strain
+    labels: {fr: Strain longitudinal global du VG, en: LV global longitudinal strain}
+    structures: [left_ventricle]
+    kind: finding
+    value: {type: numeric, unit: "%", min: -40, max: 0}
+    evidence: measurement
+    required_modality: [bmode]
+    potentially_visible_in:
+      - views: [apical_4c, apical_2c, apical_3c]
+        acquisitions: [bmode]
+    requires_views_from: [apical_4c, apical_2c, apical_3c]
+    report_sources:
+      text_fields: [Left ventricule findings]
+      phrase_hints: [strain longitudinal global, global longitudinal strain]
+      acronyms: [SLG, GLS]
+
+  # ------------------------------------------------------------------ right ventricle and pressures
+  - id: rv_systolic_function
+    labels: {fr: Fonction systolique ventriculaire droite, en: Right ventricular systolic function}
+    structures: [right_ventricle]
+    kind: finding
+    value: {type: ordinal, scale: systolic_function}
+    evidence: visual
+    required_modality: [bmode]
+    potentially_visible_in:
+      - views: [apical_4c, RVINF, parasternal_short, SUBCOSTAL]
+        acquisitions: [bmode]
+    report_sources:
+      columns:
+        - {name: MHI VD fonction systolique, parse: scale}
+      text_fields: [Report conclusions findings]
+      phrase_hints: [fonction systolique ventriculaire droite, fonction systolique du ventricule droit,
+                     fonction ventriculaire droite, right ventricular systolic function]
+
+  - id: rv_size
+    labels: {fr: Taille du ventricule droit, en: Right ventricular size}
+    structures: [right_ventricle]
+    kind: finding
+    value: {type: ordinal, scale: dilation}
+    evidence: visual
+    required_modality: [bmode]
+    potentially_visible_in:
+      - views: [apical_4c, parasternal_long, parasternal_short, SUBCOSTAL]
+        acquisitions: [bmode]
+    report_sources:
+      text_fields: [Report conclusions findings]
+      phrase_hints: [ventricule droit dilate, dilatation du ventricule droit, dilatation ventriculaire droite,
+                     taille du ventricule droit, right ventricular dilation]
+      acronyms: [VD dilaté]
+
+  - id: tapse
+    labels: {fr: TAPSE, en: TAPSE}
+    structures: [right_ventricle]
+    kind: finding
+    value: {type: numeric, unit: mm, min: 3, max: 50}
+    evidence: measurement
+    required_modality: [mmode]
+    potentially_visible_in:
+      - views: [apical_4c]
+        acquisitions: [mmode]
+    report_sources:
+      text_fields: [Report conclusions findings]
+      acronyms: [TAPSE]
+
+  - id: rv_systolic_pressure
+    labels: {fr: Pression systolique ventriculaire droite, en: Right ventricular systolic pressure}
+    structures: [right_ventricle]
+    kind: finding
+    value: {type: numeric, unit: mmHg, min: 10, max: 150}
+    evidence: measurement
+    required_modality: [spectral_doppler]
+    potentially_visible_in:
+      - views: [apical_4c, RVINF, PSAX_AV, SUBCOSTAL]
+        acquisitions: [spectral_doppler]
+    report_sources:
+      columns:
+        - {name: RV Systolic Pressure, parse: numeric}
+    notes: CW Doppler of the TR jet plus estimated RA pressure; never inferred from a color loop.
+
+  - id: tr_peak_velocity
+    labels: {fr: Vitesse maximale de l'insuffisance tricuspide, en: TR peak velocity}
+    structures: [tricuspid_valve]
+    kind: finding
+    value: {type: numeric, unit: m/s, min: 0.5, max: 7}
+    evidence: measurement
+    required_modality: [spectral_doppler]
+    potentially_visible_in:
+      - views: [apical_4c, RVINF, PSAX_AV, SUBCOSTAL]
+        acquisitions: [spectral_doppler]
+    report_sources:
+      columns:
+        - {name: TR Peak Velocity, parse: numeric}
+
+  - id: ra_pressure
+    labels: {fr: Pression auriculaire droite estimée, en: Estimated right atrial pressure}
+    structures: [right_atrium]
+    kind: finding
+    value: {type: numeric, unit: mmHg, min: 1, max: 30}
+    evidence: measurement
+    required_modality: [bmode, mmode]
+    potentially_visible_in:
+      - views: [SUBCOSTAL]
+        acquisitions: [bmode, mmode]
+    report_sources:
+      columns:
+        - {name: RA Pressure, parse: numeric}
+    notes: Estimated from IVC diameter and collapse; ivc_dilation and ivc_collapse are the visual counterparts.
+
+  # ------------------------------------------------------------------ atria and septum
+  - id: la_size
+    labels: {fr: Taille de l'oreillette gauche, en: Left atrial size}
+    structures: [left_atrium]
+    kind: finding
+    value: {type: ordinal, scale: dilation}
+    evidence: visual
+    required_modality: [bmode]
+    potentially_visible_in:
+      - views: [apical_4c, apical_2c, parasternal_long, PSAX_AV]
+        acquisitions: [bmode]
+    report_sources:
+      text_fields: [Left atrial findings, Report conclusions findings]
+      phrase_hints: [oreillette gauche dilatee, dilatation de l'oreillette gauche, dilatation auriculaire gauche,
+                     taille de l'oreillette gauche, left atrial dilation, left atrium is dilated]
+      acronyms: [OG dilatée]
+
+  - id: ra_size
+    labels: {fr: Taille de l'oreillette droite, en: Right atrial size}
+    structures: [right_atrium]
+    kind: finding
+    value: {type: ordinal, scale: dilation}
+    evidence: visual
+    required_modality: [bmode]
+    potentially_visible_in:
+      - views: [apical_4c, RVINF, SUBCOSTAL]
+        acquisitions: [bmode]
+    report_sources:
+      text_fields: [Report conclusions findings]
+      phrase_hints: [oreillette droite dilatee, dilatation de l'oreillette droite, dilatation auriculaire droite,
+                     right atrial dilation]
+      acronyms: [OD dilatée]
+
+  - id: atrial_septal_hypertrophy
+    labels: {fr: Hypertrophie lipomateuse du septum interauriculaire, en: Lipomatous atrial septal hypertrophy}
+    structures: [interatrial_septum]
+    kind: finding
+    value: {type: boolean}
+    evidence: visual
+    required_modality: [bmode]
+    potentially_visible_in:
+      - views: [apical_4c, SUBCOSTAL]
+        acquisitions: [bmode]
+    report_sources:
+      text_fields: [Left atrial findings, Report conclusions findings]
+      phrase_hints: [hypertrophie lipomateuse, lipomatous hypertrophy]
+
+  # ------------------------------------------------------------------ mitral valve
+  - id: mitral_regurgitation
+    labels: {fr: Insuffisance mitrale, en: Mitral regurgitation}
+    structures: [mitral_valve]
+    kind: finding
+    value: {type: ordinal, scale: regurgitation}
+    evidence: visual
+    required_modality: [color_flow]
+    potentially_visible_in:
+      - views: [apical_4c, apical_2c, apical_3c, apical_5c, parasternal_long]
+        acquisitions: [color_flow]
+    report_sources:
+      columns:
+        - {name: Referring MR Grade, parse: scale}
+      text_fields: [Mitral valve findings, Report conclusions findings]
+      phrase_hints: [insuffisance mitrale, regurgitation mitrale, fuite mitrale, mitral regurgitation]
+    notes: A color loop supports a visual impression of the jet; the reported grade may integrate PISA and spectral data.
+
+  - id: mitral_stenosis
+    labels: {fr: Sténose mitrale, en: Mitral stenosis}
+    structures: [mitral_valve]
+    kind: finding
+    value: {type: ordinal, scale: stenosis}
+    evidence: measurement
+    required_modality: [spectral_doppler]
+    potentially_visible_in:
+      - views: [apical_4c]
+        acquisitions: [spectral_doppler]
+    report_sources:
+      text_fields: [Mitral valve findings, Report conclusions findings]
+      phrase_hints: [stenose mitrale, retrecissement mitral, mitral stenosis]
+    notes: Graded by mean gradient or planimetry; leaflet morphology on B-mode is not a severity grade.
+
+  - id: mitral_annular_calcification
+    labels: {fr: Calcification de l'anneau mitral, en: Mitral annular calcification}
+    structures: [mitral_valve]
+    kind: finding
+    value: {type: boolean}
+    evidence: visual
+    required_modality: [bmode]
+    potentially_visible_in:
+      - views: [parasternal_long, parasternal_short, apical_4c, apical_2c, apical_3c]
+        acquisitions: [bmode]
+    report_sources:
+      text_fields: [Mitral valve findings]
+      phrase_hints: [calcification de l'anneau mitral, calcification annulaire mitrale, calcifications annulaires,
+                     mitral annular calcification]
+      acronyms: [MAC]
+
+  - id: mitral_valve_device
+    labels: {fr: Dispositif ou prothèse mitrale, en: Mitral valve device or prosthesis}
+    structures: [mitral_valve]
+    kind: finding
+    value:
+      type: categorical
+      values: [none, edge_to_edge_clip, annuloplasty_ring, bioprosthesis, mechanical_prosthesis]
+      labels:
+        fr: {none: absent, edge_to_edge_clip: clip bord à bord, annuloplasty_ring: anneau d'annuloplastie,
+             bioprosthesis: bioprothèse, mechanical_prosthesis: prothèse mécanique}
+        en: {none: none, edge_to_edge_clip: edge-to-edge clip, annuloplasty_ring: annuloplasty ring,
+             bioprosthesis: bioprosthesis, mechanical_prosthesis: mechanical prosthesis}
+      aliases:
+        edge_to_edge_clip: [mitraclip, clip mitral, edge-to-edge]
+        annuloplasty_ring: [anneau d'annuloplastie, anneau prothetique, annuloplastie, annuloplasty]
+        bioprosthesis: [bioprothese mitrale, bioprothese en position mitrale, mitral bioprosthesis]
+        mechanical_prosthesis: [prothese mecanique mitrale, valve mecanique mitrale, mechanical mitral]
+    evidence: visual
+    required_modality: [bmode, color_flow]
+    potentially_visible_in:
+      - views: [apical_4c, apical_2c, apical_3c, parasternal_long, parasternal_short]
+        acquisitions: [bmode, color_flow]
+    report_sources:
+      text_fields: [Mitral valve findings]
+      phrase_hints: [mitraclip, clip mitral, anneau d'annuloplastie, anneau prothetique, annuloplastie, prothese mitrale,
+                     bioprothese mitrale, valve mecanique mitrale]
+
+  # ------------------------------------------------------------------ aortic valve and aorta
+  - id: aortic_regurgitation
+    labels: {fr: Insuffisance aortique, en: Aortic regurgitation}
+    structures: [aortic_valve]
+    kind: finding
+    value: {type: ordinal, scale: regurgitation}
+    evidence: visual
+    required_modality: [color_flow]
+    potentially_visible_in:
+      - views: [apical_5c, apical_3c, parasternal_long, PSAX_AV]
+        acquisitions: [color_flow]
+    report_sources:
+      columns:
+        - {name: Referring AR Grade, parse: scale}
+      text_fields: [Aortic valve findings, Report conclusions findings]
+      phrase_hints: [insuffisance aortique, regurgitation aortique, fuite aortique, aortic regurgitation]
+
+  - id: aortic_stenosis
+    labels: {fr: Sténose aortique, en: Aortic stenosis}
+    structures: [aortic_valve]
+    kind: finding
+    value: {type: ordinal, scale: stenosis}
+    evidence: measurement
+    required_modality: [spectral_doppler]
+    potentially_visible_in:
+      - views: [apical_5c, apical_3c, SUPRASTERNAL]
+        acquisitions: [spectral_doppler]
+    report_sources:
+      text_fields: [Aortic valve findings, Report conclusions findings]
+      phrase_hints: [stenose aortique, retrecissement aortique, aortic stenosis]
+      acronyms: [RAo]
+    notes: Graded by peak velocity, mean gradient and valve area. Calcified, restricted cusps on B-mode are not a grade.
+
+  - id: aortic_valve_peak_velocity
+    labels: {fr: Vitesse maximale transvalvulaire aortique, en: Aortic valve peak velocity}
+    structures: [aortic_valve]
+    kind: finding
+    value: {type: numeric, unit: m/s, min: 0.5, max: 7}
+    evidence: measurement
+    required_modality: [spectral_doppler]
+    potentially_visible_in:
+      - views: [apical_5c, apical_3c, SUPRASTERNAL]
+        acquisitions: [spectral_doppler]
+    report_sources:
+      text_fields: [Aortic valve findings]
+      acronyms: [Vmax]
+
+  - id: bicuspid_aortic_valve
+    labels: {fr: Bicuspidie aortique, en: Bicuspid aortic valve}
+    structures: [aortic_valve]
+    kind: finding
+    value: {type: boolean}
+    evidence: visual
+    required_modality: [bmode]
+    potentially_visible_in:
+      - views: [PSAX_AV, parasternal_long]
+        acquisitions: [bmode]
+    report_sources:
+      text_fields: [Aortic valve findings, Report conclusions findings]
+      phrase_hints: [bicuspid, valve aortique bicuspide, bicuspid aortic valve]
+
+  - id: aortic_valve_prosthesis
+    labels: {fr: Prothèse valvulaire aortique, en: Aortic valve prosthesis}
+    structures: [aortic_valve]
+    kind: finding
+    value:
+      type: categorical
+      values: [none, transcatheter, surgical_bioprosthesis, mechanical_prosthesis]
+      labels:
+        fr: {none: absente, transcatheter: valve percutanée (TAVI), surgical_bioprosthesis: bioprothèse chirurgicale,
+             mechanical_prosthesis: prothèse mécanique}
+        en: {none: none, transcatheter: transcatheter valve (TAVI), surgical_bioprosthesis: surgical bioprosthesis,
+             mechanical_prosthesis: mechanical prosthesis}
+      aliases:
+        transcatheter: [tavi, tavr, percutane, transcatheter]
+        surgical_bioprosthesis: [bioprothese aortique, bioprothese en position aortique, aortic bioprosthesis]
+        mechanical_prosthesis: [prothese mecanique aortique, valve mecanique aortique, mechanical aortic]
+    evidence: visual
+    required_modality: [bmode, color_flow]
+    potentially_visible_in:
+      - views: [PSAX_AV, parasternal_long, apical_5c, apical_3c]
+        acquisitions: [bmode, color_flow]
+    report_sources:
+      text_fields: [Aortic valve findings]
+      phrase_hints: [tavi, tavr, bioprothese aortique, prothese aortique, valve mecanique aortique]
+
+  - id: aortic_root_dilation
+    labels: {fr: Dilatation de la racine aortique, en: Aortic root dilation}
+    structures: [aortic_root]
+    kind: finding
+    value: {type: ordinal, scale: dilation}
+    evidence: visual
+    required_modality: [bmode]
+    potentially_visible_in:
+      - views: [parasternal_long, apical_5c, apical_3c, SUPRASTERNAL]
+        acquisitions: [bmode]
+    report_sources:
+      text_fields: [Aorta findings, Report conclusions findings]
+      phrase_hints: [dilatation de la racine aortique, racine aortique dilatee, dilatation de l'aorte ascendante,
+                     aorte ascendante dilatee, ectasie aortique, aortic root dilation]
+
+  # ------------------------------------------------------------------ tricuspid and pulmonic valves
+  - id: tricuspid_regurgitation
+    labels: {fr: Insuffisance tricuspide, en: Tricuspid regurgitation}
+    structures: [tricuspid_valve]
+    kind: finding
+    value: {type: ordinal, scale: regurgitation}
+    evidence: visual
+    required_modality: [color_flow]
+    potentially_visible_in:
+      - views: [apical_4c, apical_5c, RVINF, PSAX_AV, SUBCOSTAL]
+        acquisitions: [color_flow]
+    report_sources:
+      columns:
+        - {name: Referring TR Grade, parse: scale}
+      text_fields: [Tricuspid valve findings, Report conclusions findings]
+      phrase_hints: [insuffisance tricuspide, regurgitation tricuspide, fuite tricuspide, tricuspid regurgitation]
+
+  - id: tricuspid_regurgitation_ero
+    labels: {fr: Surface de l'orifice régurgitant tricuspide (PISA), en: Tricuspid regurgitant orifice area (PISA)}
+    structures: [tricuspid_valve]
+    kind: finding
+    value: {type: numeric, unit: cm², min: 0.01, max: 3}
+    evidence: measurement
+    required_modality: [color_flow]
+    potentially_visible_in:
+      - views: [apical_4c, RVINF]
+        acquisitions: [color_flow]
+    report_sources:
+      columns:
+        - {name: TR ERO (PISA), parse: numeric}
+    notes: PISA needs a zoomed color frame with a measured radius plus CW Doppler; a loop cannot confirm the number.
+
+  - id: tricuspid_stenosis
+    labels: {fr: Sténose tricuspide, en: Tricuspid stenosis}
+    structures: [tricuspid_valve]
+    kind: finding
+    value: {type: ordinal, scale: stenosis}
+    evidence: measurement
+    required_modality: [spectral_doppler]
+    potentially_visible_in:
+      - views: [apical_4c, RVINF]
+        acquisitions: [spectral_doppler]
+    report_sources:
+      text_fields: [Tricuspid valve findings]
+      phrase_hints: [stenose tricuspide, retrecissement tricuspide, tricuspid stenosis]
+
+  - id: pulmonic_regurgitation
+    labels: {fr: Insuffisance pulmonaire, en: Pulmonic regurgitation}
+    structures: [pulmonic_valve]
+    kind: finding
+    value: {type: ordinal, scale: regurgitation}
+    evidence: visual
+    required_modality: [color_flow]
+    potentially_visible_in:
+      - views: [PSAX_AV, SUBCOSTAL]
+        acquisitions: [color_flow]
+    report_sources:
+      columns:
+        - {name: Referring PR Grade, parse: scale}
+      text_fields: [Report conclusions findings]
+      phrase_hints: [insuffisance pulmonaire, regurgitation pulmonaire, fuite pulmonaire, pulmonic regurgitation,
+                     pulmonary regurgitation]
+
+  # ------------------------------------------------------------------ IVC, pericardium, devices, pressures
+  - id: ivc_dilation
+    labels: {fr: Dilatation de la veine cave inférieure, en: Inferior vena cava dilation}
+    structures: [inferior_vena_cava]
+    kind: finding
+    value: {type: boolean}
+    evidence: visual
+    required_modality: [bmode, mmode]
+    potentially_visible_in:
+      - views: [SUBCOSTAL]
+        acquisitions: [bmode, mmode]
+    report_sources:
+      text_fields: [Inferior vena cava findings]
+      phrase_hints: [veine cave inferieure dilatee, dilatation de la veine cave, vci dilatee, dilated ivc,
+                     inferior vena cava is dilated]
+
+  - id: ivc_collapse
+    labels: {fr: Collapsus inspiratoire de la VCI, en: IVC inspiratory collapse}
+    structures: [inferior_vena_cava]
+    kind: finding
+    value:
+      type: categorical
+      values: [normal, reduced]
+      labels:
+        fr: {normal: normal (> 50 %), reduced: diminué (< 50 %)}
+        en: {normal: normal (> 50%), reduced: reduced (< 50%)}
+      aliases:
+        normal: [collapsus normal, compliance normale, se collabe, normal collapse]
+        reduced: [collapsus diminue, collapsus reduit, compliance diminuee, peu compliante, non compliante,
+                  reduced collapse]
+    evidence: visual
+    required_modality: [bmode, mmode]
+    potentially_visible_in:
+      - views: [SUBCOSTAL]
+        acquisitions: [bmode, mmode]
+    report_sources:
+      text_fields: [Inferior vena cava findings]
+      phrase_hints: [collapsus, compliance, variation respiratoire, inspiratory collapse]
+
+  - id: pericardial_effusion
+    labels: {fr: Épanchement péricardique, en: Pericardial effusion}
+    structures: [pericardium]
+    kind: finding
+    value: {type: ordinal, scale: effusion}
+    evidence: visual
+    required_modality: [bmode]
+    potentially_visible_in:
+      - views: [apical_4c, apical_2c, parasternal_long, parasternal_short, SUBCOSTAL]
+        acquisitions: [bmode]
+    report_sources:
+      text_fields: [Report conclusions findings]
+      phrase_hints: [epanchement pericardique, pericardial effusion]
+
+  - id: pacing_lead
+    labels: {fr: Sonde de stimulation intracardiaque, en: Intracardiac pacing lead}
+    structures: [right_atrium, right_ventricle]
+    kind: finding
+    value: {type: boolean}
+    evidence: visual
+    required_modality: [bmode]
+    potentially_visible_in:
+      - views: [apical_4c, RVINF, parasternal_short, SUBCOSTAL]
+        acquisitions: [bmode]
+    report_sources:
+      text_fields: [Tricuspid valve findings, Report conclusions findings]
+      phrase_hints: [sonde de stimulat, sonde de pacemaker, sonde de defibrillat, pacemaker lead, pacing lead]
+
+  - id: mechanical_circulatory_support
+    labels: {fr: Assistance circulatoire mécanique, en: Mechanical circulatory support}
+    structures: [left_ventricle]
+    kind: finding
+    value:
+      type: categorical
+      values: [none, microaxial_pump, lvad]
+      labels:
+        fr: {none: absente, microaxial_pump: pompe microaxiale (Impella), lvad: assistance ventriculaire gauche}
+        en: {none: none, microaxial_pump: microaxial pump (Impella), lvad: left ventricular assist device}
+      aliases:
+        microaxial_pump: [impella]
+        lvad: [assistance ventriculaire gauche, lvad, heartmate]
+    evidence: visual
+    required_modality: [bmode, color_flow]
+    potentially_visible_in:
+      - views: [apical_4c, apical_3c, apical_5c, parasternal_long]
+        acquisitions: [bmode, color_flow]
+    report_sources:
+      text_fields: [Left ventricule findings, Report conclusions findings]
+      phrase_hints: [impella, assistance ventriculaire, lvad]
+
+  - id: elevated_la_pressure
+    labels: {fr: Pressions de remplissage du VG élevées, en: Elevated LV filling pressure}
+    structures: [left_atrium]
+    kind: finding
+    value: {type: boolean}
+    evidence: measurement
+    required_modality: [spectral_doppler]
+    potentially_visible_in:
+      - views: [apical_4c]
+        acquisitions: [spectral_doppler]
+    report_sources:
+      text_fields: [Left ventricule findings, Report conclusions findings]
+      phrase_hints: [pressions de remplissage elevees, pressions de remplissage augmentees,
+                     elevated filling pressure]
