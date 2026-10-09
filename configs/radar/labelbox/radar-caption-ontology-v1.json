@@ -1,0 +1,3915 @@
+{
+  "name": "RADAR caption review (radar-caption-ontology-v1)",
+  "review_version": "radar-caption-ontology-v1",
+  "concept_ontology": {
+    "name": "radar-caption-ontology",
+    "version": 1,
+    "sha256": "187aca12712cb2647fb9ac084066fac4206d975672db01697c598f549904d327"
+  },
+  "tools": [],
+  "classifications": [
+    {
+      "type": "radio",
+      "instructions": "Ce clip est-il ininterprétable ? / Is this clip uninterpretable?",
+      "name": "uninterpretable_clip",
+      "required": true,
+      "options": [
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "Non, le clip est interprétable / No, the clip can be interpreted",
+          "value": "no",
+          "options": []
+        },
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "Oui, il est ininterprétable / Yes, it is uninterpretable",
+          "value": "yes",
+          "options": [
+            {
+              "type": "radio",
+              "instructions": "Raison / Reason",
+              "name": "uninterpretable_clip__reason",
+              "required": true,
+              "options": [
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Qualité d'image / Image quality",
+                  "value": "quality",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Cadrage ou zoom / Crop or zoom",
+                  "value": "crop",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Modalité / Modality",
+                  "value": "modality",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Autre / Other",
+                  "value": "other",
+                  "options": []
+                }
+              ],
+              "schemaNodeId": null,
+              "featureSchemaId": null,
+              "attributes": null
+            }
+          ]
+        }
+      ],
+      "schemaNodeId": null,
+      "featureSchemaId": null,
+      "attributes": null,
+      "scope": "global"
+    },
+    {
+      "type": "radio",
+      "instructions": "La coupe indiquée est-elle correcte ? / Is the stated view correct?",
+      "name": "view_correct",
+      "required": true,
+      "options": [
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "Oui / Yes",
+          "value": "yes",
+          "options": []
+        },
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "Non / No",
+          "value": "no",
+          "options": [
+            {
+              "type": "radio",
+              "instructions": "Coupe correcte / Correct view",
+              "name": "correct_view",
+              "required": true,
+              "options": [
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "A2C: Coupe apicale 2 cavités / Apical 2-chamber view",
+                  "value": "A2C",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "A2C_LV: Coupe apicale 2 cavités centrée sur le VG / Apical 2-chamber view, LV-focused",
+                  "value": "A2C_LV",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "A2C_ZOOM: Coupe apicale 2 cavités zoomée / Apical 2-chamber view, zoomed",
+                  "value": "A2C_ZOOM",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "A3C: Coupe apicale 3 cavités / Apical 3-chamber view",
+                  "value": "A3C",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "A3C_LV: Coupe apicale 3 cavités centrée sur le VG / Apical 3-chamber view, LV-focused",
+                  "value": "A3C_LV",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "A3C_ZOOM: Coupe apicale 3 cavités zoomée / Apical 3-chamber view, zoomed",
+                  "value": "A3C_ZOOM",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "A4C: Coupe apicale 4 cavités / Apical 4-chamber view",
+                  "value": "A4C",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "A4C_LV: Coupe apicale 4 cavités centrée sur le VG / Apical 4-chamber view, LV-focused",
+                  "value": "A4C_LV",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "A4C_ZOOM: Coupe apicale 4 cavités zoomée / Apical 4-chamber view, zoomed",
+                  "value": "A4C_ZOOM",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "A5C: Coupe apicale 5 cavités / Apical 5-chamber view",
+                  "value": "A5C",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "A5C_ZOOM: Coupe apicale 5 cavités zoomée / Apical 5-chamber view, zoomed",
+                  "value": "A5C_ZOOM",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "PLAX: Coupe parasternale grand axe / Parasternal long-axis view",
+                  "value": "PLAX",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "PLAX_DEEP: Coupe parasternale grand axe profonde / Parasternal long-axis view, deep",
+                  "value": "PLAX_DEEP",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "PLAX_ZOOM: Coupe parasternale grand axe zoomée / Parasternal long-axis view, zoomed",
+                  "value": "PLAX_ZOOM",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "PSAX: Coupe parasternale petit axe / Parasternal short-axis view",
+                  "value": "PSAX",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "PSAX_AV: Coupe parasternale petit axe aortique / Parasternal short-axis view at the aortic valve",
+                  "value": "PSAX_AV",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "RVINF: Coupe de la voie d'entrée du VD / Right ventricular inflow view",
+                  "value": "RVINF",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "SUBCOSTAL: Coupe sous-costale / Subcostal view",
+                  "value": "SUBCOSTAL",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "SUPRASTERNAL: Coupe sus-sternale / Suprasternal view",
+                  "value": "SUPRASTERNAL",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "OTHER: Coupe non classée / Unclassified view",
+                  "value": "OTHER",
+                  "options": []
+                }
+              ],
+              "schemaNodeId": null,
+              "featureSchemaId": null,
+              "attributes": null
+            }
+          ]
+        },
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "Incertain / Unsure",
+          "value": "unsure",
+          "options": []
+        },
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "Sans objet : clip ininterprétable / Not applicable: uninterpretable clip",
+          "value": "not_applicable",
+          "options": []
+        }
+      ],
+      "schemaNodeId": null,
+      "featureSchemaId": null,
+      "attributes": null,
+      "scope": "global"
+    },
+    {
+      "type": "radio",
+      "instructions": "En dehors de la coupe, tout ce que la légende affirme est-il étayé par ce clip ? / Apart from the view, is everything the caption states supported by this clip?",
+      "name": "caption_supported",
+      "required": true,
+      "options": [
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "Oui, chaque énoncé est étayé / Yes, every statement is supported",
+          "value": "yes",
+          "options": []
+        },
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "Non, au moins un énoncé n'est pas étayé ou est faux / No, at least one statement is not supported or is wrong",
+          "value": "no",
+          "options": []
+        },
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "Incertain : rien n'est faux, mais au moins un énoncé est impossible à vérifier / Unsure: nothing is wrong, but at least one statement cannot be confirmed",
+          "value": "unsure",
+          "options": []
+        },
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "Sans objet : clip ininterprétable / Not applicable: uninterpretable clip",
+          "value": "not_applicable",
+          "options": []
+        }
+      ],
+      "schemaNodeId": null,
+      "featureSchemaId": null,
+      "attributes": null,
+      "scope": "global"
+    },
+    {
+      "type": "radio",
+      "instructions": "La légende omet-elle une information visible et cliniquement pertinente ? / Does the caption leave out visible, clinically relevant information?",
+      "name": "missing_information",
+      "required": true,
+      "options": [
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "Non / No",
+          "value": "no",
+          "options": []
+        },
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "Oui / Yes",
+          "value": "yes",
+          "options": [
+            {
+              "type": "checklist",
+              "instructions": "Concepts manquants / Missing concepts",
+              "name": "missing_concepts",
+              "required": false,
+              "options": [
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Ventricule gauche visible / Left ventricle visible",
+                  "value": "lv_visible",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Ventricule droit visible / Right ventricle visible",
+                  "value": "rv_visible",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Oreillette gauche visible / Left atrium visible",
+                  "value": "la_visible",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Oreillette droite visible / Right atrium visible",
+                  "value": "ra_visible",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Valve mitrale visible / Mitral valve visible",
+                  "value": "mitral_valve_visible",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Valve aortique visible / Aortic valve visible",
+                  "value": "aortic_valve_visible",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Valve tricuspide visible / Tricuspid valve visible",
+                  "value": "tricuspid_valve_visible",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Valve pulmonaire visible / Pulmonic valve visible",
+                  "value": "pulmonic_valve_visible",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Racine aortique visible / Aortic root visible",
+                  "value": "aortic_root_visible",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Septum interauriculaire visible / Interatrial septum visible",
+                  "value": "interatrial_septum_visible",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Péricarde visible / Pericardium visible",
+                  "value": "pericardium_visible",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Veine cave inférieure visible / Inferior vena cava visible",
+                  "value": "ivc_visible",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Fonction systolique ventriculaire gauche / Left ventricular systolic function",
+                  "value": "lv_systolic_function",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Fraction d'éjection VG (estimation visuelle) / LV ejection fraction (visual estimate)",
+                  "value": "lv_ejection_fraction",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Taille du ventricule gauche / Left ventricular size",
+                  "value": "lv_size",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Hypertrophie ventriculaire gauche / Left ventricular hypertrophy",
+                  "value": "lv_wall_thickness",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Cinétique segmentaire du VG (segment le plus atteint) / LV regional wall motion (worst segment)",
+                  "value": "lv_regional_wall_motion",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Fonction systolique ventriculaire droite / Right ventricular systolic function",
+                  "value": "rv_systolic_function",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Taille du ventricule droit / Right ventricular size",
+                  "value": "rv_size",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Taille de l'oreillette gauche / Left atrial size",
+                  "value": "la_size",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Taille de l'oreillette droite / Right atrial size",
+                  "value": "ra_size",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Hypertrophie lipomateuse du septum interauriculaire / Lipomatous atrial septal hypertrophy",
+                  "value": "atrial_septal_hypertrophy",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Insuffisance mitrale / Mitral regurgitation",
+                  "value": "mitral_regurgitation",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Calcification de l'anneau mitral / Mitral annular calcification",
+                  "value": "mitral_annular_calcification",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Dispositif ou prothèse mitrale / Mitral valve device or prosthesis",
+                  "value": "mitral_valve_device",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Insuffisance aortique / Aortic regurgitation",
+                  "value": "aortic_regurgitation",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Bicuspidie aortique / Bicuspid aortic valve",
+                  "value": "bicuspid_aortic_valve",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Prothèse valvulaire aortique / Aortic valve prosthesis",
+                  "value": "aortic_valve_prosthesis",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Dilatation de la racine aortique / Aortic root dilation",
+                  "value": "aortic_root_dilation",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Insuffisance tricuspide / Tricuspid regurgitation",
+                  "value": "tricuspid_regurgitation",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Insuffisance pulmonaire / Pulmonic regurgitation",
+                  "value": "pulmonic_regurgitation",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Dilatation de la veine cave inférieure / Inferior vena cava dilation",
+                  "value": "ivc_dilation",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Collapsus inspiratoire de la VCI / IVC inspiratory collapse",
+                  "value": "ivc_collapse",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Épanchement péricardique / Pericardial effusion",
+                  "value": "pericardial_effusion",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Sonde de stimulation intracardiaque / Intracardiac pacing lead",
+                  "value": "pacing_lead",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Assistance circulatoire mécanique / Mechanical circulatory support",
+                  "value": "mechanical_circulatory_support",
+                  "options": []
+                }
+              ],
+              "schemaNodeId": null,
+              "featureSchemaId": null,
+              "attributes": null
+            },
+            {
+              "type": "text",
+              "instructions": "Autre information manquante (hors ontologie) / Other missing information (not in the ontology)",
+              "name": "missing_other",
+              "required": false,
+              "options": [],
+              "schemaNodeId": null,
+              "featureSchemaId": null,
+              "attributes": null
+            }
+          ]
+        },
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "Sans objet : clip ininterprétable / Not applicable: uninterpretable clip",
+          "value": "not_applicable",
+          "options": []
+        }
+      ],
+      "schemaNodeId": null,
+      "featureSchemaId": null,
+      "attributes": null,
+      "scope": "global"
+    },
+    {
+      "type": "radio",
+      "instructions": "En dehors de la coupe, la légende affirme-t-elle quelque chose que ce clip n'étaye pas (information non étayée ou hallucinée) ? / Apart from the view, does the caption state anything this clip does not support (unsupported or hallucinated information)?",
+      "name": "unsupported_information",
+      "required": true,
+      "options": [
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "Non / No",
+          "value": "no",
+          "options": []
+        },
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "Oui / Yes",
+          "value": "yes",
+          "options": [
+            {
+              "type": "checklist",
+              "instructions": "Énoncés non étayés ou faux / Unsupported or wrong statements",
+              "name": "unsupported_statements",
+              "required": true,
+              "options": [
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Mode d'acquisition / Acquisition mode",
+                  "value": "acquisition",
+                  "options": [
+                    {
+                      "type": "radio",
+                      "instructions": "Type / Kind",
+                      "name": "acquisition__unsupported_kind",
+                      "required": true,
+                      "options": [
+                        {
+                          "schemaNodeId": null,
+                          "featureSchemaId": null,
+                          "label": "Non montré ou contredit par le clip (halluciné) / Not shown or contradicted by the clip (hallucinated)",
+                          "value": "not_supported",
+                          "options": []
+                        },
+                        {
+                          "schemaNodeId": null,
+                          "featureSchemaId": null,
+                          "label": "Présent, mais valeur ou sévérité fausse / Present, but the value or severity is wrong",
+                          "value": "wrong_value",
+                          "options": []
+                        }
+                      ],
+                      "schemaNodeId": null,
+                      "featureSchemaId": null,
+                      "attributes": null
+                    }
+                  ]
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Ventricule gauche visible / Left ventricle visible",
+                  "value": "lv_visible",
+                  "options": [
+                    {
+                      "type": "radio",
+                      "instructions": "Type / Kind",
+                      "name": "lv_visible__unsupported_kind",
+                      "required": true,
+                      "options": [
+                        {
+                          "schemaNodeId": null,
+                          "featureSchemaId": null,
+                          "label": "Non montré ou contredit par le clip (halluciné) / Not shown or contradicted by the clip (hallucinated)",
+                          "value": "not_supported",
+                          "options": []
+                        },
+                        {
+                          "schemaNodeId": null,
+                          "featureSchemaId": null,
+                          "label": "Présent, mais valeur ou sévérité fausse / Present, but the value or severity is wrong",
+                          "value": "wrong_value",
+                          "options": []
+                        }
+                      ],
+                      "schemaNodeId": null,
+                      "featureSchemaId": null,
+                      "attributes": null
+                    }
+                  ]
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Ventricule droit visible / Right ventricle visible",
+                  "value": "rv_visible",
+                  "options": [
+                    {
+                      "type": "radio",
+                      "instructions": "Type / Kind",
+                      "name": "rv_visible__unsupported_kind",
+                      "required": true,
+                      "options": [
+                        {
+                          "schemaNodeId": null,
+                          "featureSchemaId": null,
+                          "label": "Non montré ou contredit par le clip (halluciné) / Not shown or contradicted by the clip (hallucinated)",
+                          "value": "not_supported",
+                          "options": []
+                        },
+                        {
+                          "schemaNodeId": null,
+                          "featureSchemaId": null,
+                          "label": "Présent, mais valeur ou sévérité fausse / Present, but the value or severity is wrong",
+                          "value": "wrong_value",
+                          "options": []
+                        }
+                      ],
+                      "schemaNodeId": null,
+                      "featureSchemaId": null,
+                      "attributes": null
+                    }
+                  ]
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Oreillette gauche visible / Left atrium visible",
+                  "value": "la_visible",
+                  "options": [
+                    {
+                      "type": "radio",
+                      "instructions": "Type / Kind",
+                      "name": "la_visible__unsupported_kind",
+                      "required": true,
+                      "options": [
+                        {
+                          "schemaNodeId": null,
+                          "featureSchemaId": null,
+                          "label": "Non montré ou contredit par le clip (halluciné) / Not shown or contradicted by the clip (hallucinated)",
+                          "value": "not_supported",
+                          "options": []
+                        },
+                        {
+                          "schemaNodeId": null,
+                          "featureSchemaId": null,
+                          "label": "Présent, mais valeur ou sévérité fausse / Present, but the value or severity is wrong",
+                          "value": "wrong_value",
+                          "options": []
+                        }
+                      ],
+                      "schemaNodeId": null,
+                      "featureSchemaId": null,
+                      "attributes": null
+                    }
+                  ]
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Oreillette droite visible / Right atrium visible",
+                  "value": "ra_visible",
+                  "options": [
+                    {
+                      "type": "radio",
+                      "instructions": "Type / Kind",
+                      "name": "ra_visible__unsupported_kind",
+                      "required": true,
+                      "options": [
+                        {
+                          "schemaNodeId": null,
+                          "featureSchemaId": null,
+                          "label": "Non montré ou contredit par le clip (halluciné) / Not shown or contradicted by the clip (hallucinated)",
+                          "value": "not_supported",
+                          "options": []
+                        },
+                        {
+                          "schemaNodeId": null,
+                          "featureSchemaId": null,
+                          "label": "Présent, mais valeur ou sévérité fausse / Present, but the value or severity is wrong",
+                          "value": "wrong_value",
+                          "options": []
+                        }
+                      ],
+                      "schemaNodeId": null,
+                      "featureSchemaId": null,
+                      "attributes": null
+                    }
+                  ]
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Valve mitrale visible / Mitral valve visible",
+                  "value": "mitral_valve_visible",
+                  "options": [
+                    {
+                      "type": "radio",
+                      "instructions": "Type / Kind",
+                      "name": "mitral_valve_visible__unsupported_kind",
+                      "required": true,
+                      "options": [
+                        {
+                          "schemaNodeId": null,
+                          "featureSchemaId": null,
+                          "label": "Non montré ou contredit par le clip (halluciné) / Not shown or contradicted by the clip (hallucinated)",
+                          "value": "not_supported",
+                          "options": []
+                        },
+                        {
+                          "schemaNodeId": null,
+                          "featureSchemaId": null,
+                          "label": "Présent, mais valeur ou sévérité fausse / Present, but the value or severity is wrong",
+                          "value": "wrong_value",
+                          "options": []
+                        }
+                      ],
+                      "schemaNodeId": null,
+                      "featureSchemaId": null,
+                      "attributes": null
+                    }
+                  ]
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Valve aortique visible / Aortic valve visible",
+                  "value": "aortic_valve_visible",
+                  "options": [
+                    {
+                      "type": "radio",
+                      "instructions": "Type / Kind",
+                      "name": "aortic_valve_visible__unsupported_kind",
+                      "required": true,
+                      "options": [
+                        {
+                          "schemaNodeId": null,
+                          "featureSchemaId": null,
+                          "label": "Non montré ou contredit par le clip (halluciné) / Not shown or contradicted by the clip (hallucinated)",
+                          "value": "not_supported",
+                          "options": []
+                        },
+                        {
+                          "schemaNodeId": null,
+                          "featureSchemaId": null,
+                          "label": "Présent, mais valeur ou sévérité fausse / Present, but the value or severity is wrong",
+                          "value": "wrong_value",
+                          "options": []
+                        }
+                      ],
+                      "schemaNodeId": null,
+                      "featureSchemaId": null,
+                      "attributes": null
+                    }
+                  ]
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Valve tricuspide visible / Tricuspid valve visible",
+                  "value": "tricuspid_valve_visible",
+                  "options": [
+                    {
+                      "type": "radio",
+                      "instructions": "Type / Kind",
+                      "name": "tricuspid_valve_visible__unsupported_kind",
+                      "required": true,
+                      "options": [
+                        {
+                          "schemaNodeId": null,
+                          "featureSchemaId": null,
+                          "label": "Non montré ou contredit par le clip (halluciné) / Not shown or contradicted by the clip (hallucinated)",
+                          "value": "not_supported",
+                          "options": []
+                        },
+                        {
+                          "schemaNodeId": null,
+                          "featureSchemaId": null,
+                          "label": "Présent, mais valeur ou sévérité fausse / Present, but the value or severity is wrong",
+                          "value": "wrong_value",
+                          "options": []
+                        }
+                      ],
+                      "schemaNodeId": null,
+                      "featureSchemaId": null,
+                      "attributes": null
+                    }
+                  ]
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Valve pulmonaire visible / Pulmonic valve visible",
+                  "value": "pulmonic_valve_visible",
+                  "options": [
+                    {
+                      "type": "radio",
+                      "instructions": "Type / Kind",
+                      "name": "pulmonic_valve_visible__unsupported_kind",
+                      "required": true,
+                      "options": [
+                        {
+                          "schemaNodeId": null,
+                          "featureSchemaId": null,
+                          "label": "Non montré ou contredit par le clip (halluciné) / Not shown or contradicted by the clip (hallucinated)",
+                          "value": "not_supported",
+                          "options": []
+                        },
+                        {
+                          "schemaNodeId": null,
+                          "featureSchemaId": null,
+                          "label": "Présent, mais valeur ou sévérité fausse / Present, but the value or severity is wrong",
+                          "value": "wrong_value",
+                          "options": []
+                        }
+                      ],
+                      "schemaNodeId": null,
+                      "featureSchemaId": null,
+                      "attributes": null
+                    }
+                  ]
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Racine aortique visible / Aortic root visible",
+                  "value": "aortic_root_visible",
+                  "options": [
+                    {
+                      "type": "radio",
+                      "instructions": "Type / Kind",
+                      "name": "aortic_root_visible__unsupported_kind",
+                      "required": true,
+                      "options": [
+                        {
+                          "schemaNodeId": null,
+                          "featureSchemaId": null,
+                          "label": "Non montré ou contredit par le clip (halluciné) / Not shown or contradicted by the clip (hallucinated)",
+                          "value": "not_supported",
+                          "options": []
+                        },
+                        {
+                          "schemaNodeId": null,
+                          "featureSchemaId": null,
+                          "label": "Présent, mais valeur ou sévérité fausse / Present, but the value or severity is wrong",
+                          "value": "wrong_value",
+                          "options": []
+                        }
+                      ],
+                      "schemaNodeId": null,
+                      "featureSchemaId": null,
+                      "attributes": null
+                    }
+                  ]
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Septum interauriculaire visible / Interatrial septum visible",
+                  "value": "interatrial_septum_visible",
+                  "options": [
+                    {
+                      "type": "radio",
+                      "instructions": "Type / Kind",
+                      "name": "interatrial_septum_visible__unsupported_kind",
+                      "required": true,
+                      "options": [
+                        {
+                          "schemaNodeId": null,
+                          "featureSchemaId": null,
+                          "label": "Non montré ou contredit par le clip (halluciné) / Not shown or contradicted by the clip (hallucinated)",
+                          "value": "not_supported",
+                          "options": []
+                        },
+                        {
+                          "schemaNodeId": null,
+                          "featureSchemaId": null,
+                          "label": "Présent, mais valeur ou sévérité fausse / Present, but the value or severity is wrong",
+                          "value": "wrong_value",
+                          "options": []
+                        }
+                      ],
+                      "schemaNodeId": null,
+                      "featureSchemaId": null,
+                      "attributes": null
+                    }
+                  ]
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Péricarde visible / Pericardium visible",
+                  "value": "pericardium_visible",
+                  "options": [
+                    {
+                      "type": "radio",
+                      "instructions": "Type / Kind",
+                      "name": "pericardium_visible__unsupported_kind",
+                      "required": true,
+                      "options": [
+                        {
+                          "schemaNodeId": null,
+                          "featureSchemaId": null,
+                          "label": "Non montré ou contredit par le clip (halluciné) / Not shown or contradicted by the clip (hallucinated)",
+                          "value": "not_supported",
+                          "options": []
+                        },
+                        {
+                          "schemaNodeId": null,
+                          "featureSchemaId": null,
+                          "label": "Présent, mais valeur ou sévérité fausse / Present, but the value or severity is wrong",
+                          "value": "wrong_value",
+                          "options": []
+                        }
+                      ],
+                      "schemaNodeId": null,
+                      "featureSchemaId": null,
+                      "attributes": null
+                    }
+                  ]
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Veine cave inférieure visible / Inferior vena cava visible",
+                  "value": "ivc_visible",
+                  "options": [
+                    {
+                      "type": "radio",
+                      "instructions": "Type / Kind",
+                      "name": "ivc_visible__unsupported_kind",
+                      "required": true,
+                      "options": [
+                        {
+                          "schemaNodeId": null,
+                          "featureSchemaId": null,
+                          "label": "Non montré ou contredit par le clip (halluciné) / Not shown or contradicted by the clip (hallucinated)",
+                          "value": "not_supported",
+                          "options": []
+                        },
+                        {
+                          "schemaNodeId": null,
+                          "featureSchemaId": null,
+                          "label": "Présent, mais valeur ou sévérité fausse / Present, but the value or severity is wrong",
+                          "value": "wrong_value",
+                          "options": []
+                        }
+                      ],
+                      "schemaNodeId": null,
+                      "featureSchemaId": null,
+                      "attributes": null
+                    }
+                  ]
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Fonction systolique ventriculaire gauche / Left ventricular systolic function",
+                  "value": "lv_systolic_function",
+                  "options": [
+                    {
+                      "type": "radio",
+                      "instructions": "Type / Kind",
+                      "name": "lv_systolic_function__unsupported_kind",
+                      "required": true,
+                      "options": [
+                        {
+                          "schemaNodeId": null,
+                          "featureSchemaId": null,
+                          "label": "Non montré ou contredit par le clip (halluciné) / Not shown or contradicted by the clip (hallucinated)",
+                          "value": "not_supported",
+                          "options": []
+                        },
+                        {
+                          "schemaNodeId": null,
+                          "featureSchemaId": null,
+                          "label": "Présent, mais valeur ou sévérité fausse / Present, but the value or severity is wrong",
+                          "value": "wrong_value",
+                          "options": []
+                        }
+                      ],
+                      "schemaNodeId": null,
+                      "featureSchemaId": null,
+                      "attributes": null
+                    }
+                  ]
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Fraction d'éjection VG (estimation visuelle) / LV ejection fraction (visual estimate)",
+                  "value": "lv_ejection_fraction",
+                  "options": [
+                    {
+                      "type": "radio",
+                      "instructions": "Type / Kind",
+                      "name": "lv_ejection_fraction__unsupported_kind",
+                      "required": true,
+                      "options": [
+                        {
+                          "schemaNodeId": null,
+                          "featureSchemaId": null,
+                          "label": "Non montré ou contredit par le clip (halluciné) / Not shown or contradicted by the clip (hallucinated)",
+                          "value": "not_supported",
+                          "options": []
+                        },
+                        {
+                          "schemaNodeId": null,
+                          "featureSchemaId": null,
+                          "label": "Présent, mais valeur ou sévérité fausse / Present, but the value or severity is wrong",
+                          "value": "wrong_value",
+                          "options": []
+                        }
+                      ],
+                      "schemaNodeId": null,
+                      "featureSchemaId": null,
+                      "attributes": null
+                    }
+                  ]
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Taille du ventricule gauche / Left ventricular size",
+                  "value": "lv_size",
+                  "options": [
+                    {
+                      "type": "radio",
+                      "instructions": "Type / Kind",
+                      "name": "lv_size__unsupported_kind",
+                      "required": true,
+                      "options": [
+                        {
+                          "schemaNodeId": null,
+                          "featureSchemaId": null,
+                          "label": "Non montré ou contredit par le clip (halluciné) / Not shown or contradicted by the clip (hallucinated)",
+                          "value": "not_supported",
+                          "options": []
+                        },
+                        {
+                          "schemaNodeId": null,
+                          "featureSchemaId": null,
+                          "label": "Présent, mais valeur ou sévérité fausse / Present, but the value or severity is wrong",
+                          "value": "wrong_value",
+                          "options": []
+                        }
+                      ],
+                      "schemaNodeId": null,
+                      "featureSchemaId": null,
+                      "attributes": null
+                    }
+                  ]
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Hypertrophie ventriculaire gauche / Left ventricular hypertrophy",
+                  "value": "lv_wall_thickness",
+                  "options": [
+                    {
+                      "type": "radio",
+                      "instructions": "Type / Kind",
+                      "name": "lv_wall_thickness__unsupported_kind",
+                      "required": true,
+                      "options": [
+                        {
+                          "schemaNodeId": null,
+                          "featureSchemaId": null,
+                          "label": "Non montré ou contredit par le clip (halluciné) / Not shown or contradicted by the clip (hallucinated)",
+                          "value": "not_supported",
+                          "options": []
+                        },
+                        {
+                          "schemaNodeId": null,
+                          "featureSchemaId": null,
+                          "label": "Présent, mais valeur ou sévérité fausse / Present, but the value or severity is wrong",
+                          "value": "wrong_value",
+                          "options": []
+                        }
+                      ],
+                      "schemaNodeId": null,
+                      "featureSchemaId": null,
+                      "attributes": null
+                    }
+                  ]
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Cinétique segmentaire du VG (segment le plus atteint) / LV regional wall motion (worst segment)",
+                  "value": "lv_regional_wall_motion",
+                  "options": [
+                    {
+                      "type": "radio",
+                      "instructions": "Type / Kind",
+                      "name": "lv_regional_wall_motion__unsupported_kind",
+                      "required": true,
+                      "options": [
+                        {
+                          "schemaNodeId": null,
+                          "featureSchemaId": null,
+                          "label": "Non montré ou contredit par le clip (halluciné) / Not shown or contradicted by the clip (hallucinated)",
+                          "value": "not_supported",
+                          "options": []
+                        },
+                        {
+                          "schemaNodeId": null,
+                          "featureSchemaId": null,
+                          "label": "Présent, mais valeur ou sévérité fausse / Present, but the value or severity is wrong",
+                          "value": "wrong_value",
+                          "options": []
+                        }
+                      ],
+                      "schemaNodeId": null,
+                      "featureSchemaId": null,
+                      "attributes": null
+                    }
+                  ]
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Fonction systolique ventriculaire droite / Right ventricular systolic function",
+                  "value": "rv_systolic_function",
+                  "options": [
+                    {
+                      "type": "radio",
+                      "instructions": "Type / Kind",
+                      "name": "rv_systolic_function__unsupported_kind",
+                      "required": true,
+                      "options": [
+                        {
+                          "schemaNodeId": null,
+                          "featureSchemaId": null,
+                          "label": "Non montré ou contredit par le clip (halluciné) / Not shown or contradicted by the clip (hallucinated)",
+                          "value": "not_supported",
+                          "options": []
+                        },
+                        {
+                          "schemaNodeId": null,
+                          "featureSchemaId": null,
+                          "label": "Présent, mais valeur ou sévérité fausse / Present, but the value or severity is wrong",
+                          "value": "wrong_value",
+                          "options": []
+                        }
+                      ],
+                      "schemaNodeId": null,
+                      "featureSchemaId": null,
+                      "attributes": null
+                    }
+                  ]
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Taille du ventricule droit / Right ventricular size",
+                  "value": "rv_size",
+                  "options": [
+                    {
+                      "type": "radio",
+                      "instructions": "Type / Kind",
+                      "name": "rv_size__unsupported_kind",
+                      "required": true,
+                      "options": [
+                        {
+                          "schemaNodeId": null,
+                          "featureSchemaId": null,
+                          "label": "Non montré ou contredit par le clip (halluciné) / Not shown or contradicted by the clip (hallucinated)",
+                          "value": "not_supported",
+                          "options": []
+                        },
+                        {
+                          "schemaNodeId": null,
+                          "featureSchemaId": null,
+                          "label": "Présent, mais valeur ou sévérité fausse / Present, but the value or severity is wrong",
+                          "value": "wrong_value",
+                          "options": []
+                        }
+                      ],
+                      "schemaNodeId": null,
+                      "featureSchemaId": null,
+                      "attributes": null
+                    }
+                  ]
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Taille de l'oreillette gauche / Left atrial size",
+                  "value": "la_size",
+                  "options": [
+                    {
+                      "type": "radio",
+                      "instructions": "Type / Kind",
+                      "name": "la_size__unsupported_kind",
+                      "required": true,
+                      "options": [
+                        {
+                          "schemaNodeId": null,
+                          "featureSchemaId": null,
+                          "label": "Non montré ou contredit par le clip (halluciné) / Not shown or contradicted by the clip (hallucinated)",
+                          "value": "not_supported",
+                          "options": []
+                        },
+                        {
+                          "schemaNodeId": null,
+                          "featureSchemaId": null,
+                          "label": "Présent, mais valeur ou sévérité fausse / Present, but the value or severity is wrong",
+                          "value": "wrong_value",
+                          "options": []
+                        }
+                      ],
+                      "schemaNodeId": null,
+                      "featureSchemaId": null,
+                      "attributes": null
+                    }
+                  ]
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Taille de l'oreillette droite / Right atrial size",
+                  "value": "ra_size",
+                  "options": [
+                    {
+                      "type": "radio",
+                      "instructions": "Type / Kind",
+                      "name": "ra_size__unsupported_kind",
+                      "required": true,
+                      "options": [
+                        {
+                          "schemaNodeId": null,
+                          "featureSchemaId": null,
+                          "label": "Non montré ou contredit par le clip (halluciné) / Not shown or contradicted by the clip (hallucinated)",
+                          "value": "not_supported",
+                          "options": []
+                        },
+                        {
+                          "schemaNodeId": null,
+                          "featureSchemaId": null,
+                          "label": "Présent, mais valeur ou sévérité fausse / Present, but the value or severity is wrong",
+                          "value": "wrong_value",
+                          "options": []
+                        }
+                      ],
+                      "schemaNodeId": null,
+                      "featureSchemaId": null,
+                      "attributes": null
+                    }
+                  ]
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Hypertrophie lipomateuse du septum interauriculaire / Lipomatous atrial septal hypertrophy",
+                  "value": "atrial_septal_hypertrophy",
+                  "options": [
+                    {
+                      "type": "radio",
+                      "instructions": "Type / Kind",
+                      "name": "atrial_septal_hypertrophy__unsupported_kind",
+                      "required": true,
+                      "options": [
+                        {
+                          "schemaNodeId": null,
+                          "featureSchemaId": null,
+                          "label": "Non montré ou contredit par le clip (halluciné) / Not shown or contradicted by the clip (hallucinated)",
+                          "value": "not_supported",
+                          "options": []
+                        },
+                        {
+                          "schemaNodeId": null,
+                          "featureSchemaId": null,
+                          "label": "Présent, mais valeur ou sévérité fausse / Present, but the value or severity is wrong",
+                          "value": "wrong_value",
+                          "options": []
+                        }
+                      ],
+                      "schemaNodeId": null,
+                      "featureSchemaId": null,
+                      "attributes": null
+                    }
+                  ]
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Insuffisance mitrale / Mitral regurgitation",
+                  "value": "mitral_regurgitation",
+                  "options": [
+                    {
+                      "type": "radio",
+                      "instructions": "Type / Kind",
+                      "name": "mitral_regurgitation__unsupported_kind",
+                      "required": true,
+                      "options": [
+                        {
+                          "schemaNodeId": null,
+                          "featureSchemaId": null,
+                          "label": "Non montré ou contredit par le clip (halluciné) / Not shown or contradicted by the clip (hallucinated)",
+                          "value": "not_supported",
+                          "options": []
+                        },
+                        {
+                          "schemaNodeId": null,
+                          "featureSchemaId": null,
+                          "label": "Présent, mais valeur ou sévérité fausse / Present, but the value or severity is wrong",
+                          "value": "wrong_value",
+                          "options": []
+                        }
+                      ],
+                      "schemaNodeId": null,
+                      "featureSchemaId": null,
+                      "attributes": null
+                    }
+                  ]
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Calcification de l'anneau mitral / Mitral annular calcification",
+                  "value": "mitral_annular_calcification",
+                  "options": [
+                    {
+                      "type": "radio",
+                      "instructions": "Type / Kind",
+                      "name": "mitral_annular_calcification__unsupported_kind",
+                      "required": true,
+                      "options": [
+                        {
+                          "schemaNodeId": null,
+                          "featureSchemaId": null,
+                          "label": "Non montré ou contredit par le clip (halluciné) / Not shown or contradicted by the clip (hallucinated)",
+                          "value": "not_supported",
+                          "options": []
+                        },
+                        {
+                          "schemaNodeId": null,
+                          "featureSchemaId": null,
+                          "label": "Présent, mais valeur ou sévérité fausse / Present, but the value or severity is wrong",
+                          "value": "wrong_value",
+                          "options": []
+                        }
+                      ],
+                      "schemaNodeId": null,
+                      "featureSchemaId": null,
+                      "attributes": null
+                    }
+                  ]
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Dispositif ou prothèse mitrale / Mitral valve device or prosthesis",
+                  "value": "mitral_valve_device",
+                  "options": [
+                    {
+                      "type": "radio",
+                      "instructions": "Type / Kind",
+                      "name": "mitral_valve_device__unsupported_kind",
+                      "required": true,
+                      "options": [
+                        {
+                          "schemaNodeId": null,
+                          "featureSchemaId": null,
+                          "label": "Non montré ou contredit par le clip (halluciné) / Not shown or contradicted by the clip (hallucinated)",
+                          "value": "not_supported",
+                          "options": []
+                        },
+                        {
+                          "schemaNodeId": null,
+                          "featureSchemaId": null,
+                          "label": "Présent, mais valeur ou sévérité fausse / Present, but the value or severity is wrong",
+                          "value": "wrong_value",
+                          "options": []
+                        }
+                      ],
+                      "schemaNodeId": null,
+                      "featureSchemaId": null,
+                      "attributes": null
+                    }
+                  ]
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Insuffisance aortique / Aortic regurgitation",
+                  "value": "aortic_regurgitation",
+                  "options": [
+                    {
+                      "type": "radio",
+                      "instructions": "Type / Kind",
+                      "name": "aortic_regurgitation__unsupported_kind",
+                      "required": true,
+                      "options": [
+                        {
+                          "schemaNodeId": null,
+                          "featureSchemaId": null,
+                          "label": "Non montré ou contredit par le clip (halluciné) / Not shown or contradicted by the clip (hallucinated)",
+                          "value": "not_supported",
+                          "options": []
+                        },
+                        {
+                          "schemaNodeId": null,
+                          "featureSchemaId": null,
+                          "label": "Présent, mais valeur ou sévérité fausse / Present, but the value or severity is wrong",
+                          "value": "wrong_value",
+                          "options": []
+                        }
+                      ],
+                      "schemaNodeId": null,
+                      "featureSchemaId": null,
+                      "attributes": null
+                    }
+                  ]
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Bicuspidie aortique / Bicuspid aortic valve",
+                  "value": "bicuspid_aortic_valve",
+                  "options": [
+                    {
+                      "type": "radio",
+                      "instructions": "Type / Kind",
+                      "name": "bicuspid_aortic_valve__unsupported_kind",
+                      "required": true,
+                      "options": [
+                        {
+                          "schemaNodeId": null,
+                          "featureSchemaId": null,
+                          "label": "Non montré ou contredit par le clip (halluciné) / Not shown or contradicted by the clip (hallucinated)",
+                          "value": "not_supported",
+                          "options": []
+                        },
+                        {
+                          "schemaNodeId": null,
+                          "featureSchemaId": null,
+                          "label": "Présent, mais valeur ou sévérité fausse / Present, but the value or severity is wrong",
+                          "value": "wrong_value",
+                          "options": []
+                        }
+                      ],
+                      "schemaNodeId": null,
+                      "featureSchemaId": null,
+                      "attributes": null
+                    }
+                  ]
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Prothèse valvulaire aortique / Aortic valve prosthesis",
+                  "value": "aortic_valve_prosthesis",
+                  "options": [
+                    {
+                      "type": "radio",
+                      "instructions": "Type / Kind",
+                      "name": "aortic_valve_prosthesis__unsupported_kind",
+                      "required": true,
+                      "options": [
+                        {
+                          "schemaNodeId": null,
+                          "featureSchemaId": null,
+                          "label": "Non montré ou contredit par le clip (halluciné) / Not shown or contradicted by the clip (hallucinated)",
+                          "value": "not_supported",
+                          "options": []
+                        },
+                        {
+                          "schemaNodeId": null,
+                          "featureSchemaId": null,
+                          "label": "Présent, mais valeur ou sévérité fausse / Present, but the value or severity is wrong",
+                          "value": "wrong_value",
+                          "options": []
+                        }
+                      ],
+                      "schemaNodeId": null,
+                      "featureSchemaId": null,
+                      "attributes": null
+                    }
+                  ]
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Dilatation de la racine aortique / Aortic root dilation",
+                  "value": "aortic_root_dilation",
+                  "options": [
+                    {
+                      "type": "radio",
+                      "instructions": "Type / Kind",
+                      "name": "aortic_root_dilation__unsupported_kind",
+                      "required": true,
+                      "options": [
+                        {
+                          "schemaNodeId": null,
+                          "featureSchemaId": null,
+                          "label": "Non montré ou contredit par le clip (halluciné) / Not shown or contradicted by the clip (hallucinated)",
+                          "value": "not_supported",
+                          "options": []
+                        },
+                        {
+                          "schemaNodeId": null,
+                          "featureSchemaId": null,
+                          "label": "Présent, mais valeur ou sévérité fausse / Present, but the value or severity is wrong",
+                          "value": "wrong_value",
+                          "options": []
+                        }
+                      ],
+                      "schemaNodeId": null,
+                      "featureSchemaId": null,
+                      "attributes": null
+                    }
+                  ]
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Insuffisance tricuspide / Tricuspid regurgitation",
+                  "value": "tricuspid_regurgitation",
+                  "options": [
+                    {
+                      "type": "radio",
+                      "instructions": "Type / Kind",
+                      "name": "tricuspid_regurgitation__unsupported_kind",
+                      "required": true,
+                      "options": [
+                        {
+                          "schemaNodeId": null,
+                          "featureSchemaId": null,
+                          "label": "Non montré ou contredit par le clip (halluciné) / Not shown or contradicted by the clip (hallucinated)",
+                          "value": "not_supported",
+                          "options": []
+                        },
+                        {
+                          "schemaNodeId": null,
+                          "featureSchemaId": null,
+                          "label": "Présent, mais valeur ou sévérité fausse / Present, but the value or severity is wrong",
+                          "value": "wrong_value",
+                          "options": []
+                        }
+                      ],
+                      "schemaNodeId": null,
+                      "featureSchemaId": null,
+                      "attributes": null
+                    }
+                  ]
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Insuffisance pulmonaire / Pulmonic regurgitation",
+                  "value": "pulmonic_regurgitation",
+                  "options": [
+                    {
+                      "type": "radio",
+                      "instructions": "Type / Kind",
+                      "name": "pulmonic_regurgitation__unsupported_kind",
+                      "required": true,
+                      "options": [
+                        {
+                          "schemaNodeId": null,
+                          "featureSchemaId": null,
+                          "label": "Non montré ou contredit par le clip (halluciné) / Not shown or contradicted by the clip (hallucinated)",
+                          "value": "not_supported",
+                          "options": []
+                        },
+                        {
+                          "schemaNodeId": null,
+                          "featureSchemaId": null,
+                          "label": "Présent, mais valeur ou sévérité fausse / Present, but the value or severity is wrong",
+                          "value": "wrong_value",
+                          "options": []
+                        }
+                      ],
+                      "schemaNodeId": null,
+                      "featureSchemaId": null,
+                      "attributes": null
+                    }
+                  ]
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Dilatation de la veine cave inférieure / Inferior vena cava dilation",
+                  "value": "ivc_dilation",
+                  "options": [
+                    {
+                      "type": "radio",
+                      "instructions": "Type / Kind",
+                      "name": "ivc_dilation__unsupported_kind",
+                      "required": true,
+                      "options": [
+                        {
+                          "schemaNodeId": null,
+                          "featureSchemaId": null,
+                          "label": "Non montré ou contredit par le clip (halluciné) / Not shown or contradicted by the clip (hallucinated)",
+                          "value": "not_supported",
+                          "options": []
+                        },
+                        {
+                          "schemaNodeId": null,
+                          "featureSchemaId": null,
+                          "label": "Présent, mais valeur ou sévérité fausse / Present, but the value or severity is wrong",
+                          "value": "wrong_value",
+                          "options": []
+                        }
+                      ],
+                      "schemaNodeId": null,
+                      "featureSchemaId": null,
+                      "attributes": null
+                    }
+                  ]
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Collapsus inspiratoire de la VCI / IVC inspiratory collapse",
+                  "value": "ivc_collapse",
+                  "options": [
+                    {
+                      "type": "radio",
+                      "instructions": "Type / Kind",
+                      "name": "ivc_collapse__unsupported_kind",
+                      "required": true,
+                      "options": [
+                        {
+                          "schemaNodeId": null,
+                          "featureSchemaId": null,
+                          "label": "Non montré ou contredit par le clip (halluciné) / Not shown or contradicted by the clip (hallucinated)",
+                          "value": "not_supported",
+                          "options": []
+                        },
+                        {
+                          "schemaNodeId": null,
+                          "featureSchemaId": null,
+                          "label": "Présent, mais valeur ou sévérité fausse / Present, but the value or severity is wrong",
+                          "value": "wrong_value",
+                          "options": []
+                        }
+                      ],
+                      "schemaNodeId": null,
+                      "featureSchemaId": null,
+                      "attributes": null
+                    }
+                  ]
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Épanchement péricardique / Pericardial effusion",
+                  "value": "pericardial_effusion",
+                  "options": [
+                    {
+                      "type": "radio",
+                      "instructions": "Type / Kind",
+                      "name": "pericardial_effusion__unsupported_kind",
+                      "required": true,
+                      "options": [
+                        {
+                          "schemaNodeId": null,
+                          "featureSchemaId": null,
+                          "label": "Non montré ou contredit par le clip (halluciné) / Not shown or contradicted by the clip (hallucinated)",
+                          "value": "not_supported",
+                          "options": []
+                        },
+                        {
+                          "schemaNodeId": null,
+                          "featureSchemaId": null,
+                          "label": "Présent, mais valeur ou sévérité fausse / Present, but the value or severity is wrong",
+                          "value": "wrong_value",
+                          "options": []
+                        }
+                      ],
+                      "schemaNodeId": null,
+                      "featureSchemaId": null,
+                      "attributes": null
+                    }
+                  ]
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Sonde de stimulation intracardiaque / Intracardiac pacing lead",
+                  "value": "pacing_lead",
+                  "options": [
+                    {
+                      "type": "radio",
+                      "instructions": "Type / Kind",
+                      "name": "pacing_lead__unsupported_kind",
+                      "required": true,
+                      "options": [
+                        {
+                          "schemaNodeId": null,
+                          "featureSchemaId": null,
+                          "label": "Non montré ou contredit par le clip (halluciné) / Not shown or contradicted by the clip (hallucinated)",
+                          "value": "not_supported",
+                          "options": []
+                        },
+                        {
+                          "schemaNodeId": null,
+                          "featureSchemaId": null,
+                          "label": "Présent, mais valeur ou sévérité fausse / Present, but the value or severity is wrong",
+                          "value": "wrong_value",
+                          "options": []
+                        }
+                      ],
+                      "schemaNodeId": null,
+                      "featureSchemaId": null,
+                      "attributes": null
+                    }
+                  ]
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Assistance circulatoire mécanique / Mechanical circulatory support",
+                  "value": "mechanical_circulatory_support",
+                  "options": [
+                    {
+                      "type": "radio",
+                      "instructions": "Type / Kind",
+                      "name": "mechanical_circulatory_support__unsupported_kind",
+                      "required": true,
+                      "options": [
+                        {
+                          "schemaNodeId": null,
+                          "featureSchemaId": null,
+                          "label": "Non montré ou contredit par le clip (halluciné) / Not shown or contradicted by the clip (hallucinated)",
+                          "value": "not_supported",
+                          "options": []
+                        },
+                        {
+                          "schemaNodeId": null,
+                          "featureSchemaId": null,
+                          "label": "Présent, mais valeur ou sévérité fausse / Present, but the value or severity is wrong",
+                          "value": "wrong_value",
+                          "options": []
+                        }
+                      ],
+                      "schemaNodeId": null,
+                      "featureSchemaId": null,
+                      "attributes": null
+                    }
+                  ]
+                }
+              ],
+              "schemaNodeId": null,
+              "featureSchemaId": null,
+              "attributes": null
+            }
+          ]
+        },
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "Sans objet : clip ininterprétable / Not applicable: uninterpretable clip",
+          "value": "not_applicable",
+          "options": []
+        }
+      ],
+      "schemaNodeId": null,
+      "featureSchemaId": null,
+      "attributes": null,
+      "scope": "global"
+    },
+    {
+      "type": "checklist",
+      "instructions": "Énoncés impossibles à vérifier sur ce clip (laisser vide s'il n'y en a aucun) / Statements that cannot be confirmed from this clip (leave empty if none)",
+      "name": "unconfirmed_statements",
+      "required": false,
+      "options": [
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "Mode d'acquisition / Acquisition mode",
+          "value": "acquisition",
+          "options": [
+            {
+              "type": "radio",
+              "instructions": "Raison / Reason",
+              "name": "acquisition__unconfirmed_reason",
+              "required": true,
+              "options": [
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Visible, mais je ne suis pas certain / Visible, but I am not sure",
+                  "value": "uncertain",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Qualité d'image / Image quality",
+                  "value": "quality",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Cadrage ou zoom / Crop or zoom",
+                  "value": "crop",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Modalité / Modality",
+                  "value": "modality",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Autre / Other",
+                  "value": "other",
+                  "options": []
+                }
+              ],
+              "schemaNodeId": null,
+              "featureSchemaId": null,
+              "attributes": null
+            }
+          ]
+        },
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "Ventricule gauche visible / Left ventricle visible",
+          "value": "lv_visible",
+          "options": [
+            {
+              "type": "radio",
+              "instructions": "Raison / Reason",
+              "name": "lv_visible__unconfirmed_reason",
+              "required": true,
+              "options": [
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Visible, mais je ne suis pas certain / Visible, but I am not sure",
+                  "value": "uncertain",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Qualité d'image / Image quality",
+                  "value": "quality",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Cadrage ou zoom / Crop or zoom",
+                  "value": "crop",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Modalité / Modality",
+                  "value": "modality",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Autre / Other",
+                  "value": "other",
+                  "options": []
+                }
+              ],
+              "schemaNodeId": null,
+              "featureSchemaId": null,
+              "attributes": null
+            }
+          ]
+        },
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "Ventricule droit visible / Right ventricle visible",
+          "value": "rv_visible",
+          "options": [
+            {
+              "type": "radio",
+              "instructions": "Raison / Reason",
+              "name": "rv_visible__unconfirmed_reason",
+              "required": true,
+              "options": [
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Visible, mais je ne suis pas certain / Visible, but I am not sure",
+                  "value": "uncertain",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Qualité d'image / Image quality",
+                  "value": "quality",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Cadrage ou zoom / Crop or zoom",
+                  "value": "crop",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Modalité / Modality",
+                  "value": "modality",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Autre / Other",
+                  "value": "other",
+                  "options": []
+                }
+              ],
+              "schemaNodeId": null,
+              "featureSchemaId": null,
+              "attributes": null
+            }
+          ]
+        },
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "Oreillette gauche visible / Left atrium visible",
+          "value": "la_visible",
+          "options": [
+            {
+              "type": "radio",
+              "instructions": "Raison / Reason",
+              "name": "la_visible__unconfirmed_reason",
+              "required": true,
+              "options": [
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Visible, mais je ne suis pas certain / Visible, but I am not sure",
+                  "value": "uncertain",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Qualité d'image / Image quality",
+                  "value": "quality",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Cadrage ou zoom / Crop or zoom",
+                  "value": "crop",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Modalité / Modality",
+                  "value": "modality",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Autre / Other",
+                  "value": "other",
+                  "options": []
+                }
+              ],
+              "schemaNodeId": null,
+              "featureSchemaId": null,
+              "attributes": null
+            }
+          ]
+        },
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "Oreillette droite visible / Right atrium visible",
+          "value": "ra_visible",
+          "options": [
+            {
+              "type": "radio",
+              "instructions": "Raison / Reason",
+              "name": "ra_visible__unconfirmed_reason",
+              "required": true,
+              "options": [
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Visible, mais je ne suis pas certain / Visible, but I am not sure",
+                  "value": "uncertain",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Qualité d'image / Image quality",
+                  "value": "quality",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Cadrage ou zoom / Crop or zoom",
+                  "value": "crop",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Modalité / Modality",
+                  "value": "modality",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Autre / Other",
+                  "value": "other",
+                  "options": []
+                }
+              ],
+              "schemaNodeId": null,
+              "featureSchemaId": null,
+              "attributes": null
+            }
+          ]
+        },
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "Valve mitrale visible / Mitral valve visible",
+          "value": "mitral_valve_visible",
+          "options": [
+            {
+              "type": "radio",
+              "instructions": "Raison / Reason",
+              "name": "mitral_valve_visible__unconfirmed_reason",
+              "required": true,
+              "options": [
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Visible, mais je ne suis pas certain / Visible, but I am not sure",
+                  "value": "uncertain",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Qualité d'image / Image quality",
+                  "value": "quality",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Cadrage ou zoom / Crop or zoom",
+                  "value": "crop",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Modalité / Modality",
+                  "value": "modality",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Autre / Other",
+                  "value": "other",
+                  "options": []
+                }
+              ],
+              "schemaNodeId": null,
+              "featureSchemaId": null,
+              "attributes": null
+            }
+          ]
+        },
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "Valve aortique visible / Aortic valve visible",
+          "value": "aortic_valve_visible",
+          "options": [
+            {
+              "type": "radio",
+              "instructions": "Raison / Reason",
+              "name": "aortic_valve_visible__unconfirmed_reason",
+              "required": true,
+              "options": [
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Visible, mais je ne suis pas certain / Visible, but I am not sure",
+                  "value": "uncertain",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Qualité d'image / Image quality",
+                  "value": "quality",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Cadrage ou zoom / Crop or zoom",
+                  "value": "crop",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Modalité / Modality",
+                  "value": "modality",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Autre / Other",
+                  "value": "other",
+                  "options": []
+                }
+              ],
+              "schemaNodeId": null,
+              "featureSchemaId": null,
+              "attributes": null
+            }
+          ]
+        },
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "Valve tricuspide visible / Tricuspid valve visible",
+          "value": "tricuspid_valve_visible",
+          "options": [
+            {
+              "type": "radio",
+              "instructions": "Raison / Reason",
+              "name": "tricuspid_valve_visible__unconfirmed_reason",
+              "required": true,
+              "options": [
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Visible, mais je ne suis pas certain / Visible, but I am not sure",
+                  "value": "uncertain",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Qualité d'image / Image quality",
+                  "value": "quality",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Cadrage ou zoom / Crop or zoom",
+                  "value": "crop",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Modalité / Modality",
+                  "value": "modality",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Autre / Other",
+                  "value": "other",
+                  "options": []
+                }
+              ],
+              "schemaNodeId": null,
+              "featureSchemaId": null,
+              "attributes": null
+            }
+          ]
+        },
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "Valve pulmonaire visible / Pulmonic valve visible",
+          "value": "pulmonic_valve_visible",
+          "options": [
+            {
+              "type": "radio",
+              "instructions": "Raison / Reason",
+              "name": "pulmonic_valve_visible__unconfirmed_reason",
+              "required": true,
+              "options": [
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Visible, mais je ne suis pas certain / Visible, but I am not sure",
+                  "value": "uncertain",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Qualité d'image / Image quality",
+                  "value": "quality",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Cadrage ou zoom / Crop or zoom",
+                  "value": "crop",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Modalité / Modality",
+                  "value": "modality",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Autre / Other",
+                  "value": "other",
+                  "options": []
+                }
+              ],
+              "schemaNodeId": null,
+              "featureSchemaId": null,
+              "attributes": null
+            }
+          ]
+        },
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "Racine aortique visible / Aortic root visible",
+          "value": "aortic_root_visible",
+          "options": [
+            {
+              "type": "radio",
+              "instructions": "Raison / Reason",
+              "name": "aortic_root_visible__unconfirmed_reason",
+              "required": true,
+              "options": [
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Visible, mais je ne suis pas certain / Visible, but I am not sure",
+                  "value": "uncertain",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Qualité d'image / Image quality",
+                  "value": "quality",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Cadrage ou zoom / Crop or zoom",
+                  "value": "crop",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Modalité / Modality",
+                  "value": "modality",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Autre / Other",
+                  "value": "other",
+                  "options": []
+                }
+              ],
+              "schemaNodeId": null,
+              "featureSchemaId": null,
+              "attributes": null
+            }
+          ]
+        },
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "Septum interauriculaire visible / Interatrial septum visible",
+          "value": "interatrial_septum_visible",
+          "options": [
+            {
+              "type": "radio",
+              "instructions": "Raison / Reason",
+              "name": "interatrial_septum_visible__unconfirmed_reason",
+              "required": true,
+              "options": [
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Visible, mais je ne suis pas certain / Visible, but I am not sure",
+                  "value": "uncertain",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Qualité d'image / Image quality",
+                  "value": "quality",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Cadrage ou zoom / Crop or zoom",
+                  "value": "crop",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Modalité / Modality",
+                  "value": "modality",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Autre / Other",
+                  "value": "other",
+                  "options": []
+                }
+              ],
+              "schemaNodeId": null,
+              "featureSchemaId": null,
+              "attributes": null
+            }
+          ]
+        },
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "Péricarde visible / Pericardium visible",
+          "value": "pericardium_visible",
+          "options": [
+            {
+              "type": "radio",
+              "instructions": "Raison / Reason",
+              "name": "pericardium_visible__unconfirmed_reason",
+              "required": true,
+              "options": [
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Visible, mais je ne suis pas certain / Visible, but I am not sure",
+                  "value": "uncertain",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Qualité d'image / Image quality",
+                  "value": "quality",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Cadrage ou zoom / Crop or zoom",
+                  "value": "crop",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Modalité / Modality",
+                  "value": "modality",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Autre / Other",
+                  "value": "other",
+                  "options": []
+                }
+              ],
+              "schemaNodeId": null,
+              "featureSchemaId": null,
+              "attributes": null
+            }
+          ]
+        },
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "Veine cave inférieure visible / Inferior vena cava visible",
+          "value": "ivc_visible",
+          "options": [
+            {
+              "type": "radio",
+              "instructions": "Raison / Reason",
+              "name": "ivc_visible__unconfirmed_reason",
+              "required": true,
+              "options": [
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Visible, mais je ne suis pas certain / Visible, but I am not sure",
+                  "value": "uncertain",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Qualité d'image / Image quality",
+                  "value": "quality",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Cadrage ou zoom / Crop or zoom",
+                  "value": "crop",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Modalité / Modality",
+                  "value": "modality",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Autre / Other",
+                  "value": "other",
+                  "options": []
+                }
+              ],
+              "schemaNodeId": null,
+              "featureSchemaId": null,
+              "attributes": null
+            }
+          ]
+        },
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "Fonction systolique ventriculaire gauche / Left ventricular systolic function",
+          "value": "lv_systolic_function",
+          "options": [
+            {
+              "type": "radio",
+              "instructions": "Raison / Reason",
+              "name": "lv_systolic_function__unconfirmed_reason",
+              "required": true,
+              "options": [
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Visible, mais je ne suis pas certain / Visible, but I am not sure",
+                  "value": "uncertain",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Qualité d'image / Image quality",
+                  "value": "quality",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Cadrage ou zoom / Crop or zoom",
+                  "value": "crop",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Modalité / Modality",
+                  "value": "modality",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Autre / Other",
+                  "value": "other",
+                  "options": []
+                }
+              ],
+              "schemaNodeId": null,
+              "featureSchemaId": null,
+              "attributes": null
+            }
+          ]
+        },
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "Fraction d'éjection VG (estimation visuelle) / LV ejection fraction (visual estimate)",
+          "value": "lv_ejection_fraction",
+          "options": [
+            {
+              "type": "radio",
+              "instructions": "Raison / Reason",
+              "name": "lv_ejection_fraction__unconfirmed_reason",
+              "required": true,
+              "options": [
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Visible, mais je ne suis pas certain / Visible, but I am not sure",
+                  "value": "uncertain",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Qualité d'image / Image quality",
+                  "value": "quality",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Cadrage ou zoom / Crop or zoom",
+                  "value": "crop",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Modalité / Modality",
+                  "value": "modality",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Autre / Other",
+                  "value": "other",
+                  "options": []
+                }
+              ],
+              "schemaNodeId": null,
+              "featureSchemaId": null,
+              "attributes": null
+            }
+          ]
+        },
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "Taille du ventricule gauche / Left ventricular size",
+          "value": "lv_size",
+          "options": [
+            {
+              "type": "radio",
+              "instructions": "Raison / Reason",
+              "name": "lv_size__unconfirmed_reason",
+              "required": true,
+              "options": [
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Visible, mais je ne suis pas certain / Visible, but I am not sure",
+                  "value": "uncertain",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Qualité d'image / Image quality",
+                  "value": "quality",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Cadrage ou zoom / Crop or zoom",
+                  "value": "crop",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Modalité / Modality",
+                  "value": "modality",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Autre / Other",
+                  "value": "other",
+                  "options": []
+                }
+              ],
+              "schemaNodeId": null,
+              "featureSchemaId": null,
+              "attributes": null
+            }
+          ]
+        },
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "Hypertrophie ventriculaire gauche / Left ventricular hypertrophy",
+          "value": "lv_wall_thickness",
+          "options": [
+            {
+              "type": "radio",
+              "instructions": "Raison / Reason",
+              "name": "lv_wall_thickness__unconfirmed_reason",
+              "required": true,
+              "options": [
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Visible, mais je ne suis pas certain / Visible, but I am not sure",
+                  "value": "uncertain",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Qualité d'image / Image quality",
+                  "value": "quality",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Cadrage ou zoom / Crop or zoom",
+                  "value": "crop",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Modalité / Modality",
+                  "value": "modality",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Autre / Other",
+                  "value": "other",
+                  "options": []
+                }
+              ],
+              "schemaNodeId": null,
+              "featureSchemaId": null,
+              "attributes": null
+            }
+          ]
+        },
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "Cinétique segmentaire du VG (segment le plus atteint) / LV regional wall motion (worst segment)",
+          "value": "lv_regional_wall_motion",
+          "options": [
+            {
+              "type": "radio",
+              "instructions": "Raison / Reason",
+              "name": "lv_regional_wall_motion__unconfirmed_reason",
+              "required": true,
+              "options": [
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Visible, mais je ne suis pas certain / Visible, but I am not sure",
+                  "value": "uncertain",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Qualité d'image / Image quality",
+                  "value": "quality",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Cadrage ou zoom / Crop or zoom",
+                  "value": "crop",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Modalité / Modality",
+                  "value": "modality",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Autre / Other",
+                  "value": "other",
+                  "options": []
+                }
+              ],
+              "schemaNodeId": null,
+              "featureSchemaId": null,
+              "attributes": null
+            }
+          ]
+        },
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "Fonction systolique ventriculaire droite / Right ventricular systolic function",
+          "value": "rv_systolic_function",
+          "options": [
+            {
+              "type": "radio",
+              "instructions": "Raison / Reason",
+              "name": "rv_systolic_function__unconfirmed_reason",
+              "required": true,
+              "options": [
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Visible, mais je ne suis pas certain / Visible, but I am not sure",
+                  "value": "uncertain",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Qualité d'image / Image quality",
+                  "value": "quality",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Cadrage ou zoom / Crop or zoom",
+                  "value": "crop",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Modalité / Modality",
+                  "value": "modality",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Autre / Other",
+                  "value": "other",
+                  "options": []
+                }
+              ],
+              "schemaNodeId": null,
+              "featureSchemaId": null,
+              "attributes": null
+            }
+          ]
+        },
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "Taille du ventricule droit / Right ventricular size",
+          "value": "rv_size",
+          "options": [
+            {
+              "type": "radio",
+              "instructions": "Raison / Reason",
+              "name": "rv_size__unconfirmed_reason",
+              "required": true,
+              "options": [
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Visible, mais je ne suis pas certain / Visible, but I am not sure",
+                  "value": "uncertain",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Qualité d'image / Image quality",
+                  "value": "quality",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Cadrage ou zoom / Crop or zoom",
+                  "value": "crop",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Modalité / Modality",
+                  "value": "modality",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Autre / Other",
+                  "value": "other",
+                  "options": []
+                }
+              ],
+              "schemaNodeId": null,
+              "featureSchemaId": null,
+              "attributes": null
+            }
+          ]
+        },
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "Taille de l'oreillette gauche / Left atrial size",
+          "value": "la_size",
+          "options": [
+            {
+              "type": "radio",
+              "instructions": "Raison / Reason",
+              "name": "la_size__unconfirmed_reason",
+              "required": true,
+              "options": [
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Visible, mais je ne suis pas certain / Visible, but I am not sure",
+                  "value": "uncertain",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Qualité d'image / Image quality",
+                  "value": "quality",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Cadrage ou zoom / Crop or zoom",
+                  "value": "crop",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Modalité / Modality",
+                  "value": "modality",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Autre / Other",
+                  "value": "other",
+                  "options": []
+                }
+              ],
+              "schemaNodeId": null,
+              "featureSchemaId": null,
+              "attributes": null
+            }
+          ]
+        },
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "Taille de l'oreillette droite / Right atrial size",
+          "value": "ra_size",
+          "options": [
+            {
+              "type": "radio",
+              "instructions": "Raison / Reason",
+              "name": "ra_size__unconfirmed_reason",
+              "required": true,
+              "options": [
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Visible, mais je ne suis pas certain / Visible, but I am not sure",
+                  "value": "uncertain",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Qualité d'image / Image quality",
+                  "value": "quality",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Cadrage ou zoom / Crop or zoom",
+                  "value": "crop",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Modalité / Modality",
+                  "value": "modality",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Autre / Other",
+                  "value": "other",
+                  "options": []
+                }
+              ],
+              "schemaNodeId": null,
+              "featureSchemaId": null,
+              "attributes": null
+            }
+          ]
+        },
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "Hypertrophie lipomateuse du septum interauriculaire / Lipomatous atrial septal hypertrophy",
+          "value": "atrial_septal_hypertrophy",
+          "options": [
+            {
+              "type": "radio",
+              "instructions": "Raison / Reason",
+              "name": "atrial_septal_hypertrophy__unconfirmed_reason",
+              "required": true,
+              "options": [
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Visible, mais je ne suis pas certain / Visible, but I am not sure",
+                  "value": "uncertain",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Qualité d'image / Image quality",
+                  "value": "quality",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Cadrage ou zoom / Crop or zoom",
+                  "value": "crop",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Modalité / Modality",
+                  "value": "modality",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Autre / Other",
+                  "value": "other",
+                  "options": []
+                }
+              ],
+              "schemaNodeId": null,
+              "featureSchemaId": null,
+              "attributes": null
+            }
+          ]
+        },
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "Insuffisance mitrale / Mitral regurgitation",
+          "value": "mitral_regurgitation",
+          "options": [
+            {
+              "type": "radio",
+              "instructions": "Raison / Reason",
+              "name": "mitral_regurgitation__unconfirmed_reason",
+              "required": true,
+              "options": [
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Visible, mais je ne suis pas certain / Visible, but I am not sure",
+                  "value": "uncertain",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Qualité d'image / Image quality",
+                  "value": "quality",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Cadrage ou zoom / Crop or zoom",
+                  "value": "crop",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Modalité / Modality",
+                  "value": "modality",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Autre / Other",
+                  "value": "other",
+                  "options": []
+                }
+              ],
+              "schemaNodeId": null,
+              "featureSchemaId": null,
+              "attributes": null
+            }
+          ]
+        },
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "Calcification de l'anneau mitral / Mitral annular calcification",
+          "value": "mitral_annular_calcification",
+          "options": [
+            {
+              "type": "radio",
+              "instructions": "Raison / Reason",
+              "name": "mitral_annular_calcification__unconfirmed_reason",
+              "required": true,
+              "options": [
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Visible, mais je ne suis pas certain / Visible, but I am not sure",
+                  "value": "uncertain",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Qualité d'image / Image quality",
+                  "value": "quality",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Cadrage ou zoom / Crop or zoom",
+                  "value": "crop",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Modalité / Modality",
+                  "value": "modality",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Autre / Other",
+                  "value": "other",
+                  "options": []
+                }
+              ],
+              "schemaNodeId": null,
+              "featureSchemaId": null,
+              "attributes": null
+            }
+          ]
+        },
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "Dispositif ou prothèse mitrale / Mitral valve device or prosthesis",
+          "value": "mitral_valve_device",
+          "options": [
+            {
+              "type": "radio",
+              "instructions": "Raison / Reason",
+              "name": "mitral_valve_device__unconfirmed_reason",
+              "required": true,
+              "options": [
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Visible, mais je ne suis pas certain / Visible, but I am not sure",
+                  "value": "uncertain",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Qualité d'image / Image quality",
+                  "value": "quality",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Cadrage ou zoom / Crop or zoom",
+                  "value": "crop",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Modalité / Modality",
+                  "value": "modality",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Autre / Other",
+                  "value": "other",
+                  "options": []
+                }
+              ],
+              "schemaNodeId": null,
+              "featureSchemaId": null,
+              "attributes": null
+            }
+          ]
+        },
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "Insuffisance aortique / Aortic regurgitation",
+          "value": "aortic_regurgitation",
+          "options": [
+            {
+              "type": "radio",
+              "instructions": "Raison / Reason",
+              "name": "aortic_regurgitation__unconfirmed_reason",
+              "required": true,
+              "options": [
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Visible, mais je ne suis pas certain / Visible, but I am not sure",
+                  "value": "uncertain",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Qualité d'image / Image quality",
+                  "value": "quality",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Cadrage ou zoom / Crop or zoom",
+                  "value": "crop",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Modalité / Modality",
+                  "value": "modality",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Autre / Other",
+                  "value": "other",
+                  "options": []
+                }
+              ],
+              "schemaNodeId": null,
+              "featureSchemaId": null,
+              "attributes": null
+            }
+          ]
+        },
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "Bicuspidie aortique / Bicuspid aortic valve",
+          "value": "bicuspid_aortic_valve",
+          "options": [
+            {
+              "type": "radio",
+              "instructions": "Raison / Reason",
+              "name": "bicuspid_aortic_valve__unconfirmed_reason",
+              "required": true,
+              "options": [
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Visible, mais je ne suis pas certain / Visible, but I am not sure",
+                  "value": "uncertain",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Qualité d'image / Image quality",
+                  "value": "quality",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Cadrage ou zoom / Crop or zoom",
+                  "value": "crop",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Modalité / Modality",
+                  "value": "modality",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Autre / Other",
+                  "value": "other",
+                  "options": []
+                }
+              ],
+              "schemaNodeId": null,
+              "featureSchemaId": null,
+              "attributes": null
+            }
+          ]
+        },
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "Prothèse valvulaire aortique / Aortic valve prosthesis",
+          "value": "aortic_valve_prosthesis",
+          "options": [
+            {
+              "type": "radio",
+              "instructions": "Raison / Reason",
+              "name": "aortic_valve_prosthesis__unconfirmed_reason",
+              "required": true,
+              "options": [
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Visible, mais je ne suis pas certain / Visible, but I am not sure",
+                  "value": "uncertain",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Qualité d'image / Image quality",
+                  "value": "quality",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Cadrage ou zoom / Crop or zoom",
+                  "value": "crop",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Modalité / Modality",
+                  "value": "modality",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Autre / Other",
+                  "value": "other",
+                  "options": []
+                }
+              ],
+              "schemaNodeId": null,
+              "featureSchemaId": null,
+              "attributes": null
+            }
+          ]
+        },
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "Dilatation de la racine aortique / Aortic root dilation",
+          "value": "aortic_root_dilation",
+          "options": [
+            {
+              "type": "radio",
+              "instructions": "Raison / Reason",
+              "name": "aortic_root_dilation__unconfirmed_reason",
+              "required": true,
+              "options": [
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Visible, mais je ne suis pas certain / Visible, but I am not sure",
+                  "value": "uncertain",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Qualité d'image / Image quality",
+                  "value": "quality",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Cadrage ou zoom / Crop or zoom",
+                  "value": "crop",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Modalité / Modality",
+                  "value": "modality",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Autre / Other",
+                  "value": "other",
+                  "options": []
+                }
+              ],
+              "schemaNodeId": null,
+              "featureSchemaId": null,
+              "attributes": null
+            }
+          ]
+        },
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "Insuffisance tricuspide / Tricuspid regurgitation",
+          "value": "tricuspid_regurgitation",
+          "options": [
+            {
+              "type": "radio",
+              "instructions": "Raison / Reason",
+              "name": "tricuspid_regurgitation__unconfirmed_reason",
+              "required": true,
+              "options": [
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Visible, mais je ne suis pas certain / Visible, but I am not sure",
+                  "value": "uncertain",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Qualité d'image / Image quality",
+                  "value": "quality",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Cadrage ou zoom / Crop or zoom",
+                  "value": "crop",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Modalité / Modality",
+                  "value": "modality",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Autre / Other",
+                  "value": "other",
+                  "options": []
+                }
+              ],
+              "schemaNodeId": null,
+              "featureSchemaId": null,
+              "attributes": null
+            }
+          ]
+        },
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "Insuffisance pulmonaire / Pulmonic regurgitation",
+          "value": "pulmonic_regurgitation",
+          "options": [
+            {
+              "type": "radio",
+              "instructions": "Raison / Reason",
+              "name": "pulmonic_regurgitation__unconfirmed_reason",
+              "required": true,
+              "options": [
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Visible, mais je ne suis pas certain / Visible, but I am not sure",
+                  "value": "uncertain",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Qualité d'image / Image quality",
+                  "value": "quality",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Cadrage ou zoom / Crop or zoom",
+                  "value": "crop",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Modalité / Modality",
+                  "value": "modality",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Autre / Other",
+                  "value": "other",
+                  "options": []
+                }
+              ],
+              "schemaNodeId": null,
+              "featureSchemaId": null,
+              "attributes": null
+            }
+          ]
+        },
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "Dilatation de la veine cave inférieure / Inferior vena cava dilation",
+          "value": "ivc_dilation",
+          "options": [
+            {
+              "type": "radio",
+              "instructions": "Raison / Reason",
+              "name": "ivc_dilation__unconfirmed_reason",
+              "required": true,
+              "options": [
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Visible, mais je ne suis pas certain / Visible, but I am not sure",
+                  "value": "uncertain",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Qualité d'image / Image quality",
+                  "value": "quality",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Cadrage ou zoom / Crop or zoom",
+                  "value": "crop",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Modalité / Modality",
+                  "value": "modality",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Autre / Other",
+                  "value": "other",
+                  "options": []
+                }
+              ],
+              "schemaNodeId": null,
+              "featureSchemaId": null,
+              "attributes": null
+            }
+          ]
+        },
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "Collapsus inspiratoire de la VCI / IVC inspiratory collapse",
+          "value": "ivc_collapse",
+          "options": [
+            {
+              "type": "radio",
+              "instructions": "Raison / Reason",
+              "name": "ivc_collapse__unconfirmed_reason",
+              "required": true,
+              "options": [
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Visible, mais je ne suis pas certain / Visible, but I am not sure",
+                  "value": "uncertain",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Qualité d'image / Image quality",
+                  "value": "quality",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Cadrage ou zoom / Crop or zoom",
+                  "value": "crop",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Modalité / Modality",
+                  "value": "modality",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Autre / Other",
+                  "value": "other",
+                  "options": []
+                }
+              ],
+              "schemaNodeId": null,
+              "featureSchemaId": null,
+              "attributes": null
+            }
+          ]
+        },
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "Épanchement péricardique / Pericardial effusion",
+          "value": "pericardial_effusion",
+          "options": [
+            {
+              "type": "radio",
+              "instructions": "Raison / Reason",
+              "name": "pericardial_effusion__unconfirmed_reason",
+              "required": true,
+              "options": [
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Visible, mais je ne suis pas certain / Visible, but I am not sure",
+                  "value": "uncertain",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Qualité d'image / Image quality",
+                  "value": "quality",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Cadrage ou zoom / Crop or zoom",
+                  "value": "crop",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Modalité / Modality",
+                  "value": "modality",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Autre / Other",
+                  "value": "other",
+                  "options": []
+                }
+              ],
+              "schemaNodeId": null,
+              "featureSchemaId": null,
+              "attributes": null
+            }
+          ]
+        },
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "Sonde de stimulation intracardiaque / Intracardiac pacing lead",
+          "value": "pacing_lead",
+          "options": [
+            {
+              "type": "radio",
+              "instructions": "Raison / Reason",
+              "name": "pacing_lead__unconfirmed_reason",
+              "required": true,
+              "options": [
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Visible, mais je ne suis pas certain / Visible, but I am not sure",
+                  "value": "uncertain",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Qualité d'image / Image quality",
+                  "value": "quality",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Cadrage ou zoom / Crop or zoom",
+                  "value": "crop",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Modalité / Modality",
+                  "value": "modality",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Autre / Other",
+                  "value": "other",
+                  "options": []
+                }
+              ],
+              "schemaNodeId": null,
+              "featureSchemaId": null,
+              "attributes": null
+            }
+          ]
+        },
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "Assistance circulatoire mécanique / Mechanical circulatory support",
+          "value": "mechanical_circulatory_support",
+          "options": [
+            {
+              "type": "radio",
+              "instructions": "Raison / Reason",
+              "name": "mechanical_circulatory_support__unconfirmed_reason",
+              "required": true,
+              "options": [
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Visible, mais je ne suis pas certain / Visible, but I am not sure",
+                  "value": "uncertain",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Qualité d'image / Image quality",
+                  "value": "quality",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Cadrage ou zoom / Crop or zoom",
+                  "value": "crop",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Modalité / Modality",
+                  "value": "modality",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Autre / Other",
+                  "value": "other",
+                  "options": []
+                }
+              ],
+              "schemaNodeId": null,
+              "featureSchemaId": null,
+              "attributes": null
+            }
+          ]
+        }
+      ],
+      "schemaNodeId": null,
+      "featureSchemaId": null,
+      "attributes": null,
+      "scope": "global"
+    },
+    {
+      "type": "text",
+      "instructions": "La légende telle qu'elle devrait se lire (préremplie avec la légende proposée) / The caption as it should read (preloaded with the candidate caption)",
+      "name": "corrected_caption",
+      "required": true,
+      "options": [],
+      "schemaNodeId": null,
+      "featureSchemaId": null,
+      "attributes": null,
+      "scope": "global"
+    },
+    {
+      "type": "text",
+      "instructions": "Commentaires (aucune information sur le patient) / Comments (no patient details)",
+      "name": "comments",
+      "required": false,
+      "options": [],
+      "schemaNodeId": null,
+      "featureSchemaId": null,
+      "attributes": null,
+      "scope": "global"
+    }
+  ]
+}

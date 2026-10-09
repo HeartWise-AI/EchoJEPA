@@ -1,0 +1,305 @@
+# configs/radar/review_examples_v1.yaml
+#
+# Worked examples for the RADAR caption reviewers, rendered into `docs/radar/labeling_instructions_v1{,.fr}.md`.
+# Every clip is SYNTHETIC: described in words, never taken from a real study. A unit test checks each example against
+# the review form, the claims contract (each statement is allowed for the clip's view and acquisition, and the caption
+# says exactly its statements) and the review consistency rules.
+#
+# `statements` are the candidate's statements besides the acquisition mode (concept -> value). `review` holds the
+# answers to the five multiple-choice questions and their details. `corrected_caption` is null when the reviewer
+# leaves the preloaded caption unchanged.
+
+schema: radar-review-examples
+ontology: radar-caption-ontology-v1
+
+examples:
+  - id: supported_caption
+    title: {fr: Légende étayée, en: Supported caption}
+    clip:
+      fr: Coupe apicale 4 cavités en Doppler couleur ; jet d'insuffisance mitrale modérée, bien aligné.
+      en: Apical 4-chamber color Doppler loop; a moderate mitral regurgitation jet, well aligned.
+    view: A4C
+    acquisition: color_flow
+    statements: {mitral_regurgitation: moderate}
+    caption: "Coupe apicale 4 cavités (A4C), Doppler couleur. Insuffisance mitrale : modérée."
+    review:
+      answers: {uninterpretable_clip: "no", view_correct: "yes", caption_supported: "yes", missing_information: "no",
+                unsupported_information: "no"}
+    corrected_caption: null
+    why:
+      fr: Chaque énoncé est visible sur ce clip, et rien de pertinent ne manque.
+      en: Every statement is visible in this clip, and nothing relevant is left out.
+
+  - id: wrong_severity
+    title: {fr: Sévérité fausse, en: Wrong severity}
+    clip:
+      fr: Coupe apicale 4 cavités en Doppler couleur ; jet d'insuffisance mitrale d'allure modérée.
+      en: Apical 4-chamber color Doppler loop; the mitral regurgitation jet looks moderate.
+    view: A4C
+    acquisition: color_flow
+    statements: {mitral_regurgitation: severe}
+    caption: "Coupe apicale 4 cavités (A4C), Doppler couleur. Insuffisance mitrale : sévère."
+    review:
+      answers: {uninterpretable_clip: "no", view_correct: "yes", caption_supported: "no", missing_information: "no",
+                unsupported_information: "yes"}
+      unsupported: {mitral_regurgitation: wrong_value}
+    corrected_caption: "Coupe apicale 4 cavités (A4C), Doppler couleur. Insuffisance mitrale : modérée."
+    why:
+      fr: >-
+        La fuite est présente mais la sévérité est fausse : « valeur ou sévérité fausse », et la légende corrigée donne
+        la sévérité que montre le clip.
+      en: >-
+        The regurgitation is present but its severity is wrong: "wrong value or severity", and the corrected caption
+        gives the severity the clip shows.
+
+  - id: hallucinated_finding
+    title: {fr: Constatation hallucinée, en: Hallucinated finding}
+    clip:
+      fr: Coupe parasternale grand axe en mode B ; péricarde bien visible, sans épanchement.
+      en: Parasternal long-axis B-mode loop; the pericardium is well seen, with no effusion.
+    view: PLAX
+    acquisition: bmode
+    statements: {pericardial_effusion: moderate}
+    caption: "Coupe parasternale grand axe (PLAX), mode B. Épanchement péricardique : de moyenne abondance."
+    review:
+      answers: {uninterpretable_clip: "no", view_correct: "yes", caption_supported: "no", missing_information: "no",
+                unsupported_information: "yes"}
+      unsupported: {pericardial_effusion: not_supported}
+    corrected_caption: "Coupe parasternale grand axe (PLAX), mode B. Épanchement péricardique : absent."
+    why:
+      fr: >-
+        Le clip montre bien le péricarde et aucun épanchement : l'énoncé n'est pas étayé (halluciné). Comme le clip
+        permet de juger l'absence, la légende corrigée peut l'indiquer.
+      en: >-
+        The clip shows the pericardium and no effusion: the statement is not supported (hallucinated). Because the
+        clip can show an effusion, the corrected caption may state that there is none.
+
+  - id: missing_finding
+    title: {fr: Information manquante, en: Missing information}
+    clip:
+      fr: Coupe apicale 4 cavités en Doppler couleur ; insuffisance mitrale légère et jet d'insuffisance tricuspide
+        modérée bien visible.
+      en: Apical 4-chamber color Doppler loop; mild mitral regurgitation and a clearly visible moderate tricuspid
+        regurgitation jet.
+    view: A4C
+    acquisition: color_flow
+    statements: {mitral_regurgitation: mild}
+    caption: "Coupe apicale 4 cavités (A4C), Doppler couleur. Insuffisance mitrale : légère."
+    review:
+      answers: {uninterpretable_clip: "no", view_correct: "yes", caption_supported: "yes", missing_information: "yes",
+                unsupported_information: "no"}
+      missing: [tricuspid_regurgitation]
+    corrected_caption: >-
+      Coupe apicale 4 cavités (A4C), Doppler couleur. Insuffisance mitrale : légère. Insuffisance tricuspide : modérée.
+    why:
+      fr: >-
+        Ce que la légende affirme est étayé ; la fuite tricuspide, visible et pertinente, manque. Les deux questions
+        sont indépendantes.
+      en: >-
+        What the caption states is supported; the visible, relevant tricuspid regurgitation is missing. The two
+        questions are independent.
+
+  - id: absence_not_confirmable
+    title: {fr: Absence impossible à vérifier, en: Absence that cannot be confirmed}
+    clip:
+      fr: Coupe apicale 4 cavités en Doppler couleur ; la boîte couleur est placée sur la valve tricuspide et ne couvre
+        pas la valve mitrale.
+      en: Apical 4-chamber color Doppler loop; the color box sits on the tricuspid valve and does not cover the mitral
+        valve.
+    view: A4C
+    acquisition: color_flow
+    statements: {mitral_regurgitation: none}
+    caption: "Coupe apicale 4 cavités (A4C), Doppler couleur. Insuffisance mitrale : absente."
+    review:
+      answers: {uninterpretable_clip: "no", view_correct: "yes", caption_supported: unsure, missing_information: "no",
+                unsupported_information: "no"}
+      unconfirmed: {mitral_regurgitation: crop}
+    corrected_caption: "Coupe apicale 4 cavités (A4C), Doppler couleur."
+    why:
+      fr: >-
+        Une absence s'évalue comme toute constatation : elle n'est étayée que si le clip pouvait montrer la fuite. Ici
+        le Doppler ne couvre pas la valve mitrale, donc l'énoncé est impossible à vérifier (cadrage) et sort de la
+        légende corrigée.
+      en: >-
+        An absence is judged like any other finding: it is supported only if the clip could show the regurgitation.
+        Here the color box misses the mitral valve, so the statement cannot be confirmed (crop) and leaves the
+        corrected caption.
+
+  - id: structure_not_visible
+    title: {fr: Structure attendue mais non visible, en: Expected structure that is not visible}
+    clip:
+      fr: Coupe apicale 4 cavités zoomée sur la valve mitrale en mode B ; la valve tricuspide est hors du secteur.
+      en: Apical 4-chamber B-mode loop zoomed on the mitral valve; the tricuspid valve is outside the sector.
+    view: A4C_ZOOM
+    acquisition: bmode
+    statements: {tricuspid_valve_visible: true}
+    caption: "Coupe apicale 4 cavités zoomée (A4C_ZOOM), mode B. Valve tricuspide visible."
+    review:
+      answers: {uninterpretable_clip: "no", view_correct: "yes", caption_supported: "no", missing_information: "yes",
+                unsupported_information: "yes"}
+      unsupported: {tricuspid_valve_visible: not_supported}
+      missing: [mitral_valve_visible]
+    corrected_caption: "Coupe apicale 4 cavités zoomée (A4C_ZOOM), mode B. Valve mitrale visible."
+    why:
+      fr: >-
+        Les structures attendues pour une coupe ne sont qu'un a priori : une structure attendue mais absente n'est ni
+        manquante ni fausse, sauf si la légende affirme qu'elle est visible. Ici elle l'affirme, donc l'énoncé n'est
+        pas étayé.
+      en: >-
+        The expected structures of a view are only a prior: an expected structure that is not visible is neither
+        missing nor wrong, unless the caption says it is visible. Here it does, so the statement is not supported.
+
+  - id: uncertain_grade
+    title: {fr: Grade incertain, en: Uncertain grade}
+    clip:
+      fr: Coupe apicale 4 cavités en Doppler couleur ; jet tricuspide excentré, en partie hors du plan de coupe.
+      en: Apical 4-chamber color Doppler loop; an eccentric tricuspid jet, partly out of plane.
+    view: A4C
+    acquisition: color_flow
+    statements: {tricuspid_regurgitation: mild}
+    caption: "Coupe apicale 4 cavités (A4C), Doppler couleur. Insuffisance tricuspide : légère."
+    review:
+      answers: {uninterpretable_clip: "no", view_correct: "yes", caption_supported: unsure, missing_information: "no",
+                unsupported_information: "no"}
+      unconfirmed: {tricuspid_regurgitation: uncertain}
+    corrected_caption: "Coupe apicale 4 cavités (A4C), Doppler couleur."
+    why:
+      fr: >-
+        La fuite est visible mais son grade ne peut pas être jugé sur ce clip : « incertain », jamais oui ou non au
+        hasard. Un énoncé impossible à vérifier sort de la légende corrigée.
+      en: >-
+        The regurgitation is visible but its grade cannot be judged from this clip: "uncertain", never a guessed yes
+        or no. A statement that cannot be confirmed leaves the corrected caption.
+
+  - id: wrong_acquisition
+    title: {fr: Mode d'acquisition faux, en: Wrong acquisition mode}
+    clip:
+      fr: Coupe apicale 4 cavités en mode B, sans Doppler couleur.
+      en: Apical 4-chamber B-mode loop, without color Doppler.
+    view: A4C
+    acquisition: color_flow
+    statements: {mitral_regurgitation: mild}
+    caption: "Coupe apicale 4 cavités (A4C), Doppler couleur. Insuffisance mitrale : légère."
+    review:
+      answers: {uninterpretable_clip: "no", view_correct: "yes", caption_supported: "no", missing_information: "no",
+                unsupported_information: "yes"}
+      unsupported: {acquisition: not_supported}
+      unconfirmed: {mitral_regurgitation: modality}
+    corrected_caption: "Coupe apicale 4 cavités (A4C), mode B."
+    why:
+      fr: >-
+        Le mode d'acquisition est lui aussi un énoncé : ici il est faux. La fuite mitrale ne peut pas être jugée sans
+        Doppler couleur, elle est donc impossible à vérifier (modalité). Un clip peut avoir à la fois des énoncés non
+        étayés et des énoncés impossibles à vérifier.
+      en: >-
+        The acquisition mode is a statement too, and here it is wrong. Mitral regurgitation cannot be judged without
+        color Doppler, so it cannot be confirmed (modality). A clip can have both unsupported and unconfirmed
+        statements.
+
+  - id: unconfirmed_acquisition
+    title: {fr: Mode d'acquisition impossible à vérifier, en: Acquisition mode that cannot be confirmed}
+    clip:
+      fr: >-
+        Coupe apicale 4 cavités aux bords coupés : l'échelle couleur et le contour d'une éventuelle boîte couleur sont
+        hors de l'image, et les rares pixels colorés dans le ventricule gauche peuvent être du Doppler couleur ou du
+        bruit ; le ventricule gauche est bien visible.
+      en: >-
+        Apical 4-chamber loop with cropped edges: the color scale and the outline of any color box are outside the
+        image, and the few colored pixels in the left ventricle could be color Doppler or noise; the left ventricle is
+        well seen.
+    view: A4C
+    acquisition: color_flow
+    statements: {lv_visible: true}
+    caption: "Coupe apicale 4 cavités (A4C), Doppler couleur. Ventricule gauche visible."
+    review:
+      answers: {uninterpretable_clip: "no", view_correct: "yes", caption_supported: unsure, missing_information: "no",
+                unsupported_information: "no"}
+      unconfirmed: {acquisition: crop}
+    corrected_caption: "Coupe apicale 4 cavités (A4C), acquisition indéterminée. Ventricule gauche visible."
+    why:
+      fr: >-
+        Le mode d'acquisition est un énoncé : ici il est impossible à vérifier (cadrage), il est donc listé à la
+        question 6 et la question 3 reçoit « incertain ». La légende corrigée garde sa forme : au lieu de supprimer le
+        mode, elle écrit « acquisition indéterminée ». Le ventricule gauche est visible quel que soit le mode, son
+        énoncé reste.
+      en: >-
+        The acquisition mode is a statement, and here it cannot be confirmed (crop): it is listed under question 6
+        and question 3 is "unsure". The corrected caption keeps its form: instead of dropping the mode, it writes
+        "acquisition indéterminée" (unknown acquisition). The left ventricle is visible whatever the mode, so its
+        statement stays.
+
+  - id: wrong_view
+    title: {fr: Coupe fausse, en: Wrong view}
+    clip:
+      fr: Coupe apicale 5 cavités en Doppler couleur (chambre de chasse et valve aortique visibles) ; insuffisance
+        mitrale légère.
+      en: Apical 5-chamber color Doppler loop (LV outflow tract and aortic valve visible); mild mitral regurgitation.
+    view: A4C
+    acquisition: color_flow
+    statements: {mitral_regurgitation: mild}
+    caption: "Coupe apicale 4 cavités (A4C), Doppler couleur. Insuffisance mitrale : légère."
+    review:
+      answers: {uninterpretable_clip: "no", view_correct: "no", caption_supported: "yes", missing_information: "no",
+                unsupported_information: "no"}
+      correct_view: A5C
+    corrected_caption: "Coupe apicale 5 cavités (A5C), Doppler couleur. Insuffisance mitrale : légère."
+    why:
+      fr: >-
+        La coupe se juge à part : « non » et la bonne classe. Les énoncés se jugent tels qu'ils sont écrits ; la
+        légende corrigée donne la bonne coupe.
+      en: >-
+        The view is judged on its own: "no" and the right class. The statements are judged as written; the
+        corrected caption gives the right view.
+
+  - id: uncertain_view
+    title: {fr: Coupe incertaine, en: Uncertain view}
+    clip:
+      fr: >-
+        Coupe apicale en Doppler couleur, entre 4 et 5 cavités : la chambre de chasse du ventricule gauche n'apparaît
+        que sur certains battements ; insuffisance mitrale légère.
+      en: >-
+        Apical color Doppler loop between a 4- and a 5-chamber view: the LV outflow tract appears in some beats only;
+        mild mitral regurgitation.
+    view: A4C
+    acquisition: color_flow
+    statements: {mitral_regurgitation: mild}
+    caption: "Coupe apicale 4 cavités (A4C), Doppler couleur. Insuffisance mitrale : légère."
+    review:
+      answers: {uninterpretable_clip: "no", view_correct: unsure, caption_supported: "yes", missing_information: "no",
+                unsupported_information: "no"}
+    corrected_caption: "Coupe indéterminée, Doppler couleur. Insuffisance mitrale : légère."
+    why:
+      fr: >-
+        Quand la classe de coupe ne peut pas être tranchée, répondre « incertain » : ne pas choisir une classe au
+        hasard, ni OTHER, réservée aux coupes hors axe ou non standard. Les énoncés se jugent tels qu'ils sont écrits.
+        La légende corrigée remplace la coupe par « Coupe indéterminée » ; la classe du classifieur reste enregistrée
+        avec le clip.
+      en: >-
+        When the view class cannot be decided, answer "unsure": do not pick a class at random, and do not use OTHER,
+        which is for off-axis or non-standard clips. The statements are judged as written. The corrected caption
+        replaces the view with "Coupe indéterminée" (undetermined view); the classifier's class stays recorded with
+        the clip.
+
+  - id: uninterpretable_clip
+    title: {fr: Clip ininterprétable, en: Uninterpretable clip}
+    clip:
+      fr: Coupe sous-costale en mode B ; artefacts majeurs, aucune structure identifiable.
+      en: Subcostal B-mode loop; major artifacts, no identifiable structure.
+    view: SUBCOSTAL
+    acquisition: bmode
+    statements: {ivc_visible: true}
+    caption: "Coupe sous-costale (SUBCOSTAL), mode B. Veine cave inférieure visible."
+    review:
+      answers: {uninterpretable_clip: "yes", view_correct: not_applicable, caption_supported: not_applicable,
+                missing_information: not_applicable, unsupported_information: not_applicable}
+      limitation: quality
+    corrected_caption: null
+    why:
+      fr: >-
+        Rien ne peut être jugé : « oui », la raison, puis « sans objet » aux quatre autres questions. La légende
+        corrigée reste inchangée ; elle est ignorée. Si seule une partie de la légende ne peut pas être jugée, le clip
+        est interprétable : utiliser les énoncés impossibles à vérifier.
+      en: >-
+        Nothing can be judged: "yes", the reason, then "not applicable" to the four other questions. The corrected
+        caption stays unchanged; it is ignored. If only part of the caption cannot be judged, the clip is
+        interpretable: use the unconfirmed statements.
