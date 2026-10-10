@@ -239,7 +239,7 @@ class OrchestrationTests(unittest.TestCase):
         self.assertEqual(result.total_rows, 4)
         self.assertTrue(result.batch_created)
         self.assertTrue(result.view_predictions_imported)
-        self.assertEqual(api.calls, ["predictions", "batch"])
+        self.assertEqual(api.calls, ["batch", "predictions"])
         self.assertEqual(api.batch_keys, [case.global_key for case in synthetic_cases()])
         self.assertEqual(set(api.paths), {case.global_key for case in synthetic_cases()[1:]})
         self.assertTrue(all(path.name.endswith(".mp4") for path in api.paths.values()))
@@ -390,7 +390,7 @@ class SdkPayloadTests(unittest.TestCase):
             [
                 {
                     "dataRow": {"globalKey": case.global_key},
-                    "uuid": str(uuid.uuid5(uuid.NAMESPACE_URL, f"echojepa:{case.global_key}:candidate-view:v4")),
+                    "uuid": str(uuid.uuid5(uuid.NAMESPACE_URL, f"echojepa:{case.global_key}:candidate-view:v5")),
                     "schemaId": "view-schema-id",
                     "answer": {"schemaId": f"{case.view.lower()}-schema-id"},
                 }

@@ -36,7 +36,7 @@ LEGACY_SANDBOX_ONTOLOGY_NAMES = {
     "RADAR simple review proposal v2 - English synthetic sandbox",
 }
 SANDBOX_BATCH_NAME = "RADAR synthetic pipeline v2"
-SANDBOX_VIEW_PREDICTIONS_NAME = "RADAR synthetic candidate views v4"
+SANDBOX_VIEW_PREDICTIONS_NAME = "RADAR synthetic candidate views v5"
 SANDBOX_PROJECT_DESCRIPTION = "Synthetic-only RADAR Labelbox pipeline test managed by EchoJEPA issue #22."
 SANDBOX_DATASET_DESCRIPTION = "Generated synthetic videos only; no clinical data or source file paths."
 GLOBAL_KEY_PREFIX = "radar-synthetic-v2-"
@@ -408,7 +408,7 @@ class LabelboxSandboxApi:
         predictions = [
             {
                 "dataRow": {"globalKey": case.global_key},
-                "uuid": str(uuid.uuid5(uuid.NAMESPACE_URL, f"echojepa:{case.global_key}:candidate-view:v4")),
+                "uuid": str(uuid.uuid5(uuid.NAMESPACE_URL, f"echojepa:{case.global_key}:candidate-view:v5")),
                 "schemaId": question_id,
                 "answer": {"schemaId": answer_ids[case.view]},
             }
@@ -483,8 +483,8 @@ def ensure_pipeline(
                 renderer(case, path)
                 paths[case.global_key] = path
             api.upload_rows(workspace, missing, paths)
-    view_predictions_imported = api.ensure_view_predictions(workspace, cases)
     batch_created = api.ensure_batch(workspace, keys)
+    view_predictions_imported = api.ensure_view_predictions(workspace, cases)
     return PipelineResult(
         project_name=SANDBOX_PROJECT_NAME,
         dataset_name=SANDBOX_DATASET_NAME,
