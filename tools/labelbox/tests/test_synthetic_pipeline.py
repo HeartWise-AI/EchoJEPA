@@ -1,3 +1,4 @@
+import importlib.util
 import io
 import json
 import logging
@@ -260,6 +261,7 @@ class SdkPayloadTests(unittest.TestCase):
         with self.assertRaisesRegex(SandboxError, "unconnected synthetic sandbox"):
             api._validate_existing(None, dataset, None, {})
 
+    @unittest.skipUnless(importlib.util.find_spec("lbox"), "Labelbox SDK not installed")
     def test_missing_global_keys_use_the_pinned_sdk_exception(self):
         api = LabelboxSandboxApi(MissingRowsSdkClient(), project_type=None, dataset_type=None, media_type="video")
         workspace = Workspace(project=object(), dataset=SimpleNamespace(uid="synthetic-dataset"), ontology=object(),)
@@ -288,6 +290,7 @@ class SdkPayloadTests(unittest.TestCase):
         self.assertNotIn("/tmp/", serialized)
         self.assertNotIn('"name": "Candidate view"', serialized)
 
+    @unittest.skipUnless(importlib.util.find_spec("labelbox"), "Labelbox SDK not installed")
     def test_candidate_view_predictions_are_single_choice_prelabels(self):
         created = []
 
