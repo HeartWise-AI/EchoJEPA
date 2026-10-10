@@ -47,6 +47,7 @@ class FakeApi:
         self.batch_keys = None
         self.exported = list(export_rows)
         self.prediction_cases = None
+        self.calls = []
 
     def ensure_workspace(self, form, *, create):
         self.form = form
@@ -64,12 +65,14 @@ class FakeApi:
             self.existing.add(case.global_key)
 
     def ensure_batch(self, workspace, global_keys):
+        self.calls.append("batch")
         if self.batch_keys is not None:
             return False
         self.batch_keys = list(global_keys)
         return True
 
     def ensure_view_predictions(self, workspace, cases):
+        self.calls.append("predictions")
         if self.prediction_cases is not None:
             return False
         self.prediction_cases = list(cases)
@@ -236,6 +239,7 @@ class OrchestrationTests(unittest.TestCase):
         self.assertEqual(result.total_rows, 4)
         self.assertTrue(result.batch_created)
         self.assertTrue(result.view_predictions_imported)
+        self.assertEqual(api.calls, ["predictions", "batch"])
         self.assertEqual(api.batch_keys, [case.global_key for case in synthetic_cases()])
         self.assertEqual(set(api.paths), {case.global_key for case in synthetic_cases()[1:]})
         self.assertTrue(all(path.name.endswith(".mp4") for path in api.paths.values()))
@@ -307,7 +311,7 @@ class SdkPayloadTests(unittest.TestCase):
         api = LabelboxSandboxApi(MissingRowsSdkClient(), project_type=None, dataset_type=None, media_type="video")
         workspace = Workspace(project=object(), dataset=SimpleNamespace(uid="synthetic-dataset"), ontology=object(),)
 
-        self.assertEqual(api.existing_global_keys(workspace, ["radar-synthetic-v1-missing"]), set())
+        self.assertEqual(api.existing_global_keys(workspace, ["radar-synthetic-v2-missing"]), set())
 
     def test_upload_payload_contains_only_safe_synthetic_context(self):
         sdk = CapturingSdkClient()
@@ -386,7 +390,7 @@ class SdkPayloadTests(unittest.TestCase):
             [
                 {
                     "dataRow": {"globalKey": case.global_key},
-                    "uuid": str(uuid.uuid5(uuid.NAMESPACE_URL, f"echojepa:{case.global_key}:candidate-view:v3")),
+                    "uuid": str(uuid.uuid5(uuid.NAMESPACE_URL, f"echojepa:{case.global_key}:candidate-view:v4")),
                     "schemaId": "view-schema-id",
                     "answer": {"schemaId": f"{case.view.lower()}-schema-id"},
                 }
