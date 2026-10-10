@@ -95,6 +95,50 @@ uv run --frozen --group labelbox python tools/labelbox/create_pilot_project.py \
   --apply
 ```
 
+## Test the review workflow with synthetic videos
+
+`synthetic_pipeline.py` exercises the simple five-claim review form without using
+clinical data. It creates fixed, clearly marked sandbox resources, generates four
+small synthetic videos, uploads safe review context, and creates one labeling batch.
+The cases cover a supported finding, an unsupported finding, a finding outside the
+model crop, and a modality mismatch.
+
+The command accepts no media, report, metadata, or storage-path arguments. Its
+default mode is a local preview that makes no Labelbox request:
+
+```bash
+uv run --frozen --group labelbox python -m tools.labelbox.synthetic_pipeline
+```
+
+To create or reuse the synthetic sandbox and upload only missing rows:
+
+```bash
+read -rsp "Labelbox API key: " LABELBOX_API_KEY && echo
+export LABELBOX_API_KEY
+
+uv run --frozen --group labelbox python -m tools.labelbox.synthetic_pipeline --apply
+
+unset LABELBOX_API_KEY
+```
+
+After the synthetic rows have been reviewed in Labelbox, export a de-identified
+scoring summary. The output contains only reserved synthetic global keys, review
+status, and computed scores:
+
+```bash
+read -rsp "Labelbox API key: " LABELBOX_API_KEY && echo
+export LABELBOX_API_KEY
+
+uv run --frozen --group labelbox python -m tools.labelbox.synthetic_pipeline \
+  --export-summary /tmp/radar-synthetic-review-summary.json
+
+unset LABELBOX_API_KEY
+```
+
+This sandbox does not modify the existing `RADAR Caption Pilot` project or its
+dataset. Successful synthetic execution is a pipeline check, not approval to upload
+clinical data.
+
 ## Data and credential safety
 
 - Use synthetic or fully de-identified test clips until the workspace and storage
