@@ -5,6 +5,7 @@ import logging
 import sys
 import tempfile
 import unittest
+import uuid
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from types import SimpleNamespace
@@ -320,16 +321,41 @@ class SdkPayloadTests(unittest.TestCase):
 
         self.assertEqual(created[0]["name"], SANDBOX_VIEW_PREDICTIONS_NAME)
         self.assertEqual(
+            len({prediction["uuid"] for prediction in created[0]["predictions"]}),
+            len(synthetic_cases()),
+        )
+        self.assertEqual(
             created[0]["predictions"],
             [
                 {
                     "dataRow": {"globalKey": case.global_key},
+                    "uuid": str(uuid.uuid5(uuid.NAMESPACE_URL, f"echojepa:{case.global_key}:candidate-view:v2")),
                     "name": "view",
                     "answer": {"name": case.view},
                 }
                 for case in synthetic_cases()
             ],
         )
+
+    @unittest.skipUnless(importlib.util.find_spec("labelbox"), "Labelbox SDK not installed")
+    def test_existing_prediction_import_with_row_errors_is_not_reported_as_reused(self):
+        from labelbox.schema.enums import AnnotationImportState
+
+        job = SimpleNamespace(
+            name=SANDBOX_VIEW_PREDICTIONS_NAME,
+            state=AnnotationImportState.FINISHED,
+            errors=[{"errors": [{"name": "synthetic-test-error"}]}],
+            wait_till_done=lambda: None,
+        )
+        project = SimpleNamespace(
+            get_mal_prediction_imports=lambda: [job],
+            enable_model_assisted_labeling=lambda enabled: self.assertTrue(enabled),
+        )
+        workspace = Workspace(project=project, dataset=object(), ontology=object())
+        api = LabelboxSandboxApi(object(), project_type=None, dataset_type=None, media_type="video")
+
+        with self.assertRaisesRegex(SandboxError, "existing candidate-view prediction import failed"):
+            api.ensure_view_predictions(workspace, synthetic_cases())
 
 
 def exported_row(case, answers=None):

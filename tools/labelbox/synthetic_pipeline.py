@@ -20,6 +20,7 @@ import logging
 import os
 import sys
 import tempfile
+import uuid
 from contextlib import redirect_stderr, redirect_stdout
 from dataclasses import dataclass
 from pathlib import Path
@@ -35,7 +36,7 @@ LEGACY_SANDBOX_ONTOLOGY_NAMES = {
     "RADAR simple review proposal v2 - English synthetic sandbox",
 }
 SANDBOX_BATCH_NAME = "RADAR synthetic pipeline v1"
-SANDBOX_VIEW_PREDICTIONS_NAME = "RADAR synthetic candidate views v1"
+SANDBOX_VIEW_PREDICTIONS_NAME = "RADAR synthetic candidate views v2"
 SANDBOX_PROJECT_DESCRIPTION = "Synthetic-only RADAR Labelbox pipeline test managed by EchoJEPA issue #22."
 SANDBOX_DATASET_DESCRIPTION = "Generated synthetic videos only; no clinical data or source file paths."
 GLOBAL_KEY_PREFIX = "radar-synthetic-v1-"
@@ -380,13 +381,14 @@ class LabelboxSandboxApi:
         workspace.project.enable_model_assisted_labeling(True)
         if imports:
             imports[0].wait_till_done()
-            if imports[0].state == AnnotationImportState.FAILED:
+            if imports[0].state == AnnotationImportState.FAILED or imports[0].errors:
                 raise SandboxError("The existing candidate-view prediction import failed.")
             return False
 
         predictions = [
             {
                 "dataRow": {"globalKey": case.global_key},
+                "uuid": str(uuid.uuid5(uuid.NAMESPACE_URL, f"echojepa:{case.global_key}:candidate-view:v2")),
                 "name": "view",
                 "answer": {"name": case.view},
             }
