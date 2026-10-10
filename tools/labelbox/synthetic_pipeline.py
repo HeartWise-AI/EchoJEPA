@@ -494,6 +494,9 @@ def main(
                     result = ensure_pipeline(api)
                 else:
                     reviewed = export_summary(api, args.export_summary)
+    except SandboxError as exc:
+        print(f"Synthetic Labelbox pipeline stopped by safety check: {exc}", file=sys.stderr)
+        return 1
     except Exception as exc:
         print(f"Synthetic Labelbox pipeline failed ({type(exc).__name__}).", file=sys.stderr)
         return 1

@@ -320,6 +320,23 @@ class MainTests(unittest.TestCase):
         self.assertEqual(stderr.getvalue(), "Synthetic Labelbox pipeline failed (RuntimeError).\n")
         self.assertEqual(logging.root.manager.disable, previous_log_disable)
 
+    def test_controlled_safety_errors_remain_actionable(self):
+        stdout, stderr = io.StringIO(), io.StringIO()
+
+        def fail(_):
+            raise SandboxError("The fixed-name ontology differs from the committed simple review form.")
+
+        with redirect_stdout(stdout), redirect_stderr(stderr):
+            status = main(["--apply"], environ={"LABELBOX_API_KEY": "secret-test-key"}, api_factory=fail)
+
+        self.assertEqual(status, 1)
+        self.assertEqual(stdout.getvalue(), "")
+        self.assertEqual(
+            stderr.getvalue(),
+            "Synthetic Labelbox pipeline stopped by safety check: "
+            "The fixed-name ontology differs from the committed simple review form.\n",
+        )
+
     def test_export_writes_only_summary(self):
         case = synthetic_cases()[0]
         api = FakeApi(export_rows=[exported_row(case)])
