@@ -173,8 +173,20 @@ def _canonical_form_value(value: Any) -> Any:
     if isinstance(value, list):
         return [_canonical_form_value(item) for item in value]
     if isinstance(value, Mapping):
-        ignored = {"schemaNodeId", "featureSchemaId", "attributes"}
-        return {key: _canonical_form_value(item) for key, item in value.items() if key not in ignored}
+        ignored = {"schemaNodeId", "featureSchemaId", "kind"}
+        canonical = {}
+        for key, item in value.items():
+            if key in ignored:
+                continue
+            if key == "archived" and item in (False, 0, None):
+                continue
+            if key == "attributes" and item is None:
+                continue
+            normalized = _canonical_form_value(item)
+            if key == "options" and normalized == []:
+                continue
+            canonical[key] = normalized
+        return canonical
     return value
 
 

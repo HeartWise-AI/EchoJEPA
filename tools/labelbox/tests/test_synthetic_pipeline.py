@@ -121,11 +121,24 @@ class SyntheticCasesTests(unittest.TestCase):
             self.assertGreater(path.stat().st_size, 0)
             self.assertEqual(metadata["size"], (320, 256))
 
-    def test_canonical_form_ignores_only_server_ids(self):
-        left = {"name": "x", "schemaNodeId": None, "options": [{"value": "yes", "featureSchemaId": None}]}
-        right = {"name": "x", "schemaNodeId": "server", "options": [{"value": "yes", "featureSchemaId": "id"}]}
+    def test_canonical_form_normalizes_only_inactive_server_metadata(self):
+        left = {
+            "name": "x",
+            "schemaNodeId": None,
+            "attributes": None,
+            "options": [{"value": "yes", "featureSchemaId": None, "options": []}],
+        }
+        right = {
+            "name": "x",
+            "schemaNodeId": "server",
+            "kind": "RadioQuestion",
+            "archived": 0,
+            "options": [{"value": "yes", "featureSchemaId": "id", "kind": "RadioOption", "archived": False,}],
+        }
         self.assertEqual(_canonical_form(left), _canonical_form(json.dumps(right)))
         self.assertNotEqual(_canonical_form(left), _canonical_form({"name": "y"}))
+        self.assertNotEqual(_canonical_form(left), _canonical_form({**right, "archived": True}))
+        self.assertNotEqual(_canonical_form(left), _canonical_form({**right, "attributes": {"key": "value"}}))
 
 
 class OrchestrationTests(unittest.TestCase):
