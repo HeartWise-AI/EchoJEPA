@@ -90,6 +90,14 @@ class CapturingSdkClient:
         return "https://uploads.example.invalid/synthetic-video"
 
 
+class MissingRowsSdkClient:
+    def get_data_row_by_global_key(self, _key):
+        from labelbox.schema.data_row import DataRow
+        from lbox.exceptions import ResourceNotFoundError
+
+        raise ResourceNotFoundError(DataRow, {})
+
+
 class SyntheticCasesTests(unittest.TestCase):
     def test_cases_are_reserved_and_candidate_payloads_are_synthetic(self):
         cases = synthetic_cases()
@@ -157,6 +165,12 @@ class OrchestrationTests(unittest.TestCase):
 
 
 class SdkPayloadTests(unittest.TestCase):
+    def test_missing_global_keys_use_the_pinned_sdk_exception(self):
+        api = LabelboxSandboxApi(MissingRowsSdkClient(), project_type=None, dataset_type=None, media_type="video")
+        workspace = Workspace(project=object(), dataset=SimpleNamespace(uid="synthetic-dataset"), ontology=object(),)
+
+        self.assertEqual(api.existing_global_keys(workspace, ["radar-synthetic-v1-missing"]), set())
+
     def test_upload_payload_contains_only_safe_synthetic_context(self):
         sdk = CapturingSdkClient()
         dataset = CapturingDataset()

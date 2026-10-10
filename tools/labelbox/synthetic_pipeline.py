@@ -242,7 +242,7 @@ class LabelboxSandboxApi:
         return Workspace(project=project, dataset=dataset, ontology=ontology)
 
     def existing_global_keys(self, workspace: Workspace, keys: Sequence[str]) -> set[str]:
-        from labelbox.exceptions import ResourceNotFoundError
+        from lbox.exceptions import ResourceNotFoundError
 
         existing = set()
         for key in keys:
