@@ -123,23 +123,39 @@ class SyntheticCasesTests(unittest.TestCase):
             self.assertEqual(metadata["size"], (320, 256))
 
     def test_canonical_form_normalizes_only_inactive_server_metadata(self):
-        left = {
+        expected_question = {
             "name": "x",
             "schemaNodeId": None,
             "attributes": None,
             "options": [{"value": "yes", "featureSchemaId": None, "options": []}],
         }
-        right = {
+        server_question = {
             "name": "x",
             "schemaNodeId": "server",
             "kind": "RadioQuestion",
             "archived": 0,
             "options": [{"value": "yes", "featureSchemaId": "id", "kind": "RadioOption", "archived": False,}],
         }
+        left = {"classifications": [expected_question]}
+        right = {
+            "id": "server-ontology-id",
+            "name": "server ontology resource name",
+            "files": [],
+            "relationships": [],
+            "classifications": [server_question],
+        }
         self.assertEqual(_canonical_form(left), _canonical_form(json.dumps(right)))
-        self.assertNotEqual(_canonical_form(left), _canonical_form({"name": "y"}))
-        self.assertNotEqual(_canonical_form(left), _canonical_form({**right, "archived": True}))
-        self.assertNotEqual(_canonical_form(left), _canonical_form({**right, "attributes": {"key": "value"}}))
+        self.assertNotEqual(
+            _canonical_form(left), _canonical_form({**right, "classifications": [{**server_question, "name": "y"}]}),
+        )
+        self.assertNotEqual(
+            _canonical_form(left),
+            _canonical_form({**right, "classifications": [{**server_question, "archived": True}]}),
+        )
+        self.assertNotEqual(
+            _canonical_form(left),
+            _canonical_form({**right, "classifications": [{**server_question, "attributes": {"key": "value"}}]}),
+        )
 
     def test_difference_paths_are_bounded_and_never_include_values(self):
         paths = _difference_paths(

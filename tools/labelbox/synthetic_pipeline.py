@@ -166,7 +166,11 @@ def _canonical_form(value: Any) -> Any:
     if isinstance(value, str):
         value = json.loads(value)
 
-    return _canonical_form_value(value)
+    canonical = _canonical_form_value(value)
+    if isinstance(canonical, Mapping):
+        root_metadata = {"files", "id", "name", "relationships"}
+        canonical = {key: item for key, item in canonical.items() if key not in root_metadata}
+    return canonical
 
 
 def _canonical_form_value(value: Any) -> Any:
