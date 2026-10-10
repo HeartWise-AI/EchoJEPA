@@ -36,7 +36,7 @@ LEGACY_SANDBOX_ONTOLOGY_NAMES = {
     "RADAR simple review proposal v2 - English synthetic sandbox",
 }
 SANDBOX_BATCH_NAME = "RADAR synthetic pipeline v1"
-SANDBOX_VIEW_PREDICTIONS_NAME = "RADAR synthetic candidate views v2"
+SANDBOX_VIEW_PREDICTIONS_NAME = "RADAR synthetic candidate views v3"
 SANDBOX_PROJECT_DESCRIPTION = "Synthetic-only RADAR Labelbox pipeline test managed by EchoJEPA issue #22."
 SANDBOX_DATASET_DESCRIPTION = "Generated synthetic videos only; no clinical data or source file paths."
 GLOBAL_KEY_PREFIX = "radar-synthetic-v1-"
@@ -234,6 +234,25 @@ def _difference_paths(expected: Any, actual: Any, path: str = "root", limit: int
     return [] if expected == actual else [path]
 
 
+def _view_schema_ids(ontology: Any, views: Sequence[str]) -> tuple[str, dict[str, str]]:
+    """Resolve the connected ontology's stable IDs for the view question and answers."""
+
+    normalized = ontology.normalized
+    if isinstance(normalized, str):
+        normalized = json.loads(normalized)
+    questions = [item for item in normalized.get("classifications", []) if item.get("name") == "view"]
+    if len(questions) != 1 or not questions[0].get("featureSchemaId"):
+        raise SandboxError("The connected ontology has no unique schema ID for the view question.")
+    answer_ids = {
+        option.get("value"): option.get("featureSchemaId")
+        for option in questions[0].get("options", [])
+        if option.get("value") and option.get("featureSchemaId")
+    }
+    if any(view not in answer_ids for view in views):
+        raise SandboxError("The connected ontology is missing a candidate-view answer schema ID.")
+    return questions[0]["featureSchemaId"], answer_ids
+
+
 class LabelboxSandboxApi:
     """Small adapter around the pinned Labelbox SDK."""
 
@@ -385,12 +404,13 @@ class LabelboxSandboxApi:
                 raise SandboxError("The existing candidate-view prediction import failed.")
             return False
 
+        question_id, answer_ids = _view_schema_ids(workspace.ontology, [case.view for case in cases])
         predictions = [
             {
                 "dataRow": {"globalKey": case.global_key},
-                "uuid": str(uuid.uuid5(uuid.NAMESPACE_URL, f"echojepa:{case.global_key}:candidate-view:v2")),
-                "name": "view",
-                "answer": {"name": case.view},
+                "uuid": str(uuid.uuid5(uuid.NAMESPACE_URL, f"echojepa:{case.global_key}:candidate-view:v3")),
+                "schemaId": question_id,
+                "answer": {"schemaId": answer_ids[case.view]},
             }
             for case in cases
         ]

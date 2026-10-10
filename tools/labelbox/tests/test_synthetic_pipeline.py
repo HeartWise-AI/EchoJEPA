@@ -27,6 +27,7 @@ from tools.labelbox.synthetic_pipeline import (
     _canonical_form,
     _difference_paths,
     _render_video,
+    _view_schema_ids,
     ensure_pipeline,
     main,
     summarize_export,
@@ -179,6 +180,45 @@ class SyntheticCasesTests(unittest.TestCase):
         self.assertEqual(paths, ["root.questions[0].name", "root.questions[0].required"])
         self.assertNotIn("secret", json.dumps(paths))
 
+    def test_view_schema_ids_resolve_question_and_candidate_answers(self):
+        ontology = SimpleNamespace(
+            normalized={
+                "classifications": [
+                    {
+                        "name": "view",
+                        "featureSchemaId": "view-schema-id",
+                        "options": [
+                            {"value": "A4C", "featureSchemaId": "a4c-schema-id"},
+                            {"value": "PLAX", "featureSchemaId": "plax-schema-id"},
+                        ],
+                    }
+                ]
+            }
+        )
+
+        question_id, answer_ids = _view_schema_ids(ontology, ["A4C", "PLAX"])
+
+        self.assertEqual(question_id, "view-schema-id")
+        self.assertEqual(answer_ids, {"A4C": "a4c-schema-id", "PLAX": "plax-schema-id"})
+
+    def test_view_schema_ids_reject_missing_candidate_answer(self):
+        ontology = SimpleNamespace(
+            normalized=json.dumps(
+                {
+                    "classifications": [
+                        {
+                            "name": "view",
+                            "featureSchemaId": "view-schema-id",
+                            "options": [{"value": "A4C", "featureSchemaId": "a4c-schema-id"}],
+                        }
+                    ]
+                }
+            )
+        )
+
+        with self.assertRaisesRegex(SandboxError, "missing a candidate-view answer schema ID"):
+            _view_schema_ids(ontology, ["PLAX"])
+
 
 class OrchestrationTests(unittest.TestCase):
     @staticmethod
@@ -313,7 +353,24 @@ class SdkPayloadTests(unittest.TestCase):
             get_mal_prediction_imports=lambda: [],
             enable_model_assisted_labeling=lambda enabled: self.assertTrue(enabled),
         )
-        workspace = Workspace(project=project, dataset=object(), ontology=object())
+        workspace = Workspace(
+            project=project,
+            dataset=object(),
+            ontology=SimpleNamespace(
+                normalized={
+                    "classifications": [
+                        {
+                            "name": "view",
+                            "featureSchemaId": "view-schema-id",
+                            "options": [
+                                {"value": "A4C", "featureSchemaId": "a4c-schema-id"},
+                                {"value": "PLAX", "featureSchemaId": "plax-schema-id"},
+                            ],
+                        }
+                    ]
+                }
+            ),
+        )
         api = LabelboxSandboxApi(object(), project_type=None, dataset_type=None, media_type="video")
 
         with mock.patch("labelbox.schema.annotation_import.MALPredictionImport", PredictionImport):
@@ -329,9 +386,9 @@ class SdkPayloadTests(unittest.TestCase):
             [
                 {
                     "dataRow": {"globalKey": case.global_key},
-                    "uuid": str(uuid.uuid5(uuid.NAMESPACE_URL, f"echojepa:{case.global_key}:candidate-view:v2")),
-                    "name": "view",
-                    "answer": {"name": case.view},
+                    "uuid": str(uuid.uuid5(uuid.NAMESPACE_URL, f"echojepa:{case.global_key}:candidate-view:v3")),
+                    "schemaId": "view-schema-id",
+                    "answer": {"schemaId": f"{case.view.lower()}-schema-id"},
                 }
                 for case in synthetic_cases()
             ],
