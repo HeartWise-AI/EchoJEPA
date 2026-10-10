@@ -14,6 +14,7 @@ from tools.labelbox.synthetic_pipeline import (
     CANDIDATE_ATTACHMENT,
     GLOBAL_KEY_PREFIX,
     SANDBOX_BATCH_NAME,
+    SANDBOX_DATASET_DESCRIPTION,
     SUMMARY_SCHEMA,
     LabelboxSandboxApi,
     SandboxError,
@@ -165,6 +166,16 @@ class OrchestrationTests(unittest.TestCase):
 
 
 class SdkPayloadTests(unittest.TestCase):
+    def test_existing_dataset_calls_the_sdk_iam_relationship(self):
+        api = LabelboxSandboxApi(object(), project_type=None, dataset_type=None, media_type="video")
+        dataset = SimpleNamespace(description=SANDBOX_DATASET_DESCRIPTION, iam_integration=lambda: None,)
+
+        api._validate_existing(None, dataset, None, {})
+
+        dataset.iam_integration = lambda: object()
+        with self.assertRaisesRegex(SandboxError, "unconnected synthetic sandbox"):
+            api._validate_existing(None, dataset, None, {})
+
     def test_missing_global_keys_use_the_pinned_sdk_exception(self):
         api = LabelboxSandboxApi(MissingRowsSdkClient(), project_type=None, dataset_type=None, media_type="video")
         workspace = Workspace(project=object(), dataset=SimpleNamespace(uid="synthetic-dataset"), ontology=object(),)

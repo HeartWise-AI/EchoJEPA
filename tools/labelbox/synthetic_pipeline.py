@@ -213,7 +213,7 @@ class LabelboxSandboxApi:
         ):
             raise SandboxError("The fixed-name project is not the synthetic sandbox.")
         if dataset is not None and (
-            dataset.description != SANDBOX_DATASET_DESCRIPTION or dataset.iam_integration is not None
+            dataset.description != SANDBOX_DATASET_DESCRIPTION or dataset.iam_integration() is not None
         ):
             raise SandboxError("The fixed-name dataset is not the unconnected synthetic sandbox.")
         if ontology is not None and _canonical_form(ontology.normalized) != _canonical_form(form):
