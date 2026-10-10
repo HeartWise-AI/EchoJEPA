@@ -1,0 +1,531 @@
+{
+  "schema": "radar-simple-caption-review-proposal",
+  "version": 1,
+  "status": "unapproved_proposal",
+  "max_claims": 5,
+  "review_answers": [
+    "yes",
+    "no",
+    "cannot_assess",
+    "no_claim"
+  ],
+  "fields": {
+    "lv_function": {
+      "sources": [
+        "Left ventricule findings"
+      ],
+      "values": [
+        "hyperdynamic",
+        "normal",
+        "mildly_reduced",
+        "moderately_reduced",
+        "severely_reduced"
+      ],
+      "context_columns": [
+        "Visually Estimated EF"
+      ],
+      "note": "Review qualitative contraction only; exact report EF is study context, not a local verified number."
+    },
+    "lv_size": {
+      "sources": [
+        "Left ventricule findings"
+      ],
+      "values": [
+        "normal",
+        "dilated"
+      ],
+      "context_columns": [
+        "LVID Diastole (2D)"
+      ]
+    },
+    "lv_wall_thickness": {
+      "sources": [
+        "Left ventricule findings"
+      ],
+      "values": [
+        "not_increased",
+        "increased"
+      ],
+      "context_columns": [
+        "IVS Diastole Thickness (2D)",
+        "LVIW Diastolic Thickness (2D)"
+      ]
+    },
+    "lv_wall_motion": {
+      "sources": [
+        "Left ventricule findings"
+      ],
+      "values": [
+        "normal_in_visible_segments",
+        "abnormal_in_visible_segments"
+      ],
+      "context_columns": [],
+      "note": "Use only segment columns associated with the actual view; never broadcast worst WMS to every clip."
+    },
+    "rv_function": {
+      "sources": [
+        "Right ventricule findings",
+        "MHI VD fonction systolique"
+      ],
+      "values": [
+        "normal",
+        "mildly_reduced",
+        "moderately_reduced",
+        "severely_reduced"
+      ],
+      "verified_codes": {
+        "-1": null,
+        "0": "normal",
+        "1": "mildly_reduced",
+        "2": "moderately_reduced",
+        "3": "severely_reduced"
+      }
+    },
+    "rv_size": {
+      "sources": [
+        "Right ventricule findings"
+      ],
+      "values": [
+        "normal",
+        "dilated"
+      ],
+      "context_columns": [
+        "RV Basal Diastolic Dimension",
+        "RV Dimension"
+      ]
+    },
+    "la_size": {
+      "sources": [
+        "Left atrial findings"
+      ],
+      "values": [
+        "normal",
+        "dilated"
+      ],
+      "context_columns": [
+        "LA Volume Index (BP MOD) DuBois",
+        "LA Dimension"
+      ]
+    },
+    "ra_size": {
+      "sources": [
+        "Right Atrial findings"
+      ],
+      "values": [
+        "normal",
+        "dilated"
+      ],
+      "context_columns": [
+        "RA Area (4C)"
+      ]
+    },
+    "mitral_device": {
+      "sources": [
+        "Mitral valve findings"
+      ],
+      "values": [
+        "edge_to_edge_clip",
+        "annuloplasty_ring",
+        "bioprosthesis",
+        "mechanical_prosthesis"
+      ],
+      "note": "Only explicit report mention; do not generate absent device from silence."
+    },
+    "aortic_morphology": {
+      "sources": [
+        "Aortic valve findings"
+      ],
+      "values": [
+        "calcified",
+        "restricted_opening",
+        "bicuspid_morphology",
+        "prosthesis",
+        "three_cusp_morphology"
+      ],
+      "note": "Morphology only; stenosis severity is study-level. Bicuspid morphology requires adequate en-face leaflet visualization."
+    },
+    "mitral_regurgitant_jet": {
+      "sources": [
+        "Mitral valve findings",
+        "Referring MR Grade"
+      ],
+      "values": [
+        "demonstrated",
+        "not_demonstrated"
+      ],
+      "required_modality": "color_flow",
+      "note": "Not demonstrated is local acquisition scope only, not absence of clinical MR. Undecoded numeric grade codes produce no candidate."
+    },
+    "aortic_regurgitant_jet": {
+      "sources": [
+        "Aortic valve findings",
+        "Referring AR Grade"
+      ],
+      "values": [
+        "demonstrated",
+        "not_demonstrated"
+      ],
+      "required_modality": "color_flow",
+      "note": "No integrated severity from one color loop; undecoded numeric grade codes produce no candidate."
+    },
+    "tricuspid_regurgitant_jet": {
+      "sources": [
+        "Tricuspid valve findings",
+        "Referring TR Grade"
+      ],
+      "values": [
+        "demonstrated",
+        "not_demonstrated"
+      ],
+      "required_modality": "color_flow",
+      "note": "No integrated severity from one color loop; undecoded numeric grade codes produce no candidate."
+    },
+    "pulmonic_regurgitant_jet": {
+      "sources": [
+        "Pulmonary valve findings",
+        "Referring PR Grade"
+      ],
+      "values": [
+        "demonstrated",
+        "not_demonstrated"
+      ],
+      "required_modality": "color_flow",
+      "note": "No integrated severity from one color loop; undecoded numeric grade codes produce no candidate."
+    },
+    "pericardial_effusion": {
+      "sources": [
+        "Pericardium findings"
+      ],
+      "values": [
+        "present",
+        "not_demonstrated"
+      ],
+      "note": "No global absence inferred from a partly imaged pericardium."
+    },
+    "ivc_size": {
+      "sources": [
+        "Inferior vena cava findings"
+      ],
+      "values": [
+        "normal",
+        "dilated"
+      ],
+      "context_columns": [
+        "IVC Diameter (Exp 2D)"
+      ]
+    },
+    "ivc_collapse": {
+      "sources": [
+        "Inferior vena cava findings"
+      ],
+      "values": [
+        "preserved",
+        "reduced"
+      ],
+      "context_columns": [],
+      "note": "Needs an IVC-focused loop covering respiration; Worksheet Inspiratory Collapse is entirely empty in the audited export."
+    },
+    "aorta_morphology": {
+      "sources": [
+        "Aorta findings"
+      ],
+      "values": [
+        "dilated"
+      ],
+      "context_columns": [
+        "Sinus of Valsalva Diameter",
+        "Ao Sinotub Junction Diameter",
+        "Prox Asc Ao Diameter",
+        "Ao Arch Diameter"
+      ],
+      "note": "Keep location: root, ascending aorta or arch; do not interchange them."
+    }
+  },
+  "views": {
+    "A4C": {
+      "bmode_priority": [
+        "lv_function",
+        "rv_function",
+        "lv_size",
+        "rv_size",
+        "la_size"
+      ],
+      "color_flow_priority": [
+        "mitral_regurgitant_jet",
+        "tricuspid_regurgitant_jet"
+      ],
+      "note": "No routine aortic-valve claim; RA size and local wall motion are optional priorities when explicitly abnormal.",
+      "bmode_optional": [
+        "ra_size",
+        "lv_wall_motion",
+        "mitral_device",
+        "pericardial_effusion"
+      ],
+      "requires_target_confirmation": false
+    },
+    "A4C_LV": {
+      "bmode_priority": [
+        "lv_function",
+        "lv_size",
+        "lv_wall_motion"
+      ],
+      "color_flow_priority": [],
+      "note": "LV focus does not establish right-heart visibility.",
+      "bmode_optional": [],
+      "requires_target_confirmation": false
+    },
+    "A2C": {
+      "bmode_priority": [
+        "lv_function",
+        "lv_size",
+        "lv_wall_motion",
+        "la_size"
+      ],
+      "color_flow_priority": [
+        "mitral_regurgitant_jet"
+      ],
+      "note": "",
+      "bmode_optional": [
+        "mitral_device",
+        "pericardial_effusion"
+      ],
+      "requires_target_confirmation": false
+    },
+    "A2C_LV": {
+      "bmode_priority": [
+        "lv_function",
+        "lv_size",
+        "lv_wall_motion"
+      ],
+      "color_flow_priority": [],
+      "note": "",
+      "bmode_optional": [],
+      "requires_target_confirmation": false
+    },
+    "A3C": {
+      "bmode_priority": [
+        "lv_function",
+        "lv_wall_motion",
+        "aortic_morphology",
+        "mitral_device"
+      ],
+      "color_flow_priority": [
+        "mitral_regurgitant_jet",
+        "aortic_regurgitant_jet"
+      ],
+      "note": "",
+      "bmode_optional": [
+        "lv_size",
+        "la_size",
+        "pericardial_effusion"
+      ],
+      "requires_target_confirmation": false
+    },
+    "A3C_LV": {
+      "bmode_priority": [
+        "lv_function",
+        "lv_wall_motion"
+      ],
+      "color_flow_priority": [],
+      "note": "",
+      "bmode_optional": [],
+      "requires_target_confirmation": false
+    },
+    "A5C": {
+      "bmode_priority": [
+        "lv_function",
+        "aortic_morphology",
+        "lv_size"
+      ],
+      "color_flow_priority": [
+        "aortic_regurgitant_jet",
+        "mitral_regurgitant_jet"
+      ],
+      "note": "Requires actual valve/color-box coverage; no gradient or stenosis grade in a B-mode loop.",
+      "bmode_optional": [
+        "rv_size",
+        "la_size"
+      ],
+      "requires_target_confirmation": false
+    },
+    "PLAX": {
+      "bmode_priority": [
+        "lv_size",
+        "lv_wall_thickness",
+        "aortic_morphology",
+        "mitral_device",
+        "aorta_morphology"
+      ],
+      "color_flow_priority": [
+        "mitral_regurgitant_jet",
+        "aortic_regurgitant_jet"
+      ],
+      "note": "Optional local effusion. LV function may be assessed if adequate; not the preferred isolated EF route.",
+      "bmode_optional": [
+        "lv_function",
+        "pericardial_effusion"
+      ],
+      "requires_target_confirmation": false
+    },
+    "PLAX_DEEP": {
+      "bmode_priority": [
+        "pericardial_effusion",
+        "aorta_morphology"
+      ],
+      "color_flow_priority": [],
+      "note": "Pericardial versus pleural fluid requires landmark assessment; descending aorta must not be labeled aortic root.",
+      "bmode_optional": [],
+      "requires_target_confirmation": false
+    },
+    "PSAX": {
+      "bmode_priority": [
+        "lv_function",
+        "lv_wall_motion",
+        "lv_wall_thickness"
+      ],
+      "color_flow_priority": [],
+      "note": "Class lacks slice level; do not infer valve findings from PSAX without localization.",
+      "bmode_optional": [],
+      "requires_target_confirmation": false
+    },
+    "PSAX_AV": {
+      "bmode_priority": [
+        "aortic_morphology"
+      ],
+      "color_flow_priority": [
+        "aortic_regurgitant_jet",
+        "tricuspid_regurgitant_jet",
+        "pulmonic_regurgitant_jet"
+      ],
+      "note": "Valve/jet must be identified; aortic morphology is preferred en-face when systolic opening is captured.",
+      "bmode_optional": [],
+      "requires_target_confirmation": false
+    },
+    "RVINF": {
+      "bmode_priority": [
+        "rv_function",
+        "rv_size"
+      ],
+      "color_flow_priority": [
+        "tricuspid_regurgitant_jet"
+      ],
+      "note": "Focused inflow view is not a complete RV quantification study.",
+      "bmode_optional": [
+        "ra_size"
+      ],
+      "requires_target_confirmation": false
+    },
+    "SUBCOSTAL": {
+      "bmode_priority": [
+        "pericardial_effusion",
+        "ivc_size",
+        "ivc_collapse"
+      ],
+      "color_flow_priority": [
+        "tricuspid_regurgitant_jet"
+      ],
+      "note": "Reviewer must identify subtype first: four-chamber uses chamber/pericardial claims; IVC-focused uses IVC claims. Never include both from class alone.",
+      "bmode_optional": [
+        "lv_function",
+        "lv_size",
+        "rv_function",
+        "rv_size",
+        "ra_size"
+      ],
+      "requires_target_confirmation": true
+    },
+    "SUPRASTERNAL": {
+      "bmode_priority": [
+        "aorta_morphology"
+      ],
+      "color_flow_priority": [],
+      "note": "Arch observations only; spectral obstruction/velocity labels remain separate.",
+      "bmode_optional": [],
+      "requires_target_confirmation": false
+    },
+    "A2C_ZOOM": {
+      "bmode_priority": [
+        "lv_function",
+        "lv_size",
+        "lv_wall_motion",
+        "la_size"
+      ],
+      "color_flow_priority": [
+        "mitral_regurgitant_jet"
+      ],
+      "note": "Target confirmation is mandatory before using any route. Keep only the structure actually visible; do not inherit all base-view anatomy.",
+      "bmode_optional": [],
+      "requires_target_confirmation": true
+    },
+    "A3C_ZOOM": {
+      "bmode_priority": [
+        "lv_function",
+        "lv_wall_motion",
+        "aortic_morphology",
+        "mitral_device"
+      ],
+      "color_flow_priority": [
+        "mitral_regurgitant_jet",
+        "aortic_regurgitant_jet"
+      ],
+      "note": "Target confirmation is mandatory before using any route. Keep only the structure actually visible; do not inherit all base-view anatomy.",
+      "bmode_optional": [],
+      "requires_target_confirmation": true
+    },
+    "A4C_ZOOM": {
+      "bmode_priority": [
+        "lv_function",
+        "rv_function",
+        "lv_size",
+        "rv_size",
+        "la_size"
+      ],
+      "color_flow_priority": [
+        "mitral_regurgitant_jet",
+        "tricuspid_regurgitant_jet"
+      ],
+      "note": "Target confirmation is mandatory before using any route. Keep only the structure actually visible; do not inherit all base-view anatomy.",
+      "bmode_optional": [],
+      "requires_target_confirmation": true
+    },
+    "A5C_ZOOM": {
+      "bmode_priority": [
+        "lv_function",
+        "aortic_morphology",
+        "lv_size"
+      ],
+      "color_flow_priority": [
+        "aortic_regurgitant_jet",
+        "mitral_regurgitant_jet"
+      ],
+      "note": "Target confirmation is mandatory before using any route. Keep only the structure actually visible; do not inherit all base-view anatomy.",
+      "bmode_optional": [],
+      "requires_target_confirmation": true
+    },
+    "PLAX_ZOOM": {
+      "bmode_priority": [
+        "lv_size",
+        "lv_wall_thickness",
+        "aortic_morphology",
+        "mitral_device",
+        "aorta_morphology"
+      ],
+      "color_flow_priority": [
+        "mitral_regurgitant_jet",
+        "aortic_regurgitant_jet"
+      ],
+      "note": "Target confirmation is mandatory before using any route. Keep only the structure actually visible; do not inherit all base-view anatomy.",
+      "bmode_optional": [],
+      "requires_target_confirmation": true
+    },
+    "OTHER": {
+      "bmode_priority": [],
+      "color_flow_priority": [],
+      "note": "No automatic report-to-local-caption routing. Reclassify or use separately flagged weak study supervision.",
+      "bmode_optional": [],
+      "requires_target_confirmation": false
+    }
+  },
+  "report_numeric_policy": "Numeric measurements are study context or separate supervised targets; they are never automatically verified local claims.",
+  "report_grade_policy": "Do not decode numeric MR/AR/TR/PR codes without a verified source codebook; parse explicit text with negation and uncertainty handling."
+}

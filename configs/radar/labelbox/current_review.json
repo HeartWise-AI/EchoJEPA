@@ -1,0 +1,12 @@
+{
+  "name": "DeepECHO column review v2",
+  "status": "proposed_labelbox_ontology",
+  "spec": "configs/radar/column_review_v2.json",
+  "ontology": "configs/radar/labelbox/column_review_v2.json",
+  "builder": "tools.labelbox.column_review",
+  "importer": "tools.labelbox.import_column_review",
+  "instructions": "docs/radar/column_review_v2.md",
+  "prelabel_type": "MALPredictionImport",
+  "review_completed_is_prefilled": false,
+  "supersedes_proposed_interface": "configs/radar/labelbox/simple_review_proposal_v1.json"
+}

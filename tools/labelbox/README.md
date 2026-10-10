@@ -1,5 +1,16 @@
 # Labelbox RADAR caption pilot
 
+The current proposed workflow is **DeepECHO column review v2**:
+[instructions](../../docs/radar/column_review_v2.md),
+[native ontology](../../configs/radar/labelbox/column_review_v2.json), and
+[current selection](../../configs/radar/labelbox/current_review.json).
+It prefills report values, including explicit normals, and a draft caption. Most items need one final
+confirmation; exceptions use per-column dropdowns for corrections, omissions and error reasons.
+
+The v2 builder generates the native schema and MAL drafts. The separate v2 importer previews or applies
+installation into an explicitly selected compatible video project with existing deidentified data rows.
+The resource bootstrap below remains separate.
+
 This folder bootstraps the empty Labelbox workspace for the view-specific RADAR
 caption pilot. It gives Charlotte a stable place to add the ontology, data import,
 caption preloading, export, and evaluation tools after access and governance are
@@ -112,9 +123,9 @@ uv run --frozen --group labelbox python tools/labelbox/create_pilot_project.py \
 
 Build follow-up work in this folder as separate reviewed changes:
 
-1. Define and version the view-specific RADAR caption ontology.
+1. Review the v2 column ontology and complete its clinical/input checks.
 2. Import a 3–5-study synthetic or approved de-identified pilot.
-3. Preload generated captions for human correction.
+3. Use the v2 MAL importer to preload values and captions for human confirmation.
 4. Export annotations with stable video and study identifiers.
 5. Add agreement, coverage, and failure-analysis reports.
 

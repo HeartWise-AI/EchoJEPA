@@ -21,6 +21,15 @@ se trouve dans le carré. Le reste de l'image sert de contexte, par exemple pour
 seule la zone hors du carré montre est impossible à vérifier, avec la raison « cadrage, zoom ou hors du carré » (voir
 [Incertitude](#incertitude)).
 
+Avant la relecture, vérifier que l'élément indique la séquence d'images reçue par le modèle ainsi que son cadrage.
+La boucle complète sert de contexte ; une constatation visible uniquement dans des images non reçues par le modèle
+est impossible à vérifier (raison « autre », commentaire « hors des images reçues par le modèle »). Si le cadrage
+ou la séquence manque ou ne peut pas être vérifié, retourner l'élément pour correction de l'affichage avant de
+soumettre la relecture médicale. Ne pas déduire l'entrée du modèle du seul contour. Un panneau synchronisé facultatif
+montrant uniquement le cadrage doit afficher les mêmes images sélectionnées, sans ajouter le contour à l'entrée du
+modèle. Voir [le contrat d'affichage](ontology_v1.md#model-input-review).
+
+
 Termes utilisés ci-dessous :
 
 - **Énoncé :** une chose que dit la légende, en dehors de la coupe : le mode d'acquisition, la visibilité d'une
@@ -143,6 +152,20 @@ structure dans le carré) et qu'elle est absente. Si le clip ne pouvait pas la m
 vérifier, pas étayé.
 
 Une constatation absente et non mentionnée dans la légende n'est pas une information manquante.
+
+Un champ absent du compte rendu n'indique pas l'absence d'une anomalie. L'absence de jet dans une boucle
+couleur signifie seulement qu'aucun jet n'est démontré dans cette acquisition ; une couverture couleur, des réglages
+ou des phases cardiaques insuffisants ne permettent pas de confirmer l'absence.
+
+### Sévérité clinique et portée
+
+Une valeur qualitative est une impression visuelle limitée au clip, pas le diagnostic de l'examen complet. Un jet
+couleur seul n'établit pas un grade intégré d'insuffisance valvulaire. Si le clip ne permet pas d'étayer le grade,
+indiquer que l'énoncé est impossible à vérifier, même si un jet est visible. Ne pas recopier le grade du compte rendu
+dans la légende corrigée. Ne pas inventer une FEVG chiffrée à partir d'une seule coupe. La cinétique segmentaire
+décrit uniquement les segments visibles dans les images reçues par le modèle ; les segments non vus ne sont pas
+considérés comme normaux. Ne pas inférer une sévérité de sténose, des pressions de remplissage ou une hypertension
+pulmonaire.
 
 ### Structures non visibles
 

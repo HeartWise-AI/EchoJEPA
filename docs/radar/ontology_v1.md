@@ -230,6 +230,22 @@ contract, it must:
   answer given with an allowed value, every consistency rule met, and no flag on a statement the candidate caption
   does not make.
 
+## Model-input review
+
+The square outline must come from the actual preprocessing transform, and the review item must identify the
+selected source frames received by the encoder, including any padding. The default evaluation crop described
+above is configurable and differs from random training crops. A fixed outline alone cannot establish temporal
+support. Verify the displayed geometry and selected frames using synthetic inputs before clinical review.
+
+The full loop provides context for view identification. Statements are supported only in the selected model-input
+frames inside the crop. Findings visible only in other frames are unconfirmed with reason `other` and the comment
+"outside model-input frames". Missing or unverifiable crop/frame provenance requires display correction before a
+medical label is submitted. An optional synchronized crop-only panel must show the same selected frames. Overlays
+are review aids and must never be burned into encoder inputs.
+
+The [ontology request and manuscript review](ontology_request.md) describes proposed schema extensions and
+contrastive dataset construction. Its proposals do not replace the approved v1 rules.
+
 ## Review form
 
 The Labelbox review form is defined in the `review` section of the YAML and generated as
