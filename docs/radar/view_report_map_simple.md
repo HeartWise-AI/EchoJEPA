@@ -1,5 +1,10 @@
 # DeepECHO view → report fields → simple claim review
 
+**Current Labelbox interface:** [column review v2](column_review_v2.md) uses 46 named fields,
+prefilled values and captions (including explicit normals), and dropdowns for missing and unsupported findings.
+Its [native ontology](../../configs/radar/labelbox/column_review_v2.json) supersedes the generic five-slot proposal
+as the proposed review interface. This page retains the source-data audit and earlier mapping for reference.
+
 **Proposal for clinical review.** This simplifies the reviewer interface; it does not medically approve an ontology
 or replace the pending `radar-caption-ontology-v1`. Every video receives its actual predicted view, acquisition mode
 and at most five numbered candidate findings. Reviewers confirm **Yes / No / Cannot assess** per populated finding.
@@ -119,8 +124,9 @@ A4C uses one study; PLAX and PSAX_AV use the second. The review cards are routed
 | PLAX B-mode | LV size/wall morphology; visible aortic/mitral morphology if explicitly reported | Copying the report EF or MR grade into a verified local caption |
 | PSAX_AV B-mode | AV morphology when systolic leaflet opening is adequately seen | LV EF; color jet absence without color; stenosis severity |
 
-The [private published gallery](https://deepecho-three-view-demo.papirobbi.chatgpt.site) now contains five clips,
-adding A2C_LV and A3C_LV, with valve morphology, ASE segment maps and click-to-score captions. Display deidentification changes the field
+The [published gallery](https://deepecho-three-view-demo.papirobbi.chatgpt.site) contains the five view demonstrations
+and a complete study B with all 44 video loops, 33 cropped image exports and its report records,
+with valve morphology, ASE segment maps and confirmation-based captions. Display deidentification changes the field
 of view, so these exports are **illustrations, not validated production model inputs**. They are not uploaded to
 Labelbox or used as pilot training pairs. Production review still needs exact spatial/temporal input provenance.
 
