@@ -20,6 +20,7 @@ from tools.labelbox.synthetic_pipeline import (
     SandboxError,
     Workspace,
     _canonical_form,
+    _difference_paths,
     _render_video,
     ensure_pipeline,
     main,
@@ -139,6 +140,16 @@ class SyntheticCasesTests(unittest.TestCase):
         self.assertNotEqual(_canonical_form(left), _canonical_form({"name": "y"}))
         self.assertNotEqual(_canonical_form(left), _canonical_form({**right, "archived": True}))
         self.assertNotEqual(_canonical_form(left), _canonical_form({**right, "attributes": {"key": "value"}}))
+
+    def test_difference_paths_are_bounded_and_never_include_values(self):
+        paths = _difference_paths(
+            {"questions": [{"name": "expected-secret", "required": True}]},
+            {"questions": [{"name": "actual-secret", "required": False}], "server": "server-secret"},
+            limit=2,
+        )
+
+        self.assertEqual(paths, ["root.questions[0].name", "root.questions[0].required"])
+        self.assertNotIn("secret", json.dumps(paths))
 
 
 class OrchestrationTests(unittest.TestCase):

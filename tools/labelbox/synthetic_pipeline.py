@@ -190,6 +190,36 @@ def _canonical_form_value(value: Any) -> Any:
     return value
 
 
+def _difference_paths(expected: Any, actual: Any, path: str = "root", limit: int = 8) -> list[str]:
+    """Return bounded schema paths only, without exposing ontology values."""
+
+    if limit <= 0:
+        return []
+    if type(expected) is not type(actual):
+        return [path]
+    if isinstance(expected, Mapping):
+        paths = []
+        for key in sorted(set(expected) | set(actual)):
+            child = f"{path}.{key}"
+            if key not in expected or key not in actual:
+                paths.append(child)
+            else:
+                paths.extend(_difference_paths(expected[key], actual[key], child, limit - len(paths)))
+            if len(paths) >= limit:
+                break
+        return paths
+    if isinstance(expected, list):
+        paths = []
+        if len(expected) != len(actual):
+            paths.append(path)
+        for index, (left, right) in enumerate(zip(expected, actual)):
+            paths.extend(_difference_paths(left, right, f"{path}[{index}]", limit - len(paths)))
+            if len(paths) >= limit:
+                break
+        return paths
+    return [] if expected == actual else [path]
+
+
 class LabelboxSandboxApi:
     """Small adapter around the pinned Labelbox SDK."""
 
@@ -228,8 +258,14 @@ class LabelboxSandboxApi:
             dataset.description != SANDBOX_DATASET_DESCRIPTION or dataset.iam_integration() is not None
         ):
             raise SandboxError("The fixed-name dataset is not the unconnected synthetic sandbox.")
-        if ontology is not None and _canonical_form(ontology.normalized) != _canonical_form(form):
-            raise SandboxError("The fixed-name ontology differs from the committed simple review form.")
+        if ontology is not None:
+            expected = _canonical_form(form)
+            actual = _canonical_form(ontology.normalized)
+            if actual != expected:
+                paths = ", ".join(_difference_paths(expected, actual))
+                raise SandboxError(
+                    f"The fixed-name ontology differs from the committed simple review form at: {paths}."
+                )
 
     def ensure_workspace(self, form: Mapping[str, Any], *, create: bool) -> Workspace:
         project, dataset, ontology = self._resources()
