@@ -1,0 +1,319 @@
+{
+  "tools": [],
+  "classifications": [
+    {
+      "type": "radio",
+      "instructions": "Coupe proposée correcte ? / Is the proposed view correct?",
+      "name": "view_ok",
+      "required": true,
+      "options": [
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "Oui, étayé / Yes, supported",
+          "value": "yes",
+          "options": []
+        },
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "Non, faux ou non étayé / No, wrong or unsupported",
+          "value": "no",
+          "options": []
+        },
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "Impossible à vérifier / Cannot assess",
+          "value": "cannot_assess",
+          "options": []
+        }
+      ],
+      "schemaNodeId": null,
+      "featureSchemaId": null,
+      "attributes": null,
+      "scope": "global"
+    },
+    {
+      "type": "radio",
+      "instructions": "Mode d'acquisition correct ? / Is the acquisition mode correct?",
+      "name": "modality_ok",
+      "required": true,
+      "options": [
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "Oui, étayé / Yes, supported",
+          "value": "yes",
+          "options": []
+        },
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "Non, faux ou non étayé / No, wrong or unsupported",
+          "value": "no",
+          "options": []
+        },
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "Impossible à vérifier / Cannot assess",
+          "value": "cannot_assess",
+          "options": []
+        }
+      ],
+      "schemaNodeId": null,
+      "featureSchemaId": null,
+      "attributes": null,
+      "scope": "global"
+    },
+    {
+      "type": "radio",
+      "instructions": "Énoncé 1 étayé dans l'entrée du modèle ? / Is claim 1 supported in the model input?",
+      "name": "claim_1_ok",
+      "required": true,
+      "options": [
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "Oui, étayé / Yes, supported",
+          "value": "yes",
+          "options": []
+        },
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "Non, faux ou non étayé / No, wrong or unsupported",
+          "value": "no",
+          "options": []
+        },
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "Impossible à vérifier / Cannot assess",
+          "value": "cannot_assess",
+          "options": []
+        },
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "Aucun énoncé dans ce créneau / No claim in this slot",
+          "value": "no_claim",
+          "options": []
+        }
+      ],
+      "schemaNodeId": null,
+      "featureSchemaId": null,
+      "attributes": null,
+      "scope": "global"
+    },
+    {
+      "type": "radio",
+      "instructions": "Énoncé 2 étayé dans l'entrée du modèle ? / Is claim 2 supported in the model input?",
+      "name": "claim_2_ok",
+      "required": true,
+      "options": [
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "Oui, étayé / Yes, supported",
+          "value": "yes",
+          "options": []
+        },
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "Non, faux ou non étayé / No, wrong or unsupported",
+          "value": "no",
+          "options": []
+        },
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "Impossible à vérifier / Cannot assess",
+          "value": "cannot_assess",
+          "options": []
+        },
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "Aucun énoncé dans ce créneau / No claim in this slot",
+          "value": "no_claim",
+          "options": []
+        }
+      ],
+      "schemaNodeId": null,
+      "featureSchemaId": null,
+      "attributes": null,
+      "scope": "global"
+    },
+    {
+      "type": "radio",
+      "instructions": "Énoncé 3 étayé dans l'entrée du modèle ? / Is claim 3 supported in the model input?",
+      "name": "claim_3_ok",
+      "required": true,
+      "options": [
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "Oui, étayé / Yes, supported",
+          "value": "yes",
+          "options": []
+        },
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "Non, faux ou non étayé / No, wrong or unsupported",
+          "value": "no",
+          "options": []
+        },
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "Impossible à vérifier / Cannot assess",
+          "value": "cannot_assess",
+          "options": []
+        },
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "Aucun énoncé dans ce créneau / No claim in this slot",
+          "value": "no_claim",
+          "options": []
+        }
+      ],
+      "schemaNodeId": null,
+      "featureSchemaId": null,
+      "attributes": null,
+      "scope": "global"
+    },
+    {
+      "type": "radio",
+      "instructions": "Énoncé 4 étayé dans l'entrée du modèle ? / Is claim 4 supported in the model input?",
+      "name": "claim_4_ok",
+      "required": true,
+      "options": [
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "Oui, étayé / Yes, supported",
+          "value": "yes",
+          "options": []
+        },
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "Non, faux ou non étayé / No, wrong or unsupported",
+          "value": "no",
+          "options": []
+        },
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "Impossible à vérifier / Cannot assess",
+          "value": "cannot_assess",
+          "options": []
+        },
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "Aucun énoncé dans ce créneau / No claim in this slot",
+          "value": "no_claim",
+          "options": []
+        }
+      ],
+      "schemaNodeId": null,
+      "featureSchemaId": null,
+      "attributes": null,
+      "scope": "global"
+    },
+    {
+      "type": "radio",
+      "instructions": "Énoncé 5 étayé dans l'entrée du modèle ? / Is claim 5 supported in the model input?",
+      "name": "claim_5_ok",
+      "required": true,
+      "options": [
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "Oui, étayé / Yes, supported",
+          "value": "yes",
+          "options": []
+        },
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "Non, faux ou non étayé / No, wrong or unsupported",
+          "value": "no",
+          "options": []
+        },
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "Impossible à vérifier / Cannot assess",
+          "value": "cannot_assess",
+          "options": []
+        },
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "Aucun énoncé dans ce créneau / No claim in this slot",
+          "value": "no_claim",
+          "options": []
+        }
+      ],
+      "schemaNodeId": null,
+      "featureSchemaId": null,
+      "attributes": null,
+      "scope": "global"
+    },
+    {
+      "type": "radio",
+      "instructions": "Information importante manquante ? / Important information missing?",
+      "name": "important_missing",
+      "required": true,
+      "options": [
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "Non / No",
+          "value": "no",
+          "options": []
+        },
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "Oui / Yes",
+          "value": "yes",
+          "options": [
+            {
+              "type": "text",
+              "instructions": "Préciser / Specify",
+              "name": "missing_detail",
+              "required": true,
+              "options": [],
+              "schemaNodeId": null,
+              "featureSchemaId": null,
+              "attributes": null
+            }
+          ]
+        }
+      ],
+      "schemaNodeId": null,
+      "featureSchemaId": null,
+      "attributes": null,
+      "scope": "global"
+    },
+    {
+      "type": "text",
+      "instructions": "Correction facultative / Optional correction (requires adjudication)",
+      "name": "optional_correction",
+      "required": false,
+      "options": [],
+      "schemaNodeId": null,
+      "featureSchemaId": null,
+      "attributes": null,
+      "scope": "global"
+    }
+  ]
+}
