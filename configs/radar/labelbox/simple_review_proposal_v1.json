@@ -3,29 +3,148 @@
   "classifications": [
     {
       "type": "radio",
-      "instructions": "Coupe proposée correcte ? / Is the proposed view correct?",
-      "name": "view_ok",
+      "instructions": "What is the view?",
+      "name": "view",
       "required": true,
       "options": [
         {
           "schemaNodeId": null,
           "featureSchemaId": null,
-          "label": "Oui, étayé / Yes, supported",
-          "value": "yes",
+          "label": "A2C",
+          "value": "A2C",
           "options": []
         },
         {
           "schemaNodeId": null,
           "featureSchemaId": null,
-          "label": "Non, faux ou non étayé / No, wrong or unsupported",
-          "value": "no",
+          "label": "A2C_LV",
+          "value": "A2C_LV",
           "options": []
         },
         {
           "schemaNodeId": null,
           "featureSchemaId": null,
-          "label": "Impossible à vérifier / Cannot assess",
-          "value": "cannot_assess",
+          "label": "A2C_ZOOM",
+          "value": "A2C_ZOOM",
+          "options": []
+        },
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "A3C",
+          "value": "A3C",
+          "options": []
+        },
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "A3C_LV",
+          "value": "A3C_LV",
+          "options": []
+        },
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "A3C_ZOOM",
+          "value": "A3C_ZOOM",
+          "options": []
+        },
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "A4C",
+          "value": "A4C",
+          "options": []
+        },
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "A4C_LV",
+          "value": "A4C_LV",
+          "options": []
+        },
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "A4C_ZOOM",
+          "value": "A4C_ZOOM",
+          "options": []
+        },
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "A5C",
+          "value": "A5C",
+          "options": []
+        },
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "A5C_ZOOM",
+          "value": "A5C_ZOOM",
+          "options": []
+        },
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "PLAX",
+          "value": "PLAX",
+          "options": []
+        },
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "PLAX_DEEP",
+          "value": "PLAX_DEEP",
+          "options": []
+        },
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "PLAX_ZOOM",
+          "value": "PLAX_ZOOM",
+          "options": []
+        },
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "PSAX",
+          "value": "PSAX",
+          "options": []
+        },
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "PSAX_AV",
+          "value": "PSAX_AV",
+          "options": []
+        },
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "RVINF",
+          "value": "RVINF",
+          "options": []
+        },
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "SUBCOSTAL",
+          "value": "SUBCOSTAL",
+          "options": []
+        },
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "SUPRASTERNAL",
+          "value": "SUPRASTERNAL",
+          "options": []
+        },
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "OTHER",
+          "value": "OTHER",
           "options": []
         }
       ],
@@ -36,28 +155,28 @@
     },
     {
       "type": "radio",
-      "instructions": "Mode d'acquisition correct ? / Is the acquisition mode correct?",
+      "instructions": "Is the acquisition mode correct?",
       "name": "modality_ok",
       "required": true,
       "options": [
         {
           "schemaNodeId": null,
           "featureSchemaId": null,
-          "label": "Oui, étayé / Yes, supported",
+          "label": "Yes, supported",
           "value": "yes",
           "options": []
         },
         {
           "schemaNodeId": null,
           "featureSchemaId": null,
-          "label": "Non, faux ou non étayé / No, wrong or unsupported",
+          "label": "No, wrong or unsupported",
           "value": "no",
           "options": []
         },
         {
           "schemaNodeId": null,
           "featureSchemaId": null,
-          "label": "Impossible à vérifier / Cannot assess",
+          "label": "Cannot assess",
           "value": "cannot_assess",
           "options": []
         }
@@ -69,35 +188,35 @@
     },
     {
       "type": "radio",
-      "instructions": "Énoncé 1 étayé dans l'entrée du modèle ? / Is claim 1 supported in the model input?",
+      "instructions": "Is claim 1 supported in the model input?",
       "name": "claim_1_ok",
       "required": true,
       "options": [
         {
           "schemaNodeId": null,
           "featureSchemaId": null,
-          "label": "Oui, étayé / Yes, supported",
+          "label": "Yes, supported",
           "value": "yes",
           "options": []
         },
         {
           "schemaNodeId": null,
           "featureSchemaId": null,
-          "label": "Non, faux ou non étayé / No, wrong or unsupported",
+          "label": "No, wrong or unsupported",
           "value": "no",
           "options": []
         },
         {
           "schemaNodeId": null,
           "featureSchemaId": null,
-          "label": "Impossible à vérifier / Cannot assess",
+          "label": "Cannot assess",
           "value": "cannot_assess",
           "options": []
         },
         {
           "schemaNodeId": null,
           "featureSchemaId": null,
-          "label": "Aucun énoncé dans ce créneau / No claim in this slot",
+          "label": "No claim in this slot",
           "value": "no_claim",
           "options": []
         }
@@ -109,35 +228,35 @@
     },
     {
       "type": "radio",
-      "instructions": "Énoncé 2 étayé dans l'entrée du modèle ? / Is claim 2 supported in the model input?",
+      "instructions": "Is claim 2 supported in the model input?",
       "name": "claim_2_ok",
       "required": true,
       "options": [
         {
           "schemaNodeId": null,
           "featureSchemaId": null,
-          "label": "Oui, étayé / Yes, supported",
+          "label": "Yes, supported",
           "value": "yes",
           "options": []
         },
         {
           "schemaNodeId": null,
           "featureSchemaId": null,
-          "label": "Non, faux ou non étayé / No, wrong or unsupported",
+          "label": "No, wrong or unsupported",
           "value": "no",
           "options": []
         },
         {
           "schemaNodeId": null,
           "featureSchemaId": null,
-          "label": "Impossible à vérifier / Cannot assess",
+          "label": "Cannot assess",
           "value": "cannot_assess",
           "options": []
         },
         {
           "schemaNodeId": null,
           "featureSchemaId": null,
-          "label": "Aucun énoncé dans ce créneau / No claim in this slot",
+          "label": "No claim in this slot",
           "value": "no_claim",
           "options": []
         }
@@ -149,35 +268,35 @@
     },
     {
       "type": "radio",
-      "instructions": "Énoncé 3 étayé dans l'entrée du modèle ? / Is claim 3 supported in the model input?",
+      "instructions": "Is claim 3 supported in the model input?",
       "name": "claim_3_ok",
       "required": true,
       "options": [
         {
           "schemaNodeId": null,
           "featureSchemaId": null,
-          "label": "Oui, étayé / Yes, supported",
+          "label": "Yes, supported",
           "value": "yes",
           "options": []
         },
         {
           "schemaNodeId": null,
           "featureSchemaId": null,
-          "label": "Non, faux ou non étayé / No, wrong or unsupported",
+          "label": "No, wrong or unsupported",
           "value": "no",
           "options": []
         },
         {
           "schemaNodeId": null,
           "featureSchemaId": null,
-          "label": "Impossible à vérifier / Cannot assess",
+          "label": "Cannot assess",
           "value": "cannot_assess",
           "options": []
         },
         {
           "schemaNodeId": null,
           "featureSchemaId": null,
-          "label": "Aucun énoncé dans ce créneau / No claim in this slot",
+          "label": "No claim in this slot",
           "value": "no_claim",
           "options": []
         }
@@ -189,35 +308,35 @@
     },
     {
       "type": "radio",
-      "instructions": "Énoncé 4 étayé dans l'entrée du modèle ? / Is claim 4 supported in the model input?",
+      "instructions": "Is claim 4 supported in the model input?",
       "name": "claim_4_ok",
       "required": true,
       "options": [
         {
           "schemaNodeId": null,
           "featureSchemaId": null,
-          "label": "Oui, étayé / Yes, supported",
+          "label": "Yes, supported",
           "value": "yes",
           "options": []
         },
         {
           "schemaNodeId": null,
           "featureSchemaId": null,
-          "label": "Non, faux ou non étayé / No, wrong or unsupported",
+          "label": "No, wrong or unsupported",
           "value": "no",
           "options": []
         },
         {
           "schemaNodeId": null,
           "featureSchemaId": null,
-          "label": "Impossible à vérifier / Cannot assess",
+          "label": "Cannot assess",
           "value": "cannot_assess",
           "options": []
         },
         {
           "schemaNodeId": null,
           "featureSchemaId": null,
-          "label": "Aucun énoncé dans ce créneau / No claim in this slot",
+          "label": "No claim in this slot",
           "value": "no_claim",
           "options": []
         }
@@ -229,35 +348,35 @@
     },
     {
       "type": "radio",
-      "instructions": "Énoncé 5 étayé dans l'entrée du modèle ? / Is claim 5 supported in the model input?",
+      "instructions": "Is claim 5 supported in the model input?",
       "name": "claim_5_ok",
       "required": true,
       "options": [
         {
           "schemaNodeId": null,
           "featureSchemaId": null,
-          "label": "Oui, étayé / Yes, supported",
+          "label": "Yes, supported",
           "value": "yes",
           "options": []
         },
         {
           "schemaNodeId": null,
           "featureSchemaId": null,
-          "label": "Non, faux ou non étayé / No, wrong or unsupported",
+          "label": "No, wrong or unsupported",
           "value": "no",
           "options": []
         },
         {
           "schemaNodeId": null,
           "featureSchemaId": null,
-          "label": "Impossible à vérifier / Cannot assess",
+          "label": "Cannot assess",
           "value": "cannot_assess",
           "options": []
         },
         {
           "schemaNodeId": null,
           "featureSchemaId": null,
-          "label": "Aucun énoncé dans ce créneau / No claim in this slot",
+          "label": "No claim in this slot",
           "value": "no_claim",
           "options": []
         }
@@ -269,26 +388,26 @@
     },
     {
       "type": "radio",
-      "instructions": "Information importante manquante ? / Important information missing?",
+      "instructions": "Is important information missing?",
       "name": "important_missing",
       "required": true,
       "options": [
         {
           "schemaNodeId": null,
           "featureSchemaId": null,
-          "label": "Non / No",
+          "label": "No",
           "value": "no",
           "options": []
         },
         {
           "schemaNodeId": null,
           "featureSchemaId": null,
-          "label": "Oui / Yes",
+          "label": "Yes",
           "value": "yes",
           "options": [
             {
               "type": "text",
-              "instructions": "Préciser / Specify",
+              "instructions": "Specify the missing information",
               "name": "missing_detail",
               "required": true,
               "options": [],
@@ -306,7 +425,7 @@
     },
     {
       "type": "text",
-      "instructions": "Correction facultative / Optional correction (requires adjudication)",
+      "instructions": "Optional correction (requires adjudication)",
       "name": "optional_correction",
       "required": false,
       "options": [],

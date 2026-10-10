@@ -29,7 +29,7 @@ class TestSimpleSubmission(unittest.TestCase):
                                      {"concept": "lv_size", "value": "normal"}],
                           "view": "A4C", "modality": "bmode",
                           "input_provenance_verified": True, "report_context": {"EF": 48}}
-        self.answers = {"view_ok": "yes", "modality_ok": "yes", "claim_1_ok": "yes",
+        self.answers = {"view": "A4C", "modality_ok": "yes", "claim_1_ok": "yes",
                         "claim_2_ok": "yes", "claim_3_ok": "no_claim", "claim_4_ok": "no_claim",
                         "claim_5_ok": "no_claim", "important_missing": "no"}
 
@@ -49,7 +49,7 @@ class TestSimpleSubmission(unittest.TestCase):
         self.assertEqual(result["supported"], self.candidate["claims"][:1])
 
     def test_wrong_routing_unverified_input_and_correction_block_release(self):
-        for change in ({"view_ok": "no"}, {"modality_ok": "cannot_assess"},
+        for change in ({"view": "OTHER"}, {"modality_ok": "cannot_assess"},
                        {"optional_correction": "LV size is dilated"}):
             result = score_review(self.candidate, {**self.answers, **change})
             self.assertFalse(result["partial_caption_ready_for_validation"])
@@ -57,13 +57,30 @@ class TestSimpleSubmission(unittest.TestCase):
         self.assertFalse(result["partial_caption_ready_for_validation"])
 
     def test_unsubmitted_or_inconsistent_answers_are_refused(self):
-        for change in ({"view_ok": None}, {"claim_1_ok": "no_claim"}, {"claim_3_ok": "yes"},
+        for change in ({"view": None}, {"claim_1_ok": "no_claim"}, {"claim_3_ok": "yes"},
                        {"important_missing": "yes"}):
             with self.assertRaises(ValueError):
                 score_review(self.candidate, {**self.answers, **change})
+        with self.assertRaisesRegex(ValueError, "invalid proposed view"):
+            score_review({**self.candidate, "view": "NOT_A_VIEW"}, self.answers)
 
     def test_committed_form(self):
         self.assertEqual(json.loads(FORM.read_text()), build_form())
+
+    def test_view_is_a_single_choice_over_the_approved_vocabulary(self):
+        question = build_form()["classifications"][0]
+
+        self.assertEqual(question["name"], "view")
+        self.assertEqual(question["type"], "radio")
+        self.assertEqual(question["instructions"], "What is the view?")
+        self.assertEqual([option["value"] for option in question["options"]], list(VIEWS))
+
+    def test_corrected_view_is_recorded_and_used_for_routing(self):
+        result = score_review(self.candidate, {**self.answers, "view": "A4C_LV"})
+
+        self.assertEqual(result["proposed_view"], "A4C")
+        self.assertEqual(result["reviewed_view"], "A4C_LV")
+        self.assertTrue(result["view_corrected"])
 
     def test_missing_source_grade_and_wrong_modality_are_not_released(self):
         with self.assertRaises(ValueError):
@@ -71,12 +88,12 @@ class TestSimpleSubmission(unittest.TestCase):
         jet = {"concept": "mitral_regurgitant_jet", "value": "demonstrated"}
         result = score_review({**self.candidate, "claims": [jet, self.candidate["claims"][1]]}, self.answers)
         self.assertFalse(result["partial_caption_ready_for_validation"])
-        result = score_review({**self.candidate, "view": "OTHER"}, self.answers)
+        result = score_review({**self.candidate, "view": "OTHER"}, {**self.answers, "view": "OTHER"})
         self.assertFalse(result["partial_caption_ready_for_validation"])
         av = {"concept": "aortic_morphology", "value": "three_cusp_morphology"}
         result = score_review({**self.candidate, "claims": [av, self.candidate["claims"][1]]}, self.answers)
         self.assertFalse(result["partial_caption_ready_for_validation"])
-        result = score_review({**self.candidate, "view": "A4C_ZOOM"}, self.answers)
+        result = score_review({**self.candidate, "view": "A4C_ZOOM"}, {**self.answers, "view": "A4C_ZOOM"})
         self.assertFalse(result["partial_caption_ready_for_validation"])
 
     @unittest.skipUnless(importlib.util.find_spec("labelbox"), "Labelbox SDK not installed")
