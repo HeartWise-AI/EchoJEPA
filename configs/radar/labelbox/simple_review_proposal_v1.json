@@ -3,29 +3,148 @@
   "classifications": [
     {
       "type": "radio",
-      "instructions": "Is the proposed view correct?",
-      "name": "view_ok",
+      "instructions": "What is the view?",
+      "name": "view",
       "required": true,
       "options": [
         {
           "schemaNodeId": null,
           "featureSchemaId": null,
-          "label": "Yes, supported",
-          "value": "yes",
+          "label": "A2C",
+          "value": "A2C",
           "options": []
         },
         {
           "schemaNodeId": null,
           "featureSchemaId": null,
-          "label": "No, wrong or unsupported",
-          "value": "no",
+          "label": "A2C_LV",
+          "value": "A2C_LV",
           "options": []
         },
         {
           "schemaNodeId": null,
           "featureSchemaId": null,
-          "label": "Cannot assess",
-          "value": "cannot_assess",
+          "label": "A2C_ZOOM",
+          "value": "A2C_ZOOM",
+          "options": []
+        },
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "A3C",
+          "value": "A3C",
+          "options": []
+        },
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "A3C_LV",
+          "value": "A3C_LV",
+          "options": []
+        },
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "A3C_ZOOM",
+          "value": "A3C_ZOOM",
+          "options": []
+        },
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "A4C",
+          "value": "A4C",
+          "options": []
+        },
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "A4C_LV",
+          "value": "A4C_LV",
+          "options": []
+        },
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "A4C_ZOOM",
+          "value": "A4C_ZOOM",
+          "options": []
+        },
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "A5C",
+          "value": "A5C",
+          "options": []
+        },
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "A5C_ZOOM",
+          "value": "A5C_ZOOM",
+          "options": []
+        },
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "PLAX",
+          "value": "PLAX",
+          "options": []
+        },
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "PLAX_DEEP",
+          "value": "PLAX_DEEP",
+          "options": []
+        },
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "PLAX_ZOOM",
+          "value": "PLAX_ZOOM",
+          "options": []
+        },
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "PSAX",
+          "value": "PSAX",
+          "options": []
+        },
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "PSAX_AV",
+          "value": "PSAX_AV",
+          "options": []
+        },
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "RVINF",
+          "value": "RVINF",
+          "options": []
+        },
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "SUBCOSTAL",
+          "value": "SUBCOSTAL",
+          "options": []
+        },
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "SUPRASTERNAL",
+          "value": "SUPRASTERNAL",
+          "options": []
+        },
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "OTHER",
+          "value": "OTHER",
           "options": []
         }
       ],

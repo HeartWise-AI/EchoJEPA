@@ -29,9 +29,13 @@ from tools.labelbox.simple_review import build_form, score_review
 
 SANDBOX_PROJECT_NAME = "RADAR Caption Pilot Sandbox"
 SANDBOX_DATASET_NAME = "RADAR Caption Pilot Sandbox Dataset"
-SANDBOX_ONTOLOGY_NAME = "RADAR simple review proposal v2 - English synthetic sandbox"
-LEGACY_SANDBOX_ONTOLOGY_NAMES = {"RADAR simple review proposal v1 - synthetic sandbox"}
+SANDBOX_ONTOLOGY_NAME = "RADAR simple review proposal v3 - preselected view synthetic sandbox"
+LEGACY_SANDBOX_ONTOLOGY_NAMES = {
+    "RADAR simple review proposal v1 - synthetic sandbox",
+    "RADAR simple review proposal v2 - English synthetic sandbox",
+}
 SANDBOX_BATCH_NAME = "RADAR synthetic pipeline v1"
+SANDBOX_VIEW_PREDICTIONS_NAME = "RADAR synthetic candidate views v1"
 SANDBOX_PROJECT_DESCRIPTION = "Synthetic-only RADAR Labelbox pipeline test managed by EchoJEPA issue #22."
 SANDBOX_DATASET_DESCRIPTION = "Generated synthetic videos only; no clinical data or source file paths."
 GLOBAL_KEY_PREFIX = "radar-synthetic-v1-"
@@ -133,6 +137,7 @@ class PipelineResult:
     total_rows: int
     uploaded_rows: int
     batch_created: bool
+    view_predictions_imported: bool
 
 
 class SandboxApi(Protocol):
@@ -148,6 +153,9 @@ class SandboxApi(Protocol):
         ...
 
     def ensure_batch(self, workspace: Workspace, global_keys: Sequence[str]) -> bool:
+        ...
+
+    def ensure_view_predictions(self, workspace: Workspace, cases: Sequence[SyntheticCase]) -> bool:
         ...
 
     def export_rows(self, workspace: Workspace) -> Sequence[Mapping[str, Any]]:
@@ -332,7 +340,6 @@ class LabelboxSandboxApi:
                     "attachments": [
                         {"type": "RAW_TEXT", "name": "Synthetic notice", "value": "SYNTHETIC DATA ONLY"},
                         {"type": "RAW_TEXT", "name": "Review scenario", "value": case.scenario},
-                        {"type": "RAW_TEXT", "name": "Candidate view", "value": case.view},
                         {"type": "RAW_TEXT", "name": "Candidate modality", "value": case.modality},
                         {"type": "RAW_TEXT", "name": "Numbered candidate claims", "value": claims},
                         {
@@ -357,6 +364,43 @@ class LabelboxSandboxApi:
                 raise SandboxError("The existing synthetic batch has an unexpected size.")
             return False
         workspace.project.create_batch(SANDBOX_BATCH_NAME, global_keys=list(global_keys))
+        return True
+
+    def ensure_view_predictions(self, workspace: Workspace, cases: Sequence[SyntheticCase]) -> bool:
+        from labelbox.schema.annotation_import import MALPredictionImport
+        from labelbox.schema.enums import AnnotationImportState
+
+        imports = [
+            item
+            for item in workspace.project.get_mal_prediction_imports()
+            if item.name == SANDBOX_VIEW_PREDICTIONS_NAME
+        ]
+        if len(imports) > 1:
+            raise SandboxError("Multiple imports use the fixed candidate-view prediction name.")
+        workspace.project.enable_model_assisted_labeling(True)
+        if imports:
+            imports[0].wait_till_done()
+            if imports[0].state == AnnotationImportState.FAILED:
+                raise SandboxError("The existing candidate-view prediction import failed.")
+            return False
+
+        predictions = [
+            {
+                "dataRow": {"globalKey": case.global_key},
+                "name": "view",
+                "answer": {"name": case.view},
+            }
+            for case in cases
+        ]
+        job = MALPredictionImport.create_from_objects(
+            client=self.client,
+            project_id=workspace.project.uid,
+            name=SANDBOX_VIEW_PREDICTIONS_NAME,
+            predictions=predictions,
+        )
+        job.wait_till_done()
+        if job.state == AnnotationImportState.FAILED or job.errors:
+            raise SandboxError("Candidate-view prediction import failed.")
         return True
 
     def export_rows(self, workspace: Workspace) -> Sequence[Mapping[str, Any]]:
@@ -418,6 +462,7 @@ def ensure_pipeline(
                 paths[case.global_key] = path
             api.upload_rows(workspace, missing, paths)
     batch_created = api.ensure_batch(workspace, keys)
+    view_predictions_imported = api.ensure_view_predictions(workspace, cases)
     return PipelineResult(
         project_name=SANDBOX_PROJECT_NAME,
         dataset_name=SANDBOX_DATASET_NAME,
@@ -425,6 +470,7 @@ def ensure_pipeline(
         total_rows=len(keys),
         uploaded_rows=len(missing),
         batch_created=batch_created,
+        view_predictions_imported=view_predictions_imported,
     )
 
 
@@ -568,6 +614,10 @@ def main(
     if args.apply:
         print(f"sandbox: ready; rows={result.total_rows}; uploaded={result.uploaded_rows}")
         print(f"batch: {'created' if result.batch_created else 'reused'}; name={SANDBOX_BATCH_NAME!r}")
+        print(
+            "candidate views: "
+            f"{'imported as pre-labels' if result.view_predictions_imported else 'existing pre-labels reused'}"
+        )
     else:
         print(f"summary: written; reviewed={reviewed}")
     return 0

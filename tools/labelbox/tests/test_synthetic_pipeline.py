@@ -7,6 +7,7 @@ import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from types import SimpleNamespace
+from unittest import mock
 
 import imageio.v3 as iio
 
@@ -16,6 +17,7 @@ from tools.labelbox.synthetic_pipeline import (
     LEGACY_SANDBOX_ONTOLOGY_NAMES,
     SANDBOX_BATCH_NAME,
     SANDBOX_DATASET_DESCRIPTION,
+    SANDBOX_VIEW_PREDICTIONS_NAME,
     SUMMARY_SCHEMA,
     LabelboxSandboxApi,
     SandboxError,
@@ -41,6 +43,7 @@ class FakeApi:
         self.rows = []
         self.batch_keys = None
         self.exported = list(export_rows)
+        self.prediction_cases = None
 
     def ensure_workspace(self, form, *, create):
         self.form = form
@@ -61,6 +64,12 @@ class FakeApi:
         if self.batch_keys is not None:
             return False
         self.batch_keys = list(global_keys)
+        return True
+
+    def ensure_view_predictions(self, workspace, cases):
+        if self.prediction_cases is not None:
+            return False
+        self.prediction_cases = list(cases)
         return True
 
     def export_rows(self, workspace):
@@ -184,6 +193,7 @@ class OrchestrationTests(unittest.TestCase):
         self.assertEqual(result.uploaded_rows, 3)
         self.assertEqual(result.total_rows, 4)
         self.assertTrue(result.batch_created)
+        self.assertTrue(result.view_predictions_imported)
         self.assertEqual(api.batch_keys, [case.global_key for case in synthetic_cases()])
         self.assertEqual(set(api.paths), {case.global_key for case in synthetic_cases()[1:]})
         self.assertTrue(all(path.name.endswith(".mp4") for path in api.paths.values()))
@@ -192,11 +202,13 @@ class OrchestrationTests(unittest.TestCase):
         keys = [case.global_key for case in synthetic_cases()]
         api = FakeApi(existing=keys)
         api.batch_keys = keys
+        api.prediction_cases = list(synthetic_cases())
 
         result = ensure_pipeline(api, renderer=lambda *_: self.fail("rendered an existing row"))
 
         self.assertEqual(result.uploaded_rows, 0)
         self.assertFalse(result.batch_created)
+        self.assertFalse(result.view_predictions_imported)
         self.assertEqual(api.rows, [])
 
     def test_refuses_non_reserved_or_duplicate_keys(self):
@@ -274,6 +286,47 @@ class SdkPayloadTests(unittest.TestCase):
         self.assertIn("SYNTHETIC DATA ONLY", serialized)
         self.assertNotIn("local-secret-path", serialized)
         self.assertNotIn("/tmp/", serialized)
+        self.assertNotIn('"name": "Candidate view"', serialized)
+
+    def test_candidate_view_predictions_are_single_choice_prelabels(self):
+        created = []
+
+        class PredictionJob:
+            state = SimpleNamespace(value="FINISHED")
+            errors = []
+
+            def wait_till_done(self):
+                return None
+
+        class PredictionImport:
+            @classmethod
+            def create_from_objects(cls, **kwargs):
+                created.append(kwargs)
+                return PredictionJob()
+
+        project = SimpleNamespace(
+            uid="project-id",
+            get_mal_prediction_imports=lambda: [],
+            enable_model_assisted_labeling=lambda enabled: self.assertTrue(enabled),
+        )
+        workspace = Workspace(project=project, dataset=object(), ontology=object())
+        api = LabelboxSandboxApi(object(), project_type=None, dataset_type=None, media_type="video")
+
+        with mock.patch("labelbox.schema.annotation_import.MALPredictionImport", PredictionImport):
+            self.assertTrue(api.ensure_view_predictions(workspace, synthetic_cases()))
+
+        self.assertEqual(created[0]["name"], SANDBOX_VIEW_PREDICTIONS_NAME)
+        self.assertEqual(
+            created[0]["predictions"],
+            [
+                {
+                    "dataRow": {"globalKey": case.global_key},
+                    "name": "view",
+                    "answer": {"name": case.view},
+                }
+                for case in synthetic_cases()
+            ],
+        )
 
 
 def exported_row(case, answers=None):
@@ -302,7 +355,7 @@ class ExportTests(unittest.TestCase):
     def test_scores_reviewed_rows_and_keeps_unreviewed_rows(self):
         reviewed, unreviewed = synthetic_cases()[:2]
         answers = {
-            "view_ok": "yes",
+            "view": "A4C",
             "modality_ok": "yes",
             "claim_1_ok": "yes",
             "claim_2_ok": "yes",
@@ -338,7 +391,7 @@ class ExportTests(unittest.TestCase):
         row = exported_row(case, {})
         row["projects"]["project-id"]["labels"][0]["label_details"] = None
 
-        with self.assertRaisesRegex(ValueError, "Missing or invalid view_ok"):
+        with self.assertRaisesRegex(ValueError, "Missing or invalid view"):
             summarize_export([row])
 
 

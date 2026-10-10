@@ -103,6 +103,10 @@ small synthetic videos, uploads safe review context, and creates one labeling ba
 The cases cover a supported finding, an unsupported finding, a finding outside the
 model crop, and a modality mismatch.
 
+The view question is a single-choice list of the approved RADAR views. Each synthetic
+row imports its candidate view as a Labelbox model-assisted pre-label, so the reviewer
+can confirm it without changing the answer or directly select the correct view.
+
 The command accepts no media, report, metadata, or storage-path arguments. Its
 default mode is a local preview that makes no Labelbox request:
 
