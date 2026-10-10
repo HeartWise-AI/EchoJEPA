@@ -29,7 +29,8 @@ from tools.labelbox.simple_review import build_form, score_review
 
 SANDBOX_PROJECT_NAME = "RADAR Caption Pilot Sandbox"
 SANDBOX_DATASET_NAME = "RADAR Caption Pilot Sandbox Dataset"
-SANDBOX_ONTOLOGY_NAME = "RADAR simple review proposal v1 - synthetic sandbox"
+SANDBOX_ONTOLOGY_NAME = "RADAR simple review proposal v2 - English synthetic sandbox"
+LEGACY_SANDBOX_ONTOLOGY_NAMES = {"RADAR simple review proposal v1 - synthetic sandbox"}
 SANDBOX_BATCH_NAME = "RADAR synthetic pipeline v1"
 SANDBOX_PROJECT_DESCRIPTION = "Synthetic-only RADAR Labelbox pipeline test managed by EchoJEPA issue #22."
 SANDBOX_DATASET_DESCRIPTION = "Generated synthetic videos only; no clinical data or source file paths."
@@ -271,6 +272,19 @@ class LabelboxSandboxApi:
                     f"The fixed-name ontology differs from the committed simple review form at: {paths}."
                 )
 
+    @staticmethod
+    def _connect_expected_ontology(project, ontology) -> None:
+        connected = project.ontology()
+        if connected is None:
+            project.connect_ontology(ontology)
+            return
+        if connected.uid == ontology.uid:
+            return
+        if connected.name in LEGACY_SANDBOX_ONTOLOGY_NAMES and project.get_label_count() == 0:
+            project.connect_ontology(ontology)
+            return
+        raise SandboxError("The synthetic sandbox project uses another ontology or already has labels.")
+
     def ensure_workspace(self, form: Mapping[str, Any], *, create: bool) -> Workspace:
         project, dataset, ontology = self._resources()
         self._validate_existing(project, dataset, ontology, form)
@@ -286,11 +300,7 @@ class LabelboxSandboxApi:
             dataset = self.client.create_dataset(
                 name=SANDBOX_DATASET_NAME, description=SANDBOX_DATASET_DESCRIPTION, iam_integration=None,
             )
-        connected = project.ontology()
-        if connected is None:
-            project.connect_ontology(ontology)
-        elif connected.uid != ontology.uid:
-            raise SandboxError("The synthetic sandbox project uses another ontology.")
+        self._connect_expected_ontology(project, ontology)
         return Workspace(project=project, dataset=dataset, ontology=ontology)
 
     def existing_global_keys(self, workspace: Workspace, keys: Sequence[str]) -> set[str]:

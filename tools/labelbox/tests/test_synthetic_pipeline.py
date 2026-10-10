@@ -13,6 +13,7 @@ import imageio.v3 as iio
 from tools.labelbox.synthetic_pipeline import (
     CANDIDATE_ATTACHMENT,
     GLOBAL_KEY_PREFIX,
+    LEGACY_SANDBOX_ONTOLOGY_NAMES,
     SANDBOX_BATCH_NAME,
     SANDBOX_DATASET_DESCRIPTION,
     SUMMARY_SCHEMA,
@@ -206,6 +207,37 @@ class OrchestrationTests(unittest.TestCase):
 
 
 class SdkPayloadTests(unittest.TestCase):
+    def test_replaces_only_the_unlabeled_legacy_sandbox_ontology(self):
+        legacy = SimpleNamespace(uid="legacy-id", name=next(iter(LEGACY_SANDBOX_ONTOLOGY_NAMES)))
+        english = SimpleNamespace(uid="english-id", name="English ontology")
+        connected = []
+        project = SimpleNamespace(
+            ontology=lambda: legacy, get_label_count=lambda: 0, connect_ontology=connected.append,
+        )
+
+        LabelboxSandboxApi._connect_expected_ontology(project, english)
+
+        self.assertEqual(connected, [english])
+
+    def test_refuses_to_replace_a_labeled_or_unknown_ontology(self):
+        english = SimpleNamespace(uid="english-id", name="English ontology")
+        legacy = SimpleNamespace(uid="legacy-id", name=next(iter(LEGACY_SANDBOX_ONTOLOGY_NAMES)))
+        labeled = SimpleNamespace(
+            ontology=lambda: legacy,
+            get_label_count=lambda: 1,
+            connect_ontology=lambda _: self.fail("replaced a labeled ontology"),
+        )
+        unknown = SimpleNamespace(
+            ontology=lambda: SimpleNamespace(uid="other-id", name="Another ontology"),
+            get_label_count=lambda: 0,
+            connect_ontology=lambda _: self.fail("replaced an unknown ontology"),
+        )
+
+        with self.assertRaisesRegex(SandboxError, "another ontology or already has labels"):
+            LabelboxSandboxApi._connect_expected_ontology(labeled, english)
+        with self.assertRaisesRegex(SandboxError, "another ontology or already has labels"):
+            LabelboxSandboxApi._connect_expected_ontology(unknown, english)
+
     def test_existing_dataset_calls_the_sdk_iam_relationship(self):
         api = LabelboxSandboxApi(object(), project_type=None, dataset_type=None, media_type="video")
         dataset = SimpleNamespace(description=SANDBOX_DATASET_DESCRIPTION, iam_integration=lambda: None,)
