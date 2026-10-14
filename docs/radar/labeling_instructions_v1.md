@@ -70,7 +70,7 @@ your confirmation.
 | 8 | Prefilled findings — confirm or correct selected columns | `review_columns` | no | the prefilled columns, each: Proposed value (original retained in context) (one of the column's values) + Confirm this finding (`yes` Supported in this input; `no` Incorrect / should not be here → Why should it not be here? (an error reason) + Correction (`remove` Remove this claim, or one of the column's values); `cannot_assess` Cannot assess → Why can it not be assessed? (an assessment limitation)) |
 | 9 | Important visible finding missing from the candidate? | `missing_information` | yes | `no` No; `yes` Yes → Select missing columns and values (any column the view carries, each: Missing visible value (one of the column's values) + Visible in this input? (`yes` Yes; `cannot_assess` Cannot assess)) |
 | 10 | Additional statement that should not be here? | `unsupported_information` | yes | `no` No; `yes` Yes → Select offending columns / statements (any column or statement type, each: Why should this statement not be here? (an error reason); a statement type also needs Copy the offending statement (free text)) |
-| 11 | Original caption (kept in immutable context; generated from proposals) | `candidate_caption` | no | free text |
+| 11 | Original caption (for reference only; edits are ignored) | `candidate_caption` | no | free text |
 | 12 | Comments (no patient details) | `comments` | no | free text |
 | 13 | I reviewed this input, checked the proposed values and targets, and confirmed or corrected the suggestions. | `review_completed` | yes | `yes` Review completed |
 <!-- END GENERATED: column_form -->

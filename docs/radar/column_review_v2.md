@@ -37,6 +37,9 @@ The form keeps version 2: nothing has been uploaded under it, and its approval f
 - Routed `OTHER` and unclassified clips to the separate [view and type review](view_type_review_v1.md) instead of this form;
 - Corrected the "IVC collapse" and "Pericardial effusion" labels and removed
   the unused `status` field from the specification.
+- Relabelled the original caption field "Original caption (for reference only;
+  edits are ignored)": the caption is rebuilt from the answers, and the original
+  stays in the context attachment.
 
 ## The usual annotation takes one confirmation
 

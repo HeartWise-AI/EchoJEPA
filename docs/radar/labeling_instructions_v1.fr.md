@@ -72,7 +72,7 @@ quelle vaut confirmation.
 | 8 | Prefilled findings — confirm or correct selected columns | `review_columns` | non | les colonnes préremplies, chacune : Proposed value (original retained in context) (une des valeurs de la colonne) + Confirm this finding (`yes` Supported in this input; `no` Incorrect / should not be here → Why should it not be here? (une raison d'erreur) + Correction (`remove` Remove this claim, ou une des valeurs de la colonne); `cannot_assess` Cannot assess → Why can it not be assessed? (une limite d'évaluation)) |
 | 9 | Important visible finding missing from the candidate? | `missing_information` | oui | `no` No; `yes` Yes → Select missing columns and values (toute colonne que la coupe porte, chacune : Missing visible value (une des valeurs de la colonne) + Visible in this input? (`yes` Yes; `cannot_assess` Cannot assess)) |
 | 10 | Additional statement that should not be here? | `unsupported_information` | oui | `no` No; `yes` Yes → Select offending columns / statements (toute colonne ou tout type d'énoncé, chacune : Why should this statement not be here? (une raison d'erreur); un type d'énoncé demande aussi Copy the offending statement (texte libre)) |
-| 11 | Original caption (kept in immutable context; generated from proposals) | `candidate_caption` | non | texte libre |
+| 11 | Original caption (for reference only; edits are ignored) | `candidate_caption` | non | texte libre |
 | 12 | Comments (no patient details) | `comments` | non | texte libre |
 | 13 | I reviewed this input, checked the proposed values and targets, and confirmed or corrected the suggestions. | `review_completed` | oui | `yes` Review completed |
 <!-- END GENERATED: column_form -->

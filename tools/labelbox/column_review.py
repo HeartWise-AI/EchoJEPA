@@ -79,7 +79,7 @@ def build_form(spec=None):
             _option("no", "No"), _option("yes", "Yes", [_checklist("missing_columns", "Select missing columns and values", missing_columns, required=True)])], top_level=True),
         _classification("radio", "unsupported_information", "Additional statement that should not be here?", required=True, options=[
             _option("no", "No"), _option("yes", "Yes", [_checklist("unsupported_columns", "Select offending columns / statements", unsupported_columns, required=True)])], top_level=True),
-        _classification("text", "candidate_caption", "Original caption (kept in immutable context; generated from proposals)", required=False, top_level=True),
+        _classification("text", "candidate_caption", "Original caption (for reference only; edits are ignored)", required=False, top_level=True),
         _classification("text", "comments", "Comments (no patient details)", required=False, top_level=True),
         _classification("radio", "review_completed", "I reviewed this input, checked the proposed values and targets, and confirmed or corrected the suggestions.", required=True, options=[_option("yes", "Review completed")], top_level=True),
     ]

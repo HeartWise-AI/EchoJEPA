@@ -20737,7 +20737,7 @@
     },
     {
       "type": "text",
-      "instructions": "Original caption (kept in immutable context; generated from proposals)",
+      "instructions": "Original caption (for reference only; edits are ignored)",
       "name": "candidate_caption",
       "required": false,
       "options": [],
