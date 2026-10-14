@@ -55,17 +55,6 @@ class TestShippedOntology(unittest.TestCase):
         for c in self.o.concepts.values():
             self.assertNotIn("OTHER", c.prior_views, c.id)  # the unclassified view carries no prior
 
-    def test_statement_concepts(self):
-        statements = self.o.statement_concepts
-        self.assertIn("mitral_valve_visible", statements)
-        self.assertIn("mitral_regurgitation", statements)
-        self.assertNotIn("tapse", statements)  # measurements are never stated
-        self.assertEqual(len(statements), sum(c.kind == "structure_visibility" or c.evidence == "visual"
-                                              for c in self.o.concepts.values()))
-        self.assertEqual([q.id for q in self.o.review.questions][:5],
-                         ["uninterpretable_clip", "view_correct", "caption_supported", "missing_information",
-                          "unsupported_information"])
-
     def test_structure_taxonomy(self):
         used = {s for c in self.o.concepts.values() for s in c.structures}
         self.assertEqual(used, set(self.o.structures))  # every structure is used, every use is declared
@@ -145,8 +134,6 @@ class TestValidator(unittest.TestCase):
         self.refused(lambda d: d.update(version="1.0.0"), "positive integer")
         self.refused(lambda d: d.update(version=True), "positive integer")
         self.refused(lambda d: d.pop("version"), "positive integer")
-        self.refused(lambda d: d.pop("assessment_limitations"), "assessment_limitations")
-        self.refused(lambda d: d["assessment_limitations"]["crop"].pop("fr"), "needs ['fr', 'en'] labels")
         self.refused(lambda d: d["concepts"].append(copy.deepcopy(d["concepts"][0])), "duplicate id")
         self.refused(lambda d: d["concepts"][0]["potentially_visible_in"][0]["views"].append("A6C"),
                      "neither a view nor a view group")
@@ -172,24 +159,7 @@ class TestValidator(unittest.TestCase):
         self.refused(lambda d: concept(d, "lv_size")["potentially_visible_in"][0]["views"].append("OTHER"),
                      "OTHER is the unclassified view and carries no prior")
 
-    def test_review_section_refusals(self):
-        def question(d, qid):
-            return next(q for q in d["review"]["questions"] if q["id"] == qid)
-
-        self.refused(lambda d: question(d, "view_correct")["answers"][0].update(id=True),
-                     "must be a unique snake_case string (quote yes and no)")
-        self.refused(lambda d: question(d, "view_correct")["answers"][2].update(detail="correct_view"),
-                     "detail 'correct_view' must be used exactly once, not 2 times")
-        self.refused(lambda d: question(d, "missing_information")["answers"][1].update(detail="notes"),
-                     "detail 'notes' not in")
-        self.refused(lambda d: question(d, "unconfirmed_statements").pop("detail"), "a checklist question")
-        self.refused(lambda d: question(d, "comments").update(required="no"), "required must be true or false")
-        self.refused(lambda d: d["review"]["detail_labels"].pop("unsupported_kind"), "must label exactly")
-        self.refused(lambda d: d["review"]["unconfirmed_reasons"].update(crop={"fr": "x", "en": "y"}),
-                     "repeat assessment limitations ['crop']")
-        self.refused(lambda d: d["concepts"][0].update(id="acquisition"), "reserved for the acquisition statement")
-        self.refused(lambda d: d.pop("review"), "the review form section is missing")
-
+    def test_concept_refusals(self):
         def spectral_prior_in_color(d):
             rvsp = next(c for c in d["concepts"] if c["id"] == "rv_systolic_pressure")
             rvsp["potentially_visible_in"][0]["acquisitions"].append("color_flow")

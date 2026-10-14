@@ -7,7 +7,8 @@ from types import SimpleNamespace
 from app.radar.ontology import VIEWS
 from tools.labelbox.column_review import (
     FORM, allowed_columns, build_candidate, build_form, context_attachment,
-    decode_annotations, finding_sentence, load_spec, prelabels, score_review, validate_annotations,
+    decode_annotations, encode_answers, finding_sentence, load_spec, prelabels, review_problems, score_review,
+    validate_annotations,
 )
 from tools.labelbox.import_column_review import apply_bundle, schema_shape
 
@@ -192,6 +193,64 @@ class TestColumnSubmissions(unittest.TestCase):
         self.assertTrue(self.score()["pending"])
         self.assertEqual(self.score()["caption"], "")
 
+    def test_an_uninterpretable_clip_counts_in_no_rate(self):
+        self.assertEqual(self.a["uninterpretable"], "no")
+        self.a.update(review_completed="yes", uninterpretable="yes", uninterpretable_reason="poor_quality",
+                      tricuspid_appearance__status="no")  # the other answers are not read
+        score = self.score()
+        self.assertTrue(score["uninterpretable"])
+        self.assertEqual((score["pending"], score["caption"], score["support_rate"], score["error_rate"]),
+                         ([], "", None, None))
+        self.assertEqual((score["rejected"], score["errors"]), ([], []))
+        self.a["uninterpretable_reason"] = "other"
+        self.assertEqual(self.score()["pending"], ["uninterpretable_reason"])  # "other" needs a comment
+        self.a["comments"] = "abdominal scan filed under the echo"
+        self.assertEqual(self.score()["pending"], [])
+        del self.a["uninterpretable_reason"]
+        self.assertEqual(self.score()["pending"], ["uninterpretable_reason"])
+        self.a = decode_annotations(prelabels(self.c))
+        self.a.update(review_completed="yes", uninterpretable=None)
+        self.assertIn("uninterpretable", self.score()["pending"])
+
+    def test_review_problems_define_a_valid_review(self):
+        done = prelabels(self.c) + [{"name": "review_completed", "answer": {"name": "yes"}}]
+
+        def changed(records, **answers):
+            out = copy.deepcopy(records)
+            for name, answer in answers.items():
+                next(r for r in out if r["name"] == name)["answer"] = answer
+            return out
+
+        self.assertEqual(review_problems(self.c, done), [])
+        self.assertTrue(review_problems(self.c, prelabels(self.c)))  # not completed
+        self.assertEqual(review_problems(self.c, changed(done, view_ok={"name": "no"})),
+                         ["view_ok is no exactly when view is changed from the proposal"])
+        self.assertEqual(review_problems(self.c, changed(done, view_ok={"name": "no"}, view={"name": "A5C"})), [])
+        self.assertTrue(review_problems(self.c, changed(done, view={"name": "A5C"})))
+        self.assertTrue(review_problems(self.c, changed(done, modality_ok={"name": "no"})))
+        self.assertTrue(review_problems(self.c, changed(done, uninterpretable={"name": "yes"})))  # no reason
+        reason = [{"name": "uninterpretable_reason", "answer": {"name": "not_cardiac"}}]
+        uninterpretable = {"name": "yes", "classifications": reason}
+        unread = changed(done, uninterpretable=uninterpretable, view_ok={"name": "no"})  # the view is not read
+        self.assertEqual(review_problems(self.c, unread), [])
+        self.assertEqual(review_problems(self.c, changed(done, review_columns=[])),
+                         ["Original columns must be reviewed; additions go in missing_columns"])
+
+    def test_encode_answers_inverts_decoding(self):
+        records = prelabels(self.c) + [{"name": "review_completed", "answer": {"name": "yes"}}]
+        answers = decode_annotations(records)
+        self.assertEqual(decode_annotations(encode_answers(answers, build_form())), answers)
+        answers.update(tricuspid_appearance__status="no", tricuspid_appearance__error="wrong_value",
+                       tricuspid_appearance__correction="thickened", missing_information="yes",
+                       missing_columns=["lv_size"], lv_size__missing_value="dilated", lv_size__missing_visible="yes")
+        encoded = encode_answers(answers, build_form())
+        validate_annotations(encoded, build_form(), require_complete=True)
+        self.assertEqual(decode_annotations(encoded), answers)
+        with self.assertRaises(ValueError):  # nested under an answer that is not selected
+            encode_answers({**answers, "uninterpretable_reason": "poor_quality"}, build_form())
+        with self.assertRaises(ValueError):
+            encode_answers({**answers, "view_ok": "maybe"}, build_form())
+
     def test_nested_ndjson_path_validation_and_required_confirmation(self):
         p = prelabels(self.c)
         validate_annotations(p, build_form())
@@ -199,8 +258,11 @@ class TestColumnSubmissions(unittest.TestCase):
             validate_annotations(p, build_form(), require_complete=True)
         p.append({"name": "review_completed", "answer": {"name": "yes"}})
         validate_annotations(p, build_form(), require_complete=True)
+        validate_annotations(p + [{"name": "comments", "answer": "jet partly outside the color box"}], build_form(),
+                             require_complete=True)
+        self.assertNotIn("comments", decode_annotations(prelabels(self.c)))
         wrong = copy.deepcopy(p)
-        wrong[6]["answer"][0]["classifications"][0]["name"] = "view_ok"
+        next(r for r in wrong if r["name"] == "review_columns")["answer"][0]["classifications"][0]["name"] = "view_ok"
         with self.assertRaises(ValueError):
             validate_annotations(wrong, build_form())
 
@@ -212,6 +274,21 @@ class TestColumnSubmissions(unittest.TestCase):
         self.assertIn("tricuspid_appearance", attachment["attachment_value"])
         with self.assertRaises(ValueError):
             context_attachment({**self.c, "report_context": {"MRN": "not-allowed"}})
+
+    def test_attachment_uploads_no_report_text(self):
+        report = {"Left ventricule findings":
+                  "Dysfonction légère du ventricule gauche. // Ventricule gauche non-dilaté",
+                  "Tricuspid valve findings": "Valve tricuspide normale", "Mitral valve findings": "Feuillets fins",
+                  "Visually Estimated EF": 48.0, "LVID Diastole (2D)": "5.1", "WMS Basal Inferoseptal": 2}
+        c = build_candidate(report, "A4C", "bmode", global_key="synthetic-text")
+        self.assertTrue(any(col.get("source_text") for col in c["columns"]))  # kept in the local candidate only.
+        value = context_attachment(c)["attachment_value"]
+        for text in ("Dysfonction", "non-dilaté", "Valve tricuspide", "Feuillets"):
+            self.assertNotIn(text, value)
+        self.assertIn("tricuspid_appearance | Normal | Tricuspid valve findings", value)
+        self.assertIn("Visually Estimated EF: 48", value)
+        self.assertIn("LVID Diastole (2D): 5.1", value)
+        self.assertIn("WMS Basal Inferoseptal: 2", value)
 
     @unittest.skipUnless(importlib.util.find_spec("labelbox"), "Labelbox SDK optional")
     def test_sdk_form_roundtrip(self):

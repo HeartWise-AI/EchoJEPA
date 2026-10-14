@@ -1,7 +1,6 @@
 {
   "schema": "deepecho-column-review",
   "version": 2,
-  "status": "proposed_labelbox_ontology",
   "fields": {
     "lv_function": {
       "label": "LV function",
@@ -159,7 +158,7 @@
       "note": ""
     },
     "pericardial_effusion": {
-      "label": "pericardial effusion",
+      "label": "Pericardial effusion",
       "group": "Other visible anatomy",
       "target": "pericardium",
       "sources": [
@@ -197,7 +196,7 @@
       "note": ""
     },
     "ivc_collapse": {
-      "label": "IVC colLApse",
+      "label": "IVC collapse",
       "group": "Other visible anatomy",
       "target": "ivc",
       "sources": [
@@ -1653,6 +1652,12 @@
     "unresolved_view": "View / slice level unresolved",
     "insufficient_input": "Needs additional views or measurements"
   },
+  "uninterpretable_reasons": {
+    "poor_quality": "Poor image quality or artifacts throughout",
+    "no_cardiac_structure": "No identifiable cardiac structure (crop, zoom or depth)",
+    "not_cardiac": "Not a cardiac ultrasound acquisition",
+    "other": "Other: say why in Comments"
+  },
   "unsupported_columns": {
     "exact_ef": "Exact numerical EF",
     "valve_severity": "Integrated valve severity",
@@ -1690,7 +1695,7 @@
     "5": "aneurysmal"
   },
   "prefill_policy": "Explicit report values only, view/modality/target routed; suggestions are MAL drafts. No review_completed prelabel, no missing-to-normal inference, no automatic ground truth.",
-  "scoring_policy": "Score immutable original columns; corrections and confirmed omissions are separate. Cannot assess is not an error or a negative. Exact report numbers remain context. Submitted review and exact input provenance gate release.",
+  "scoring_policy": "Score immutable original columns; corrections and confirmed omissions are separate. Cannot assess is not an error or a negative. An uninterpretable clip is scored on nothing else and gets no caption. Exact report numbers remain context. Submitted review and exact input provenance gate release.",
   "sources": [
     "https://www.asecho.org/wp-content/uploads/2016/02/2015_ChamberQuantificationREV.pdf",
     "https://www.asecho.org/wp-content/uploads/2025/09/PIIS0894731725002925.pdf",

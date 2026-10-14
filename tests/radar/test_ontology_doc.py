@@ -1,18 +1,10 @@
-"""The generated parts of the RADAR documents match the ontology, mapping and example YAML files."""
+"""The generated parts of the ontology document match the ontology and mapping YAML files."""
 
 import unittest
 
 from app.radar.label_mappings import load_mappings
 from app.radar.ontology import load_ontology
-from app.radar.ontology_doc import (
-    DEFAULT_DOC_PATH,
-    INSTRUCTIONS_PATHS,
-    document_sections,
-    mapping_text,
-    prior_text,
-    sync,
-)
-from app.radar.review_rules import load_examples
+from app.radar.ontology_doc import DEFAULT_DOC_PATH, document_sections, mapping_text, prior_text, sync
 
 
 def read(path):
@@ -25,11 +17,11 @@ class TestOntologyDoc(unittest.TestCase):
     def setUpClass(cls):
         cls.o = load_ontology()
         cls.m = load_mappings(cls.o)
-        cls.sections = document_sections(cls.o, cls.m, load_examples(cls.o))
+        cls.sections = document_sections(cls.o, cls.m)
         cls.text = read(DEFAULT_DOC_PATH)
 
     def test_documents_are_up_to_date(self):
-        self.assertEqual(set(self.sections), {DEFAULT_DOC_PATH, *INSTRUCTIONS_PATHS.values()})
+        self.assertEqual(set(self.sections), {DEFAULT_DOC_PATH})
         for path, sections in self.sections.items():
             text = read(path)
             self.assertEqual(sync(text, sections), text,
@@ -45,13 +37,6 @@ class TestOntologyDoc(unittest.TestCase):
             sync(self.text[:start] + self.text[stop:], sections)
         with self.assertRaises(ValueError):
             sync(self.text + "\n" + self.text[start:stop], sections)
-
-    def test_instructions_share_ids_across_languages(self):
-        en, fr = (read(INSTRUCTIONS_PATHS[lang]) for lang in ("en", "fr"))
-        for q in self.o.review.questions:
-            self.assertIn(f"`{q.id}`", en)
-            self.assertIn(f"`{q.id}`", fr)
-        self.assertEqual(en.count("\n### "), fr.count("\n### "))  # same rules and examples
 
     def test_prior_text_names_whole_groups(self):
         self.assertEqual(prior_text(self.o, self.o.concept("ivc_visible")), "`subcostal` (bmode, color_flow, mmode)")

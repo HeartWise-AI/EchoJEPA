@@ -3,6 +3,73 @@
   "classifications": [
     {
       "type": "radio",
+      "instructions": "Is this clip uninterpretable?",
+      "name": "uninterpretable",
+      "required": true,
+      "options": [
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "No, it can be interpreted",
+          "value": "no",
+          "options": []
+        },
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "Yes, nothing in it can be judged",
+          "value": "yes",
+          "options": [
+            {
+              "type": "radio",
+              "instructions": "Why?",
+              "name": "uninterpretable_reason",
+              "required": true,
+              "options": [
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Poor image quality or artifacts throughout",
+                  "value": "poor_quality",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "No identifiable cardiac structure (crop, zoom or depth)",
+                  "value": "no_cardiac_structure",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Not a cardiac ultrasound acquisition",
+                  "value": "not_cardiac",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Other: say why in Comments",
+                  "value": "other",
+                  "options": []
+                }
+              ],
+              "schemaNodeId": null,
+              "featureSchemaId": null,
+              "attributes": null,
+              "uiMode": "searchable"
+            }
+          ]
+        }
+      ],
+      "schemaNodeId": null,
+      "featureSchemaId": null,
+      "attributes": null,
+      "scope": "global"
+    },
+    {
+      "type": "radio",
       "instructions": "Proposed view",
       "name": "view",
       "required": true,
@@ -2090,7 +2157,7 @@
         {
           "schemaNodeId": null,
           "featureSchemaId": null,
-          "label": "pericardial effusion",
+          "label": "Pericardial effusion",
           "value": "pericardial_effusion",
           "options": [
             {
@@ -2536,7 +2603,7 @@
         {
           "schemaNodeId": null,
           "featureSchemaId": null,
-          "label": "IVC colLApse",
+          "label": "IVC collapse",
           "value": "ivc_collapse",
           "options": [
             {
@@ -13150,7 +13217,7 @@
                 {
                   "schemaNodeId": null,
                   "featureSchemaId": null,
-                  "label": "pericardial effusion",
+                  "label": "Pericardial effusion",
                   "value": "pericardial_effusion",
                   "options": [
                     {
@@ -13270,7 +13337,7 @@
                 {
                   "schemaNodeId": null,
                   "featureSchemaId": null,
-                  "label": "IVC colLApse",
+                  "label": "IVC collapse",
                   "value": "ivc_collapse",
                   "options": [
                     {
@@ -17048,7 +17115,7 @@
                 {
                   "schemaNodeId": null,
                   "featureSchemaId": null,
-                  "label": "pericardial effusion",
+                  "label": "Pericardial effusion",
                   "value": "pericardial_effusion",
                   "options": [
                     {
@@ -17214,7 +17281,7 @@
                 {
                   "schemaNodeId": null,
                   "featureSchemaId": null,
-                  "label": "IVC colLApse",
+                  "label": "IVC collapse",
                   "value": "ivc_collapse",
                   "options": [
                     {
@@ -20672,6 +20739,17 @@
       "type": "text",
       "instructions": "Original caption (kept in immutable context; generated from proposals)",
       "name": "candidate_caption",
+      "required": false,
+      "options": [],
+      "schemaNodeId": null,
+      "featureSchemaId": null,
+      "attributes": null,
+      "scope": "global"
+    },
+    {
+      "type": "text",
+      "instructions": "Comments (no patient details)",
+      "name": "comments",
       "required": false,
       "options": [],
       "schemaNodeId": null,

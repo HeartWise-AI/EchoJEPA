@@ -128,7 +128,8 @@ The [published gallery](https://deepecho-three-view-demo.papirobbi.chatgpt.site)
 and a complete study B with all 44 video loops, 33 cropped image exports and its report records,
 with valve morphology, ASE segment maps and confirmation-based captions. Display deidentification changes the field
 of view, so these exports are **illustrations, not validated production model inputs**. They are not uploaded to
-Labelbox or used as pilot training pairs. Production review still needs exact spatial/temporal input provenance.
+Labelbox or used as pilot training pairs. Production review shows the whole de-identified clip, which is also the
+model input (see [model input and review display](ontology_v1.md#model-input-and-review-display)).
 
 ## Sources and implementation status
 

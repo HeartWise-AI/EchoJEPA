@@ -3,6 +3,8 @@
 Ref: [issue #21](https://github.com/HeartWise-AI/EchoJEPA/issues/21) and
 [PR #25](https://github.com/HeartWise-AI/EchoJEPA/pull/25), reviewed at commit
 `6d4c55afd6c52007c31cd4301f027a29b1058e49`.
+The pilot now uses [column review v2](column_review_v2.md) and the
+[view and type review](view_type_review_v1.md) for clip labeling. The original five-question v1 form is retired.
 
 Build a versioned, bilingual ontology and dataset that align the **video actually received by the encoder** with
 its supported view, anatomy and findings. First pretrain the video encoder with EchoJEPA; then train video–text
@@ -46,13 +48,14 @@ The latter may require additional views, spectral Doppler and measurements.
 The existing PR documents the view and structure taxonomies, source mappings, machine-readable form, EN/FR
 instructions, synthetic examples and pilot denominators. It separates visibility from pathology and excludes
 measurement-dependent concepts from captions. Its approval record is pending. The latest PR description already
-specifies a crop outline, updating the earlier discussion quoted in the request.
+specified a crop outline; the team has since decided on whole-frame input instead (see
+[Review display contract](#review-display-contract)).
 
 Resolve these points before medical approval:
 
 | Priority | Finding | Requested decision or change |
 |---|---|---|
-| High | A center-crop outline describes spatial support but not selected frames; pretraining also uses random crops. | Apply the display contract below and prevent training augmentations from removing evidence for an accepted caption. |
+| High | A center-crop outline describes spatial support but not selected frames; pretraining also uses random crops. | Decided: no crop. Reviewers see the whole de-identified clip and the encoder receives the same clip, every frame resized whole to 224 × 224, with the embedding computed over the whole clip (see the display contract below). Still prevent training augmentations from removing evidence for an accepted caption. |
 | High | MR/AR/TR/PR share a severity scale marked visual; a report's integrated grade may not be decidable from one color loop. | Distinguish visible jet/presence from integrated severity. Until that extension is approved, leave an indeterminate grade unconfirmed and remove it from corrected captions. |
 | High | Numerical EF is caption-eligible despite multiview requirements, while reviewer instructions exclude measurements. | Decide whether to exclude numerical EF from local captions or retain only explicitly qualified visual estimates with sufficient multiview evidence. Never use a study EF as a verified one-clip value. |
 | High | A workflow-feasibility “Go” permits unsupported candidate captions. | Release only individually validated corrected pairs for contrastive training; the pilot's Go is not approval of every candidate. |
@@ -85,7 +88,7 @@ jet observation and integrated regurgitation severity, so a reviewer can preserv
 These fields are proposed additions, not already implemented v1 fields.
 
 Every dataset pair must retain opaque study/patient grouping keys in secure storage, input id, ontology version and
-hash, preprocessing version, crop geometry, selected source-frame indices, modality and its provenance, candidate
+hash, preprocessing version, the de-identified copy's digest, modality and its provenance, candidate
 structured claims/text, review status and reviewer, corrected claims/text, and acceptance reason. Preserve the
 candidate separately from the correction. Do not place patient data or source report text in repository artifacts.
 The future importer must parse corrected captions back to validated claims and flag text/claim disagreement for
@@ -93,7 +96,7 @@ adjudication; the current free-text correction field alone cannot enforce that c
 
 Only local pairs with checked display provenance, resolved view/acquisition, validated corrected text/claims and no
 remaining unsupported or unconfirmed claim enter the verified contrastive dataset. Uninterpretable inputs,
-unresolved reviews and report-only claims are excluded from that dataset. If the crop removes a real finding,
+unresolved reviews and report-only claims are excluded from that dataset. If a crop removes a real finding,
 removing that finding is a visibility limitation; it must not produce a negative clinical label.
 
 Synthetic examples for the requested extension:
@@ -103,25 +106,22 @@ Synthetic examples for the requested extension:
 - EN: “Apical four-chamber view, color Doppler. Mitral regurgitant jet visible; severity cannot be determined.”
   FR: « Coupe apicale 4 cavités, Doppler couleur. Jet d'insuffisance mitrale visible ; sévérité indéterminée. »
   Use proposed jet-presence semantics; do not serialize this as an existing v1 severity value.
-- A report mentions effusion, visible only outside the crop: flag the candidate effusion unconfirmed, remove it
-  from the corrected local caption and retain the report label only at study scope. Never label “no effusion”.
+- A report mentions effusion, but the clip's sector does not include it: flag the candidate effusion unconfirmed,
+  remove it from the corrected local caption and retain the report label only at study scope. Never label “no
+  effusion”.
 
 ## Review display contract
 
-The proposed v1 display is a full loop with the exact crop outline plus an identified model-input frame sequence.
-A synchronized crop-only panel is useful if Labelbox supports it, but must not substitute a different crop or
-temporal window. The model-input panel is the evidence; the full loop helps identify anatomy and view.
+Decided, replacing the crop outline: reviewers and the encoder see the same de-identified copy of the clip (the
+source's frame size and every frame, with identifying text blacked out). Reviewers see it whole, at its original
+resolution, with no overlay. The encoder receives every frame resized whole to 224 × 224, with no crop and no
+padding, and the caption's embedding is computed over the whole clip, not one window of frames. Nothing the
+reviewer sees is outside the model input, so no crop geometry or frame selection needs to be displayed or verified.
 
-The upload implementation must derive geometry from the actual transform and record frame indices, padding,
-source/resized dimensions, interpolation and preprocessing version. The 256-short-side/224-center-crop description
-matches the default frozen-evaluation transform in `evals/video_classification_frozen/utils.py`; it is not a
-universal description of `app/vjepa/transforms.py`, which uses random resized crops. Input resolution is configurable.
-Do not draw a fixed square on the assumption that every run uses the default.
-
-Outline overlays and panel labels are review aids only; the encoder receives neither. Verify the display using
-synthetic wide, tall and odd-dimension inputs and selected-frame examples before clinical review. A display whose
-crop or temporal sequence cannot be verified is returned for correction, not scored as a medical caption error.
-The upload/display implementation remains outside issue #21 and is not delivered by this documentation PR.
+The upload implementation records the copy's digest with each item and computes the embedding from the same file.
+Verify on a synthetic clip that the uploaded copy keeps every frame at its original size and carries no overlay. The
+stored archive videos carry burned-in identifiers and are never uploaded or embedded. The upload/display
+implementation remains outside issue #21.
 
 ## EchoJEPA then contrastive learning
 
@@ -152,14 +152,13 @@ set. Retain ordinal grades and negation in hard retrieval negatives. Never tune 
 
 The existing [pilot metrics](pilot_metrics_v1.md) are explicitly feasibility metrics for 3–5 training studies.
 Their denominators, unconfirmed-statement handling and per-study reporting are useful. Add a display-readiness gate,
-reasons for temporal exclusion, clinically important-error review and the verified-pair acceptance rule above.
+clinically important-error review and the verified-pair acceptance rule above.
 Report proposed thresholds as engineering decisions, not guideline-derived clinical acceptance limits. A rare major
 error warrants adjudication even when aggregate M3 meets Go. Predetermine the double-read subset and adjudication
 procedure; a larger external validation is a separate experiment.
 
 Request Dr. Avram's review of all v1 taxonomies, priors, mappings, EN/FR instructions and examples, then explicit
-decisions on numerical EF, regurgitation scope, absent findings, focused/zoomed views, temporal input, and pilot
-thresholds. Charlotte incorporates the decisions into YAML, generated documents and form; Jacques checks the input
+decisions on numerical EF, regurgitation scope, absent findings, focused/zoomed views and pilot thresholds. Charlotte incorporates the decisions into YAML, generated documents and form; Jacques checks the input
 and dataset provenance contract. Run generation checks, the Labelbox SDK round trip and an editor inspection, then
 request medical approval naming the final content commit. The approval record remains pending until that evidence
 exists. No clinical pilot upload or training run is authorized by this document.

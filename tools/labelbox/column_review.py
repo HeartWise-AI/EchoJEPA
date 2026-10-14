@@ -63,6 +63,10 @@ def build_form(spec=None):
             _choice(key+"__unsupported_kind", "Why should this statement not be here?", spec["error_kinds"]),
             _classification("text", key+"__statement", "Copy the offending statement", required=True)]))
     questions = [
+        _classification("radio", "uninterpretable", "Is this clip uninterpretable?", required=True, options=[
+            _option("no", "No, it can be interpreted"),
+            _option("yes", "Yes, nothing in it can be judged", [
+                _choice("uninterpretable_reason", "Why?", spec["uninterpretable_reasons"])])], top_level=True),
         _choice("view", "Proposed view", {v: v for v in spec["views"]}, top=True),
         _choice("modality", "Acquisition mode", spec["modalities"], top=True),
         _choice("view_ok", "View correct?", {"yes": "Yes", "no": "No — reroute", "cannot_assess": "Cannot assess"}, top=True),
@@ -76,6 +80,7 @@ def build_form(spec=None):
         _classification("radio", "unsupported_information", "Additional statement that should not be here?", required=True, options=[
             _option("no", "No"), _option("yes", "Yes", [_checklist("unsupported_columns", "Select offending columns / statements", unsupported_columns, required=True)])], top_level=True),
         _classification("text", "candidate_caption", "Original caption (kept in immutable context; generated from proposals)", required=False, top_level=True),
+        _classification("text", "comments", "Comments (no patient details)", required=False, top_level=True),
         _classification("radio", "review_completed", "I reviewed this input, checked the proposed values and targets, and confirmed or corrected the suggestions.", required=True, options=[_option("yes", "Review completed")], top_level=True),
     ]
     return {"tools": [], "classifications": questions}
@@ -290,6 +295,7 @@ def prelabels(candidate, spec=None):
     selected = [{"name": c["concept"], "classifications": [
         _answer(c["concept"]+"__value", c["value"]), _answer(c["concept"]+"__status", "yes")]} for c in candidate["columns"]]
     records = [
+        _answer("uninterpretable", "no"),
         _answer("view", candidate["view"]), _answer("modality", candidate["modality"]),
         _answer("view_ok", "yes"), _answer("modality_ok", "yes"), _answer("psax_level", candidate["level"]),
         {"name": "visible_targets", "answer": [{"name": t} for t in candidate["suggested_targets"]]},
@@ -369,13 +375,53 @@ def decode_annotations(annotations):
     return out
 
 
+def encode_answers(answers, form):
+    """The nested annotation records of decoded answers on this form: the inverse of `decode_annotations`. An answer
+    the selected options do not reach is refused rather than dropped."""
+    def records(questions):
+        out = []
+        for q in questions:
+            if q["name"] not in answers:
+                continue
+            value = answers[q["name"]]
+            if q["type"] == "text":
+                out.append({"name": q["name"], "answer": value})
+                continue
+            options = {o["value"]: o for o in q["options"]}
+            selected = []
+            for chosen in (value if q["type"] == "checklist" else [value]):
+                if chosen not in options:
+                    raise ValueError(f"{q['name']} has no answer {chosen!r}")
+                nested = records(options[chosen]["options"])
+                selected.append({"name": chosen, **({"classifications": nested} if nested else {})})
+            out.append({"name": q["name"], "answer": selected if q["type"] == "checklist" else selected[0]})
+        return out
+    encoded = records(form["classifications"])
+    unreached = set(answers) - set(decode_annotations(encoded))
+    if unreached:
+        raise ValueError(f"Answers outside the selected options: {sorted(unreached)}")
+    return encoded
+
+
 def score_review(candidate, answers, *, submitted=False, spec=None):
     spec = spec or load_spec()
     _validate_candidate(candidate, spec)
     original = {c["concept"]: c for c in candidate["columns"]}
+    completed = submitted is True and answers.get("review_completed") == "yes"
+    if answers.get("uninterpretable") == "yes":
+        # Nothing else is read: the clip counts in no column rate and gets no caption.
+        reason = answers.get("uninterpretable_reason")
+        explained = reason != "other" or str(answers.get("comments", "")).strip()
+        pending = [] if reason in spec["uninterpretable_reasons"] and explained else ["uninterpretable_reason"]
+        return dict(uninterpretable=True, uninterpretable_reason=reason, supported=[], rejected=[], cannot_assess=[],
+                    corrections=[], omissions=[], errors=[], pending=pending, original_count=len(original),
+                    resolved_count=0, support_rate=None, error_rate=None, routing=False, submitted=completed,
+                    caption="", ready_for_validation=False)
     if set(answers.get("review_columns", [])) != set(original):
         raise ValueError("Original columns must be reviewed; additions go in missing_columns")
     supported, rejected, unresolved, corrections, omissions, errors, pending = [], [], [], [], [], [], []
+    if answers.get("uninterpretable") != "no":
+        pending.append("uninterpretable")
     for key, column in original.items():
         status = answers.get(key+"__status")
         if answers.get(key+"__value") != column["value"]:
@@ -433,10 +479,10 @@ def score_review(candidate, answers, *, submitted=False, spec=None):
                and answers.get("view") == candidate["view"] and answers.get("modality") == candidate["modality"]
                and candidate["view"] != "OTHER"
                and all(c["concept"] in allowed and value_allowed(c["concept"], c["value"], candidate["view"], spec) for c in actual))
-    completed = submitted is True and answers.get("review_completed") == "yes"
     caption = " ".join(finding_sentence(c["concept"], c["value"], spec) for c in actual) if completed and routing and not pending else ""
     resolved = len(supported) + len(rejected)
-    return dict(supported=supported, rejected=rejected, cannot_assess=unresolved, corrections=corrections, omissions=omissions,
+    return dict(uninterpretable=False, uninterpretable_reason=None, supported=supported, rejected=rejected,
+                cannot_assess=unresolved, corrections=corrections, omissions=omissions,
                 errors=errors, pending=pending, original_count=len(original), resolved_count=resolved,
                 support_rate=len(supported)/len(original) if original else None,
                 error_rate=len(rejected)/resolved if resolved else None,
@@ -444,19 +490,60 @@ def score_review(candidate, answers, *, submitted=False, spec=None):
                 ready_for_validation=bool(caption) and candidate.get("input_provenance_verified") is True)
 
 
+def review_problems(candidate, annotations, spec=None):
+    """Why one submitted review cannot be counted; empty when it is valid. Valid reviews are the population of the
+    pilot metrics: every required answer in its place in the form, no detail left pending, nothing that contradicts
+    the candidate, and a view or acquisition mode answered "No" replaced by the one the clip shows."""
+    spec = spec or load_spec()
+    try:
+        validate_annotations(annotations, build_form(spec), require_complete=True)
+        answers = decode_annotations(annotations)
+        score = score_review(candidate, answers, submitted=True, spec=spec)
+    except ValueError as e:
+        return [str(e)]
+    problems = list(score["pending"])
+    if score["uninterpretable"]:
+        return problems
+    for name in ("view", "modality"):
+        if (answers.get(name+"_ok") == "no") != (answers.get(name) != candidate[name]):
+            problems.append(f"{name}_ok is no exactly when {name} is changed from the proposal")
+    return problems
+
+
+def numeric_context(report_context):
+    """The report context values that are finite numbers (EF, dimensions, codes); free text is left out."""
+    out = {}
+    for key, value in report_context.items():
+        if isinstance(value, bool):
+            continue
+        try:
+            number = float(value)
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if number == number and abs(number) != float("inf"):
+            out[key] = int(number) if number.is_integer() else number
+    return out
+
+
 def context_attachment(candidate, spec=None):
+    """The text uploaded next to each video. It holds no report text: each proposal shows its report field's name,
+    not the clause it came from, and the report context keeps only numbers. The source text stays in the local
+    candidate."""
     spec = spec or load_spec()
     lines = [f"DeepECHO column review v{spec['version']} — original, unverified proposals",
              f"View: {candidate['view']}; acquisition: {candidate['modality']}",
              "Confirm values only in the displayed input. Report numbers are study context."]
     for c in candidate["columns"]:
-        lines.append(f"{c['concept']} | {spec['fields'][c['concept']]['values'][c['value']]} | {c.get('source_column', 'candidate')} | {c.get('source_text', '')}")
+        lines.append(f"{c['concept']} | {spec['fields'][c['concept']]['values'][c['value']]} | "
+                     f"{c.get('source_column', 'candidate')}")
     if candidate.get("report_context"):
         allowed = {source for f in spec["fields"].values() for source in f["sources"]+f.get("context_columns", [])}
         if any(key not in allowed for key in candidate["report_context"]):
             raise ValueError("Report context contains a column outside the clinical allowlist")
-        lines.append("Report context (not local claims):")
-        lines.extend(f"{key}: {value}" for key, value in candidate["report_context"].items())
+        numbers = numeric_context(candidate["report_context"])
+        if numbers:
+            lines.append("Report numbers (not local claims):")
+            lines.extend(f"{key}: {value}" for key, value in numbers.items())
     lines += ["Original caption: "+candidate["candidate_caption"], "Suggestions require submitted human review."]
     return dict(global_key=candidate["global_key"], attachment_type="RAW_TEXT", attachment_name="DeepECHO review v2 — original proposals", attachment_value="\n".join(lines))
 

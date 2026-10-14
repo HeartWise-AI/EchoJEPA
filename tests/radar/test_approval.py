@@ -35,7 +35,7 @@ PENDING_RECORD = {
     "thresholds_agreement": {"link": None, "date": None}, "labelbox_sdk_check": {"version": None},
 }
 STATUS_TEXT = re.compile(
-    r"\b(?:status|statut)\s*:|\b(?:not approved|non approuvée?s?|draft|brouillon|proposed thresholds)\b", re.I)
+    r"\b(?:status|statut)\"?\s*:|\b(?:not approved|non approuvée?s?|draft|brouillon|proposed thresholds)\b", re.I)
 
 
 def git(root, *args):
@@ -196,6 +196,13 @@ class TestShippedRecord(unittest.TestCase):
         else:
             with self.assertRaises(ApprovalError):
                 require_approval(ONTOLOGY)
+
+    def test_the_review_forms_are_approved_with_the_ontology(self):
+        files = approved_files(ONTOLOGY)
+        for path in ("configs/radar/column_review_v2.json", "configs/radar/labelbox/column_review_v2.json",
+                     "configs/radar/labelbox/view_type_review_v1.json"):
+            self.assertIn(path, files)
+        self.assertEqual(files[0], os.path.relpath(ONTOLOGY.path, REPO_ROOT))  # the ontology comes first
 
     def test_every_approved_file_exists(self):
         for path in approved_files(ONTOLOGY):

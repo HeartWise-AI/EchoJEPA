@@ -1,9 +1,13 @@
 # DeepECHO: confirm prefilled columns in Labelbox
 
-**This is the proposed Labelbox review interface for the current PR.** It replaces the generic five-slot
-proposal with named clinical columns, dropdown values, report-based draft captions, and typed omissions and
-unsupported statements. The website uses the same field IDs and choices. The older RADAR v1 taxonomy and
-approval record remain versioned separately; this change does not record medical approval.
+This is the Labelbox review form for clips of a classified view in the RADAR caption pilot. It replaces the generic
+five-slot proposal with named clinical columns, dropdown values, report-based candidate captions, and typed omissions
+and unsupported statements. The demo website uses the same field IDs and answer choices as the approved
+labeling form, except for the clip-level "uninterpretable" question, which
+has not yet been implemented. The form is approved together with
+[ontology v1](ontology_v1.md), the [reviewer instructions](labeling_instructions_v1.md) and the
+[pilot metrics](pilot_metrics_v1.md), in [approval_v1.md](approval_v1.md). The form's version (2) is independent of the approved package version (v1),
+which is reflected in the supporting document filenames (see [Versions](ontology_v1.md)).
 
 The current files are selected by [current_review.json](../../configs/radar/labelbox/current_review.json):
 
@@ -13,9 +17,30 @@ The current files are selected by [current_review.json](../../configs/radar/labe
 - [Ontology/context/MAL importer](../../tools/labelbox/import_column_review.py)
 - [Whole-study demonstration](https://deepecho-three-view-demo.papirobbi.chatgpt.site)
 
+## Changes since PR #26
+
+The form keeps version 2: nothing has been uploaded under it, and its approval freezes it. Changes since PR #26:
+
+- Added a clip-level "Uninterpretable clip?" question (issue #21), defaulting
+  to "No". Selecting "Yes" requires a reason, and selecting "Other" also
+  requires a comment. Uninterpretable clips are excluded from all rate
+  calculations and receive no caption.
+- Added an optional "Comments" field, which must not contain patient details.
+- Added `review_problems` to validate submitted reviews for inclusion in
+  pilot metrics. If a reviewer answers "No" to a proposed view or acquisition
+  mode, they must provide the correct one.
+- Added `encode_answers` as the inverse of `decode_annotations`.
+- Removed report text from context attachments. Each proposal identifies its
+  source report field, while report context contains only numeric values.
+- Required reviewers to see the complete de-identified clip and the encoder
+  to process every frame resized in full, without cropping.
+- Routed `OTHER` and unclassified clips to the separate [view and type review](view_type_review_v1.md) instead of this form;
+- Corrected the "IVC collapse" and "Pericardial effusion" labels and removed
+  the unused `status` field from the specification.
+
 ## The usual annotation takes one confirmation
 
-Each clip opens with its proposed view and acquisition mode, relevant report values, and a draft caption.
+Each clip opens with its proposed view and acquisition mode, relevant report values, and a candidate caption.
 Explicitly reported normal findings are prefilled too:
 
 | Report field | Explicit report text | Prefilled column/value | Proposed caption |
@@ -25,16 +50,46 @@ Explicitly reported normal findings are prefilled too:
 | Left ventricule findings | Ventricule gauche non-dilaté | lv_size = normal | The visible LV cavity is not dilated. |
 
 The native form selects applicable clinical columns, fills their values, and suggests **Supported**.
-It also suggests that the view and mode are correct and that no additional information is missing or unsupported.
+It also suggests that the clip can be interpreted, that the view and mode are correct, and that no additional
+information is missing or unsupported.
 The reviewer checks the displayed input and target coverage, changes exceptions, and selects the required
 **Review completed** answer before submitting. That answer is never part of imported predictions.
 Imported suggestions cannot be scored as submitted annotations.
 
-An empty report section stays empty. Mild TR, no TR, or a normal RV does not establish normal tricuspid
-leaflet appearance. Normal appearance does not establish normal motion or absence of a jet.
-The narrow extractor handles explicit phrases, uncertainty, conflicting assertions, and verified RV function codes.
+An empty report section stays empty. The narrow extractor handles explicit phrases, uncertainty, conflicting assertions, and verified RV function codes.
 It does not convert numerical EF into arbitrary qualitative thresholds. Unrecognized phrases produce no proposal
 and remain available as report context.
+
+## What the reviewer sees and what the encoder receives
+
+Both use the same de-identified copy of the clip: the source's frame size and every frame, with identifying text
+blacked out. The reviewer sees the copy whole, at its original resolution, with no overlay. The encoder receives
+every frame resized whole to 224 × 224, with no crop and no padding, and the embedding paired
+with the reviewed caption covers the whole clip. "This input" in the captions therefore means the whole clip. Stored
+archive videos carry burned-in identifiers and are never uploaded. A reviewer who sees identifying text must skip the item and report its Labelbox id so the item can be deleted. The rule is the ontology's
+([model input and review display](ontology_v1.md#model-input-and-review-display)), and the view and type review
+follows it too.
+
+## Which clips reach this form
+
+Every valid video of a pilot study is reviewed, in one of two forms:
+
+- a video of a classified view, in B-mode or color Doppler, gets this form and its caption;
+- a video the view classifier labels `OTHER`, or does not classify, gets the separate
+  [view and type review](view_type_review_v1.md) and no caption: an `OTHER` clip can show the inferior vena cava or
+  flow through a ventricle, and one caption cannot fit both.
+
+Preprocessing removes, before anything is uploaded:
+
+- still clips (no motion), including frozen frames saved as several identical frames;
+- clips with visible measurements: calipers, tracings or measurement text over the image, which would let a model
+  read the answer instead of assessing the image;
+- a classified view whose acquisition mode is not B-mode or color Doppler.
+
+Single-frame DICOM objects (still B-mode measurement frames, spectral Doppler stills, report and measurement pages)
+have no video in the archive and are never candidates. Non-cardiac clips filed under a TTE exam still need their
+own check. If a removed kind of clip reaches a reviewer anyway, the reviewer says so in **Comments**, an optional
+free-text field (no patient details); the clip is then removed and the preprocessing rule fixed.
 
 ## Per-column exceptions
 
@@ -51,9 +106,27 @@ evidence, not visible, wrong view/target, wrong modality, study-level claim in a
 source/invented assertion**. Limitations are poor image quality, incomplete cycle, target outside the displayed
 input, unresolved view/slice level, and insufficient input requiring other views or measurements.
 
-Original values and source text remain in an immutable context attachment and the local candidate.
+Original values remain in an immutable context attachment, which names each proposal's report field but holds no
+report text; the source text stays in the local candidate, on the server.
 A value correction uses its explicit correction control. An existing column cannot also be counted as an
 omission. Removing a rejected claim never inverts it to normal or disease absent.
+
+## What a caption claims
+
+A candidate caption is built from the prefilled columns. Each column with its value gives one fixed sentence
+(`finding_sentence` in `tools/labelbox/column_review.py`), so the text and the structured claims match one to one by
+construction, and the caption holds nothing else: no identifiers, dates, numbers or report text. Reviewers judge the
+columns, not the text, and the [pilot metrics](pilot_metrics_v1.md) count the columns.
+
+- **View and acquisition mode** are proposed with every clip and judged by their own questions. They are not columns.
+- **Findings.** A column names a clinical finding (for example `lv_function`) and holds one of its values. The clip's
+  view, acquisition mode and covered targets decide which columns it may carry; only explicit report statements
+  prefill them, and a report section that is empty prefills nothing.
+- **Absence.** "No mitral regurgitant jet is demonstrated in this acquisition" is a column value (`not_demonstrated`),
+  judged like any other.
+- **Rebuilt captions.** After review, the caption is rebuilt from the supported columns, the corrected values and the
+  confirmed omissions. An uninterpretable clip, a corrected view or acquisition mode, a detail left pending or an
+  unsubmitted review gives no caption. There is no free-text caption to edit.
 
 ## Routing and values
 
@@ -75,9 +148,11 @@ not broadcast to basal/apical slices. The apical cap is excluded.
 
 ## Native ontology and prelabels
 
-Build candidates with the builder's report, view, acquisition mode and opaque row-key arguments. Retain exact
-input provenance and use confirmed targets for focused acquisitions. Whitelisted clinical report context includes
-relevant numerical fields without turning those numbers into local claims.
+Build candidates with the builder's report, view, acquisition mode and opaque row-key arguments. Set
+`input_provenance_verified` only when the data row is the de-identified copy whose whole frames feed the encoder
+(checked by the copy's digest), and use confirmed targets for focused acquisitions. Whitelisted clinical report
+context includes relevant numerical fields without turning those numbers into local claims; only those numbers are
+uploaded, never the findings text.
 Raw report pages, accession numbers and linkage manifests are not annotation payloads.
 
 Generate the schema, native annotations and text context offline:
@@ -115,11 +190,16 @@ Mutable caption text is not accepted as clinical evidence.
 - Original error rate = rejected original columns / (supported + rejected original columns).
 - Cannot-assess columns, corrections, omissions and extra unsupported statements have separate counts.
 - Empty denominators return null.
+- An uninterpretable clip must include a reason, with an additional comment required if "Other" is selected. It is excluded from all other evaluations, contributes to no rate calculations, and receives no caption.
+
+`review_problems` lists why a submitted review cannot be counted: an answer missing or misplaced in the form, a
+detail left pending, an answer that contradicts the candidate, or a view or acquisition mode answered "No" but left
+as proposed. The [pilot metrics](pilot_metrics_v1.md) are computed on the reviews it accepts.
 
 The rebuilt caption includes supported findings and explicit visible corrections/omissions. Wrong or unresolved
 view, acquisition or target coverage, missing details or absent final confirmation prevents a clinical caption.
-Exact spatial/temporal provenance additionally gates readiness for downstream validation. That flag is not
-medical approval or a release to training.
+Input provenance (`input_provenance_verified`: the reviewed row is the encoder's de-identified copy) additionally
+gates readiness for downstream validation. That flag is not medical approval or a release to training.
 
 ## Complete study
 
@@ -134,7 +214,8 @@ belong to study A; PLAX/PSAX_AV belong to study B and retain that report.
 
 The site shows default captions, saves reviews locally, and exports original and corrected candidates.
 It provides the native ontology and all 44 video prelabels. Display crops have unverified production-input
-provenance and are clinical review illustrations.
+provenance and are clinical review illustrations. Labelbox items are not crops: they are the whole de-identified
+clips described above.
 
 ## Sources and verification
 

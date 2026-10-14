@@ -38,13 +38,6 @@ VALUE_TYPES = ("boolean", "ordinal", "categorical", "numeric")
 EVIDENCE_TYPES = ("visual", "measurement")
 LANGUAGES = ("fr", "en")
 COLUMN_PARSERS = ("numeric", "scale")
-QUESTION_TYPES = ("radio", "checklist", "text")
-# Define the additional information requested after a review answer (see the `review` section of the YAML); the form builder implements each.
-ANSWER_DETAILS = ("limitation", "correct_view", "missing", "unsupported")
-CHECKLIST_DETAILS = ("unconfirmed",)
-DETAIL_LABELS = ("limitation", "correct_view", "missing", "missing_other", "unsupported", "unsupported_kind",
-                 "unconfirmed_reason")
-ACQUISITION_STATEMENT = "acquisition"  # the statement id of a caption's acquisition mode.
 
 # Outcomes of `Ontology.relevance`. Only `RELEVANT` findings may enter a caption. The three gap outcomes are reported
 # as explicit gaps; `NOT_IN_VIEW` is simply out of scope for the clip.
@@ -138,36 +131,6 @@ class Concept:
 
 
 @dataclass(frozen=True)
-class Answer:
-    id: str
-    labels: Mapping[str, str]           # language -> label.
-    detail: str | None = None
-
-
-@dataclass(frozen=True)
-class Question:
-    id: str
-    type: str
-    required: bool
-    text: Mapping[str, str]             # language -> question.
-    answers: tuple[Answer, ...] = ()    # radio questions.
-    detail: str | None = None           # checklist questions.
-
-
-@dataclass(frozen=True)
-class ReviewSpec:
-    questions: tuple[Question, ...]
-    detail_labels: Mapping[str, Mapping[str, str]]
-    unsupported_kinds: Mapping[str, Mapping[str, str]]
-    unconfirmed_reasons: Mapping[str, Mapping[str, str]]  # followed by the assessment limitations.
-    acquisition_statement: Mapping[str, str]
-    undetermined_view: Mapping[str, str]  # the view assigned to a corrected caption when the reviewer cannot identify it.
-
-    def question(self, question_id: str) -> Question:
-        return next(q for q in self.questions if q.id == question_id)
-
-
-@dataclass(frozen=True)
 class Ontology:
     name: str
     version: int
@@ -178,8 +141,6 @@ class Ontology:
     view_labels: Mapping[str, Mapping[str, str]]    # language -> view -> label.
     structures: Mapping[str, Structure]             # in file order.
     acquisition_labels: Mapping[str, Mapping[str, str]]
-    limitations: Mapping[str, Mapping[str, str]]    # reason -> language -> label, in file order.
-    review: ReviewSpec
     scales: Mapping[str, Scale]
     negation_cues: tuple[str, ...]
     concepts: Mapping[str, Concept]                 # in file order.
@@ -187,16 +148,6 @@ class Ontology:
     @property
     def concept_ids(self) -> tuple[str, ...]:
         return tuple(self.concepts)
-
-    @property
-    def statement_concepts(self) -> tuple[str, ...]:
-        """Returns concepts that can appear in captions, in their original file order.
-
-        Includes structure visibility concepts and visually assessed findings. Measurement-based findings
-        are never considered relevant to individual clips and therefore cannot be included in captions.
-        """
-        return tuple(cid for cid, c in self.concepts.items()
-                     if c.kind == "structure_visibility" or c.evidence == "visual")
 
     @property
     def tag(self) -> str:
@@ -365,88 +316,6 @@ def _expand_views(entries, groups: Mapping, where: str, problems: list) -> list:
     return views
 
 
-def _bilingual(raw, where: str, problems: list) -> dict:
-    if not isinstance(raw, Mapping) or any(not isinstance(raw.get(lang), str) or not raw.get(lang)
-                                           for lang in LANGUAGES):
-        problems.append(f"{where}: needs {list(LANGUAGES)} text")
-        return {}
-    return {lang: raw[lang] for lang in LANGUAGES}
-
-
-def _labelled_ids(raw, where: str, problems: list) -> dict:
-    out = {}
-    if not isinstance(raw, Mapping) or not raw:
-        problems.append(f"{where}: must list at least one id")
-        return out
-    for key, labels in raw.items():
-        if not isinstance(key, str) or not _ID.match(key):
-            problems.append(f"{where}: {key!r} must be a snake_case string id")
-            continue
-        out[key] = _bilingual(labels, f"{where}.{key}", problems)
-    return out
-
-
-def _review_spec(raw, limitations: Mapping, problems: list) -> ReviewSpec | None:
-    if not isinstance(raw, Mapping):
-        problems.append("review: the review form section is missing")
-        return None
-    questions, seen_details = [], []
-    for i, qraw in enumerate(raw.get("questions") or []):
-        qraw = qraw or {}
-        qid = qraw.get("id")
-        where = f"review question {qid or f'#{i}'}"
-        if not isinstance(qid, str) or not _ID.match(qid) or qid in {q.id for q in questions}:
-            problems.append(f"{where}: id must be a unique snake_case string")
-            continue
-        qtype = qraw.get("type")
-        if qtype not in QUESTION_TYPES:
-            problems.append(f"{where}: type {qtype!r} not in {list(QUESTION_TYPES)}")
-        if not isinstance(qraw.get("required"), bool):
-            problems.append(f"{where}: required must be true or false")
-        answers = []
-        for araw in qraw.get("answers") or []:
-            araw = araw or {}
-            aid = araw.get("id")
-            if not isinstance(aid, str) or not _ID.match(aid) or aid in {a.id for a in answers}:
-                problems.append(f"{where}: answer {aid!r} must be a unique snake_case string (quote yes and no)")
-                continue
-            detail = araw.get("detail")
-            if detail is not None and detail not in ANSWER_DETAILS:
-                problems.append(f"{where}: answer {aid}: detail {detail!r} not in {list(ANSWER_DETAILS)}")
-            seen_details.append(detail)
-            answers.append(Answer(id=aid, labels=_bilingual(araw.get("labels"), f"{where}.{aid}", problems),
-                                  detail=detail))
-        if qtype == "radio" and len(answers) < 2:
-            problems.append(f"{where}: a radio question needs at least two answers")
-        if qtype != "radio" and qraw.get("answers"):
-            problems.append(f"{where}: only radio questions list answers")
-        detail = qraw.get("detail")
-        if (qtype == "checklist") != (detail in CHECKLIST_DETAILS):
-            problems.append(f"{where}: a checklist question, and only one, has a detail in {list(CHECKLIST_DETAILS)}")
-        seen_details.append(detail)
-        questions.append(Question(id=qid, type=qtype, required=bool(qraw.get("required")),
-                                  text=_bilingual(qraw.get("text"), f"{where}.text", problems),
-                                  answers=tuple(answers), detail=detail))
-    used = [d for d in seen_details if d is not None]
-    for detail in ANSWER_DETAILS + CHECKLIST_DETAILS:
-        if used.count(detail) != 1:
-            problems.append(f"review: detail {detail!r} must be used exactly once, not {used.count(detail)} times")
-    detail_labels = _labelled_ids(raw.get("detail_labels"), "review.detail_labels", problems)
-    if set(detail_labels) != set(DETAIL_LABELS):
-        problems.append(f"review.detail_labels must label exactly {list(DETAIL_LABELS)}")
-    unsupported_kinds = _labelled_ids(raw.get("unsupported_kinds"), "review.unsupported_kinds", problems)
-    unconfirmed = _labelled_ids(raw.get("unconfirmed_reasons"), "review.unconfirmed_reasons", problems)
-    clash = set(unconfirmed) & set(limitations)
-    if clash:
-        problems.append(f"review.unconfirmed_reasons repeat assessment limitations {sorted(clash)}")
-    return ReviewSpec(
-        questions=tuple(questions), detail_labels=detail_labels, unsupported_kinds=unsupported_kinds,
-        unconfirmed_reasons=unconfirmed,
-        acquisition_statement=_bilingual(raw.get("acquisition_statement"), "review.acquisition_statement", problems),
-        undetermined_view=_bilingual(raw.get("undetermined_view"), "review.undetermined_view", problems),
-    )
-
-
 def validate_ontology(raw: Mapping, path: str = "<memory>", sha256: str = "") -> Ontology:
     """Build an `Ontology` from parsed YAML, collecting every problem before raising `OntologyError`."""
     problems: list[str] = []
@@ -521,17 +390,6 @@ def validate_ontology(raw: Mapping, path: str = "<memory>", sha256: str = "") ->
         if missing:
             problems.append(f"acquisition_labels.{lang} missing {missing}")
         acquisition_labels[lang] = dict(table)
-
-    limitations = {}
-    for reason, labels in (raw.get("assessment_limitations") or {}).items():
-        if not isinstance(reason, str) or not _ID.match(reason):
-            problems.append(f"assessment limitation {reason!r} must be snake_case")
-        elif any(not isinstance((labels or {}).get(lang), str) for lang in LANGUAGES):
-            problems.append(f"assessment limitation {reason!r} needs {list(LANGUAGES)} labels")
-        else:
-            limitations[reason] = {lang: labels[lang] for lang in LANGUAGES}
-    if not limitations:
-        problems.append("assessment_limitations must list at least one reason")
 
     scales = {}
     for sname, sraw in (raw.get("scales") or {}).items():
@@ -654,9 +512,6 @@ def validate_ontology(raw: Mapping, path: str = "<memory>", sha256: str = "") ->
         )
     if not concepts:
         problems.append("no concepts")
-    if ACQUISITION_STATEMENT in concepts:
-        problems.append(f"concept id {ACQUISITION_STATEMENT!r} is reserved for the acquisition statement")
-    review = _review_spec(raw.get("review"), limitations, problems)
     for sid in structures:
         visibility = [cid for cid, c in concepts.items() if c.kind == "structure_visibility" and sid in c.structures]
         if len(visibility) > 1:
@@ -665,8 +520,7 @@ def validate_ontology(raw: Mapping, path: str = "<memory>", sha256: str = "") ->
         raise OntologyError(f"{os.path.basename(path)} is not a valid RADAR ontology:\n- " + "\n- ".join(problems))
     return Ontology(
         name=name, version=version, path=path, sha256=sha256, views=view_defs, view_groups=groups,
-        view_labels=view_labels, structures=structures, acquisition_labels=acquisition_labels, limitations=limitations,
-        review=review, scales=scales,
+        view_labels=view_labels, structures=structures, acquisition_labels=acquisition_labels, scales=scales,
         negation_cues=tuple(normalize_text(c) for c in raw.get("negation_cues") or ()), concepts=concepts,
     )
 
