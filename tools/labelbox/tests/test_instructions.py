@@ -27,7 +27,7 @@ class TestInstructions(unittest.TestCase):
         en, fr = (read(ins.INSTRUCTIONS_PATHS[lang]) for lang in ("en", "fr"))
         for level in ("## ", "### ", "#### "):
             self.assertEqual(en.count("\n" + level), fr.count("\n" + level), level)
-        questions = [q["name"] for q in cr.build_form()["classifications"]] + [q[0] for q in vt.questions()]
+        questions = [q["name"] for q in cr.build_form()["classifications"]] + [q.name for q in vt.questions()]
         for name in questions:
             self.assertIn(f"`{name}`", en)
             self.assertIn(f"`{name}`", fr)
@@ -44,6 +44,8 @@ class TestInstructions(unittest.TestCase):
         routes = [e["route"] for e in examples["view_type_review"]]
         self.assertTrue(any(routes) and not all(routes))
         self.assertIn("yes", {e["answers"]["identifier_visible"] for e in examples["view_type_review"]})
+        self.assertEqual({e["answers"]["input_type"] for e in examples["view_type_review"]}, set(vt.INPUT_TYPES) - {
+            "no_echo_image"})
 
     def test_invalid_examples_are_refused(self):
         with open(ins.EXAMPLES_PATH, encoding="utf-8") as f:
@@ -68,6 +70,8 @@ class TestInstructions(unittest.TestCase):
         refused(lambda b: first(b)["changes"].update(view_ok="no"))  # a wrong view left as proposed
         refused(lambda b: first(b)["title"].pop("fr"))
         refused(lambda b: b["view_type_review"][0]["answers"].update(view="no_view"))
+        refused(lambda b: next(e for e in b["view_type_review"] if e["id"] == "analysis_screen")["answers"].update(
+            view="A4C"))  # a view the form does not ask for an analysis screen
         refused(lambda b: b["view_type_review"].append(copy.deepcopy(b["view_type_review"][0])))  # a repeated id
 
     def test_rebuilt_captions_come_from_the_scorer(self):

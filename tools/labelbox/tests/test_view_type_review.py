@@ -7,9 +7,16 @@ import unittest
 
 from app.radar.ontology import VIEWS
 from tools.labelbox import view_type_review as vt
-from tools.labelbox.column_review import build_candidate, decode_annotations, load_spec, validate_annotations
+from tools.labelbox.column_review import (
+    build_candidate,
+    decode_annotations,
+    encode_answers,
+    load_spec,
+    validate_annotations,
+)
 
 VALID = {"input_type": "cine_loop", "view": "A4C", "modality": "bmode", "identifier_visible": "no"}
+NOT_A_LOOP = {"input_type": "analysis_screen", "identifier_visible": "no"}
 
 
 def answers(**changes):
@@ -22,23 +29,32 @@ class TestForm(unittest.TestCase):
             self.assertEqual(json.load(f), vt.build_form())
         self.assertEqual(vt.main(["--check"]), 0)
 
-    def test_choices_share_ids_with_the_caption_reviews(self):
+    def test_view_and_mode_are_asked_only_after_a_cine_loop(self):
         form = {q["name"]: q for q in vt.build_form()["classifications"]}
-        values = {name: [o["value"] for o in q["options"]] for name, q in form.items()}
-        self.assertEqual(values["view"], list(VIEWS) + [vt.CANNOT_TELL, vt.NO_VIEW])
-        self.assertEqual(values["modality"], list(load_spec()["modalities"]) + [vt.NO_ULTRASOUND])
-        self.assertEqual(values["input_type"], list(vt.INPUT_TYPES))
+        self.assertEqual(list(form), ["input_type", "identifier_visible", "comments"])
+        options = {o["value"]: o for o in form["input_type"]["options"]}
+        self.assertEqual(list(options), list(vt.INPUT_TYPES))
+        nested = {q["name"]: q for q in options["cine_loop"]["options"]}
+        self.assertEqual(list(nested), ["view", "modality"])
+        self.assertTrue(all(not o["options"] for value, o in options.items() if value != "cine_loop"))
+        self.assertEqual([o["value"] for o in nested["view"]["options"]], list(VIEWS) + [vt.CANNOT_TELL])
+        self.assertEqual([o["value"] for o in nested["modality"]["options"]], list(load_spec()["modalities"]))
+        self.assertTrue(all(q["required"] and "scope" not in q for q in nested.values()))
 
-    def test_every_question_is_global_and_only_comments_are_optional(self):
+    def test_top_level_questions_are_global_and_only_comments_are_optional(self):
         for q in vt.build_form()["classifications"]:
             self.assertEqual(q["scope"], "global")
             self.assertEqual(q["required"], q["name"] != "comments", q["name"])
 
     def test_an_exported_review_decodes_and_validates(self):
-        records = [{"name": k, "answer": {"name": v}} for k, v in VALID.items()]
-        records.append({"name": "comments", "answer": "measurement frame"})
-        validate_annotations(records, vt.build_form(), require_complete=True)
-        self.assertEqual(vt.review_problems(decode_annotations(records)), [])
+        form = vt.build_form()
+        for review in (VALID, NOT_A_LOOP, {**NOT_A_LOOP, "input_type": "no_echo_image", "comments": "text page"}):
+            records = encode_answers(review, form)
+            validate_annotations(records, form, require_complete=True)
+            self.assertEqual(decode_annotations(records), review)
+            self.assertEqual(vt.review_problems(decode_annotations(records)), [])
+        with self.assertRaises(ValueError):
+            encode_answers({**NOT_A_LOOP, "view": "A4C"}, form)  # Labelbox never shows it
 
     @unittest.skipUnless(importlib.util.find_spec("labelbox"), "the Labelbox SDK is not installed")
     def test_sdk_round_trip(self):
@@ -49,40 +65,42 @@ class TestForm(unittest.TestCase):
 
 class TestReviewProblems(unittest.TestCase):
     def test_valid_reviews(self):
-        for review in [VALID,
-                       answers(input_type="measurement_still", view="cannot_tell", modality="spectral"),
-                       answers(input_type="text_page", view="no_view", modality="not_applicable"),
-                       answers(input_type="analysis_screen", view="no_view", modality="not_applicable"),
-                       answers(input_type="analysis_screen", view="A4C", modality="mixed", comments="strain")]:
+        for review in [VALID, NOT_A_LOOP,
+                       answers(view="cannot_tell", modality="spectral"),
+                       answers(view="OTHER", modality="mixed", comments="strain"),
+                       {**NOT_A_LOOP, "input_type": "no_echo_image", "identifier_visible": "yes"}]:
             self.assertEqual(vt.review_problems(review), [], review)
 
-    def test_missing_or_unknown_answers(self):
+    def test_missing_unknown_or_unasked_answers(self):
         self.assertIn("view is required", vt.review_problems({k: v for k, v in VALID.items() if k != "view"}))
-        self.assertIn("view has no answer 'A6C'", vt.review_problems(answers(view="A6C")))
+        self.assertIn("view has no answer 'no_view'", vt.review_problems(answers(view="no_view")))
+        self.assertIn("modality has no answer 'not_applicable'",
+                      vt.review_problems(answers(modality="not_applicable")))
         self.assertIn("identifier_visible has no answer 'maybe'",
                       vt.review_problems(answers(identifier_visible="maybe")))
+        self.assertIn("input_type has no answer 'still_image'", vt.review_problems(answers(input_type="still_image")))
+        self.assertIn("input_type has no answer 'should_be_removed'",
+                      vt.review_problems({**NOT_A_LOOP, "input_type": "should_be_removed"}))
+        self.assertEqual(vt.review_problems({**NOT_A_LOOP, "modality": "bmode"}),
+                         ["modality is asked only when input_type is 'cine_loop'"])
 
-    def test_inconsistent_answers(self):
-        for review in [answers(input_type="text_page", modality="not_applicable"),
-                       answers(input_type="still_image", view="no_view", modality="not_applicable"),
-                       answers(view="no_view"),
-                       answers(modality="not_applicable"),
-                       answers(input_type="other", view="no_view")]:
-            self.assertTrue(vt.review_problems(review), review)
+    def test_unasked_questions_are_recorded_as_not_applicable(self):
+        self.assertEqual(vt.with_not_applicable(NOT_A_LOOP),
+                         {**NOT_A_LOOP, "view": "not_applicable", "modality": "not_applicable"})
+        self.assertEqual(vt.with_not_applicable(VALID), VALID)
 
 
 class TestRoute(unittest.TestCase):
-    def test_cine_loops_and_plain_stills_go_to_the_column_review(self):
+    def test_cine_loops_go_to_the_column_review(self):
         self.assertEqual(vt.route(VALID), {"view": "A4C", "modality": "bmode", "input_kind": "video"})
-        still = vt.route(answers(input_type="still_image", view="PLAX", modality="color_flow"))
-        self.assertEqual(still, {"view": "PLAX", "modality": "color_flow", "input_kind": "image"})
+        loop = vt.route(answers(view="PLAX", modality="color_flow"))
+        self.assertEqual(loop, {"view": "PLAX", "modality": "color_flow", "input_kind": "video"})
         report = {"Left ventricule findings": "Fonction systolique normale du ventricule gauche"}
-        candidate = build_candidate(report, global_key="synthetic-row", **still)
-        self.assertFalse([c for c in candidate["columns"] if c["concept"] == "lv_function"])
+        self.assertTrue(build_candidate(report, global_key="synthetic-row", **loop)["columns"])
 
     def test_everything_else_stays_out(self):
-        for review in [answers(input_type="measurement_still"),
-                       answers(input_type="analysis_screen"),
+        for review in [NOT_A_LOOP,
+                       {**NOT_A_LOOP, "input_type": "no_echo_image"},
                        answers(view="OTHER"),
                        answers(view="cannot_tell"),
                        answers(modality="spectral"),

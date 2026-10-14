@@ -58,6 +58,8 @@ WORDS = {
            "none_empty": "none: no finding was confirmed", "why": "Why", "answers_given": "Answers", "next": "Next",
            "routed": "back to the column review as `{view}`, {modality}",
            "not_routed": "stays out of the column review", "deleted": "deleted from Labelbox: identifying text",
+           "asked_after": ", asked when `{question}` is `{answer}`",
+           "not_asked": "view and acquisition mode not asked, recorded as not applicable",
            "colon": ":"},
     "fr": {"question": "Question", "id": "Id", "required": "Obligatoire", "answers": "Réponses", "yes": "oui",
            "no": "non", "free_text": "texte libre", "views": "une des 20 classes de coupe", "each": "chacune",
@@ -81,7 +83,9 @@ WORDS = {
            "answers_given": "Réponses", "next": "Ensuite",
            "routed": "renvoyé à la revue par colonnes en `{view}`, {modality}",
            "not_routed": "reste hors de la revue par colonnes",
-           "deleted": "supprimé de Labelbox : texte identifiant", "colon": " :"},
+           "deleted": "supprimé de Labelbox : texte identifiant", "colon": " :",
+           "asked_after": ", demandée si `{question}` vaut `{answer}`",
+           "not_asked": "coupe et mode d'acquisition non demandés, enregistrés comme sans objet"},
 }
 
 
@@ -151,9 +155,13 @@ def render_column_reasons(lang: str) -> str:
 
 def render_view_type_form(lang: str) -> str:
     w, rows = WORDS[lang], []
-    for name, text, choices, required in vt.questions():
-        answers = w["free_text"] if choices is None else "; ".join(f"`{v}` {label}" for v, label in choices.items())
-        rows.append([text, f"`{name}`", w["yes"] if required else w["no"], answers])
+    for q in vt.questions():
+        answers = (w["free_text"] if q.choices is None
+                   else "; ".join(f"`{v}` {label}" for v, label in q.choices.items()))
+        required = w["yes"] if q.required else w["no"]
+        if q.asked_after:
+            required += w["asked_after"].format(question=q.asked_after[0], answer=q.asked_after[1])
+        rows.append([q.text, f"`{q.name}`", required, answers])
     return _table([w["question"], w["id"], w["required"], w["answers"]], rows)
 
 
@@ -274,8 +282,11 @@ def render_view_type_examples(lang: str) -> str:
     w, modalities, out = WORDS[lang], vt.modality_choices(), []
     for i, e in enumerate(load_examples()["view_type_review"], 1):
         answers = e["answers"]
-        given = "; ".join(_asked(text, f"**{choices[answers[name]]}**", w) for name, text, choices, _ in vt.questions()
-                          if choices is not None and name in answers)
+        given = [_asked(q.text, f"**{q.choices[answers[q.name]]}**", w) for q in vt.questions()
+                 if q.choices is not None and q.name in answers]
+        if any(value == vt.NOT_APPLICABLE for value in vt.with_not_applicable(answers).values()):
+            given.append(w["not_asked"])
+        given = "; ".join(given)
         if answers["identifier_visible"] == "yes":
             then = w["deleted"]
         elif e["route"]:

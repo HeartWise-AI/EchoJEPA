@@ -345,28 +345,25 @@ The clips are synthetic, described in words.
 
 ## View and type review (`OTHER` clips)
 
-Each item is a clip the view classifier labels `OTHER` or does not classify. Say what it is, which view it shows and
-its acquisition mode. Your answers measure what `OTHER` holds, and a moving echo image of a view the column review
-carries, in B-mode or color Doppler, goes back to the column review under that view.
+Each item is a clip the view classifier labels `OTHER` or does not classify. Say what it is and, for an echo cine
+loop, which view it shows and its acquisition mode. Your answers measure what `OTHER` holds, and an echo cine loop of
+a view the column review carries, in B-mode or color Doppler, goes back to the column review under that view.
 
 <!-- BEGIN GENERATED: view_type_form -->
 | Question | Id | Required | Answers |
 |---|---|---|---|
-| What is this item? | `input_type` | yes | `cine_loop` Cine loop (moving echo images); `still_image` Still frame of an echo image; `measurement_still` Still frame with measurements, calipers or tracings; `analysis_screen` Analysis or quantification screen (strain, 3D, EF tool); `text_page` Report, worksheet or other text page; `other` Other, no echo image |
-| Which view does it show? | `view` | yes | `A2C` A2C: Apical 2-chamber view; `A2C_LV` A2C_LV: Apical 2-chamber view, LV-focused; `A2C_ZOOM` A2C_ZOOM: Apical 2-chamber view, zoomed; `A3C` A3C: Apical 3-chamber view; `A3C_LV` A3C_LV: Apical 3-chamber view, LV-focused; `A3C_ZOOM` A3C_ZOOM: Apical 3-chamber view, zoomed; `A4C` A4C: Apical 4-chamber view; `A4C_LV` A4C_LV: Apical 4-chamber view, LV-focused; `A4C_ZOOM` A4C_ZOOM: Apical 4-chamber view, zoomed; `A5C` A5C: Apical 5-chamber view; `A5C_ZOOM` A5C_ZOOM: Apical 5-chamber view, zoomed; `PLAX` PLAX: Parasternal long-axis view; `PLAX_DEEP` PLAX_DEEP: Parasternal long-axis view, deep; `PLAX_ZOOM` PLAX_ZOOM: Parasternal long-axis view, zoomed; `PSAX` PSAX: Parasternal short-axis view; `PSAX_AV` PSAX_AV: Parasternal short-axis view at the aortic valve; `RVINF` RVINF: Right ventricular inflow view; `SUBCOSTAL` SUBCOSTAL: Subcostal view; `SUPRASTERNAL` SUPRASTERNAL: Suprasternal view; `OTHER` OTHER: off-axis or non-standard echo view; `cannot_tell` Cannot tell the view; `no_view` No echo view (text, screen or no ultrasound image) |
-| Acquisition mode | `modality` | yes | `bmode` B-mode; `color_flow` Color Doppler; `spectral` Spectral Doppler; `m_mode` M-mode; `mixed` Mixed / analysis acquisition; `unresolved` Unresolved; `not_applicable` Not applicable: no ultrasound image |
+| What is this item? | `input_type` | yes | `cine_loop` Echo cine loop (moving echo images); `analysis_screen` Analysis or quantification screen (strain, 3D, EF tool); `no_echo_image` No echo image |
+| Which view does it show? | `view` | yes, asked when `input_type` is `cine_loop` | `A2C` A2C: Apical 2-chamber view; `A2C_LV` A2C_LV: Apical 2-chamber view, LV-focused; `A2C_ZOOM` A2C_ZOOM: Apical 2-chamber view, zoomed; `A3C` A3C: Apical 3-chamber view; `A3C_LV` A3C_LV: Apical 3-chamber view, LV-focused; `A3C_ZOOM` A3C_ZOOM: Apical 3-chamber view, zoomed; `A4C` A4C: Apical 4-chamber view; `A4C_LV` A4C_LV: Apical 4-chamber view, LV-focused; `A4C_ZOOM` A4C_ZOOM: Apical 4-chamber view, zoomed; `A5C` A5C: Apical 5-chamber view; `A5C_ZOOM` A5C_ZOOM: Apical 5-chamber view, zoomed; `PLAX` PLAX: Parasternal long-axis view; `PLAX_DEEP` PLAX_DEEP: Parasternal long-axis view, deep; `PLAX_ZOOM` PLAX_ZOOM: Parasternal long-axis view, zoomed; `PSAX` PSAX: Parasternal short-axis view; `PSAX_AV` PSAX_AV: Parasternal short-axis view at the aortic valve; `RVINF` RVINF: Right ventricular inflow view; `SUBCOSTAL` SUBCOSTAL: Subcostal view; `SUPRASTERNAL` SUPRASTERNAL: Suprasternal view; `OTHER` OTHER: off-axis or non-standard echo view; `cannot_tell` Cannot tell the view |
+| Acquisition mode | `modality` | yes, asked when `input_type` is `cine_loop` | `bmode` B-mode; `color_flow` Color Doppler; `spectral` Spectral Doppler; `m_mode` M-mode; `mixed` Mixed / analysis acquisition; `unresolved` Unresolved |
 | Is identifying text visible (a name, a record number, a date of birth)? | `identifier_visible` | yes | `no` No; `yes` Yes: the item must be deleted |
 | Comments (no patient details) | `comments` | no | free text |
 <!-- END GENERATED: view_type_form -->
 
-- **View.** `OTHER` is for an echo image in an off-axis or non-standard view; "Cannot tell the view" when you cannot
-  decide; "No echo view" only for an item with no ultrasound image, whose acquisition mode is then "Not applicable".
-- **What is this item?** A cine loop or a still always shows a view (give it, or "Cannot tell the view"); a text page
-  or an item without an echo image never does; an analysis screen may.
+- **What is this item?** "Echo cine loop" for a moving echo image in any acquisition mode: only then are the view and
+  the acquisition mode asked. For any other answer they are not asked and are recorded as not applicable.
+- **View.** `OTHER` is for an off-axis or non-standard echo view; "Cannot tell the view" when you cannot decide.
 - **Identifying text.** Answer "Yes" if a name, a record number or a date of birth is readable anywhere in the item.
   It is deleted.
-
-A review whose answers contradict each other on these points is returned for correction.
 
 ## Worked examples: view and type review
 
@@ -374,28 +371,28 @@ A review whose answers contradict each other on these points is returned for cor
 ### 1. Inferior vena cava labelled OTHER
 
 - **Item (synthetic):** Subcostal B-mode loop of the inferior vena cava entering the right atrium.
-- **Answers:** What is this item? **Cine loop (moving echo images)**; Which view does it show? **SUBCOSTAL: Subcostal view**; Acquisition mode: **B-mode**; Is identifying text visible (a name, a record number, a date of birth)? **No**
+- **Answers:** What is this item? **Echo cine loop (moving echo images)**; Which view does it show? **SUBCOSTAL: Subcostal view**; Acquisition mode: **B-mode**; Is identifying text visible (a name, a record number, a date of birth)? **No**
 - **Next:** back to the column review as `SUBCOSTAL`, B-mode
 - **Why:** A moving echo image of a view the column review routes: it goes back to the column review under that view.
 
 ### 2. Off-axis view
 
 - **Item (synthetic):** B-mode loop between the apical 4- and 5-chamber planes, foreshortened, in no standard view.
-- **Answers:** What is this item? **Cine loop (moving echo images)**; Which view does it show? **OTHER: off-axis or non-standard echo view**; Acquisition mode: **B-mode**; Is identifying text visible (a name, a record number, a date of birth)? **No**
+- **Answers:** What is this item? **Echo cine loop (moving echo images)**; Which view does it show? **OTHER: off-axis or non-standard echo view**; Acquisition mode: **B-mode**; Is identifying text visible (a name, a record number, a date of birth)? **No**
 - **Next:** stays out of the column review
 - **Why:** OTHER is for off-axis or non-standard echo views; "Cannot tell the view" is for when you cannot decide.
 
 ### 3. Analysis screen
 
 - **Item (synthetic):** Strain analysis screen: an apical 4-chamber image with colored segments and a bull's-eye plot.
-- **Answers:** What is this item? **Analysis or quantification screen (strain, 3D, EF tool)**; Which view does it show? **A4C: Apical 4-chamber view**; Acquisition mode: **Mixed / analysis acquisition**; Is identifying text visible (a name, a record number, a date of birth)? **No**
+- **Answers:** What is this item? **Analysis or quantification screen (strain, 3D, EF tool)**; Is identifying text visible (a name, a record number, a date of birth)? **No**; view and acquisition mode not asked, recorded as not applicable
 - **Next:** stays out of the column review
-- **Why:** Give the view the screen shows. An analysis screen is not a clip a caption should describe, so it does not go back to the column review.
+- **Why:** An analysis screen is not a clip a caption should describe: its view and mode are not asked, and it does not go back to the column review.
 
 ### 4. Identifying text visible
 
 - **Item (synthetic):** Apical 4-chamber B-mode loop in which a name is still readable in the top banner.
-- **Answers:** What is this item? **Cine loop (moving echo images)**; Which view does it show? **A4C: Apical 4-chamber view**; Acquisition mode: **B-mode**; Is identifying text visible (a name, a record number, a date of birth)? **Yes: the item must be deleted**
+- **Answers:** What is this item? **Echo cine loop (moving echo images)**; Which view does it show? **A4C: Apical 4-chamber view**; Acquisition mode: **B-mode**; Is identifying text visible (a name, a record number, a date of birth)? **Yes: the item must be deleted**
 - **Next:** deleted from Labelbox: identifying text
 - **Why:** Answer "Yes" without copying the text anywhere. The item is deleted from Labelbox and the de-identification step is fixed.
 <!-- END GENERATED: view_type_examples -->

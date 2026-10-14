@@ -10,23 +10,222 @@
         {
           "schemaNodeId": null,
           "featureSchemaId": null,
-          "label": "Cine loop (moving echo images)",
+          "label": "Echo cine loop (moving echo images)",
           "value": "cine_loop",
-          "options": []
-        },
-        {
-          "schemaNodeId": null,
-          "featureSchemaId": null,
-          "label": "Still frame of an echo image",
-          "value": "still_image",
-          "options": []
-        },
-        {
-          "schemaNodeId": null,
-          "featureSchemaId": null,
-          "label": "Still frame with measurements, calipers or tracings",
-          "value": "measurement_still",
-          "options": []
+          "options": [
+            {
+              "type": "radio",
+              "instructions": "Which view does it show?",
+              "name": "view",
+              "required": true,
+              "options": [
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "A2C: Apical 2-chamber view",
+                  "value": "A2C",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "A2C_LV: Apical 2-chamber view, LV-focused",
+                  "value": "A2C_LV",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "A2C_ZOOM: Apical 2-chamber view, zoomed",
+                  "value": "A2C_ZOOM",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "A3C: Apical 3-chamber view",
+                  "value": "A3C",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "A3C_LV: Apical 3-chamber view, LV-focused",
+                  "value": "A3C_LV",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "A3C_ZOOM: Apical 3-chamber view, zoomed",
+                  "value": "A3C_ZOOM",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "A4C: Apical 4-chamber view",
+                  "value": "A4C",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "A4C_LV: Apical 4-chamber view, LV-focused",
+                  "value": "A4C_LV",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "A4C_ZOOM: Apical 4-chamber view, zoomed",
+                  "value": "A4C_ZOOM",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "A5C: Apical 5-chamber view",
+                  "value": "A5C",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "A5C_ZOOM: Apical 5-chamber view, zoomed",
+                  "value": "A5C_ZOOM",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "PLAX: Parasternal long-axis view",
+                  "value": "PLAX",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "PLAX_DEEP: Parasternal long-axis view, deep",
+                  "value": "PLAX_DEEP",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "PLAX_ZOOM: Parasternal long-axis view, zoomed",
+                  "value": "PLAX_ZOOM",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "PSAX: Parasternal short-axis view",
+                  "value": "PSAX",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "PSAX_AV: Parasternal short-axis view at the aortic valve",
+                  "value": "PSAX_AV",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "RVINF: Right ventricular inflow view",
+                  "value": "RVINF",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "SUBCOSTAL: Subcostal view",
+                  "value": "SUBCOSTAL",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "SUPRASTERNAL: Suprasternal view",
+                  "value": "SUPRASTERNAL",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "OTHER: off-axis or non-standard echo view",
+                  "value": "OTHER",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Cannot tell the view",
+                  "value": "cannot_tell",
+                  "options": []
+                }
+              ],
+              "schemaNodeId": null,
+              "featureSchemaId": null,
+              "attributes": null,
+              "uiMode": "searchable"
+            },
+            {
+              "type": "radio",
+              "instructions": "Acquisition mode",
+              "name": "modality",
+              "required": true,
+              "options": [
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "B-mode",
+                  "value": "bmode",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Color Doppler",
+                  "value": "color_flow",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Spectral Doppler",
+                  "value": "spectral",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "M-mode",
+                  "value": "m_mode",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Mixed / analysis acquisition",
+                  "value": "mixed",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Unresolved",
+                  "value": "unresolved",
+                  "options": []
+                }
+              ],
+              "schemaNodeId": null,
+              "featureSchemaId": null,
+              "attributes": null
+            }
+          ]
         },
         {
           "schemaNodeId": null,
@@ -38,243 +237,8 @@
         {
           "schemaNodeId": null,
           "featureSchemaId": null,
-          "label": "Report, worksheet or other text page",
-          "value": "text_page",
-          "options": []
-        },
-        {
-          "schemaNodeId": null,
-          "featureSchemaId": null,
-          "label": "Other, no echo image",
-          "value": "other",
-          "options": []
-        }
-      ],
-      "schemaNodeId": null,
-      "featureSchemaId": null,
-      "attributes": null,
-      "scope": "global"
-    },
-    {
-      "type": "radio",
-      "instructions": "Which view does it show?",
-      "name": "view",
-      "required": true,
-      "options": [
-        {
-          "schemaNodeId": null,
-          "featureSchemaId": null,
-          "label": "A2C: Apical 2-chamber view",
-          "value": "A2C",
-          "options": []
-        },
-        {
-          "schemaNodeId": null,
-          "featureSchemaId": null,
-          "label": "A2C_LV: Apical 2-chamber view, LV-focused",
-          "value": "A2C_LV",
-          "options": []
-        },
-        {
-          "schemaNodeId": null,
-          "featureSchemaId": null,
-          "label": "A2C_ZOOM: Apical 2-chamber view, zoomed",
-          "value": "A2C_ZOOM",
-          "options": []
-        },
-        {
-          "schemaNodeId": null,
-          "featureSchemaId": null,
-          "label": "A3C: Apical 3-chamber view",
-          "value": "A3C",
-          "options": []
-        },
-        {
-          "schemaNodeId": null,
-          "featureSchemaId": null,
-          "label": "A3C_LV: Apical 3-chamber view, LV-focused",
-          "value": "A3C_LV",
-          "options": []
-        },
-        {
-          "schemaNodeId": null,
-          "featureSchemaId": null,
-          "label": "A3C_ZOOM: Apical 3-chamber view, zoomed",
-          "value": "A3C_ZOOM",
-          "options": []
-        },
-        {
-          "schemaNodeId": null,
-          "featureSchemaId": null,
-          "label": "A4C: Apical 4-chamber view",
-          "value": "A4C",
-          "options": []
-        },
-        {
-          "schemaNodeId": null,
-          "featureSchemaId": null,
-          "label": "A4C_LV: Apical 4-chamber view, LV-focused",
-          "value": "A4C_LV",
-          "options": []
-        },
-        {
-          "schemaNodeId": null,
-          "featureSchemaId": null,
-          "label": "A4C_ZOOM: Apical 4-chamber view, zoomed",
-          "value": "A4C_ZOOM",
-          "options": []
-        },
-        {
-          "schemaNodeId": null,
-          "featureSchemaId": null,
-          "label": "A5C: Apical 5-chamber view",
-          "value": "A5C",
-          "options": []
-        },
-        {
-          "schemaNodeId": null,
-          "featureSchemaId": null,
-          "label": "A5C_ZOOM: Apical 5-chamber view, zoomed",
-          "value": "A5C_ZOOM",
-          "options": []
-        },
-        {
-          "schemaNodeId": null,
-          "featureSchemaId": null,
-          "label": "PLAX: Parasternal long-axis view",
-          "value": "PLAX",
-          "options": []
-        },
-        {
-          "schemaNodeId": null,
-          "featureSchemaId": null,
-          "label": "PLAX_DEEP: Parasternal long-axis view, deep",
-          "value": "PLAX_DEEP",
-          "options": []
-        },
-        {
-          "schemaNodeId": null,
-          "featureSchemaId": null,
-          "label": "PLAX_ZOOM: Parasternal long-axis view, zoomed",
-          "value": "PLAX_ZOOM",
-          "options": []
-        },
-        {
-          "schemaNodeId": null,
-          "featureSchemaId": null,
-          "label": "PSAX: Parasternal short-axis view",
-          "value": "PSAX",
-          "options": []
-        },
-        {
-          "schemaNodeId": null,
-          "featureSchemaId": null,
-          "label": "PSAX_AV: Parasternal short-axis view at the aortic valve",
-          "value": "PSAX_AV",
-          "options": []
-        },
-        {
-          "schemaNodeId": null,
-          "featureSchemaId": null,
-          "label": "RVINF: Right ventricular inflow view",
-          "value": "RVINF",
-          "options": []
-        },
-        {
-          "schemaNodeId": null,
-          "featureSchemaId": null,
-          "label": "SUBCOSTAL: Subcostal view",
-          "value": "SUBCOSTAL",
-          "options": []
-        },
-        {
-          "schemaNodeId": null,
-          "featureSchemaId": null,
-          "label": "SUPRASTERNAL: Suprasternal view",
-          "value": "SUPRASTERNAL",
-          "options": []
-        },
-        {
-          "schemaNodeId": null,
-          "featureSchemaId": null,
-          "label": "OTHER: off-axis or non-standard echo view",
-          "value": "OTHER",
-          "options": []
-        },
-        {
-          "schemaNodeId": null,
-          "featureSchemaId": null,
-          "label": "Cannot tell the view",
-          "value": "cannot_tell",
-          "options": []
-        },
-        {
-          "schemaNodeId": null,
-          "featureSchemaId": null,
-          "label": "No echo view (text, screen or no ultrasound image)",
-          "value": "no_view",
-          "options": []
-        }
-      ],
-      "schemaNodeId": null,
-      "featureSchemaId": null,
-      "attributes": null,
-      "scope": "global",
-      "uiMode": "searchable"
-    },
-    {
-      "type": "radio",
-      "instructions": "Acquisition mode",
-      "name": "modality",
-      "required": true,
-      "options": [
-        {
-          "schemaNodeId": null,
-          "featureSchemaId": null,
-          "label": "B-mode",
-          "value": "bmode",
-          "options": []
-        },
-        {
-          "schemaNodeId": null,
-          "featureSchemaId": null,
-          "label": "Color Doppler",
-          "value": "color_flow",
-          "options": []
-        },
-        {
-          "schemaNodeId": null,
-          "featureSchemaId": null,
-          "label": "Spectral Doppler",
-          "value": "spectral",
-          "options": []
-        },
-        {
-          "schemaNodeId": null,
-          "featureSchemaId": null,
-          "label": "M-mode",
-          "value": "m_mode",
-          "options": []
-        },
-        {
-          "schemaNodeId": null,
-          "featureSchemaId": null,
-          "label": "Mixed / analysis acquisition",
-          "value": "mixed",
-          "options": []
-        },
-        {
-          "schemaNodeId": null,
-          "featureSchemaId": null,
-          "label": "Unresolved",
-          "value": "unresolved",
-          "options": []
-        },
-        {
-          "schemaNodeId": null,
-          "featureSchemaId": null,
-          "label": "Not applicable: no ultrasound image",
-          "value": "not_applicable",
+          "label": "No echo image",
+          "value": "no_echo_image",
           "options": []
         }
       ],

@@ -222,14 +222,14 @@ view_type_review:
         Écran d'analyse de déformation : une coupe apicale 4 cavités aux segments colorés et une cible en œil de bœuf.
       en: >-
         Strain analysis screen: an apical 4-chamber image with colored segments and a bull's-eye plot.
-    answers: {input_type: analysis_screen, view: A4C, modality: mixed, identifier_visible: "no"}
+    answers: {input_type: analysis_screen, identifier_visible: "no"}
     why:
       fr: >-
-        Donner la coupe que montre l'écran. Un écran d'analyse n'est pas un clip qu'une légende doit décrire : il ne
-        retourne pas à la revue par colonnes.
+        Un écran d'analyse n'est pas un clip qu'une légende doit décrire : sa coupe et son mode ne sont pas demandés,
+        et il ne retourne pas à la revue par colonnes.
       en: >-
-        Give the view the screen shows. An analysis screen is not a clip a caption should describe, so it does not go
-        back to the column review.
+        An analysis screen is not a clip a caption should describe: its view and mode are not asked, and it does not
+        go back to the column review.
 
   - id: identifier_visible
     title: {fr: Texte identifiant visible, en: Identifying text visible}

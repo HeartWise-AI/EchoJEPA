@@ -93,7 +93,7 @@ The **review checks** are three, and a review that fails any of them is returned
 An uninterpretable clip is checked only for its answers and its reason: its other answers are not read.
 
 For the view and type review, `review_problems` in `tools/labelbox/view_type_review.py` checks that every required
-answer is given and that the item's type, view and acquisition mode agree.
+question asked is answered, and that the view and acquisition mode are answered exactly for a cine loop.
 
 What is kept while the pilot runs, because a final export shows only the last answers:
 
@@ -129,9 +129,9 @@ reported; the spread across studies is the measure of consistency.
 | M7 | Review time | Median and interquartile range, over S and per reviewer, of the time spent filling the form: the label's `performance_details.seconds_to_create`, in minutes, from the first kept export that contains it (its first submission). Time spent correcting a returned review is not added (M8 counts those reviews), and `seconds_to_review`, the time of a Labelbox review step, is never part of M7. A missing or zero value is missing; M7 is computed over the labels that have one, with their number, and is reported as missing when fewer than 80% of S have one. It is never estimated from timestamps. |
 | M8 | Form problems | R / S, by the check failed (answers, details or consistency). |
 
-The view and type review is reported in counts, without gating the decision: items by type, by view and by
-acquisition mode; items sent back to the column review; and items with identifying text, each a de-identification
-failure.
+The view and type review is reported in counts, without gating the decision: items by type; cine loops by view and
+by acquisition mode; items sent back to the column review; and items with identifying text, each a
+de-identification failure.
 
 If a second reviewer reads a subset of clips (to be decided before the review starts), their clip-level answers and
 their answer for each column are compared clip by clip and reported as counts of agreement. No agreement coefficient

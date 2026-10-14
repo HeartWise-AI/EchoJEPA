@@ -358,30 +358,28 @@ Les clips sont synthétiques, décrits en mots.
 
 ## Revue de coupe et de type (clips `OTHER`)
 
-Chaque élément est un clip que le classifieur de coupes classe `OTHER` ou ne classe pas. Dites ce qu'il est, quelle
-coupe il montre et son mode d'acquisition. Vos réponses mesurent ce que contient `OTHER`, et une boucle échographique
-d'une coupe que porte la revue par colonnes, en mode B ou en Doppler couleur, retourne à la revue par colonnes sous
-cette coupe.
+Chaque élément est un clip que le classifieur de coupes classe `OTHER` ou ne classe pas. Dites ce qu'il est et, pour
+une boucle échographique, quelle coupe il montre et son mode d'acquisition. Vos réponses mesurent ce que contient
+`OTHER`, et une boucle échographique d'une coupe que porte la revue par colonnes, en mode B ou en Doppler couleur,
+retourne à la revue par colonnes sous cette coupe.
 
 <!-- BEGIN GENERATED: view_type_form -->
 | Question | Id | Obligatoire | Réponses |
 |---|---|---|---|
-| What is this item? | `input_type` | oui | `cine_loop` Cine loop (moving echo images); `still_image` Still frame of an echo image; `measurement_still` Still frame with measurements, calipers or tracings; `analysis_screen` Analysis or quantification screen (strain, 3D, EF tool); `text_page` Report, worksheet or other text page; `other` Other, no echo image |
-| Which view does it show? | `view` | oui | `A2C` A2C: Apical 2-chamber view; `A2C_LV` A2C_LV: Apical 2-chamber view, LV-focused; `A2C_ZOOM` A2C_ZOOM: Apical 2-chamber view, zoomed; `A3C` A3C: Apical 3-chamber view; `A3C_LV` A3C_LV: Apical 3-chamber view, LV-focused; `A3C_ZOOM` A3C_ZOOM: Apical 3-chamber view, zoomed; `A4C` A4C: Apical 4-chamber view; `A4C_LV` A4C_LV: Apical 4-chamber view, LV-focused; `A4C_ZOOM` A4C_ZOOM: Apical 4-chamber view, zoomed; `A5C` A5C: Apical 5-chamber view; `A5C_ZOOM` A5C_ZOOM: Apical 5-chamber view, zoomed; `PLAX` PLAX: Parasternal long-axis view; `PLAX_DEEP` PLAX_DEEP: Parasternal long-axis view, deep; `PLAX_ZOOM` PLAX_ZOOM: Parasternal long-axis view, zoomed; `PSAX` PSAX: Parasternal short-axis view; `PSAX_AV` PSAX_AV: Parasternal short-axis view at the aortic valve; `RVINF` RVINF: Right ventricular inflow view; `SUBCOSTAL` SUBCOSTAL: Subcostal view; `SUPRASTERNAL` SUPRASTERNAL: Suprasternal view; `OTHER` OTHER: off-axis or non-standard echo view; `cannot_tell` Cannot tell the view; `no_view` No echo view (text, screen or no ultrasound image) |
-| Acquisition mode | `modality` | oui | `bmode` B-mode; `color_flow` Color Doppler; `spectral` Spectral Doppler; `m_mode` M-mode; `mixed` Mixed / analysis acquisition; `unresolved` Unresolved; `not_applicable` Not applicable: no ultrasound image |
+| What is this item? | `input_type` | oui | `cine_loop` Echo cine loop (moving echo images); `analysis_screen` Analysis or quantification screen (strain, 3D, EF tool); `no_echo_image` No echo image |
+| Which view does it show? | `view` | oui, demandée si `input_type` vaut `cine_loop` | `A2C` A2C: Apical 2-chamber view; `A2C_LV` A2C_LV: Apical 2-chamber view, LV-focused; `A2C_ZOOM` A2C_ZOOM: Apical 2-chamber view, zoomed; `A3C` A3C: Apical 3-chamber view; `A3C_LV` A3C_LV: Apical 3-chamber view, LV-focused; `A3C_ZOOM` A3C_ZOOM: Apical 3-chamber view, zoomed; `A4C` A4C: Apical 4-chamber view; `A4C_LV` A4C_LV: Apical 4-chamber view, LV-focused; `A4C_ZOOM` A4C_ZOOM: Apical 4-chamber view, zoomed; `A5C` A5C: Apical 5-chamber view; `A5C_ZOOM` A5C_ZOOM: Apical 5-chamber view, zoomed; `PLAX` PLAX: Parasternal long-axis view; `PLAX_DEEP` PLAX_DEEP: Parasternal long-axis view, deep; `PLAX_ZOOM` PLAX_ZOOM: Parasternal long-axis view, zoomed; `PSAX` PSAX: Parasternal short-axis view; `PSAX_AV` PSAX_AV: Parasternal short-axis view at the aortic valve; `RVINF` RVINF: Right ventricular inflow view; `SUBCOSTAL` SUBCOSTAL: Subcostal view; `SUPRASTERNAL` SUPRASTERNAL: Suprasternal view; `OTHER` OTHER: off-axis or non-standard echo view; `cannot_tell` Cannot tell the view |
+| Acquisition mode | `modality` | oui, demandée si `input_type` vaut `cine_loop` | `bmode` B-mode; `color_flow` Color Doppler; `spectral` Spectral Doppler; `m_mode` M-mode; `mixed` Mixed / analysis acquisition; `unresolved` Unresolved |
 | Is identifying text visible (a name, a record number, a date of birth)? | `identifier_visible` | oui | `no` No; `yes` Yes: the item must be deleted |
 | Comments (no patient details) | `comments` | non | texte libre |
 <!-- END GENERATED: view_type_form -->
 
-- **Coupe.** `OTHER` sert à une image échographique dans une coupe hors axe ou non standard ; « Cannot tell the view »
-  quand vous ne pouvez pas trancher ; « No echo view » seulement pour un élément sans image échographique, dont le mode
-  d'acquisition est alors « Not applicable ».
-- **Qu'est-ce que cet élément ?** Une boucle ou une image figée montre toujours une coupe (donnez-la, ou « Cannot
-  tell the view ») ; une page de texte ou un élément sans image échographique jamais ; un écran d'analyse peut-être.
+- **Qu'est-ce que cet élément ?** « Echo cine loop » pour une image échographique en mouvement, dans tout mode
+  d'acquisition : alors seulement la coupe et le mode d'acquisition sont demandés. Pour toute autre réponse, ils ne
+  sont pas demandés et sont enregistrés comme sans objet.
+- **Coupe.** `OTHER` sert à une coupe échographique hors axe ou non standard ; « Cannot tell the view » quand vous ne
+  pouvez pas trancher.
 - **Texte identifiant.** Répondez « Yes » si un nom, un numéro de dossier ou une date de naissance est lisible où que
   ce soit dans l'élément. Il est supprimé.
-
-Une revue dont les réponses se contredisent sur ces points est renvoyée pour correction.
 
 ## Exemples commentés : revue de coupe et de type
 
@@ -389,28 +387,28 @@ Une revue dont les réponses se contredisent sur ces points est renvoyée pour c
 ### 1. Veine cave inférieure classée OTHER
 
 - **Élément (synthétique) :** Boucle sous-costale en mode B de la veine cave inférieure qui se jette dans l'oreillette droite.
-- **Réponses :** What is this item? **Cine loop (moving echo images)**; Which view does it show? **SUBCOSTAL: Subcostal view**; Acquisition mode : **B-mode**; Is identifying text visible (a name, a record number, a date of birth)? **No**
+- **Réponses :** What is this item? **Echo cine loop (moving echo images)**; Which view does it show? **SUBCOSTAL: Subcostal view**; Acquisition mode : **B-mode**; Is identifying text visible (a name, a record number, a date of birth)? **No**
 - **Ensuite :** renvoyé à la revue par colonnes en `SUBCOSTAL`, B-mode
 - **Pourquoi :** Une boucle échographique d'une coupe que la revue par colonnes sait router : elle y retourne sous cette coupe.
 
 ### 2. Coupe hors axe
 
 - **Élément (synthétique) :** Boucle en mode B entre les plans apicaux 4 et 5 cavités, raccourcie, sans coupe standard.
-- **Réponses :** What is this item? **Cine loop (moving echo images)**; Which view does it show? **OTHER: off-axis or non-standard echo view**; Acquisition mode : **B-mode**; Is identifying text visible (a name, a record number, a date of birth)? **No**
+- **Réponses :** What is this item? **Echo cine loop (moving echo images)**; Which view does it show? **OTHER: off-axis or non-standard echo view**; Acquisition mode : **B-mode**; Is identifying text visible (a name, a record number, a date of birth)? **No**
 - **Ensuite :** reste hors de la revue par colonnes
 - **Pourquoi :** OTHER sert aux coupes échographiques hors axe ou non standard ; « Cannot tell the view » sert quand on ne peut pas trancher.
 
 ### 3. Écran d'analyse
 
 - **Élément (synthétique) :** Écran d'analyse de déformation : une coupe apicale 4 cavités aux segments colorés et une cible en œil de bœuf.
-- **Réponses :** What is this item? **Analysis or quantification screen (strain, 3D, EF tool)**; Which view does it show? **A4C: Apical 4-chamber view**; Acquisition mode : **Mixed / analysis acquisition**; Is identifying text visible (a name, a record number, a date of birth)? **No**
+- **Réponses :** What is this item? **Analysis or quantification screen (strain, 3D, EF tool)**; Is identifying text visible (a name, a record number, a date of birth)? **No**; coupe et mode d'acquisition non demandés, enregistrés comme sans objet
 - **Ensuite :** reste hors de la revue par colonnes
-- **Pourquoi :** Donner la coupe que montre l'écran. Un écran d'analyse n'est pas un clip qu'une légende doit décrire : il ne retourne pas à la revue par colonnes.
+- **Pourquoi :** Un écran d'analyse n'est pas un clip qu'une légende doit décrire : sa coupe et son mode ne sont pas demandés, et il ne retourne pas à la revue par colonnes.
 
 ### 4. Texte identifiant visible
 
 - **Élément (synthétique) :** Boucle apicale 4 cavités en mode B où un nom reste lisible dans le bandeau du haut.
-- **Réponses :** What is this item? **Cine loop (moving echo images)**; Which view does it show? **A4C: Apical 4-chamber view**; Acquisition mode : **B-mode**; Is identifying text visible (a name, a record number, a date of birth)? **Yes: the item must be deleted**
+- **Réponses :** What is this item? **Echo cine loop (moving echo images)**; Which view does it show? **A4C: Apical 4-chamber view**; Acquisition mode : **B-mode**; Is identifying text visible (a name, a record number, a date of birth)? **Yes: the item must be deleted**
 - **Ensuite :** supprimé de Labelbox : texte identifiant
 - **Pourquoi :** Répondre « Yes » sans recopier le texte nulle part. L'élément est supprimé de Labelbox et l'étape de dé-identification est corrigée.
 <!-- END GENERATED: view_type_examples -->
