@@ -38,6 +38,20 @@ square shows is unconfirmed, with the reason "crop, zoom or outside the square",
 therefore measure captions against what the model sees, and an unsupported statement is a caption error, not a crop
 effect.
 
+## Display readiness and training eligibility
+
+Before pilot review, verify crop geometry and selected model-input frames on synthetic examples under the
+[model-input review contract](ontology_v1.md#model-input-review). Items with unverifiable display provenance are
+returned for display correction before medical labeling; report their number separately from medical form problems.
+For findings visible only outside the selected frames, use an unconfirmed statement with reason `other` and comment
+"outside model-input frames". Report this reason separately in the analysis records, without changing the form ids.
+
+A workflow Go does not validate all generated captions. Only individually reviewed corrected captions with resolved
+view/acquisition, no unsupported or unconfirmed remaining claim, and verified text/structured-claim agreement may
+enter the verified local contrastive dataset. Preserve candidates separately for pilot scoring. Study-report labels
+remain a separate weak-supervision source. Adjudicate clinically important errors before releasing affected pairs,
+regardless of aggregate M3; agree the second-reader subset and adjudication procedure before the pilot starts.
+
 ## Which reviews count
 
 Every rate names its population:

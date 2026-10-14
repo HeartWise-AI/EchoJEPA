@@ -19,6 +19,13 @@ the square. The rest of the image is context, for example to recognize the view.
 outside the square shows is unconfirmed, with the reason "crop, zoom or outside the square" (see
 [Uncertainty](#uncertainty)).
 
+Before reviewing, confirm that the item identifies the model-input frame sequence as well as its crop. The full
+loop is context; a finding seen only in frames the model does not receive is unconfirmed (reason "other", with a
+comment "outside model-input frames"). If the crop or frame sequence is missing or cannot be checked, return the
+item for display correction before submitting a medical review. Do not guess the model's input from the outline.
+An optional synchronized crop-only panel must show the same selected frames, without the outline burned into the
+model input. See [the review display contract](ontology_v1.md#model-input-review).
+
 The terms used below:
 
 - **Statement:** one thing the caption says, besides the view: the acquisition mode, a structure being visible, or a
@@ -135,6 +142,18 @@ it is supported only if this clip could show the finding (right view, right moda
 square) and it is not there. If the clip could not show it, the statement is unconfirmed, not supported.
 
 A finding that is absent and not mentioned in the caption is not missing information.
+
+An omitted report field is not evidence of absence. An absent jet in one color loop means only that no jet is
+demonstrated in this acquisition; inadequate color coverage, settings or cardiac phases leave absence unconfirmed.
+
+### Clinical severity and scope
+
+Treat qualitative grades as clip-level visual impressions, not as a complete examination's diagnosis. A color jet
+alone does not establish an integrated regurgitation grade. If the clip cannot substantiate the stated grade, mark
+that statement unconfirmed even when a jet is clearly present. Do not copy a report grade into the corrected caption.
+Likewise, a numerical EF requires more evidence than recognizing reduced contraction; do not invent a number from
+one view. Regional wall motion describes only the segments visible in the model-input frames. Do not infer normal
+motion in unseen segments, a whole-study EF, stenosis severity, filling pressures or pulmonary hypertension.
 
 ### Structures that are not visible
 
