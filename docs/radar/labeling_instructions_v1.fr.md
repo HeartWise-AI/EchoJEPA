@@ -1,470 +1,423 @@
-# Revue des légendes RADAR : consignes aux relecteurs (v1)
+# Revue des légendes RADAR : instructions aux relecteurs (v1)
 
-Version : `radar-caption-ontology-v1`. Son approbation médicale est consignée dans [approval_v1.md](approval_v1.md).
-Aucune donnée clinique ne peut être téléversée pour relecture selon ces consignes tant que le statut qui y figure
-n'est pas `approved`.
-[English version](labeling_instructions_v1.md). Les deux versions utilisent les mêmes identifiants de questions et de
-réponses.
+Version : `radar-caption-ontology-v1`, avec la [revue par colonnes v2](column_review_v2.md) et la
+[revue de coupe et de type](view_type_review_v1.md). Leur approbation médicale est consignée dans
+[approval_v1.md](approval_v1.md) ; aucune donnée clinique ne peut être téléversée pour revue avant que ce registre soit
+`approved`. [English version](labeling_instructions_v1.md). Les deux versions décrivent les mêmes formulaires, dont
+les libellés sont en anglais, comme dans Labelbox.
 
 ## Ce que vous relisez
 
-Chaque élément dans Labelbox est un clip d'échocardiographie accompagné d'une **légende proposée** : une ou deux
-phrases courtes, en français, qui indiquent la coupe, le mode d'acquisition et quelques constatations. Les légendes
-proposées sont rédigées automatiquement à partir du compte rendu de l'examen et de ce que la coupe et l'acquisition
-du clip peuvent montrer. Elles ne sont pas validées : votre relecture décide de ce que ce clip étaye réellement.
+Chaque vidéo valide d'une étude pilote va dans l'un de deux projets Labelbox :
 
-À côté du clip figurent aussi les structures que sa coupe montre habituellement (les « structures attendues »). C'est
-un a priori pour vous aider, pas une affirmation de la légende.
+- **Revue par colonnes**, pour un clip d'une coupe classée, en mode B ou en Doppler couleur. Vous voyez le clip, sa
+  coupe et son mode d'acquisition proposés, ses **constatations préremplies** et une **légende proposée**, une phrase
+  par constatation. Les constatations sont préremplies à partir de ce que le compte rendu de l'étude affirme
+  explicitement : une section du compte rendu qui ne dit rien ne préremplit rien, et aucune constatation n'est
+  supposée normale. Ce sont des suggestions ; votre revue décide de ce que ce clip étaye.
+- **Revue de coupe et de type**, pour un clip que le classifieur de coupes classe `OTHER`, ou ne classe pas. Vous
+  voyez le clip seul, sans légende, et dites ce qu'il est et quelle coupe il montre.
 
-Le clip montre un **contour carré** : la partie de l'image qu'utilise le modèle. Jugez chaque énoncé d'après ce qui
-se trouve dans le carré. Le reste de l'image sert de contexte, par exemple pour reconnaître la coupe. Un énoncé que
-seule la zone hors du carré montre est impossible à vérifier, avec la raison « cadrage, zoom ou hors du carré » (voir
-[Incertitude](#incertitude)).
+Les clips figés, les clips avec des mesures visibles et les coupes classées dans d'autres modes d'acquisition sont
+retirés avant le téléversement. Si l'un d'eux vous parvient quand même, signalez-le dans **Comments**.
 
-Avant la relecture, vérifier que l'élément indique la séquence d'images reçue par le modèle ainsi que son cadrage.
-La boucle complète sert de contexte ; une constatation visible uniquement dans des images non reçues par le modèle
-est impossible à vérifier (raison « autre », commentaire « hors des images reçues par le modèle »). Si le cadrage
-ou la séquence manque ou ne peut pas être vérifié, retourner l'élément pour correction de l'affichage avant de
-soumettre la relecture médicale. Ne pas déduire l'entrée du modèle du seul contour. Un panneau synchronisé facultatif
-montrant uniquement le cadrage doit afficher les mêmes images sélectionnées, sans ajouter le contour à l'entrée du
-modèle. Voir [le contrat d'affichage](ontology_v1.md#model-input-review).
+À côté de chaque clip de la revue par colonnes, une pièce jointe texte liste les propositions d'origine, chacune avec
+le champ du compte rendu dont elle vient, et les nombres du compte rendu (FE, dimensions, scores de cinétique) comme
+contexte de l'étude. Ces nombres décrivent l'étude, pas ce clip, et ne sont jamais des constatations à confirmer.
 
+Le clip est montré en entier, à sa résolution d'origine, après dé-identification : le texte identifiant est masqué en
+noir. Le modèle reçoit le même clip, chaque image redimensionnée en entier : rien n'est rogné. Jugez chaque
+constatation sur l'image entière et la boucle entière (voir
+[Model input and review display](ontology_v1.md#model-input-and-review-display)).
 
-Termes utilisés ci-dessous :
+Les termes employés ci-dessous :
 
-- **Énoncé :** une chose que dit la légende, en dehors de la coupe : le mode d'acquisition, la visibilité d'une
-  structure, ou une constatation avec sa valeur (« Insuffisance mitrale : modérée », « Insuffisance mitrale :
-  absente »).
-- **Étayé :** ce clip le montre dans le carré, avec la valeur ou la sévérité indiquée.
-- **Impossible à vérifier :** ce clip ne permet pas de trancher (voir [Incertitude](#incertitude)).
+- **Constatation :** une colonne avec sa valeur, par exemple « LV function: Mildly reduced ». Chacune donne une phrase
+  de la légende.
+- **Étayée :** ce clip la montre, à la valeur indiquée.
+- **Fausse :** ce clip montre une autre valeur, ou la contredit.
+- **Impossible à évaluer :** ce clip ne permet pas de trancher (voir [Incertitude](#incertitude)).
 
-L'ontologie sur laquelle repose le formulaire, avec chaque coupe, structure et constatation, est décrite dans
-[ontology_v1.md](ontology_v1.md) (en anglais, libellés en français).
+## Revue par colonnes
 
-## Déroulement pour un clip
+### Comment relire un clip
 
-1. Regarder toute la boucle, plusieurs fois si nécessaire, et repérer le carré : les énoncés se jugent dans le carré.
-2. Décider si le clip est interprétable (question 1).
-3. Vérifier la coupe (question 2).
-4. Parcourir la légende énoncé par énoncé : étayé, non étayé (question 5) ou impossible à vérifier (question 6).
-   Répondre ensuite à la question 3, qui les résume.
-5. Chercher une information visible et pertinente que la légende omet (question 4).
-6. Corriger la légende (question 7), et n'ajouter un commentaire que si nécessaire.
+1. Regardez la boucle entière, plusieurs fois si besoin.
+2. Décidez si le clip est interprétable (question 1). S'il ne l'est pas, donnez la raison, sélectionnez **Review
+   completed** et soumettez : rien d'autre n'est lu.
+3. Vérifiez la coupe et le mode d'acquisition (questions 2 à 5).
+4. Vérifiez les cibles que le clip couvre réellement et, pour un clip PSAX ou sous-costal, son niveau (questions 6 et
+   7).
+5. Passez les constatations préremplies une à une : étayée, fausse ou impossible à évaluer (question 8).
+6. Cherchez une constatation importante et visible que la proposition omet (question 9), et un énoncé de la légende
+   hors de ses constatations (question 10).
+7. Ajoutez un commentaire seulement si nécessaire, sélectionnez **Review completed** (question 13) et soumettez.
 
-## Le formulaire
+Toutes les réponses sauf **Review completed** sont préremplies : clip interprétable, coupe et mode corrects, chaque
+constatation étayée, rien de manquant ni de superflu. Modifiez ce que ce clip n'étaye pas ; une réponse laissée telle
+quelle vaut confirmation.
 
-<!-- BEGIN GENERATED: review_form -->
+### Le formulaire
+
+<!-- BEGIN GENERATED: column_form -->
 | # | Question | Id | Obligatoire | Réponses |
 |---|---|---|---|---|
-| 1 | Ce clip est-il ininterprétable ? | `uninterpretable_clip` | oui | `no` Non, le clip est interprétable; `yes` Oui, il est ininterprétable → Raison : Qualité d'image, Cadrage, zoom ou hors du carré, Modalité, Autre |
-| 2 | La coupe indiquée est-elle correcte ? | `view_correct` | oui | `yes` Oui; `no` Non → Coupe correcte (une des classes de coupe); `unsure` Incertain; `not_applicable` Sans objet : clip ininterprétable |
-| 3 | En dehors de la coupe, tout ce que la légende affirme est-il étayé par ce clip ? | `caption_supported` | oui | `yes` Oui, chaque énoncé est étayé; `no` Non, au moins un énoncé n'est pas étayé ou est faux; `unsure` Incertain : rien n'est faux, mais au moins un énoncé est impossible à vérifier; `not_applicable` Sans objet : clip ininterprétable |
-| 4 | La légende omet-elle une information visible et cliniquement pertinente ? | `missing_information` | oui | `no` Non; `yes` Oui → Concepts manquants (les énoncés ci-dessous) + Autre information manquante (hors ontologie) (texte libre); `not_applicable` Sans objet : clip ininterprétable |
-| 5 | En dehors de la coupe, la légende affirme-t-elle quelque chose que ce clip n'étaye pas (information non étayée ou hallucinée) ? | `unsupported_information` | oui | `no` Non; `yes` Oui → Énoncés non étayés ou faux (les énoncés ci-dessous), chacun : Non montré ou contredit par le clip (halluciné) / Présent, mais valeur ou sévérité fausse; `not_applicable` Sans objet : clip ininterprétable |
-| 6 | Énoncés impossibles à vérifier sur ce clip (laisser vide s'il n'y en a aucun) | `unconfirmed_statements` | non | les énoncés ci-dessous, chacun : Raison (Visible, mais je ne suis pas certain / Qualité d'image / Cadrage, zoom ou hors du carré / Modalité / Autre) |
-| 7 | La légende telle qu'elle devrait se lire (préremplie avec la légende proposée) | `corrected_caption` | oui | texte libre |
-| 8 | Commentaires (aucune information sur le patient) | `comments` | non | texte libre |
-<!-- END GENERATED: review_form -->
+| 1 | Is this clip uninterpretable? | `uninterpretable` | oui | `no` No, it can be interpreted; `yes` Yes, nothing in it can be judged → Why? (une raison ci-dessous) |
+| 2 | Proposed view | `view` | oui | une des 20 classes de coupe |
+| 3 | Acquisition mode | `modality` | oui | `bmode` B-mode; `color_flow` Color Doppler; `spectral` Spectral Doppler; `m_mode` M-mode; `mixed` Mixed / analysis acquisition; `unresolved` Unresolved |
+| 4 | View correct? | `view_ok` | oui | `yes` Yes; `no` No — reroute; `cannot_assess` Cannot assess |
+| 5 | Acquisition mode correct? | `modality_ok` | oui | `yes` Yes; `no` No — reroute; `cannot_assess` Cannot assess |
+| 6 | Confirm targets actually covered and assessable | `visible_targets` | non | `lv` LV; `rv` RV; `la` LA; `ra` RA; `mitral` Mitral; `tricuspid` Tricuspid; `pericardium` Pericardium; `aortic` Aortic; `aorta_root` Aorta root; `aorta_ascending` Aorta ascending; `pulmonic` Pulmonic; `ivc` IVC; `aorta_arch` Aorta arch |
+| 7 | PSAX slice / SUBCOSTAL subtype (when relevant) | `psax_level` | oui | `not_applicable` Not applicable; `unresolved` Unresolved; `mid` PSAX mid / papillary level; `basal` PSAX basal; `apical` PSAX apical; `mitral` PSAX mitral leaflet level; `ivc` IVC focused; `four_chamber` Subcostal four chamber |
+| 8 | Prefilled findings — confirm or correct selected columns | `review_columns` | non | les colonnes préremplies, chacune : Proposed value (original retained in context) (une des valeurs de la colonne) + Confirm this finding (`yes` Supported in this input; `no` Incorrect / should not be here → Why should it not be here? (une raison d'erreur) + Correction (`remove` Remove this claim, ou une des valeurs de la colonne); `cannot_assess` Cannot assess → Why can it not be assessed? (une limite d'évaluation)) |
+| 9 | Important visible finding missing from the candidate? | `missing_information` | oui | `no` No; `yes` Yes → Select missing columns and values (toute colonne que la coupe porte, chacune : Missing visible value (une des valeurs de la colonne) + Visible in this input? (`yes` Yes; `cannot_assess` Cannot assess)) |
+| 10 | Additional statement that should not be here? | `unsupported_information` | oui | `no` No; `yes` Yes → Select offending columns / statements (toute colonne ou tout type d'énoncé, chacune : Why should this statement not be here? (une raison d'erreur); un type d'énoncé demande aussi Copy the offending statement (texte libre)) |
+| 11 | Original caption (for reference only; edits are ignored) | `candidate_caption` | non | texte libre |
+| 12 | Comments (no patient details) | `comments` | non | texte libre |
+| 13 | I reviewed this input, checked the proposed values and targets, and confirmed or corrected the suggestions. | `review_completed` | oui | `yes` Review completed |
+<!-- END GENERATED: column_form -->
 
-Les énoncés que vous pouvez signaler ou indiquer comme manquants :
+Les colonnes de constatations, leurs valeurs et les coupes qui les portent sont listées dans
+[column_review_v2.md](column_review_v2.md#clinical-columns-and-choices). Les raisons :
 
-<!-- BEGIN GENERATED: statements -->
-| Énoncé | Libellé | Type |
-|---|---|---|
-| `acquisition` | Mode d'acquisition | mode d'acquisition |
-| `lv_visible` | Ventricule gauche visible | visibilité |
-| `rv_visible` | Ventricule droit visible | visibilité |
-| `la_visible` | Oreillette gauche visible | visibilité |
-| `ra_visible` | Oreillette droite visible | visibilité |
-| `mitral_valve_visible` | Valve mitrale visible | visibilité |
-| `aortic_valve_visible` | Valve aortique visible | visibilité |
-| `tricuspid_valve_visible` | Valve tricuspide visible | visibilité |
-| `pulmonic_valve_visible` | Valve pulmonaire visible | visibilité |
-| `aortic_root_visible` | Racine aortique visible | visibilité |
-| `interatrial_septum_visible` | Septum interauriculaire visible | visibilité |
-| `pericardium_visible` | Péricarde visible | visibilité |
-| `ivc_visible` | Veine cave inférieure visible | visibilité |
-| `lv_systolic_function` | Fonction systolique ventriculaire gauche | constatation |
-| `lv_ejection_fraction` | Fraction d'éjection VG (estimation visuelle) | constatation |
-| `lv_size` | Taille du ventricule gauche | constatation |
-| `lv_wall_thickness` | Hypertrophie ventriculaire gauche | constatation |
-| `lv_regional_wall_motion` | Cinétique segmentaire du VG (segment le plus atteint) | constatation |
-| `rv_systolic_function` | Fonction systolique ventriculaire droite | constatation |
-| `rv_size` | Taille du ventricule droit | constatation |
-| `la_size` | Taille de l'oreillette gauche | constatation |
-| `ra_size` | Taille de l'oreillette droite | constatation |
-| `atrial_septal_hypertrophy` | Hypertrophie lipomateuse du septum interauriculaire | constatation |
-| `mitral_regurgitation` | Insuffisance mitrale | constatation |
-| `mitral_annular_calcification` | Calcification de l'anneau mitral | constatation |
-| `mitral_valve_device` | Dispositif ou prothèse mitrale | constatation |
-| `aortic_regurgitation` | Insuffisance aortique | constatation |
-| `bicuspid_aortic_valve` | Bicuspidie aortique | constatation |
-| `aortic_valve_prosthesis` | Prothèse valvulaire aortique | constatation |
-| `aortic_root_dilation` | Dilatation de la racine aortique | constatation |
-| `tricuspid_regurgitation` | Insuffisance tricuspide | constatation |
-| `pulmonic_regurgitation` | Insuffisance pulmonaire | constatation |
-| `ivc_dilation` | Dilatation de la veine cave inférieure | constatation |
-| `ivc_collapse` | Collapsus inspiratoire de la VCI | constatation |
-| `pericardial_effusion` | Épanchement péricardique | constatation |
-| `pacing_lead` | Sonde de stimulation intracardiaque | constatation |
-| `mechanical_circulatory_support` | Assistance circulatoire mécanique | constatation |
-<!-- END GENERATED: statements -->
+<!-- BEGIN GENERATED: column_reasons -->
+**Raisons d'erreur (constatation fausse, énoncé supplémentaire)**
 
-## Règles
+| Id | Libellé |
+|---|---|
+| `wrong_value` | Wrong value / diagnosis |
+| `wrong_severity` | Wrong severity |
+| `wrong_location` | Wrong structure / segment |
+| `contradicted` | Contradicted by visible evidence |
+| `not_visible` | Claimed structure/finding not visible |
+| `wrong_view` | Wrong view / target |
+| `wrong_modality` | Needs another acquisition mode |
+| `study_only` | Study-level claim in a local caption |
+| `unsupported_report` | No supporting source / invented assertion |
 
-### Juger ce clip seulement
+**Limites d'évaluation (constatation impossible à évaluer)**
 
-Jugez ce que ce clip montre, pas ce que vous savez du patient : le compte rendu, les autres clips de l'examen et vos
-propres mesures ne comptent pas. Une constatation réelle chez le patient mais invisible sur ce clip n'est pas étayée
-ici.
+| Id | Libellé |
+|---|---|
+| `poor_quality` | Poor image quality |
+| `incomplete_cycle` | Incomplete cardiac/respiratory cycle |
+| `target_outside` | Target outside the displayed input |
+| `unresolved_view` | View / slice level unresolved |
+| `insufficient_input` | Needs additional views or measurements |
 
-### Étayé, non étayé, valeur fausse
+**Clips ininterprétables**
 
-- **Étayé :** vous le voyez dans le carré, avec la valeur ou la sévérité indiquée, telle que vous l'évalueriez
-  visuellement.
-- **Non étayé (halluciné) :** le clip ne le montre pas, ou le contredit. Signalez-le à la question 5 avec « non
-  montré ou contredit ».
-- **Valeur fausse :** la constatation est présente mais sa valeur ou sa sévérité est fausse (par exemple sévère au
-  lieu de modérée). Signalez-la à la question 5 avec « valeur ou sévérité fausse » et donnez la bonne valeur dans la
-  légende corrigée.
-- Le **mode d'acquisition** est aussi un énoncé : si la légende indique Doppler couleur et que le clip est en mode B,
-  signalez « mode d'acquisition » comme non étayé.
+| Id | Libellé |
+|---|---|
+| `poor_quality` | Poor image quality or artifacts throughout |
+| `no_cardiac_structure` | No identifiable cardiac structure (crop, zoom or depth) |
+| `not_cardiac` | Not a cardiac ultrasound acquisition |
+| `other` | Other: say why in Comments |
 
-### Incertitude
+**Types d'énoncé supplémentaire (énoncé de la légende hors de ses colonnes)**
 
-Quand vous ne pouvez pas décider si un énoncé est étayé, ne devinez pas. Indiquez-le à la question 6 avec une raison :
+| Id | Libellé |
+|---|---|
+| `exact_ef` | Exact numerical EF |
+| `valve_severity` | Integrated valve severity |
+| `numeric_measurement` | Numeric dimension / velocity / gradient / pressure |
+| `other_statement` | Other unsupported statement |
+<!-- END GENERATED: column_reasons -->
 
-- **incertain :** la constatation est visible mais vous ne pouvez pas la juger avec assurance (par exemple un jet
-  excentré dont le grade est indéterminable) ;
-- **qualité d'image, cadrage, zoom ou hors du carré, modalité, autre :** quelque chose dans le clip empêche de juger.
-  Un énoncé que seule la zone hors du carré montre est impossible à vérifier, avec « cadrage, zoom ou hors du carré » :
-  le clip le montre, mais pas là où regarde le modèle ; ne le signalez pas comme non étayé.
+### Règles
 
-Si rien n'est faux dans la légende mais qu'au moins un énoncé est impossible à vérifier, répondez « incertain » à la
-question 3. Un énoncé est soit non étayé, soit impossible à vérifier, jamais les deux. Pour la coupe, répondez
-« incertain » si vous ne pouvez pas déterminer la classe.
+#### Juger ce clip seulement
 
-### Constatations absentes
+Jugez ce que montre ce clip, pas ce que vous savez du patient : le compte rendu, ses nombres, les autres clips de
+l'étude et vos propres mesures ne comptent pas. Une constatation réelle chez le patient mais invisible sur ce clip
+n'est pas étayée ici.
 
-Une légende peut affirmer qu'une constatation est absente (« Insuffisance mitrale : absente »). Jugez-la comme tout
-autre énoncé : elle n'est étayée que si ce clip pouvait montrer la constatation (bonne coupe, bonne modalité,
-structure dans le carré) et qu'elle est absente. Si le clip ne pouvait pas la montrer, l'énoncé est impossible à
-vérifier, pas étayé.
+#### Étayée, fausse, impossible à évaluer
 
-Une constatation absente et non mentionnée dans la légende n'est pas une information manquante.
+- **Étayée :** vous la voyez à la valeur indiquée, comme vous la graderiez à l'œil. Laissez « Supported in this
+  input ».
+- **Fausse :** choisissez pourquoi (les raisons d'erreur ci-dessus), puis la valeur correcte ou « Remove this
+  claim ». Ne donnez une valeur que si ce clip la montre ; sinon retirez l'énoncé. Retirer un énoncé n'affirme jamais
+  son contraire.
+- **Impossible à évaluer :** choisissez la limite. Ce n'est ni une erreur ni une constatation négative, et la
+  constatation reste hors de la légende.
 
-Un champ absent du compte rendu n'indique pas l'absence d'une anomalie. L'absence de jet dans une boucle
-couleur signifie seulement qu'aucun jet n'est démontré dans cette acquisition ; une couverture couleur, des réglages
-ou des phases cardiaques insuffisants ne permettent pas de confirmer l'absence.
+**Proposed value** garde la valeur d'origine : une correction va dans **Correction**, jamais dans **Proposed value**.
 
-### Sévérité clinique et portée
+#### Incertitude
 
-Une valeur qualitative est une impression visuelle limitée au clip, pas le diagnostic de l'examen complet. Un jet
-couleur seul n'établit pas un grade intégré d'insuffisance valvulaire. Si le clip ne permet pas d'étayer le grade,
-indiquer que l'énoncé est impossible à vérifier, même si un jet est visible. Ne pas recopier le grade du compte rendu
-dans la légende corrigée. Ne pas inventer une FEVG chiffrée à partir d'une seule coupe. La cinétique segmentaire
-décrit uniquement les segments visibles dans les images reçues par le modèle ; les segments non vus ne sont pas
-considérés comme normaux. Ne pas inférer une sévérité de sténose, des pressions de remplissage ou une hypertension
-pulmonaire.
+Quand vous ne pouvez pas décider si une constatation est étayée, ne devinez pas : choisissez **Cannot assess** avec la
+limite la plus proche. « View / slice level unresolved » sert pour une constatation qui dépend d'une coupe ou d'un
+niveau que vous ne pouvez pas dire ; « Needs additional views or measurements » pour une constatation que ce clip seul
+ne peut pas trancher ; « Target outside the displayed input » pour une structure coupée au bord du secteur, hors de la
+boîte couleur, ou hors d'un clip zoomé.
 
-### Structures non visibles
+#### Constatations absentes
 
-Les structures attendues sont un a priori, pas une affirmation. Une structure attendue mais non visible sur ce clip
-n'est ni une information manquante ni une erreur, sauf si la légende affirme qu'elle est visible : cet énoncé est
-alors non étayé.
+Certaines constatations affirment une absence : « No mitral regurgitant jet is demonstrated in this acquisition »,
+« No pericardial effusion is demonstrated in the imaged region ». Jugez-les comme toute autre constatation : étayées
+seulement si ce clip pouvait montrer la constatation (bonne coupe, bon mode, la structure dans l'image et, pour un jet,
+le Doppler couleur sur la valve pendant la systole) et qu'elle n'y est pas. Si le clip ne pouvait pas la montrer, choisissez
+**Cannot assess**.
 
-Une structure partiellement visible, ou située en partie ou en totalité hors du carré, ne compte comme visible que si
-vous pouvez l'identifier avec assurance dans le carré ; sinon, indiquez l'énoncé comme impossible à vérifier (cadrage,
-zoom ou hors du carré).
+Un compte rendu qui ne mentionne pas une constatation ne prouve pas son absence, et une constatation absente qui n'est
+pas préremplie n'est pas une information manquante.
 
-### Information manquante
+#### Constatations normales préremplies
 
-Répondez « oui » à la question 4 seulement pour une information visible dans le carré, cliniquement pertinente, que
-la légende omet. Cochez les énoncés correspondants ; utilisez le champ de texte libre pour ce que la liste ne contient
-pas. N'indiquez pas les mesures (TAPSE, PSVD, PISA…), ce que seuls d'autres clips ou seule la zone hors du carré
-montrent, ni les constatations absentes.
+Une constatation normale n'est préremplie que si le compte rendu l'affirme (« Valve tricuspide normale »). Ne la
+confirmez que si ce clip la montre. Un aspect normal des feuillets n'établit pas une mobilité normale, et aucun des
+deux n'établit l'absence de jet.
 
-### Clips ininterprétables
+#### Sévérité clinique et portée
 
-Répondez « oui » à la question 1 seulement quand rien dans la légende ne peut être jugé : artefacts majeurs, modalité
-inadaptée à toute la légende, cadrage ou carré ne laissant rien d'identifiable. Donnez la raison, répondez
-« sans objet » aux questions 2 à 5 et laissez la légende corrigée inchangée (elle est ignorée).
+Les valeurs de fonction et de taille sont des impressions visuelles à l'échelle du clip, pas le diagnostic d'un
+examen complet. Un jet de régurgitation est seulement démontré ou non démontré dans cette acquisition : aucune
+constatation ne le grade, et une légende qui affirme un grade intégré, une FE exacte ou un nombre fait un énoncé
+supplémentaire (question 10). La cinétique segmentaire ne décrit que les segments que montre ce clip. Les scores de
+cinétique du compte rendu gardent leur ambiguïté : le score 1 donne « Normal / hyperkinetic », le score 3
+« Akinetic / severely hypokinetic ». N'inférez pas une cinétique normale dans des segments non vus, une FE de l'étude,
+une sévérité de sténose, des pressions de remplissage ni une hypertension pulmonaire.
 
-Si seule une partie de la légende ne peut pas être jugée, le clip est interprétable : utilisez les énoncés impossibles
-à vérifier. Un clip interprétable ne reçoit jamais la réponse « sans objet » : si vous ne pouvez pas trancher,
-répondez « incertain » quand la question le propose, et indiquez à la question 6 les énoncés impossibles à vérifier.
+#### Cibles et structures non visibles
 
-### La coupe
+**Confirm targets actually covered and assessable** est prérempli avec les cibles que la coupe montre habituellement.
+Décochez une cible que ce clip ne couvre pas assez pour l'évaluer ; cochez une cible qu'un clip ciblé ou zoomé couvre.
 
-Répondez à la question 2 d'après les classes de coupe décrites dans [ontology_v1.md](ontology_v1.md#views). Si le
-clip relève d'une autre classe, répondez « non » et choisissez cette classe, jamais celle qui est indiquée ; utilisez
-`OTHER` pour un clip hors axe ou non standard. Si vous ne pouvez pas déterminer la classe, répondez « incertain » : ne
-choisissez pas une classe au hasard et n'utilisez pas `OTHER` pour cela.
+Une constatation sur une structure absente du clip est **fausse** : « Claimed structure/finding not visible ». Une
+structure seulement en partie dans l'image, trop coupée pour être jugée, est **impossible à évaluer** : « Target
+outside the displayed input ».
 
-La coupe se juge seulement ici. Les questions 3 et 5 portent sur les autres énoncés : une coupe fausse ou incertaine,
-à elle seule, donne « légende étayée : oui » si chaque énoncé est étayé, et n'est jamais signalée comme énoncé non
-étayé. Dans tous les cas, jugez les énoncés tels qu'ils sont écrits.
+#### Niveau PSAX et sous-type sous-costal
 
-### La légende corrigée
+Pour un clip PSAX, choisissez le niveau de coupe ; pour un clip sous-costal, VCI ou quatre cavités. Les segments
+pariétaux ne sont jugés qu'au niveau moyen (papillaire) et les feuillets mitraux qu'au niveau mitral, et les
+constatations sous-costales sur la VCI et sur les cavités ne se mélangent jamais. Pour les autres coupes, laissez
+« Not applicable ».
 
-Le champ est prérempli avec la légende proposée. Réécrivez-la pour qu'elle n'affirme que ce que ce clip étaye :
+#### Information manquante
 
-- retirer les énoncés non étayés et ceux impossibles à vérifier, sauf le mode d'acquisition, que toute légende garde
-  (voir ci-dessous) ;
-- corriger les valeurs fausses ;
-- ajouter l'information manquante quand la liste des énoncés la contient ;
-- donner la bonne coupe si la réponse à la question 2 était « non » ;
-- garder la même forme : la coupe, le mode d'acquisition, puis les constatations, en français ;
-- ne jamais ajouter d'identifiants, de dates, de mesures ni de texte du compte rendu.
+Répondez « Yes » à la question 9 seulement pour une constatation **importante**, visible sur ce clip, que la coupe
+porte et qu'aucune constatation préremplie n'énonce : choisissez la colonne et sa valeur, et confirmez qu'elle est
+visible. N'ajoutez pas de valeurs normales que le compte rendu omet, de constatations absentes, de mesures, ni ce que
+seuls d'autres clips montrent. Une constatation préremplie à la valeur fausse se corrige à la question 8 ; elle ne
+s'ajoute pas comme manquante.
 
-Quand vous ne pouvez pas déterminer la coupe ou le mode d'acquisition, la légende corrigée garde sa forme et
-l'indique :
+#### Énoncés supplémentaires
 
-- question 2 « incertain » : écrivez « Coupe indéterminée » à la place de la coupe (« Coupe indéterminée, Doppler
-  couleur. … ») ; la classe du classifieur reste enregistrée avec le clip ;
-- mode d'acquisition impossible à vérifier : écrivez « acquisition indéterminée » à la place du mode. Si le mode
-  indiqué est faux, écrivez celui que montre le clip, ou « acquisition indéterminée » si vous ne pouvez pas le
-  déterminer.
+La légende proposée est construite à partir de ses constatations, donc la question 10 est rarement « Yes ».
+Utilisez-la quand la légende affirme quelque chose hors de ses constatations, comme un grade, une FE exacte ou un
+nombre : choisissez la colonne ou le type d'énoncé et la raison, et recopiez l'énoncé quand le formulaire le demande.
 
-Les énoncés que le clip étaye restent. Si la légende est juste telle quelle, laissez-la inchangée.
+#### Clips ininterprétables
 
-### Quand une relecture est renvoyée
+Répondez « Yes » à la question 1 seulement quand rien dans le clip ne peut être jugé : artéfacts ou mauvaise qualité
+d'image tout du long, aucune structure cardiaque reconnaissable, ou pas une acquisition d'échographie cardiaque.
+Donnez la raison ; avec « Other », dites pourquoi dans **Comments**. Les autres réponses ne sont alors pas lues, et
+vous n'avez pas à les modifier.
 
-Une relecture est renvoyée pour correction quand une réponse obligatoire est vide, comme une légende corrigée laissée
-vide, ou quand ses réponses se contredisent : par exemple « légende étayée : oui » avec un énoncé non étayé ou
-impossible à vérifier, « non » sans énoncé non étayé, « information manquante : oui » sans rien d'indiqué,
-« sans objet » pour un clip interprétable, une coupe fausse corrigée en la coupe déjà indiquée, ou un énoncé signalé
-que la légende ne contient pas. La liste complète est dans
-[pilot_metrics_v1.md](pilot_metrics_v1.md#which-reviews-count) (en anglais).
+Si seules certaines constatations ne peuvent pas être jugées, le clip est interprétable : utilisez **Cannot assess**
+pour celles-là.
 
-### Confidentialité
+#### La coupe et le mode d'acquisition
 
-Les commentaires et les légendes corrigées ne doivent contenir ni nom de patient, ni identifiant, ni date, ni texte du
-compte rendu.
+Répondez à la question 4 d'après les classes de coupe décrites dans [ontology_v1.md](ontology_v1.md#views). Si le clip
+appartient à une autre classe, répondez « No — reroute » et choisissez cette classe dans **Proposed view** ; utilisez
+`OTHER` pour les clips hors axe ou non standard. Si vous ne pouvez pas dire la classe, répondez « Cannot assess » : ne
+choisissez pas une classe au hasard, et n'utilisez pas `OTHER` pour cela. Le mode d'acquisition fonctionne de même
+(question 5 et **Acquisition mode**).
 
-## Exemples commentés
+Jugez tout de même les constatations préremplies sur le clip : elles sont comptées dans tous les cas. Une coupe ou un
+mode corrigé ne donne pas de légende au clip.
+
+#### La légende
+
+Il n'y a pas de légende à modifier. Après la revue, la légende est reconstruite à partir de vos réponses : les
+constatations étayées, les valeurs corrigées et les constatations manquantes confirmées, une phrase chacune.
+**Original caption** montre la proposition et n'est pas lu.
+
+#### Quand une revue est renvoyée
+
+Une revue est renvoyée pour correction quand :
+
+- une réponse obligatoire est vide, ou **Review completed** n'est pas sélectionné ;
+- une constatation fausse n'a pas de raison ou pas de correction, ou une constatation impossible à évaluer n'a pas de
+  limite ;
+- la question 9 est « Yes » sans colonne, sans sa valeur ou sans « Visible in this input? Yes », ou liste une
+  constatation déjà préremplie ;
+- la question 10 est « Yes » sans colonne ou type d'énoncé et sa raison, ou nomme une constatation laissée étayée ;
+- la coupe ou le mode d'acquisition est répondu « No » mais laissé tel que proposé, ou modifié sans répondre « No » ;
+- une constatation préremplie est décochée, ou sa valeur proposée modifiée ;
+- le clip est ininterprétable sans raison, ou avec « Other » et sans commentaire.
+
+Les règles complètes sont dans [pilot_metrics_v1.md](pilot_metrics_v1.md#which-reviews-count).
+
+## Exemples commentés : revue par colonnes
 
 Les clips sont synthétiques, décrits en mots.
 
-<!-- BEGIN GENERATED: examples -->
-### 1. Légende étayée
+<!-- BEGIN GENERATED: column_examples -->
+### 1. Constatations étayées
 
-- **Clip (synthétique) :** Coupe apicale 4 cavités en Doppler couleur ; jet d'insuffisance mitrale modérée, bien aligné.
-- **Coupe et acquisition du classifieur :** `A4C`, Doppler couleur
-- **Légende proposée :** « Coupe apicale 4 cavités (A4C), Doppler couleur. Insuffisance mitrale : modérée. »
-- **Réponses :**
-
-  - Ce clip est-il ininterprétable ? **Non, le clip est interprétable**
-  - La coupe indiquée est-elle correcte ? **Oui**
-  - En dehors de la coupe, tout ce que la légende affirme est-il étayé par ce clip ? **Oui, chaque énoncé est étayé**
-  - La légende omet-elle une information visible et cliniquement pertinente ? **Non**
-  - En dehors de la coupe, la légende affirme-t-elle quelque chose que ce clip n'étaye pas (information non étayée ou hallucinée) ? **Non**
-  - Énoncés impossibles à vérifier sur ce clip (laisser vide s'il n'y en a aucun) : **aucun**
-
-- **Légende corrigée :** inchangée
-- **Pourquoi :** Chaque énoncé est visible sur ce clip, et rien de pertinent ne manque.
+- **Clip (synthétique) :** Coupe apicale 4 cavités en mode B : ventricule gauche de taille normale, ventricule droit qui se contracte normalement, feuillets tricuspides fins.
+- **Proposé :** `A4C`, B-mode
+- **Constatations préremplies :** `lv_size` Normal; `rv_function` Normal; `tricuspid_appearance` Normal
+- **Légende proposée :** « The visible LV cavity is not dilated. RV systolic function appears normal in this input. The visible tricuspid valve has a normal appearance. »
+- **Ce que le relecteur modifie :** rien
+- **Légende reconstruite :** « The visible LV cavity is not dilated. RV systolic function appears normal in this input. The visible tricuspid valve has a normal appearance. »
+- **Pourquoi :** Chaque constatation préremplie est visible sur ce clip, à la valeur indiquée, et rien d'important ne manque : il suffit de confirmer et de soumettre.
 
 ### 2. Sévérité fausse
 
-- **Clip (synthétique) :** Coupe apicale 4 cavités en Doppler couleur ; jet d'insuffisance mitrale d'allure modérée.
-- **Coupe et acquisition du classifieur :** `A4C`, Doppler couleur
-- **Légende proposée :** « Coupe apicale 4 cavités (A4C), Doppler couleur. Insuffisance mitrale : sévère. »
-- **Réponses :**
+- **Clip (synthétique) :** Coupe apicale 4 cavités en mode B : le ventricule gauche se contracte nettement moins que la normale, une atteinte modérée à l'œil.
+- **Proposé :** `A4C`, B-mode
+- **Constatations préremplies :** `lv_function` Mildly reduced
+- **Légende proposée :** « LV systolic function appears mildly reduced in this input. »
+- **Ce que le relecteur modifie :**
+  - LV function, Confirm this finding : **Incorrect / should not be here**
+  - LV function, Why should it not be here? **Wrong severity**
+  - LV function, Correction : **Moderately reduced**
+- **Légende reconstruite :** « LV systolic function appears moderately reduced in this input. »
+- **Pourquoi :** La constatation est juste mais pas sa sévérité : « Wrong severity », avec la valeur que montre le clip. La légende reconstruite reprend la correction ; la valeur d'origine reste enregistrée.
 
-  - Ce clip est-il ininterprétable ? **Non, le clip est interprétable**
-  - La coupe indiquée est-elle correcte ? **Oui**
-  - En dehors de la coupe, tout ce que la légende affirme est-il étayé par ce clip ? **Non, au moins un énoncé n'est pas étayé ou est faux**
-  - La légende omet-elle une information visible et cliniquement pertinente ? **Non**
-  - En dehors de la coupe, la légende affirme-t-elle quelque chose que ce clip n'étaye pas (information non étayée ou hallucinée) ? **Oui** (Insuffisance mitrale : Présent, mais valeur ou sévérité fausse)
-  - Énoncés impossibles à vérifier sur ce clip (laisser vide s'il n'y en a aucun) : **aucun**
+### 3. Constatation contredite
 
-- **Légende corrigée :** « Coupe apicale 4 cavités (A4C), Doppler couleur. Insuffisance mitrale : modérée. »
-- **Pourquoi :** La fuite est présente mais la sévérité est fausse : « valeur ou sévérité fausse », et la légende corrigée donne la sévérité que montre le clip.
+- **Clip (synthétique) :** Coupe parasternale grand axe en mode B : le péricarde postérieur est bien visible, sans liquide autour du cœur.
+- **Proposé :** `PLAX`, B-mode
+- **Constatations préremplies :** `pericardial_effusion` Present
+- **Légende proposée :** « Pericardial effusion is demonstrated in the imaged region. »
+- **Ce que le relecteur modifie :**
+  - Pericardial effusion, Confirm this finding : **Incorrect / should not be here**
+  - Pericardial effusion, Why should it not be here? **Contradicted by visible evidence**
+  - Pericardial effusion, Correction : **Not demonstrated**
+- **Légende reconstruite :** « No pericardial effusion is demonstrated in the imaged region. »
+- **Pourquoi :** Le clip montre bien le péricarde et aucun épanchement : la constatation préremplie est contredite. Comme ce clip peut montrer un épanchement, la correction peut dire qu'aucun n'est démontré ; s'il ne le pouvait pas, il faudrait retirer l'énoncé (« Remove this claim »).
 
-### 3. Constatation hallucinée
+### 4. Constatation manquante
 
-- **Clip (synthétique) :** Coupe parasternale grand axe en mode B ; péricarde bien visible, sans épanchement.
-- **Coupe et acquisition du classifieur :** `PLAX`, mode B
-- **Légende proposée :** « Coupe parasternale grand axe (PLAX), mode B. Épanchement péricardique : de moyenne abondance. »
-- **Réponses :**
+- **Clip (synthétique) :** Coupe apicale 4 cavités en Doppler couleur : un jet d'insuffisance mitrale et un jet d'insuffisance tricuspide bien visible.
+- **Proposé :** `A4C`, Color Doppler
+- **Constatations préremplies :** `mitral_regurgitant_jet` Jet demonstrated
+- **Légende proposée :** « A mitral regurgitant jet is demonstrated in this color acquisition. »
+- **Ce que le relecteur modifie :**
+  - Important visible finding missing from the candidate? **Yes**
+  - Select missing columns and values : **Tricuspid regurgitant jet**
+  - Tricuspid regurgitant jet, Missing visible value : **Jet demonstrated**
+  - Tricuspid regurgitant jet, Visible in this input? **Yes**
+- **Légende reconstruite :** « A mitral regurgitant jet is demonstrated in this color acquisition. A tricuspid regurgitant jet is demonstrated in this color acquisition. »
+- **Pourquoi :** Ce qui est prérempli est étayé ; le jet tricuspide est visible, pertinent et absent des constatations : il est ajouté comme manquant. Aucun des deux jets ne reçoit de grade : une boucle couleur montre si un jet est démontré, pas une sévérité intégrée.
 
-  - Ce clip est-il ininterprétable ? **Non, le clip est interprétable**
-  - La coupe indiquée est-elle correcte ? **Oui**
-  - En dehors de la coupe, tout ce que la légende affirme est-il étayé par ce clip ? **Non, au moins un énoncé n'est pas étayé ou est faux**
-  - La légende omet-elle une information visible et cliniquement pertinente ? **Non**
-  - En dehors de la coupe, la légende affirme-t-elle quelque chose que ce clip n'étaye pas (information non étayée ou hallucinée) ? **Oui** (Épanchement péricardique : Non montré ou contredit par le clip (halluciné))
-  - Énoncés impossibles à vérifier sur ce clip (laisser vide s'il n'y en a aucun) : **aucun**
+### 5. Absence impossible à juger
 
-- **Légende corrigée :** « Coupe parasternale grand axe (PLAX), mode B. Épanchement péricardique : absent. »
-- **Pourquoi :** Le clip montre bien le péricarde et aucun épanchement : l'énoncé n'est pas étayé (halluciné). Comme le clip permet de juger l'absence, la légende corrigée peut l'indiquer.
+- **Clip (synthétique) :** Coupe apicale 4 cavités en Doppler couleur, la boîte couleur placée sur la valve tricuspide ; la valve mitrale est hors de la boîte couleur.
+- **Proposé :** `A4C`, Color Doppler
+- **Constatations préremplies :** `mitral_regurgitant_jet` No jet demonstrated in this acquisition
+- **Légende proposée :** « No mitral regurgitant jet is demonstrated in this acquisition. »
+- **Ce que le relecteur modifie :**
+  - Mitral regurgitant jet, Confirm this finding : **Cannot assess**
+  - Mitral regurgitant jet, Why can it not be assessed? **Target outside the displayed input**
+- **Légende reconstruite :** aucune : aucune constatation n'a été confirmée
+- **Pourquoi :** Un jet ne peut être dit absent que là où le Doppler couleur couvre la valve. Ici ce n'est pas le cas : l'absence ne peut pas être jugée, ce qui n'est ni une erreur ni une constatation négative.
 
-### 4. Information manquante
+### 6. Segment non évaluable
 
-- **Clip (synthétique) :** Coupe apicale 4 cavités en Doppler couleur ; insuffisance mitrale légère et jet d'insuffisance tricuspide modérée bien visible.
-- **Coupe et acquisition du classifieur :** `A4C`, Doppler couleur
-- **Légende proposée :** « Coupe apicale 4 cavités (A4C), Doppler couleur. Insuffisance mitrale : légère. »
-- **Réponses :**
+- **Clip (synthétique) :** Coupe apicale 2 cavités en mode B : ventricule gauche de taille normale ; l'endocarde de la paroi inférieure moyenne n'est pas visible (perte d'écho).
+- **Proposé :** `A2C`, B-mode
+- **Constatations préremplies :** `lv_size` Normal; `wall_mid_inferior` Normal / hyperkinetic (report score 1)
+- **Légende proposée :** « The visible LV cavity is not dilated. The visible mid inferior segment shows normal or hyperkinetic motion. »
+- **Ce que le relecteur modifie :**
+  - Mid inferior wall motion, Confirm this finding : **Cannot assess**
+  - Mid inferior wall motion, Why can it not be assessed? **Poor image quality**
+- **Légende reconstruite :** « The visible LV cavity is not dilated. »
+- **Pourquoi :** Un segment dont l'endocarde n'est pas vu ne peut pas être gradé. « Cannot assess » avec sa limite retire l'énoncé de la légende sans le compter comme une erreur ; l'autre constatation reste.
 
-  - Ce clip est-il ininterprétable ? **Non, le clip est interprétable**
-  - La coupe indiquée est-elle correcte ? **Oui**
-  - En dehors de la coupe, tout ce que la légende affirme est-il étayé par ce clip ? **Oui, chaque énoncé est étayé**
-  - La légende omet-elle une information visible et cliniquement pertinente ? **Oui** (Insuffisance tricuspide)
-  - En dehors de la coupe, la légende affirme-t-elle quelque chose que ce clip n'étaye pas (information non étayée ou hallucinée) ? **Non**
-  - Énoncés impossibles à vérifier sur ce clip (laisser vide s'il n'y en a aucun) : **aucun**
+### 7. Coupe fausse
 
-- **Légende corrigée :** « Coupe apicale 4 cavités (A4C), Doppler couleur. Insuffisance mitrale : légère. Insuffisance tricuspide : modérée. »
-- **Pourquoi :** Ce que la légende affirme est étayé ; la fuite tricuspide, visible et pertinente, manque. Les deux questions sont indépendantes.
+- **Clip (synthétique) :** Boucle en mode B classée apicale 4 cavités, mais la chambre de chasse du ventricule gauche et la valve aortique sont ouvertes dans l'image : c'est une coupe apicale 5 cavités. Les deux ventricules sont de taille normale.
+- **Proposé :** `A4C`, B-mode
+- **Constatations préremplies :** `lv_size` Normal; `rv_size` Normal
+- **Légende proposée :** « The visible LV cavity is not dilated. The visible RV cavity is not dilated. »
+- **Ce que le relecteur modifie :**
+  - View correct? **No — reroute**
+  - Proposed view : **A5C**
+- **Légende reconstruite :** aucune : la coupe ou le mode d'acquisition a été corrigé
+- **Pourquoi :** Répondre « No » et choisir dans « Proposed view » la coupe que montre le clip. Les constatations préremplies sont tout de même jugées sur le clip, car elles sont comptées. Le clip n'a pas de légende sous la coupe proposée.
 
-### 5. Absence impossible à vérifier
+### 8. Clip ininterprétable
 
-- **Clip (synthétique) :** Coupe apicale 4 cavités en Doppler couleur ; la boîte couleur est placée sur la valve tricuspide et ne couvre pas la valve mitrale.
-- **Coupe et acquisition du classifieur :** `A4C`, Doppler couleur
-- **Légende proposée :** « Coupe apicale 4 cavités (A4C), Doppler couleur. Insuffisance mitrale : absente. »
-- **Réponses :**
+- **Clip (synthétique) :** Boucle apicale en mode B envahie d'artéfacts du début à la fin : aucune paroi ni valve n'est reconnaissable.
+- **Proposé :** `A4C`, B-mode
+- **Constatations préremplies :** `lv_function` Normal
+- **Légende proposée :** « LV systolic function appears normal in this input. »
+- **Ce que le relecteur modifie :**
+  - Is this clip uninterpretable? **Yes, nothing in it can be judged**
+  - Why? **Poor image quality or artifacts throughout**
+- **Légende reconstruite :** aucune : le clip est ininterprétable
+- **Pourquoi :** Rien dans ce clip ne peut être jugé : répondre « Yes », donner la raison et soumettre ; les autres réponses ne sont pas lues. Quand seules certaines constatations ne peuvent pas être jugées, le clip est interprétable : utiliser « Cannot assess » pour celles-là.
+<!-- END GENERATED: column_examples -->
 
-  - Ce clip est-il ininterprétable ? **Non, le clip est interprétable**
-  - La coupe indiquée est-elle correcte ? **Oui**
-  - En dehors de la coupe, tout ce que la légende affirme est-il étayé par ce clip ? **Incertain : rien n'est faux, mais au moins un énoncé est impossible à vérifier**
-  - La légende omet-elle une information visible et cliniquement pertinente ? **Non**
-  - En dehors de la coupe, la légende affirme-t-elle quelque chose que ce clip n'étaye pas (information non étayée ou hallucinée) ? **Non**
-  - Énoncés impossibles à vérifier sur ce clip (laisser vide s'il n'y en a aucun) : **Insuffisance mitrale : Cadrage, zoom ou hors du carré**
+## Revue de coupe et de type (clips `OTHER`)
 
-- **Légende corrigée :** « Coupe apicale 4 cavités (A4C), Doppler couleur. »
-- **Pourquoi :** Une absence s'évalue comme toute constatation : elle n'est étayée que si le clip pouvait montrer la fuite. Ici le Doppler ne couvre pas la valve mitrale, donc l'énoncé est impossible à vérifier (cadrage) et sort de la légende corrigée.
+Chaque élément est un clip que le classifieur de coupes classe `OTHER` ou ne classe pas. Dites ce qu'il est et, pour
+une boucle échographique, quelle coupe il montre et son mode d'acquisition. Vos réponses mesurent ce que contient
+`OTHER`, et une boucle échographique d'une coupe que porte la revue par colonnes, en mode B ou en Doppler couleur,
+retourne à la revue par colonnes sous cette coupe.
 
-### 6. Structure attendue mais non visible
+<!-- BEGIN GENERATED: view_type_form -->
+| Question | Id | Obligatoire | Réponses |
+|---|---|---|---|
+| What is this item? | `input_type` | oui | `cine_loop` Echo cine loop (moving echo images); `analysis_screen` Analysis or quantification screen (strain, 3D, EF tool); `no_echo_image` No echo image |
+| Which view does it show? | `view` | oui, demandée si `input_type` vaut `cine_loop` | `A2C` A2C: Apical 2-chamber view; `A2C_LV` A2C_LV: Apical 2-chamber view, LV-focused; `A2C_ZOOM` A2C_ZOOM: Apical 2-chamber view, zoomed; `A3C` A3C: Apical 3-chamber view; `A3C_LV` A3C_LV: Apical 3-chamber view, LV-focused; `A3C_ZOOM` A3C_ZOOM: Apical 3-chamber view, zoomed; `A4C` A4C: Apical 4-chamber view; `A4C_LV` A4C_LV: Apical 4-chamber view, LV-focused; `A4C_ZOOM` A4C_ZOOM: Apical 4-chamber view, zoomed; `A5C` A5C: Apical 5-chamber view; `A5C_ZOOM` A5C_ZOOM: Apical 5-chamber view, zoomed; `PLAX` PLAX: Parasternal long-axis view; `PLAX_DEEP` PLAX_DEEP: Parasternal long-axis view, deep; `PLAX_ZOOM` PLAX_ZOOM: Parasternal long-axis view, zoomed; `PSAX` PSAX: Parasternal short-axis view; `PSAX_AV` PSAX_AV: Parasternal short-axis view at the aortic valve; `RVINF` RVINF: Right ventricular inflow view; `SUBCOSTAL` SUBCOSTAL: Subcostal view; `SUPRASTERNAL` SUPRASTERNAL: Suprasternal view; `OTHER` OTHER: off-axis or non-standard echo view; `cannot_tell` Cannot tell the view |
+| Acquisition mode | `modality` | oui, demandée si `input_type` vaut `cine_loop` | `bmode` B-mode; `color_flow` Color Doppler; `spectral` Spectral Doppler; `m_mode` M-mode; `mixed` Mixed / analysis acquisition; `unresolved` Unresolved |
+| Is identifying text visible (a name, a record number, a date of birth)? | `identifier_visible` | oui | `no` No; `yes` Yes: the item must be deleted |
+| Comments (no patient details) | `comments` | non | texte libre |
+<!-- END GENERATED: view_type_form -->
 
-- **Clip (synthétique) :** Coupe apicale 4 cavités zoomée sur la valve mitrale en mode B ; la valve tricuspide est hors du secteur.
-- **Coupe et acquisition du classifieur :** `A4C_ZOOM`, mode B
-- **Légende proposée :** « Coupe apicale 4 cavités zoomée (A4C_ZOOM), mode B. Valve tricuspide visible. »
-- **Réponses :**
+- **Qu'est-ce que cet élément ?** « Echo cine loop » pour une image échographique en mouvement, dans tout mode
+  d'acquisition : alors seulement la coupe et le mode d'acquisition sont demandés. Pour toute autre réponse, ils ne
+  sont pas demandés et sont enregistrés comme sans objet.
+- **Coupe.** `OTHER` sert à une coupe échographique hors axe ou non standard ; « Cannot tell the view » quand vous ne
+  pouvez pas trancher.
+- **Texte identifiant.** Répondez « Yes » si un nom, un numéro de dossier ou une date de naissance est lisible où que
+  ce soit dans l'élément. Il est supprimé.
 
-  - Ce clip est-il ininterprétable ? **Non, le clip est interprétable**
-  - La coupe indiquée est-elle correcte ? **Oui**
-  - En dehors de la coupe, tout ce que la légende affirme est-il étayé par ce clip ? **Non, au moins un énoncé n'est pas étayé ou est faux**
-  - La légende omet-elle une information visible et cliniquement pertinente ? **Oui** (Valve mitrale visible)
-  - En dehors de la coupe, la légende affirme-t-elle quelque chose que ce clip n'étaye pas (information non étayée ou hallucinée) ? **Oui** (Valve tricuspide visible : Non montré ou contredit par le clip (halluciné))
-  - Énoncés impossibles à vérifier sur ce clip (laisser vide s'il n'y en a aucun) : **aucun**
+## Exemples commentés : revue de coupe et de type
 
-- **Légende corrigée :** « Coupe apicale 4 cavités zoomée (A4C_ZOOM), mode B. Valve mitrale visible. »
-- **Pourquoi :** Les structures attendues pour une coupe ne sont qu'un a priori : une structure attendue mais absente n'est ni manquante ni fausse, sauf si la légende affirme qu'elle est visible. Ici elle l'affirme, donc l'énoncé n'est pas étayé.
+<!-- BEGIN GENERATED: view_type_examples -->
+### 1. Veine cave inférieure classée OTHER
 
-### 7. Constatation visible seulement hors du carré
+- **Élément (synthétique) :** Boucle sous-costale en mode B de la veine cave inférieure qui se jette dans l'oreillette droite.
+- **Réponses :** What is this item? **Echo cine loop (moving echo images)**; Which view does it show? **SUBCOSTAL: Subcostal view**; Acquisition mode : **B-mode**; Is identifying text visible (a name, a record number, a date of birth)? **No**
+- **Ensuite :** renvoyé à la revue par colonnes en `SUBCOSTAL`, B-mode
+- **Pourquoi :** Une boucle échographique d'une coupe que la revue par colonnes sait router : elle y retourne sous cette coupe.
 
-- **Clip (synthétique) :** Coupe apicale 4 cavités en mode B ; un petit épanchement péricardique longe la paroi libre du ventricule droit, au bord gauche de l'image, hors du carré ; dans le carré, le ventricule gauche est bien vu.
-- **Coupe et acquisition du classifieur :** `A4C`, mode B
-- **Légende proposée :** « Coupe apicale 4 cavités (A4C), mode B. Ventricule gauche visible. Épanchement péricardique : de faible abondance. »
-- **Réponses :**
+### 2. Coupe hors axe
 
-  - Ce clip est-il ininterprétable ? **Non, le clip est interprétable**
-  - La coupe indiquée est-elle correcte ? **Oui**
-  - En dehors de la coupe, tout ce que la légende affirme est-il étayé par ce clip ? **Incertain : rien n'est faux, mais au moins un énoncé est impossible à vérifier**
-  - La légende omet-elle une information visible et cliniquement pertinente ? **Non**
-  - En dehors de la coupe, la légende affirme-t-elle quelque chose que ce clip n'étaye pas (information non étayée ou hallucinée) ? **Non**
-  - Énoncés impossibles à vérifier sur ce clip (laisser vide s'il n'y en a aucun) : **Épanchement péricardique : Cadrage, zoom ou hors du carré**
+- **Élément (synthétique) :** Boucle en mode B entre les plans apicaux 4 et 5 cavités, raccourcie, sans coupe standard.
+- **Réponses :** What is this item? **Echo cine loop (moving echo images)**; Which view does it show? **OTHER: off-axis or non-standard echo view**; Acquisition mode : **B-mode**; Is identifying text visible (a name, a record number, a date of birth)? **No**
+- **Ensuite :** reste hors de la revue par colonnes
+- **Pourquoi :** OTHER sert aux coupes échographiques hors axe ou non standard ; « Cannot tell the view » sert quand on ne peut pas trancher.
 
-- **Légende corrigée :** « Coupe apicale 4 cavités (A4C), mode B. Ventricule gauche visible. »
-- **Pourquoi :** Les énoncés se jugent dans le carré, la partie de l'image qu'utilise le modèle. L'épanchement est réel et visible sur le clip, mais seulement hors du carré : l'énoncé est impossible à vérifier (cadrage, zoom ou hors du carré), il n'est pas signalé comme non étayé, et il sort de la légende corrigée. Le ventricule gauche, visible dans le carré, reste.
+### 3. Écran d'analyse
 
-### 8. Grade incertain
+- **Élément (synthétique) :** Écran d'analyse de déformation : une coupe apicale 4 cavités aux segments colorés et une cible en œil de bœuf.
+- **Réponses :** What is this item? **Analysis or quantification screen (strain, 3D, EF tool)**; Is identifying text visible (a name, a record number, a date of birth)? **No**; coupe et mode d'acquisition non demandés, enregistrés comme sans objet
+- **Ensuite :** reste hors de la revue par colonnes
+- **Pourquoi :** Un écran d'analyse n'est pas un clip qu'une légende doit décrire : sa coupe et son mode ne sont pas demandés, et il ne retourne pas à la revue par colonnes.
 
-- **Clip (synthétique) :** Coupe apicale 4 cavités en Doppler couleur ; jet tricuspide excentré, en partie hors du plan de coupe.
-- **Coupe et acquisition du classifieur :** `A4C`, Doppler couleur
-- **Légende proposée :** « Coupe apicale 4 cavités (A4C), Doppler couleur. Insuffisance tricuspide : légère. »
-- **Réponses :**
+### 4. Texte identifiant visible
 
-  - Ce clip est-il ininterprétable ? **Non, le clip est interprétable**
-  - La coupe indiquée est-elle correcte ? **Oui**
-  - En dehors de la coupe, tout ce que la légende affirme est-il étayé par ce clip ? **Incertain : rien n'est faux, mais au moins un énoncé est impossible à vérifier**
-  - La légende omet-elle une information visible et cliniquement pertinente ? **Non**
-  - En dehors de la coupe, la légende affirme-t-elle quelque chose que ce clip n'étaye pas (information non étayée ou hallucinée) ? **Non**
-  - Énoncés impossibles à vérifier sur ce clip (laisser vide s'il n'y en a aucun) : **Insuffisance tricuspide : Visible, mais je ne suis pas certain**
+- **Élément (synthétique) :** Boucle apicale 4 cavités en mode B où un nom reste lisible dans le bandeau du haut.
+- **Réponses :** What is this item? **Echo cine loop (moving echo images)**; Which view does it show? **A4C: Apical 4-chamber view**; Acquisition mode : **B-mode**; Is identifying text visible (a name, a record number, a date of birth)? **Yes: the item must be deleted**
+- **Ensuite :** supprimé de Labelbox : texte identifiant
+- **Pourquoi :** Répondre « Yes » sans recopier le texte nulle part. L'élément est supprimé de Labelbox et l'étape de dé-identification est corrigée.
+<!-- END GENERATED: view_type_examples -->
 
-- **Légende corrigée :** « Coupe apicale 4 cavités (A4C), Doppler couleur. »
-- **Pourquoi :** La fuite est visible mais son grade ne peut pas être jugé sur ce clip : « incertain », jamais oui ou non au hasard. Un énoncé impossible à vérifier sort de la légende corrigée.
+## Confidentialité
 
-### 9. Mode d'acquisition faux
+Les commentaires ne doivent contenir ni nom de patient, ni identifiant, ni date, ni texte de compte rendu.
 
-- **Clip (synthétique) :** Coupe apicale 4 cavités en mode B, sans Doppler couleur.
-- **Coupe et acquisition du classifieur :** `A4C`, Doppler couleur
-- **Légende proposée :** « Coupe apicale 4 cavités (A4C), Doppler couleur. Insuffisance mitrale : légère. »
-- **Réponses :**
-
-  - Ce clip est-il ininterprétable ? **Non, le clip est interprétable**
-  - La coupe indiquée est-elle correcte ? **Oui**
-  - En dehors de la coupe, tout ce que la légende affirme est-il étayé par ce clip ? **Non, au moins un énoncé n'est pas étayé ou est faux**
-  - La légende omet-elle une information visible et cliniquement pertinente ? **Non**
-  - En dehors de la coupe, la légende affirme-t-elle quelque chose que ce clip n'étaye pas (information non étayée ou hallucinée) ? **Oui** (Mode d'acquisition : Non montré ou contredit par le clip (halluciné))
-  - Énoncés impossibles à vérifier sur ce clip (laisser vide s'il n'y en a aucun) : **Insuffisance mitrale : Modalité**
-
-- **Légende corrigée :** « Coupe apicale 4 cavités (A4C), mode B. »
-- **Pourquoi :** Le mode d'acquisition est lui aussi un énoncé : ici il est faux. La fuite mitrale ne peut pas être jugée sans Doppler couleur, elle est donc impossible à vérifier (modalité). Un clip peut avoir à la fois des énoncés non étayés et des énoncés impossibles à vérifier.
-
-### 10. Mode d'acquisition impossible à vérifier
-
-- **Clip (synthétique) :** Coupe apicale 4 cavités aux bords coupés : l'échelle couleur et le contour d'une éventuelle boîte couleur sont hors de l'image, et les rares pixels colorés dans le ventricule gauche peuvent être du Doppler couleur ou du bruit ; le ventricule gauche est bien visible.
-- **Coupe et acquisition du classifieur :** `A4C`, Doppler couleur
-- **Légende proposée :** « Coupe apicale 4 cavités (A4C), Doppler couleur. Ventricule gauche visible. »
-- **Réponses :**
-
-  - Ce clip est-il ininterprétable ? **Non, le clip est interprétable**
-  - La coupe indiquée est-elle correcte ? **Oui**
-  - En dehors de la coupe, tout ce que la légende affirme est-il étayé par ce clip ? **Incertain : rien n'est faux, mais au moins un énoncé est impossible à vérifier**
-  - La légende omet-elle une information visible et cliniquement pertinente ? **Non**
-  - En dehors de la coupe, la légende affirme-t-elle quelque chose que ce clip n'étaye pas (information non étayée ou hallucinée) ? **Non**
-  - Énoncés impossibles à vérifier sur ce clip (laisser vide s'il n'y en a aucun) : **Mode d'acquisition : Cadrage, zoom ou hors du carré**
-
-- **Légende corrigée :** « Coupe apicale 4 cavités (A4C), acquisition indéterminée. Ventricule gauche visible. »
-- **Pourquoi :** Le mode d'acquisition est un énoncé : ici il est impossible à vérifier (cadrage), il est donc listé à la question 6 et la question 3 reçoit « incertain ». La légende corrigée garde sa forme : au lieu de supprimer le mode, elle écrit « acquisition indéterminée ». Le ventricule gauche est visible quel que soit le mode, son énoncé reste.
-
-### 11. Coupe fausse
-
-- **Clip (synthétique) :** Coupe apicale 5 cavités en Doppler couleur (chambre de chasse et valve aortique visibles) ; insuffisance mitrale légère.
-- **Coupe et acquisition du classifieur :** `A4C`, Doppler couleur
-- **Légende proposée :** « Coupe apicale 4 cavités (A4C), Doppler couleur. Insuffisance mitrale : légère. »
-- **Réponses :**
-
-  - Ce clip est-il ininterprétable ? **Non, le clip est interprétable**
-  - La coupe indiquée est-elle correcte ? **Non** (A5C: Coupe apicale 5 cavités)
-  - En dehors de la coupe, tout ce que la légende affirme est-il étayé par ce clip ? **Oui, chaque énoncé est étayé**
-  - La légende omet-elle une information visible et cliniquement pertinente ? **Non**
-  - En dehors de la coupe, la légende affirme-t-elle quelque chose que ce clip n'étaye pas (information non étayée ou hallucinée) ? **Non**
-  - Énoncés impossibles à vérifier sur ce clip (laisser vide s'il n'y en a aucun) : **aucun**
-
-- **Légende corrigée :** « Coupe apicale 5 cavités (A5C), Doppler couleur. Insuffisance mitrale : légère. »
-- **Pourquoi :** La coupe se juge à part : « non » et la bonne classe. Les énoncés se jugent tels qu'ils sont écrits ; la légende corrigée donne la bonne coupe.
-
-### 12. Coupe incertaine
-
-- **Clip (synthétique) :** Coupe apicale en Doppler couleur, entre 4 et 5 cavités : la chambre de chasse du ventricule gauche n'apparaît que sur certains battements ; insuffisance mitrale légère.
-- **Coupe et acquisition du classifieur :** `A4C`, Doppler couleur
-- **Légende proposée :** « Coupe apicale 4 cavités (A4C), Doppler couleur. Insuffisance mitrale : légère. »
-- **Réponses :**
-
-  - Ce clip est-il ininterprétable ? **Non, le clip est interprétable**
-  - La coupe indiquée est-elle correcte ? **Incertain**
-  - En dehors de la coupe, tout ce que la légende affirme est-il étayé par ce clip ? **Oui, chaque énoncé est étayé**
-  - La légende omet-elle une information visible et cliniquement pertinente ? **Non**
-  - En dehors de la coupe, la légende affirme-t-elle quelque chose que ce clip n'étaye pas (information non étayée ou hallucinée) ? **Non**
-  - Énoncés impossibles à vérifier sur ce clip (laisser vide s'il n'y en a aucun) : **aucun**
-
-- **Légende corrigée :** « Coupe indéterminée, Doppler couleur. Insuffisance mitrale : légère. »
-- **Pourquoi :** Quand la classe de coupe ne peut pas être tranchée, répondre « incertain » : ne pas choisir une classe au hasard, ni OTHER, réservée aux coupes hors axe ou non standard. Les énoncés se jugent tels qu'ils sont écrits. La légende corrigée remplace la coupe par « Coupe indéterminée » ; la classe du classifieur reste enregistrée avec le clip.
-
-### 13. Clip ininterprétable
-
-- **Clip (synthétique) :** Coupe sous-costale en mode B ; artefacts majeurs, aucune structure identifiable.
-- **Coupe et acquisition du classifieur :** `SUBCOSTAL`, mode B
-- **Légende proposée :** « Coupe sous-costale (SUBCOSTAL), mode B. Veine cave inférieure visible. »
-- **Réponses :**
-
-  - Ce clip est-il ininterprétable ? **Oui, il est ininterprétable** (Qualité d'image)
-  - La coupe indiquée est-elle correcte ? **Sans objet : clip ininterprétable**
-  - En dehors de la coupe, tout ce que la légende affirme est-il étayé par ce clip ? **Sans objet : clip ininterprétable**
-  - La légende omet-elle une information visible et cliniquement pertinente ? **Sans objet : clip ininterprétable**
-  - En dehors de la coupe, la légende affirme-t-elle quelque chose que ce clip n'étaye pas (information non étayée ou hallucinée) ? **Sans objet : clip ininterprétable**
-  - Énoncés impossibles à vérifier sur ce clip (laisser vide s'il n'y en a aucun) : **aucun**
-
-- **Légende corrigée :** inchangée
-- **Pourquoi :** Rien ne peut être jugé : « oui », la raison, puis « sans objet » aux quatre autres questions. La légende corrigée reste inchangée ; elle est ignorée. Si seule une partie de la légende ne peut pas être jugée, le clip est interprétable : utiliser les énoncés impossibles à vérifier.
-<!-- END GENERATED: examples -->
+Si vous voyez du texte identifiant dans l'image (un nom, un numéro de dossier, une date de naissance) : dans la revue
+par colonnes, ne relisez pas le clip, passez-le dans Labelbox et donnez à l'équipe de l'étude son identifiant
+Labelbox, sans recopier le texte ; dans la revue de coupe et de type, répondez « Yes » à la question sur le texte
+identifiant. Dans les deux cas, le clip est retiré de Labelbox et du jeu de légendes.

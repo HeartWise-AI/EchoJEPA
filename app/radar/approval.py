@@ -1,7 +1,8 @@
 """Verify medical approval for versioned RADAR caption ontologies.
 
-Each version has a YAML approval record at `docs/radar/approval_v<N>.md`. Pending records have empty approval
-fields; approved records contain the reviewed Git commit, file hashes, medical sign-off, threshold agreement,
+Each version has a YAML approval record at `docs/radar/approval_v<N>.md`. It approves the ontology together with the
+review forms, reviewer instructions and pilot metrics used with it (`approved_files`). Pending records have empty
+approval fields; approved records contain the reviewed Git commit, file hashes, medical sign-off, threshold agreement,
 and Labelbox SDK version.
 
 Approval requires all files to match their recorded hashes in both the reviewed commit and working tree, and
@@ -43,18 +44,32 @@ class ApprovalError(ValueError):
     """The approval record is malformed or no longer matches the files it approves."""
 
 
+# The review forms each ontology version is approved with, which carry their own versions: the column review for
+# clips of a classified view and the view and type review for OTHER clips. A new ontology version lists its forms here.
+REVIEW_FORMS = {
+    1: (
+        "configs/radar/column_review_v2.json",
+        "configs/radar/labelbox/column_review_v2.json",
+        "docs/radar/column_review_v2.md",
+        "configs/radar/labelbox/view_type_review_v1.json",
+        "docs/radar/view_type_review_v1.md",
+    ),
+}
+
+
 def approved_files(ontology: Ontology) -> tuple[str, ...]:
-    """Repository paths a medical approval covers, for this ontology version."""
+    """Repository paths a medical approval covers, for this ontology version: the ontology first, then its mappings,
+    the reviewer instructions and examples, the pilot metrics and the review forms."""
     v = ontology.version
     return (
         f"configs/radar/{ontology.tag}.yaml",
         f"configs/radar/label_mappings_v{v}.yaml",
         f"configs/radar/review_examples_v{v}.yaml",
-        f"configs/radar/labelbox/{ontology.tag}.json",
         f"docs/radar/ontology_v{v}.md",
         f"docs/radar/labeling_instructions_v{v}.md",
         f"docs/radar/labeling_instructions_v{v}.fr.md",
         f"docs/radar/pilot_metrics_v{v}.md",
+        *REVIEW_FORMS.get(v, ()),
     )
 
 

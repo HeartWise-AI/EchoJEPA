@@ -1,8 +1,6 @@
-"""Generate and synchronize RADAR documentation from YAML definitions.
-
-- docs/radar/ontology_v1.md: ontology taxonomies, findings and label mappings.
-- docs/radar/labeling_instructions_v1.md and .fr.md: the review form, statements and worked examples, in
-  English and French.
+"""Generate and synchronize the tables of `docs/radar/ontology_v1.md` from the ontology and label-mapping YAML files:
+the taxonomies, findings and label mappings. The reviewer instructions are generated from the review forms by
+`tools.labelbox.instructions`.
 
 Usage:
     python -m app.radar.ontology_doc          # rewrite the generated parts.
@@ -19,13 +17,10 @@ import sys
 from typing import Callable, Mapping
 
 from app.radar.label_mappings import RELATIONS, UNSPECIFIED, Entry, LabelMappings, Source, load_mappings
-from app.radar.ontology import ACQUISITION_STATEMENT, REPO_ROOT, VIEWS, Concept, Ontology, load_ontology
-from app.radar.review_rules import load_examples
+from app.radar.ontology import REPO_ROOT, VIEWS, Concept, Ontology, load_ontology
 
 DOCS_DIR = os.path.join(REPO_ROOT, "docs", "radar")
 DEFAULT_DOC_PATH = os.path.join(DOCS_DIR, "ontology_v1.md")
-INSTRUCTIONS_PATHS = {"en": os.path.join(DOCS_DIR, "labeling_instructions_v1.md"),
-                      "fr": os.path.join(DOCS_DIR, "labeling_instructions_v1.fr.md")}
 # Identify important pieces between `<!-- BEGIN GENERATED: <name> -->` and `<!-- END GENERATED: <name> -->`.
 _BLOCK = re.compile(
     r"(<!-- BEGIN GENERATED: (?P<name>[a-z_]+) -->\n)(?P<body>.*?)(<!-- END GENERATED: (?P=name) -->)", re.S
@@ -140,12 +135,6 @@ def render_scales(ontology: Ontology) -> str:
     return _table(["Scale", "Values, in order", "Outside the order", "Negated mention"], rows)
 
 
-def render_limitations(ontology: Ontology) -> str:
-    """Creates a bilingual table of limitation reasons."""
-    rows = [[f"`{r}`", labels["en"], labels["fr"]] for r, labels in ontology.limitations.items()]
-    return _table(["Reason", "English", "French"], rows)
-
-
 def _target_text(target) -> str:
     """Expresses a mapping target in readable text.
     
@@ -217,7 +206,6 @@ ONTOLOGY_SECTIONS = {
     "structures": render_structures,
     "findings": render_findings,
     "scales": render_scales,
-    "limitations": render_limitations,
 }
 MAPPING_SECTIONS = {
     "mapping_summary": render_mapping_summary,
@@ -226,148 +214,14 @@ MAPPING_SECTIONS = {
     "mapping_echoprime_findings": _source_section("echoprime_findings"),
     "mapping_panecho_tasks": _source_section("panecho_tasks"),
 }
-# The few words the instruction tables need besides the YAML's own labels.
-WORDS = {
-    "en": {"question": "Question", "id": "Id", "required": "Required", "answers": "Answers", "yes": "yes",
-           "no": "no", "views": "one of the view classes", "statements": "the statements below",
-           "each": "each", "free_text": "free text", "statement": "Statement", "label": "Label", "kind": "Kind",
-           "acquisition": "acquisition mode", "visibility": "visibility", "finding": "finding",
-           "clip": "Clip (synthetic)", "stated": "Classifier view and acquisition", "caption": "Candidate caption",
-           "answers_given": "Answers",
-           "corrected": "Corrected caption", "unchanged": "unchanged", "why": "Why", "none": "none", "colon": ":"},
-    "fr": {"question": "Question", "id": "Id", "required": "Obligatoire", "answers": "Réponses", "yes": "oui",
-           "no": "non", "views": "une des classes de coupe", "statements": "les énoncés ci-dessous",
-           "each": "chacun", "free_text": "texte libre", "statement": "Énoncé", "label": "Libellé", "kind": "Type",
-           "acquisition": "mode d'acquisition", "visibility": "visibilité", "finding": "constatation",
-           "clip": "Clip (synthétique)", "stated": "Coupe et acquisition du classifieur",
-           "caption": "Légende proposée", "answers_given": "Réponses", "corrected": "Légende corrigée",
-           "unchanged": "inchangée", "why": "Pourquoi", "none": "aucun", "colon": " :"},
-}
 
 
-def _statement_label(ontology: Ontology, statement: str, lang: str) -> str:
-    """Returns the localized label for an acquisition statement or ontology concept."""
-    if statement == ACQUISITION_STATEMENT:
-        return ontology.review.acquisition_statement[lang]
-    return ontology.concept(statement).labels[lang]
-
-
-def _detail_text(ontology: Ontology, detail: str, lang: str) -> str:
-    """Describes additional information required from a reviewer."""
-    spec, w = ontology.review, WORDS[lang]
-    label = spec.detail_labels[detail][lang] if detail in spec.detail_labels else ""
-    if detail == "limitation":
-        return f"{label}{w['colon']} " + ", ".join(lab[lang] for lab in ontology.limitations.values())
-    if detail == "correct_view":
-        return f"{label} ({w['views']})"
-    if detail == "missing":
-        return f"{label} ({w['statements']}) + {spec.detail_labels['missing_other'][lang]} ({w['free_text']})"
-    if detail == "unsupported":
-        kinds = " / ".join(lab[lang] for lab in spec.unsupported_kinds.values())
-        return f"{label} ({w['statements']}), {w['each']}{w['colon']} {kinds}"
-    if detail == "unconfirmed":
-        reasons = [lab[lang] for lab in {**spec.unconfirmed_reasons, **ontology.limitations}.values()]
-        return (f"{w['statements']}, {w['each']}{w['colon']} {spec.detail_labels['unconfirmed_reason'][lang]} "
-                f"({' / '.join(reasons)})")
-    raise ValueError(f"unknown detail {detail!r}")
-
-
-def render_review_form(ontology: Ontology, lang: str) -> str:
-    """Iterates over all questions defined in the ontology's review specification and generates
-    the review-form table."""
-    w, rows = WORDS[lang], []
-    for i, q in enumerate(ontology.review.questions, 1):
-        if q.type == "radio":
-            answers = "; ".join(f"`{a.id}` {a.labels[lang]}"
-                                + (f" → {_detail_text(ontology, a.detail, lang)}" if a.detail else "")
-                                for a in q.answers)
-        elif q.type == "checklist":
-            answers = _detail_text(ontology, q.detail, lang)
-        else:
-            answers = w["free_text"]
-        rows.append([i, q.text[lang], f"`{q.id}`", w["yes"] if q.required else w["no"], answers])
-    return _table(["#", w["question"], w["id"], w["required"], w["answers"]], rows)
-
-
-def render_statements(ontology: Ontology, lang: str) -> str:
-    """Generates a reference list of statements that can be reviewed."""
-    w = WORDS[lang]
-    rows = [[f"`{ACQUISITION_STATEMENT}`", ontology.review.acquisition_statement[lang], w["acquisition"]]]
-    rows += [[f"`{cid}`", ontology.concept(cid).labels[lang],
-              w["visibility"] if ontology.concept(cid).kind == "structure_visibility" else w["finding"]]
-             for cid in ontology.statement_concepts]
-    return _table([w["statement"], w["label"], w["kind"]], rows)
-
-
-def _answer_lines(ontology: Ontology, example: dict, lang: str) -> list[str]:
-    """Formats a worked example's review answers as localized Markdown bullet points."""
-    spec, w, review = ontology.review, WORDS[lang], example["review"]
-    lines = []
-    for q in spec.questions:
-        if q.type != "radio":
-            continue
-        answer = next(a for a in q.answers if a.id == review["answers"][q.id])
-        text = f"- {q.text[lang]} **{answer.labels[lang]}**"
-        if answer.detail == "limitation":
-            text += f" ({ontology.limitations[review['limitation']][lang]})"
-        elif answer.detail == "correct_view":
-            view = review["correct_view"]
-            text += f" ({view}: {ontology.views[view].labels[lang]})"
-        elif answer.detail == "missing":
-            items = [_statement_label(ontology, c, lang) for c in review.get("missing", [])]
-            items += [review["missing_other"]] if review.get("missing_other") else []
-            text += f" ({'; '.join(items)})"
-        elif answer.detail == "unsupported":
-            text += " (" + "; ".join(
-                f"{_statement_label(ontology, s, lang)}{w['colon']} {spec.unsupported_kinds[k][lang]}"
-                for s, k in review["unsupported"].items()) + ")"
-        lines.append(text)
-    checklist = next(q for q in spec.questions if q.type == "checklist")
-    reasons = {**spec.unconfirmed_reasons, **ontology.limitations}
-    unconfirmed = "; ".join(f"{_statement_label(ontology, s, lang)}{w['colon']} {reasons[r][lang]}"
-                            for s, r in review.get("unconfirmed", {}).items())
-    lines.append(f"- {checklist.text[lang]}{w['colon']} **{unconfirmed or w['none']}**")
-    return lines
-
-
-def render_examples(ontology: Ontology, examples: list, lang: str) -> str:
-    """Renders worked review examples with captions, answers, corrections and explanations."""
-    w, out = WORDS[lang], []
-
-    def quoted(text: str) -> str:
-        return f"« {text} »" if lang == "fr" else f"\"{text}\""
-
-    def item(key: str, value: str) -> str:
-        return f"- **{w[key]}{w['colon']}** {value}".rstrip()
-
-    for i, e in enumerate(examples, 1):
-        corrected = e["corrected_caption"]
-        out += [
-            f"### {i}. {e['title'][lang]}", "",
-            item("clip", e["clip"][lang]),
-            item("stated", f"`{e['view']}`, {ontology.acquisition_labels[lang][e['acquisition']]}"),
-            item("caption", quoted(e["caption"])),
-            item("answers_given", ""), "",
-            *("  " + line for line in _answer_lines(ontology, e, lang)), "",
-            item("corrected", w["unchanged"] if corrected is None else quoted(corrected)),
-            item("why", " ".join(e["why"][lang].split())), "",
-        ]
-    return "\n".join(out)
-
-
-def document_sections(ontology: Ontology, mappings: LabelMappings, examples: list) -> dict[str, dict]:
+def document_sections(ontology: Ontology, mappings: LabelMappings) -> dict[str, dict]:
     """Maps each document path to its named generated-section renderers."""
-    sections = {DEFAULT_DOC_PATH: {
+    return {DEFAULT_DOC_PATH: {
         **{name: functools.partial(fn, ontology) for name, fn in ONTOLOGY_SECTIONS.items()},
         **{name: functools.partial(fn, mappings) for name, fn in MAPPING_SECTIONS.items()},
     }}
-    for lang, path in INSTRUCTIONS_PATHS.items():
-        sections[path] = {
-            "review_form": functools.partial(render_review_form, ontology, lang),
-            "statements": functools.partial(render_statements, ontology, lang),
-            "examples": functools.partial(render_examples, ontology, examples, lang),
-        }
-    return sections
 
 
 def sync(text: str, sections: Mapping[str, Callable[[], str]]) -> str:
@@ -384,7 +238,7 @@ def main(argv=None) -> int:
     args = parser.parse_args(argv)
     ontology = load_ontology()
     stale = []
-    for path, sections in document_sections(ontology, load_mappings(ontology), load_examples(ontology)).items():
+    for path, sections in document_sections(ontology, load_mappings(ontology)).items():
         with open(path, encoding="utf-8") as f:
             text = f.read()
         new = sync(text, sections)

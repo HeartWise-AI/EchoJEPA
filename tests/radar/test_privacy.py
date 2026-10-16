@@ -1,7 +1,7 @@
 """The RADAR ontology, mapping, review and documentation files carry no patient data or credentials.
 
-Scanned: the files under configs/radar, docs/radar, app/radar and tests/radar, the review form builder and its test.
-This file is left out: it holds the patterns and the synthetic strings that check them. The rules target patient
+Scanned: the files under configs/radar, docs/radar, app/radar and tests/radar, the review form builders and their
+tests. This file is left out: it holds the patterns and the synthetic strings that check them. The rules target patient
 identifiers (DICOM UIDs, long digit runs such as record or accession numbers, e-mail addresses outside the reserved
 example domains), clinical dates (allowed only in the approval records and the approval test, for the approval
 itself), patient-file paths and names, report-style text and credentials. Concept ids, hashes and repository paths are
@@ -16,7 +16,10 @@ import unittest
 from app.radar.ontology import REPO_ROOT
 
 SCANNED_DIRS = ("configs/radar", "docs/radar", "app/radar", "tests/radar")
-SCANNED_FILES = ("tools/labelbox/review_ontology.py", "tools/labelbox/tests/test_review_ontology.py")
+SCANNED_FILES = ("tools/labelbox/review_ontology.py", "tools/labelbox/column_review.py",
+                 "tools/labelbox/view_type_review.py", "tools/labelbox/instructions.py",
+                 "tools/labelbox/tests/test_column_review.py", "tools/labelbox/tests/test_view_type_review.py",
+                 "tools/labelbox/tests/test_instructions.py")
 SUFFIXES = (".py", ".md", ".yaml", ".json")
 DATES_ALLOWED = ("docs/radar/approval_v*.md", "tests/radar/test_approval.py")
 THIS_FILE = os.path.relpath(os.path.abspath(__file__), REPO_ROOT)
@@ -58,7 +61,7 @@ def findings(path: str, text: str) -> list[str]:
 class TestPrivacy(unittest.TestCase):
     def test_scanned_files_are_clean(self):
         paths = scanned_paths()
-        self.assertIn("configs/radar/labelbox/radar-caption-ontology-v1.json", paths)
+        self.assertIn("configs/radar/labelbox/column_review_v2.json", paths)
         self.assertIn("docs/radar/labeling_instructions_v1.fr.md", paths)
         problems = []
         for path in paths:

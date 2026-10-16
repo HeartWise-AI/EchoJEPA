@@ -1,5 +1,10 @@
 # DeepECHO view → report fields → simple claim review
 
+**Current Labelbox interface:** [column review v2](column_review_v2.md) uses 46 named fields,
+prefilled values and captions (including explicit normals), and dropdowns for missing and unsupported findings.
+Its [native ontology](../../configs/radar/labelbox/column_review_v2.json) supersedes the generic five-slot proposal
+as the proposed review interface. This page retains the source-data audit and earlier mapping for reference.
+
 **Proposal for clinical review.** This simplifies the reviewer interface; it does not medically approve an ontology
 or replace the pending `radar-caption-ontology-v1`. Every video receives its actual predicted view, acquisition mode
 and at most five numbered candidate findings. Reviewers confirm **Yes / No / Cannot assess** per populated finding.
@@ -103,15 +108,15 @@ not inverted into “disease absent.” If the view or modality is wrong/uncerta
 Missing information or a free-text correction sends the item for adjudication. Rebuild captions from supported claims
 and validate their structured/text agreement; do not train on the report number shown in the context panel.
 
-## Three linked video examples
+## Linked video examples
 
-Three TTE clips were selected from one report-linked study and inspected as deidentified local display exports:
+The original three TTE clips were selected from two separately report-linked studies and inspected as deidentified local display exports:
 A4C, PLAX and PSAX_AV. Their classifier probabilities are approximately 0.974, 0.998 and 0.978, respectively.
 These are classifier scores, not clinical confidence or medical approval. The examples are kept outside GitHub;
 their private linkage manifest is not part of the repository.
 
-The report contains a visual EF value, a qualitative LV-function statement, local wall-motion findings and valve
-information. The demonstration makes three different review cards from that same report:
+Each clip uses its own linked report for EF context, qualitative LV function, segment scores and valve findings.
+A4C uses one study; PLAX and PSAX_AV use the second. The review cards are routed separately:
 
 | Example | Candidate cards | What stays out |
 |---|---|---|
@@ -119,9 +124,12 @@ information. The demonstration makes three different review cards from that same
 | PLAX B-mode | LV size/wall morphology; visible aortic/mitral morphology if explicitly reported | Copying the report EF or MR grade into a verified local caption |
 | PSAX_AV B-mode | AV morphology when systolic leaflet opening is adequately seen | LV EF; color jet absence without color; stenosis severity |
 
-The local example gallery contains the clips and click-to-score cards. Display deidentification changes the field
+The [published gallery](https://deepecho-three-view-demo.papirobbi.chatgpt.site) contains the five view demonstrations
+and a complete study B with all 44 video loops, 33 cropped image exports and its report records,
+with valve morphology, ASE segment maps and confirmation-based captions. Display deidentification changes the field
 of view, so these exports are **illustrations, not validated production model inputs**. They are not uploaded to
-Labelbox or used as pilot training pairs. Production review still needs exact spatial/temporal input provenance.
+Labelbox or used as pilot training pairs. Production review shows the whole de-identified clip, which is also the
+model input (see [model input and review display](ontology_v1.md#model-input-and-review-display)).
 
 ## Sources and implementation status
 

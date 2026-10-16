@@ -1,11 +1,18 @@
 # RADAR caption ontology v1 (`radar-caption-ontology-v1`)
 
 **Approval.** The medical approval of this version (issue #21) is recorded in [approval_v1.md](approval_v1.md) and
-nowhere else. No clinical data may be uploaded for review under this ontology until that record is `approved`.
+nowhere else. It covers this ontology together with the review forms, the reviewer instructions and the pilot metrics
+listed there. No clinical data may be uploaded for review until that record is `approved`.
 
-The ontology fixes what a RADAR caption may say about one echo clip: its view, its acquisition mode, which cardiac
-structures it shows, and which findings it supports. The Labelbox review form, the reviewer instructions and the
-[pilot metrics](pilot_metrics_v1.md) are all built on it.
+The ontology is the shared vocabulary for one echo clip: its view, its acquisition mode, the cardiac structures it may
+show and the findings it may support, and how DeepECHO, EchoPrime and PanEcho labels relate to them. The pilot reviews
+clips in two Labelbox forms that use its view classes (see [Review forms](#review-forms)): the
+[column review v2](column_review_v2.md) for clips of a classified view and the
+[view and type review](view_type_review_v1.md) for `OTHER` clips. The
+[reviewer instructions](labeling_instructions_v1.md) and the [pilot metrics](pilot_metrics_v1.md) are written for
+those forms.
+
+**Versions.** v1 denotes the approved package version, while each form is versioned separately: column review v2 and view/type review v1. This document defines the ontology; see [column_review_v2.md](column_review_v2.md) for captions.
 
 The sources of truth are [`configs/radar/radar-caption-ontology-v1.yaml`](../../configs/radar/radar-caption-ontology-v1.yaml)
 and [`configs/radar/label_mappings_v1.yaml`](../../configs/radar/label_mappings_v1.yaml). The tables below are
@@ -47,6 +54,8 @@ Three further rules come with the prior:
 
 Visibility and disease are separate concepts: `mitral_valve_visible` says nothing about `mitral_regurgitation`, and a
 reported disease says nothing about what one clip shows.
+
+These priors define concepts, but ([routing](column_review_v2.md#routing-and-values)) determines which columns apply to each clip based on view, acquisition mode, and covered target.
 
 ## Views
 
@@ -182,79 +191,62 @@ value but no grade: it ranks neither above nor below the others.
 | `effusion` | `none` < `trivial` < `small` < `moderate` < `large` |  | `none` |
 <!-- END GENERATED: scales -->
 
-## Assessment limitations
+## What the upload code must do
 
-The reasons a reviewer can give when a clip, or one concept in it, cannot be judged:
-
-<!-- BEGIN GENERATED: limitations -->
-| Reason | English | French |
-|---|---|---|
-| `quality` | Image quality | Qualité d'image |
-| `crop` | Crop, zoom or outside the square | Cadrage, zoom ou hors du carré |
-| `modality` | Modality | Modalité |
-| `other` | Other | Autre |
-<!-- END GENERATED: limitations -->
-
-## What a caption claims
-
-A candidate caption is its text plus a structured list of the statements it makes. Reviewers judge those
-statements, and the [pilot metrics](pilot_metrics_v1.md) count them, so the two must match exactly:
-
-- **View.** Every caption states the clip's view class. The view is judged by its own review question and is not
-  counted as a statement.
-- **Acquisition mode.** Every caption states the clip's acquisition mode; this is a statement.
-- **Findings.** A finding statement names a concept and a value. Only findings `relevant` to the clip may be stated;
-  gaps and findings outside the view never are.
-- **Visibility.** A visibility statement names a visibility concept and says whether the structure is visible. It may
-  only name a structure whose prior includes the clip's view and acquisition. The visibility prior shown to reviewers
-  as expected structures is not a statement.
-- **Absence.** "No mitral regurgitation" is a finding statement with the value `none` (or the scale's normal value),
-  judged like any other statement.
-- **Text and list match one to one.** Every statement appears in the text, and everything the text asserts is a
-  statement. A caption whose text says "mitral valve visible" without the matching visibility statement is invalid
-  and is not sent for review.
-- **Nothing else.** No identifiers, dates, report text, or values the ontology does not define.
-- **Corrected captions** keep the same form. A view the reviewer cannot tell is written "Coupe indéterminée"
-  (`review.undetermined_view`), which is not a view class: `OTHER` stays for off-axis or non-standard clips. An
-  acquisition mode the reviewer cannot tell is written with the label of `unknown`, "acquisition indéterminée".
-
-The code that generates captions, uploads clips and imports reviews is outside issue #21. Besides enforcing this
-contract, it must:
+The code that selects clips, uploads them and imports reviews is outside issue #21. For both review forms, it must:
 
 - upload clips only under an approved ontology (`require_approval` in `app/radar/approval.py`);
-- draw on every uploaded clip the square the model uses (its evaluation crop: shorter side resized to 256, center
-  crop of 224, mapped back to the clip's pixels), and record that square with the clip;
-- record with each clip the ontology tag and the candidate caption's view, acquisition mode and statements, and
-  preload the candidate caption as the answer to "corrected caption" (the form itself cannot hold a per-clip default);
-- count a review as valid only when `review_problems` in `app/radar/review_rules.py` finds nothing: every required
-  answer given with an allowed value, every consistency rule met, and no flag on a statement the candidate caption
-  does not make.
+- upload only de-identified copies, whole and without overlays, and pair each review with the embedding of the same
+  copy (see [Model input and review display](#model-input-and-review-display));
+- record each clip's opaque key and form version. For column reviews, also record the candidate view, acquisition mode, and prefilled columns. Do not upload report text; context attachments identify each proposal's report field and contain only numeric values.
+- count a review as valid only when `review_problems` finds nothing: in `tools/labelbox/column_review.py` for the column
+  review, in `tools/labelbox/view_type_review.py` for the view and type review.
 
-## Model-input review
+## Model input and review display
 
-The square outline must come from the actual preprocessing transform, and the review item must identify the
-selected source frames received by the encoder, including any padding. The default evaluation crop described
-above is configurable and differs from random training crops. A fixed outline alone cannot establish temporal
-support. Verify the displayed geometry and selected frames using synthetic inputs before clinical review.
+Reviewers and the encoder see the same clip: its de-identified copy, which keeps the source's frame size, frame count
+and frame rate, with identifying text blacked out.
 
-The full loop provides context for view identification. Statements are supported only in the selected model-input
-frames inside the crop. Findings visible only in other frames are unconfirmed with reason `other` and the comment
-"outside model-input frames". Missing or unverifiable crop/frame provenance requires display correction before a
-medical label is submitted. An optional synchronized crop-only panel must show the same selected frames. Overlays
-are review aids and must never be burned into encoder inputs.
+- **Reviewers** see that copy whole, at its original resolution, every frame, with no outline or other overlay.
+- **The encoder** receives that copy with every frame resized whole to 224 × 224: no crop and no padding, so a frame
+  that is not square is stretched. The caption describes the whole loop, so the embedding paired with it is computed
+  over the whole clip, not one window of frames.
+
+Nothing in the displayed clip is outside the model's input, so findings are judged on the whole image and the whole
+loop. A structure cut off at the edge of the sector, or a clip zoomed on another target, is a property of the
+acquisition: the column review's limitation "Target outside the displayed input" covers it.
+
+The stored archive videos are never uploaded or embedded: they carry burned-in identifiers. A reviewer who still
+sees identifying text skips the clip and reports it (see the [instructions](labeling_instructions_v1.md#privacy));
+the clip is removed from Labelbox and from the caption dataset. Random crops used as training augmentation are not
+part of this contract: a caption reviewed on the whole clip may not hold for a crop of it.
 
 The [ontology request and manuscript review](ontology_request.md) describes proposed schema extensions and
 contrastive dataset construction. Its proposals do not replace the approved v1 rules.
 
-## Review form
+## Review forms
 
-The Labelbox review form is defined in the `review` section of the YAML and generated as
-[`configs/radar/labelbox/radar-caption-ontology-v1.json`](../../configs/radar/labelbox/radar-caption-ontology-v1.json)
-(`python -m tools.labelbox.review_ontology`; a unit test fails when the JSON drifts, and another checks it against
-the Labelbox SDK). It asks the six questions of issue #21 (uninterpretable clip, view, caption supported, missing
-information, unsupported information, corrected caption), an optional list of unconfirmed statements and optional
-comments. The reviewer instructions, in [English](labeling_instructions_v1.md) and
-[French](labeling_instructions_v1.fr.md), explain every answer with worked synthetic examples.
+Every valid video of a pilot study is reviewed in one of two Labelbox forms, each in its own project:
+
+- the [column review v2](column_review_v2.md), for clips of a classified view in B-mode or color Doppler: its
+  specification is [`configs/radar/column_review_v2.json`](../../configs/radar/column_review_v2.json) and its form
+  [`configs/radar/labelbox/column_review_v2.json`](../../configs/radar/labelbox/column_review_v2.json)
+  (`python -m tools.labelbox.column_review --check` fails when the form no longer matches the specification);
+- the [view and type review](view_type_review_v1.md), for clips the view classifier labels `OTHER` or does not
+  classify: its form is [`configs/radar/labelbox/view_type_review_v1.json`](../../configs/radar/labelbox/view_type_review_v1.json)
+  (`python -m tools.labelbox.view_type_review --check`).
+
+Both use the 20 view classes of this ontology, and their unit tests check each form against the Labelbox SDK. What the
+column review's captions claim is described in [column_review_v2.md](column_review_v2.md#what-a-caption-claims).
+
+The columns are named for the DeepECHO report fields they are prefilled from. They are not mapped one by one to the
+concepts of this ontology: the [label mappings](#how-deepecho-echoprime-and-panecho-labels-relate-to-v1) relate
+DeepECHO, EchoPrime and PanEcho labels to the concepts, not to the columns.
+
+The reviewer instructions, in [English](labeling_instructions_v1.md) and [French](labeling_instructions_v1.fr.md),
+explain every answer of both forms with worked synthetic examples. Their form tables and examples are generated from
+the forms and from [`configs/radar/review_examples_v1.yaml`](../../configs/radar/review_examples_v1.yaml), and every
+example is scored as a review (`python -m tools.labelbox.instructions --check`).
 
 ## How DeepECHO, EchoPrime and PanEcho labels relate to v1
 
@@ -395,20 +387,19 @@ PanEcho's study-level tasks, with their class names. A `|` inside a class name j
 
 ## Clinical choices in v1
 
-The medical review covers the whole ontology. These choices rest most on clinical judgment; a change the review asks
-for is made in the approved files before their content commit (see [approval_v1.md](approval_v1.md)).
+The medical review covers the whole package. These choices of the ontology rest most on clinical judgment. A change the
+review asks for is made in the approved files before their content commit (see [approval_v1.md](approval_v1.md)).
 
 1. **View class boundaries.** The descriptions are written to match how the DeepECHO classes were labelled, in
    particular the `_LV` and `_ZOOM` variants and `SUBCOSTAL`, which groups the subcostal four-chamber and IVC views.
 2. **LV outflow tract.** v1 has no visibility concept for it (no `lvot_visible`); it appears only in
    `lvot_obstruction`, a measurement.
 3. **Priors.** Each structure's and finding's prior (views and acquisition modes), listed in full in the tables above.
-4. **Measurement concepts.** Which concepts are marked `measurement`, and so stay out of captions, and which are
-   judged visually.
+4. **Measurement concepts.** Which concepts are marked `measurement`, because watching a clip cannot confirm them, and
+   which are judged visually.
 5. **Mappings.** The relations and class-to-value assignments, in particular: PanEcho's merged grades, where
    `mild_to_moderate` regurgitation is left unassigned; PanEcho "mild" effusion as "small"; PA systolic pressure as
    only related to RVSP; EchoPrime's reported EF as the same quantity as the visual estimate; and every EchoPrime
    binary task kept as only related, because its phrases also match negated, possible or borderline mentions.
-6. **Field of view.** Reviewers judge statements inside the square the model uses, with the rest of the clip as
-   context. A statement that only the area outside the square shows is unconfirmed ("crop, zoom or outside the
-   square"), not unsupported, so the pilot's error rates count caption errors and not crop effects.
+6. **Field of view.** Reviewers judge findings on the whole de-identified clip, which is also the whole model input
+   (resized, never cropped). The pilot's error rates therefore count caption errors, not crop effects.
