@@ -277,7 +277,13 @@ class SandboxApi(Protocol):
     def ensure_study_batches(self, workspace: Workspace, cases: Sequence[SyntheticCase]) -> int:
         ...
 
-    def ensure_prelabels(self, workspace: Workspace, cases: Sequence[SyntheticCase]) -> bool:
+    def ensure_prelabels(
+        self,
+        workspace: Workspace,
+        cases: Sequence[SyntheticCase],
+        *,
+        refresh: bool = False,
+    ) -> bool:
         ...
 
     def export_rows(self, workspace: Workspace) -> Sequence[Mapping[str, Any]]:
@@ -580,13 +586,25 @@ class LabelboxSandboxApi:
                 raise SandboxError("Multiple batches use a fixed synthetic study-batch name.")
             if batches:
                 if batches[0].size != len(global_keys):
-                    raise SandboxError("An existing synthetic study batch has an unexpected size.")
-                continue
+                    if workspace.project.get_label_count() != 0:
+                        raise SandboxError(
+                            "A stale synthetic study batch cannot be replaced because "
+                            "the project has submitted labels."
+                        )
+                    batches[0].delete()
+                else:
+                    continue
             workspace.project.create_batch(name, global_keys=global_keys)
             created += 1
         return created
 
-    def ensure_prelabels(self, workspace: Workspace, cases: Sequence[SyntheticCase]) -> bool:
+    def ensure_prelabels(
+        self,
+        workspace: Workspace,
+        cases: Sequence[SyntheticCase],
+        *,
+        refresh: bool = False,
+    ) -> bool:
         from labelbox.schema.annotation_import import MALPredictionImport
         from labelbox.schema.enums import AnnotationImportState
 
@@ -603,14 +621,14 @@ class LabelboxSandboxApi:
         if imports:
             imports[0].wait_till_done()
             current_failed = imports[0].state == AnnotationImportState.FAILED or bool(imports[0].errors)
-        obsolete = legacy_imports + (imports if current_failed else [])
+        obsolete = legacy_imports + (imports if current_failed or refresh else [])
         if obsolete:
             if workspace.project.get_label_count() != 0:
                 raise SandboxError("Synthetic prelabel migration refused because the project has submitted labels.")
             for item in obsolete:
                 item.wait_till_done()
                 item.delete()
-            if current_failed:
+            if current_failed or refresh:
                 imports = []
         workspace.project.enable_model_assisted_labeling(True)
         if imports:
@@ -695,7 +713,11 @@ def ensure_pipeline(
             api.upload_rows(workspace, missing, paths)
     batch_plan = _study_batch_plan(candidates, prefix=SANDBOX_BATCH_PREFIX)
     created_study_batches = api.ensure_study_batches(workspace, cases)
-    prelabels_imported = api.ensure_prelabels(workspace, cases)
+    prelabels_imported = api.ensure_prelabels(
+        workspace,
+        cases,
+        refresh=created_study_batches > 0,
+    )
     return PipelineResult(
         project_name=SANDBOX_PROJECT_NAME,
         project_id=workspace.project.uid,

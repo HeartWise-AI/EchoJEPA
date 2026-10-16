@@ -29,6 +29,7 @@ from tools.labelbox.synthetic_pipeline import (
     _difference_paths,
     _render_video,
     _safe_error_summary,
+    _study_batch_plan,
     ensure_pipeline,
     main,
     summarize_export,
@@ -91,8 +92,9 @@ class FakeApi:
         self.study_batches = grouped
         return len(grouped)
 
-    def ensure_prelabels(self, workspace, cases):
+    def ensure_prelabels(self, workspace, cases, *, refresh=False):
         self.calls.append("prelabels")
+        self.prelabels_refresh = refresh
         if self.prediction_cases is not None:
             return False
         self.prediction_cases = list(cases)
@@ -270,6 +272,7 @@ class OrchestrationTests(unittest.TestCase):
         self.assertEqual(result.total_study_batches, 3)
         self.assertEqual(result.created_study_batches, 0)
         self.assertFalse(result.prelabels_imported)
+        self.assertFalse(api.prelabels_refresh)
         self.assertEqual(api.rows, [])
 
     def test_refuses_non_reserved_or_duplicate_keys(self):
@@ -299,6 +302,57 @@ class SdkPayloadTests(unittest.TestCase):
             case.global_key for case in synthetic_cases() if case.study_key.endswith("01")
         }
         self.assertIn(shared_study_keys, [set(batch.global_keys) for batch in batches])
+
+    def test_sdk_adapter_replaces_stale_unlabeled_study_batch(self):
+        deleted = []
+        cases = [case for case in synthetic_cases() if case.study_key.endswith("01")]
+        batch_name = next(
+            iter(_study_batch_plan([case.candidate() for case in cases], prefix=SANDBOX_BATCH_PREFIX))
+        )
+        stale = SimpleNamespace(
+            name=batch_name,
+            size=0,
+            delete=lambda: deleted.append(True),
+        )
+        batches = [stale]
+
+        def create_batch(name, global_keys):
+            batches.append(
+                SimpleNamespace(name=name, global_keys=list(global_keys), size=len(global_keys))
+            )
+
+        project = SimpleNamespace(
+            batches=lambda: batches,
+            create_batch=create_batch,
+            get_label_count=lambda: 0,
+        )
+        workspace = Workspace(project=project, dataset=object(), ontology=object())
+        api = LabelboxSandboxApi(object(), project_type=None, dataset_type=None, media_type="video")
+
+        self.assertEqual(api.ensure_study_batches(workspace, cases), 1)
+        self.assertEqual(deleted, [True])
+        self.assertEqual(batches[-1].size, len(cases))
+
+    def test_sdk_adapter_refuses_to_replace_labeled_study_batch(self):
+        cases = [case for case in synthetic_cases() if case.study_key.endswith("01")]
+        batch_name = next(
+            iter(_study_batch_plan([case.candidate() for case in cases], prefix=SANDBOX_BATCH_PREFIX))
+        )
+        stale = SimpleNamespace(
+            name=batch_name,
+            size=0,
+            delete=lambda: self.fail("deleted a batch containing reviewed work"),
+        )
+        project = SimpleNamespace(
+            batches=lambda: [stale],
+            create_batch=lambda *_args, **_kwargs: self.fail("recreated a labeled batch"),
+            get_label_count=lambda: 1,
+        )
+        workspace = Workspace(project=project, dataset=object(), ontology=object())
+        api = LabelboxSandboxApi(object(), project_type=None, dataset_type=None, media_type="video")
+
+        with self.assertRaisesRegex(SandboxError, "project has submitted labels"):
+            api.ensure_study_batches(workspace, cases)
 
     def test_replaces_only_the_unlabeled_legacy_sandbox_ontology(self):
         legacy = SimpleNamespace(uid="legacy-id", name=next(iter(LEGACY_SANDBOX_ONTOLOGY_NAMES)))
@@ -453,6 +507,47 @@ class SdkPayloadTests(unittest.TestCase):
 
         with mock.patch("labelbox.schema.annotation_import.MALPredictionImport", PredictionImport):
             self.assertTrue(api.ensure_prelabels(workspace, synthetic_cases()))
+        self.assertEqual(deleted, [SANDBOX_PREDICTIONS_NAME])
+        self.assertEqual(len(created), 1)
+
+    @unittest.skipUnless(importlib.util.find_spec("labelbox"), "Labelbox SDK not installed")
+    def test_refresh_replaces_successful_prediction_import_without_labels(self):
+        from labelbox.schema.enums import AnnotationImportState
+
+        deleted = []
+        created = []
+        job = SimpleNamespace(
+            name=SANDBOX_PREDICTIONS_NAME,
+            state=AnnotationImportState.FINISHED,
+            errors=[],
+            wait_till_done=lambda: None,
+            delete=lambda: deleted.append(SANDBOX_PREDICTIONS_NAME),
+        )
+        project = SimpleNamespace(
+            uid="project-id",
+            get_mal_prediction_imports=lambda: [job],
+            get_label_count=lambda: 0,
+            enable_model_assisted_labeling=lambda enabled: self.assertTrue(enabled),
+        )
+        workspace = Workspace(
+            project=project,
+            dataset=object(),
+            ontology=SimpleNamespace(normalized=server_form()),
+        )
+        api = LabelboxSandboxApi(object(), project_type=None, dataset_type=None, media_type="video")
+
+        class PredictionImport:
+            @classmethod
+            def create_from_objects(cls, **kwargs):
+                created.append(kwargs)
+                return SimpleNamespace(
+                    state=AnnotationImportState.FINISHED,
+                    errors=[],
+                    wait_till_done=lambda: None,
+                )
+
+        with mock.patch("labelbox.schema.annotation_import.MALPredictionImport", PredictionImport):
+            self.assertTrue(api.ensure_prelabels(workspace, synthetic_cases(), refresh=True))
         self.assertEqual(deleted, [SANDBOX_PREDICTIONS_NAME])
         self.assertEqual(len(created), 1)
 
