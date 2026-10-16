@@ -15,8 +15,8 @@ from pathlib import Path
 from tools.labelbox.review_ontology import _classification, _option
 
 ROOT = Path(__file__).resolve().parents[2]
-SPEC = ROOT / "configs/radar/column_review_v2.json"
-FORM = ROOT / "configs/radar/labelbox/column_review_v2.json"
+SPEC = ROOT / "configs/radar/deepecho_video_clip_annotation_specification.json"
+FORM = ROOT / "configs/radar/labelbox/deepecho_video_clip_annotation_ontology.json"
 
 
 def load_spec():

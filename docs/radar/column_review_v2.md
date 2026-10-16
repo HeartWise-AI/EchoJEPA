@@ -15,8 +15,8 @@ specification is the hand-maintained JSON source, and the much larger Labelbox o
 specification and retained as the exact schema submitted for medical approval:
 
 - [Clinical ontology](../../configs/radar/radar-caption-ontology-v1.yaml)
-- [Source column/value/view specification](../../configs/radar/column_review_v2.json)
-- [Generated native Labelbox ontology](../../configs/radar/labelbox/column_review_v2.json)
+- [Source column/value/view specification](../../configs/radar/deepecho_video_clip_annotation_specification.json)
+- [Generated native Labelbox ontology](../../configs/radar/labelbox/deepecho_video_clip_annotation_ontology.json)
 - [Prefill builder and scorer](../../tools/labelbox/column_review.py)
 - [Ontology/context/MAL importer](../../tools/labelbox/import_column_review.py)
 - [Whole-study demonstration](https://deepecho-three-view-demo.papirobbi.chatgpt.site)

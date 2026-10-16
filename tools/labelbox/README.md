@@ -5,8 +5,8 @@ The pilot reviews every valid video of its studies in one of two forms, approved
 
 - **DeepECHO column review v2**, for clips of a classified view:
   [design](../../docs/radar/column_review_v2.md),
-  [source specification](../../configs/radar/column_review_v2.json),
-  [generated native Labelbox ontology](../../configs/radar/labelbox/column_review_v2.json) and
+  [source specification](../../configs/radar/deepecho_video_clip_annotation_specification.json),
+  [generated native Labelbox ontology](../../configs/radar/labelbox/deepecho_video_clip_annotation_ontology.json) and
   [current selection](../../configs/radar/labelbox/current_review.json). It prefills explicit report values,
   including explicit normals, and a candidate caption. Most items need one final confirmation; exceptions use
   per-column dropdowns for corrections, omissions and error reasons, and a clip-level answer for an uninterpretable
