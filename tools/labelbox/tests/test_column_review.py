@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 from app.radar.ontology import VIEWS
 from tools.labelbox.column_review import (
-    FORM, allowed_columns, build_candidate, build_form, context_attachment,
+    FORM, ROOT, SPEC, allowed_columns, build_candidate, build_form, context_attachment,
     decode_annotations, encode_answers, finding_sentence, load_spec, prelabels, review_problems, score_review,
     validate_annotations,
 )
@@ -30,6 +30,21 @@ class TestColumnPrefills(unittest.TestCase):
         self.assertEqual(len(segments), 16)
         self.assertFalse(any("cap" in k for k in segments))
         self.assertEqual(json.loads(FORM.read_text()), build_form())
+
+    def test_review_selection_names_sources_and_generated_artifact(self):
+        selection = json.loads((ROOT / "configs/radar/labelbox/current_review.json").read_text())
+        self.assertEqual(selection["schema"], "radar-review-selection")
+        self.assertEqual(selection["version"], 1)
+        self.assertEqual(
+            selection["clinical_ontology"],
+            "configs/radar/radar-caption-ontology-v1.yaml",
+        )
+        self.assertEqual(selection["source_specification"], SPEC.relative_to(ROOT).as_posix())
+        self.assertEqual(
+            selection["generated_labelbox_ontology"], FORM.relative_to(ROOT).as_posix()
+        )
+        self.assertNotIn("ontology", selection)
+        self.assertNotIn("spec", selection)
 
     def test_explicit_normal_tricuspid_prefills_value_and_caption(self):
         for text in ["Valve tricuspide normale", "Normal tricuspid valve", "Tricuspid valve: normal", "Normal"]:

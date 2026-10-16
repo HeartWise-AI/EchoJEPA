@@ -9,10 +9,14 @@ has not yet been implemented. The form is approved together with
 [pilot metrics](pilot_metrics_v1.md), in [approval_v1.md](approval_v1.md). The form's version (2) is independent of the approved package version (v1),
 which is reflected in the supporting document filenames (see [Versions](ontology_v1.md)).
 
-The current files are selected by [current_review.json](../../configs/radar/labelbox/current_review.json):
+The current files and their roles are selected by
+[current_review.json](../../configs/radar/labelbox/current_review.json). The clinical ontology is YAML; the review
+specification is the hand-maintained JSON source, and the much larger Labelbox ontology JSON is generated from that
+specification and retained as the exact schema submitted for medical approval:
 
-- [Column/value/view specification](../../configs/radar/column_review_v2.json)
-- [Native Labelbox ontology](../../configs/radar/labelbox/column_review_v2.json)
+- [Clinical ontology](../../configs/radar/radar-caption-ontology-v1.yaml)
+- [Source column/value/view specification](../../configs/radar/column_review_v2.json)
+- [Generated native Labelbox ontology](../../configs/radar/labelbox/column_review_v2.json)
 - [Prefill builder and scorer](../../tools/labelbox/column_review.py)
 - [Ontology/context/MAL importer](../../tools/labelbox/import_column_review.py)
 - [Whole-study demonstration](https://deepecho-three-view-demo.papirobbi.chatgpt.site)

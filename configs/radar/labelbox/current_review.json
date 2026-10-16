@@ -1,8 +1,11 @@
 {
+  "schema": "radar-review-selection",
+  "version": 1,
   "name": "DeepECHO column review v2",
   "status": "proposed_labelbox_ontology",
-  "spec": "configs/radar/column_review_v2.json",
-  "ontology": "configs/radar/labelbox/column_review_v2.json",
+  "clinical_ontology": "configs/radar/radar-caption-ontology-v1.yaml",
+  "source_specification": "configs/radar/column_review_v2.json",
+  "generated_labelbox_ontology": "configs/radar/labelbox/column_review_v2.json",
   "builder": "tools.labelbox.column_review",
   "importer": "tools.labelbox.import_column_review",
   "instructions": "docs/radar/column_review_v2.md",
