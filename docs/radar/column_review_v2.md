@@ -175,7 +175,10 @@ python -m tools.labelbox.import_column_review --project-id YOUR_PROJECT_ID --can
 
 The importer checks every existing video row, the complete schema and original context before writing.
 It creates or reuses the v2 ontology, connects a compatible project, creates a stable batch of existing rows,
-adds original-proposal context, and imports **MAL predictions**. A retry reuses its matching job.
+adds original-proposal context, and imports **MAL predictions** by schema id. The import job is named after the
+prelabels and the form they are sent in: a rerun reuses a job that finished cleanly, supersedes a failed job of an
+earlier form, and stops at a failed job of the current form, or one whose errors Labelbox no longer keeps (24
+hours), until it is checked in Labelbox and the importer is rerun with `--retry-failed`.
 It refuses conflicting schemas or context and never uploads videos, imports ground truth, invites users, or
 replaces an incompatible live ontology.
 
