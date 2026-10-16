@@ -1,3 +1,4 @@
+import copy
 import importlib.util
 import io
 import json
@@ -5,7 +6,6 @@ import logging
 import sys
 import tempfile
 import unittest
-import uuid
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from types import SimpleNamespace
@@ -13,13 +13,14 @@ from unittest import mock
 
 import imageio.v3 as iio
 
+from tools.labelbox.column_review import build_form, prelabels
 from tools.labelbox.synthetic_pipeline import (
     CANDIDATE_ATTACHMENT,
     GLOBAL_KEY_PREFIX,
     LEGACY_SANDBOX_ONTOLOGY_NAMES,
-    SANDBOX_BATCH_NAME,
+    SANDBOX_BATCH_PREFIX,
     SANDBOX_DATASET_DESCRIPTION,
-    SANDBOX_VIEW_PREDICTIONS_NAME,
+    SANDBOX_PREDICTIONS_NAME,
     SUMMARY_SCHEMA,
     LabelboxSandboxApi,
     SandboxError,
@@ -27,7 +28,7 @@ from tools.labelbox.synthetic_pipeline import (
     _canonical_form,
     _difference_paths,
     _render_video,
-    _view_schema_ids,
+    _safe_error_summary,
     ensure_pipeline,
     main,
     summarize_export,
@@ -35,16 +36,32 @@ from tools.labelbox.synthetic_pipeline import (
 )
 
 
+def server_form():
+    form = copy.deepcopy(build_form())
+
+    def add_ids(questions, path="root"):
+        for question_index, question in enumerate(questions):
+            question_path = f"{path}.q{question_index}"
+            question["featureSchemaId"] = question_path
+            for option_index, option in enumerate(question.get("options", [])):
+                option_path = f"{question_path}.o{option_index}"
+                option["featureSchemaId"] = option_path
+                add_ids(option.get("options", []), option_path)
+
+    add_ids(form["classifications"])
+    return form
+
+
 class FakeApi:
     def __init__(self, *, existing=(), export_rows=()):
         self.workspace = Workspace(
-            project=SimpleNamespace(name="project"),
+            project=SimpleNamespace(name="project", uid="synthetic-project-id"),
             dataset=SimpleNamespace(name="dataset"),
             ontology=SimpleNamespace(name="ontology"),
         )
         self.existing = set(existing)
         self.rows = []
-        self.batch_keys = None
+        self.study_batches = None
         self.exported = list(export_rows)
         self.prediction_cases = None
         self.calls = []
@@ -64,15 +81,18 @@ class FakeApi:
         for case in cases:
             self.existing.add(case.global_key)
 
-    def ensure_batch(self, workspace, global_keys):
-        self.calls.append("batch")
-        if self.batch_keys is not None:
-            return False
-        self.batch_keys = list(global_keys)
-        return True
+    def ensure_study_batches(self, workspace, cases):
+        self.calls.append("study_batches")
+        if self.study_batches is not None:
+            return 0
+        grouped = {}
+        for case in cases:
+            grouped.setdefault(case.study_key, []).append(case.global_key)
+        self.study_batches = grouped
+        return len(grouped)
 
-    def ensure_view_predictions(self, workspace, cases):
-        self.calls.append("predictions")
+    def ensure_prelabels(self, workspace, cases):
+        self.calls.append("prelabels")
         if self.prediction_cases is not None:
             return False
         self.prediction_cases = list(cases)
@@ -126,8 +146,14 @@ class SyntheticCasesTests(unittest.TestCase):
             self.assertTrue(case.global_key.startswith(GLOBAL_KEY_PREFIX))
             self.assertIs(candidate["synthetic"], True)
             self.assertEqual(candidate["global_key"], case.global_key)
-            self.assertLessEqual(len(candidate["claims"]), 5)
-            self.assertNotIn("report_context", candidate)
+            self.assertEqual(candidate["study_key"], case.study_key)
+            self.assertEqual(candidate["clip_key"], case.clip_key)
+            self.assertEqual(candidate["schema"], "deepecho-column-review")
+            self.assertEqual(candidate["version"], 2)
+            self.assertGreater(len(candidate["columns"]), 0)
+            self.assertTrue(set(candidate["report_context"]).issubset(case.report))
+
+        self.assertEqual(len(build_form()["classifications"]), 13)
 
     def test_renderer_creates_a_readable_mp4(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -183,52 +209,30 @@ class SyntheticCasesTests(unittest.TestCase):
         self.assertEqual(paths, ["root.questions[0].name", "root.questions[0].required"])
         self.assertNotIn("secret", json.dumps(paths))
 
-    def test_view_schema_ids_resolve_question_and_candidate_answers(self):
-        ontology = SimpleNamespace(
-            normalized={
-                "classifications": [
-                    {
-                        "name": "view",
-                        "featureSchemaId": "view-schema-id",
-                        "options": [
-                            {"value": "A4C", "featureSchemaId": "a4c-schema-id"},
-                            {"value": "PLAX", "featureSchemaId": "plax-schema-id"},
-                        ],
-                    }
-                ]
+    def test_server_error_summary_redacts_urls_paths_and_tokens(self):
+        summary = _safe_error_summary(
+            {
+                "message": (
+                    "Invalid attachment at /sensitive/local/path using "
+                    "https://uploads.example.invalid/private?token=secret and "
+                    "abcdefghijklmnopqrstuvwxyz0123456789"
+                )
             }
         )
 
-        question_id, answer_ids = _view_schema_ids(ontology, ["A4C", "PLAX"])
-
-        self.assertEqual(question_id, "view-schema-id")
-        self.assertEqual(answer_ids, {"A4C": "a4c-schema-id", "PLAX": "plax-schema-id"})
-
-    def test_view_schema_ids_reject_missing_candidate_answer(self):
-        ontology = SimpleNamespace(
-            normalized=json.dumps(
-                {
-                    "classifications": [
-                        {
-                            "name": "view",
-                            "featureSchemaId": "view-schema-id",
-                            "options": [{"value": "A4C", "featureSchemaId": "a4c-schema-id"}],
-                        }
-                    ]
-                }
-            )
-        )
-
-        with self.assertRaisesRegex(SandboxError, "missing a candidate-view answer schema ID"):
-            _view_schema_ids(ontology, ["PLAX"])
-
+        self.assertIn("Invalid attachment", summary)
+        self.assertIn("<path>", summary)
+        self.assertIn("<url>", summary)
+        self.assertIn("<token>", summary)
+        self.assertNotIn("sensitive", summary)
+        self.assertNotIn("secret", summary)
 
 class OrchestrationTests(unittest.TestCase):
     @staticmethod
     def renderer(case, path):
         path.write_bytes(b"synthetic video bytes")
 
-    def test_uploads_only_missing_rows_and_creates_one_batch(self):
+    def test_uploads_only_missing_rows_and_creates_one_batch_per_study(self):
         first = synthetic_cases()[0].global_key
         api = FakeApi(existing={first})
 
@@ -237,24 +241,35 @@ class OrchestrationTests(unittest.TestCase):
         self.assertTrue(api.create)
         self.assertEqual(result.uploaded_rows, 3)
         self.assertEqual(result.total_rows, 4)
-        self.assertTrue(result.batch_created)
-        self.assertTrue(result.view_predictions_imported)
-        self.assertEqual(api.calls, ["batch", "predictions"])
-        self.assertEqual(api.batch_keys, [case.global_key for case in synthetic_cases()])
+        self.assertEqual(result.project_id, "synthetic-project-id")
+        self.assertEqual(result.total_study_batches, 3)
+        self.assertEqual(result.created_study_batches, 3)
+        self.assertTrue(result.prelabels_imported)
+        self.assertEqual(api.calls, ["study_batches", "prelabels"])
+        self.assertEqual(len(api.study_batches), 3)
+        a4c_cases = [case for case in synthetic_cases() if case.study_key.endswith("01")]
+        self.assertEqual(
+            api.study_batches[a4c_cases[0].study_key],
+            [case.global_key for case in a4c_cases],
+        )
         self.assertEqual(set(api.paths), {case.global_key for case in synthetic_cases()[1:]})
         self.assertTrue(all(path.name.endswith(".mp4") for path in api.paths.values()))
 
     def test_second_run_is_idempotent(self):
         keys = [case.global_key for case in synthetic_cases()]
         api = FakeApi(existing=keys)
-        api.batch_keys = keys
+        api.study_batches = {
+            case.study_key: [item.global_key for item in synthetic_cases() if item.study_key == case.study_key]
+            for case in synthetic_cases()
+        }
         api.prediction_cases = list(synthetic_cases())
 
         result = ensure_pipeline(api, renderer=lambda *_: self.fail("rendered an existing row"))
 
         self.assertEqual(result.uploaded_rows, 0)
-        self.assertFalse(result.batch_created)
-        self.assertFalse(result.view_predictions_imported)
+        self.assertEqual(result.total_study_batches, 3)
+        self.assertEqual(result.created_study_batches, 0)
+        self.assertFalse(result.prelabels_imported)
         self.assertEqual(api.rows, [])
 
     def test_refuses_non_reserved_or_duplicate_keys(self):
@@ -265,6 +280,26 @@ class OrchestrationTests(unittest.TestCase):
 
 
 class SdkPayloadTests(unittest.TestCase):
+    def test_sdk_adapter_creates_and_reuses_one_batch_per_study(self):
+        batches = []
+        project = SimpleNamespace(
+            batches=lambda: batches,
+            create_batch=lambda name, global_keys: batches.append(
+                SimpleNamespace(name=name, global_keys=list(global_keys), size=len(global_keys))
+            ),
+        )
+        workspace = Workspace(project=project, dataset=object(), ontology=object())
+        api = LabelboxSandboxApi(object(), project_type=None, dataset_type=None, media_type="video")
+
+        self.assertEqual(api.ensure_study_batches(workspace, synthetic_cases()), 3)
+        self.assertEqual(api.ensure_study_batches(workspace, synthetic_cases()), 0)
+        self.assertEqual(len(batches), 3)
+        self.assertEqual(sorted(batch.size for batch in batches), [1, 1, 2])
+        shared_study_keys = {
+            case.global_key for case in synthetic_cases() if case.study_key.endswith("01")
+        }
+        self.assertIn(shared_study_keys, [set(batch.global_keys) for batch in batches])
+
     def test_replaces_only_the_unlabeled_legacy_sandbox_ontology(self):
         legacy = SimpleNamespace(uid="legacy-id", name=next(iter(LEGACY_SANDBOX_ONTOLOGY_NAMES)))
         english = SimpleNamespace(uid="english-id", name="English ontology")
@@ -311,7 +346,7 @@ class SdkPayloadTests(unittest.TestCase):
         api = LabelboxSandboxApi(MissingRowsSdkClient(), project_type=None, dataset_type=None, media_type="video")
         workspace = Workspace(project=object(), dataset=SimpleNamespace(uid="synthetic-dataset"), ontology=object(),)
 
-        self.assertEqual(api.existing_global_keys(workspace, ["radar-synthetic-v2-missing"]), set())
+        self.assertEqual(api.existing_global_keys(workspace, [f"{GLOBAL_KEY_PREFIX}missing"]), set())
 
     def test_upload_payload_contains_only_safe_synthetic_context(self):
         sdk = CapturingSdkClient()
@@ -333,10 +368,14 @@ class SdkPayloadTests(unittest.TestCase):
         self.assertIn("SYNTHETIC DATA ONLY", serialized)
         self.assertNotIn("local-secret-path", serialized)
         self.assertNotIn("/tmp/", serialized)
-        self.assertNotIn('"name": "Candidate view"', serialized)
+        self.assertIn("DeepECHO review v2", serialized)
+        self.assertIn(case.study_key, serialized)
+        self.assertIn(case.clip_key, serialized)
+        self.assertNotIn("report_context", serialized)
+        self.assertNotIn("source_text", serialized)
 
     @unittest.skipUnless(importlib.util.find_spec("labelbox"), "Labelbox SDK not installed")
-    def test_candidate_view_predictions_are_single_choice_prelabels(self):
+    def test_complete_v2_predictions_are_imported_as_prelabels(self):
         created = []
 
         class PredictionJob:
@@ -360,50 +399,30 @@ class SdkPayloadTests(unittest.TestCase):
         workspace = Workspace(
             project=project,
             dataset=object(),
-            ontology=SimpleNamespace(
-                normalized={
-                    "classifications": [
-                        {
-                            "name": "view",
-                            "featureSchemaId": "view-schema-id",
-                            "options": [
-                                {"value": "A4C", "featureSchemaId": "a4c-schema-id"},
-                                {"value": "PLAX", "featureSchemaId": "plax-schema-id"},
-                            ],
-                        }
-                    ]
-                }
-            ),
+            ontology=SimpleNamespace(normalized=server_form()),
         )
         api = LabelboxSandboxApi(object(), project_type=None, dataset_type=None, media_type="video")
 
         with mock.patch("labelbox.schema.annotation_import.MALPredictionImport", PredictionImport):
-            self.assertTrue(api.ensure_view_predictions(workspace, synthetic_cases()))
+            self.assertTrue(api.ensure_prelabels(workspace, synthetic_cases()))
 
-        self.assertEqual(created[0]["name"], SANDBOX_VIEW_PREDICTIONS_NAME)
+        self.assertEqual(created[0]["name"], SANDBOX_PREDICTIONS_NAME)
+        predictions = created[0]["predictions"]
         self.assertEqual(
-            len({prediction["uuid"] for prediction in created[0]["predictions"]}),
-            len(synthetic_cases()),
+            len({prediction["uuid"] for prediction in predictions}),
+            sum(len(prelabels(case.candidate())) for case in synthetic_cases()),
         )
-        self.assertEqual(
-            created[0]["predictions"],
-            [
-                {
-                    "dataRow": {"globalKey": case.global_key},
-                    "uuid": str(uuid.uuid5(uuid.NAMESPACE_URL, f"echojepa:{case.global_key}:candidate-view:v5")),
-                    "schemaId": "view-schema-id",
-                    "answer": {"schemaId": f"{case.view.lower()}-schema-id"},
-                }
-                for case in synthetic_cases()
-            ],
-        )
+        self.assertTrue(all("schemaId" in prediction for prediction in predictions))
+        self.assertTrue(all("name" not in prediction for prediction in predictions))
+        self.assertTrue(any(isinstance(prediction["answer"], list) for prediction in predictions))
+        self.assertTrue(any(isinstance(prediction["answer"], str) for prediction in predictions))
 
     @unittest.skipUnless(importlib.util.find_spec("labelbox"), "Labelbox SDK not installed")
     def test_existing_prediction_import_with_row_errors_is_not_reported_as_reused(self):
         from labelbox.schema.enums import AnnotationImportState
 
         job = SimpleNamespace(
-            name=SANDBOX_VIEW_PREDICTIONS_NAME,
+            name=SANDBOX_PREDICTIONS_NAME,
             state=AnnotationImportState.FINISHED,
             errors=[{"errors": [{"name": "synthetic-test-error"}]}],
             wait_till_done=lambda: None,
@@ -415,23 +434,50 @@ class SdkPayloadTests(unittest.TestCase):
         workspace = Workspace(project=project, dataset=object(), ontology=object())
         api = LabelboxSandboxApi(object(), project_type=None, dataset_type=None, media_type="video")
 
-        with self.assertRaisesRegex(SandboxError, "existing candidate-view prediction import failed"):
-            api.ensure_view_predictions(workspace, synthetic_cases())
+        with self.assertRaisesRegex(
+            SandboxError,
+            "existing synthetic v2 prelabel import failed: no safe server message available",
+        ):
+            api.ensure_prelabels(workspace, synthetic_cases())
 
 
-def exported_row(case, answers=None):
+def _export_classification(record):
+    answer = record["answer"]
+    item = {"name": record["name"]}
+    if isinstance(answer, str):
+        item["text_answer"] = {"content": answer}
+    elif isinstance(answer, list):
+        item["checklist_answers"] = [
+            {
+                "value": selected["name"],
+                "classifications": [
+                    _export_classification(child) for child in selected.get("classifications", [])
+                ],
+            }
+            for selected in answer
+        ]
+    else:
+        item["radio_answer"] = {
+            "value": answer["name"],
+            "classifications": [
+                _export_classification(child) for child in answer.get("classifications", [])
+            ],
+        }
+    return item
+
+
+def exported_row(case, reviewed=False):
     labels = []
-    if answers is not None:
-        classifications = []
-        for name, value in answers.items():
-            if name in {"missing_detail", "optional_correction"}:
-                classifications.append({"name": name, "text_answer": {"content": value}})
-            else:
-                classifications.append({"name": name, "radio_answer": {"value": value}})
+    if reviewed:
+        records = prelabels(case.candidate())
+        records.append({"name": "input_quality", "answer": {"name": "interpretable"}})
+        records.append({"name": "review_completed", "answer": {"name": "yes"}})
         labels.append(
             {
                 "label_details": {"created_at": "2026-10-10T10:00:00Z"},
-                "annotations": {"classifications": classifications},
+                "annotations": {
+                    "classifications": [_export_classification(record) for record in records]
+                },
             }
         )
     return {
@@ -444,23 +490,16 @@ def exported_row(case, answers=None):
 class ExportTests(unittest.TestCase):
     def test_scores_reviewed_rows_and_keeps_unreviewed_rows(self):
         reviewed, unreviewed = synthetic_cases()[:2]
-        answers = {
-            "view": "A4C",
-            "modality_ok": "yes",
-            "claim_1_ok": "yes",
-            "claim_2_ok": "yes",
-            "claim_3_ok": "no_claim",
-            "claim_4_ok": "no_claim",
-            "claim_5_ok": "no_claim",
-            "important_missing": "no",
-        }
 
-        summary = summarize_export([exported_row(reviewed, answers), exported_row(unreviewed)])
+        summary = summarize_export([exported_row(reviewed, reviewed=True), exported_row(unreviewed)])
 
         self.assertEqual(summary["schema"], SUMMARY_SCHEMA)
         by_key = {item["global_key"]: item for item in summary["items"]}
         self.assertEqual(by_key[reviewed.global_key]["status"], "scored")
-        self.assertTrue(by_key[reviewed.global_key]["score"]["all_supported"])
+        self.assertEqual(by_key[reviewed.global_key]["study_key"], reviewed.study_key)
+        self.assertEqual(by_key[reviewed.global_key]["clip_key"], reviewed.clip_key)
+        self.assertEqual(by_key[reviewed.global_key]["score"]["support_rate"], 1.0)
+        self.assertTrue(by_key[reviewed.global_key]["score"]["ready_for_validation"])
         self.assertEqual(by_key[unreviewed.global_key]["status"], "unreviewed")
 
     def test_rejects_non_synthetic_or_duplicate_candidates(self):
@@ -478,11 +517,12 @@ class ExportTests(unittest.TestCase):
 
     def test_null_label_details_do_not_break_scoring(self):
         case = synthetic_cases()[0]
-        row = exported_row(case, {})
+        row = exported_row(case, reviewed=True)
         row["projects"]["project-id"]["labels"][0]["label_details"] = None
 
-        with self.assertRaisesRegex(ValueError, "Missing or invalid view"):
-            summarize_export([row])
+        summary = summarize_export([row])
+
+        self.assertEqual(summary["items"][0]["status"], "scored")
 
 
 class MainTests(unittest.TestCase):
@@ -515,7 +555,8 @@ class MainTests(unittest.TestCase):
         self.assertNotIn(secret, stdout.getvalue())
         self.assertNotIn("/tmp/", stdout.getvalue())
         self.assertIn("rows=4", stdout.getvalue())
-        self.assertIn(SANDBOX_BATCH_NAME, stdout.getvalue())
+        self.assertIn("id=synthetic-project-id", stdout.getvalue())
+        self.assertIn("study batches: total=3; created=3; reused=0", stdout.getvalue())
 
     def test_errors_are_sanitized(self):
         secret = "secret-test-key"
@@ -539,7 +580,7 @@ class MainTests(unittest.TestCase):
         stdout, stderr = io.StringIO(), io.StringIO()
 
         def fail(_):
-            raise SandboxError("The fixed-name ontology differs from the committed simple review form.")
+            raise SandboxError("The fixed-name ontology differs from the committed column-review v2 form.")
 
         with redirect_stdout(stdout), redirect_stderr(stderr):
             status = main(["--apply"], environ={"LABELBOX_API_KEY": "secret-test-key"}, api_factory=fail)
@@ -549,7 +590,7 @@ class MainTests(unittest.TestCase):
         self.assertEqual(
             stderr.getvalue(),
             "Synthetic Labelbox pipeline stopped by safety check: "
-            "The fixed-name ontology differs from the committed simple review form.\n",
+            "The fixed-name ontology differs from the committed column-review v2 form.\n",
         )
 
     def test_export_writes_only_summary(self):

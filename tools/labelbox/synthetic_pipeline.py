@@ -1,9 +1,10 @@
-"""Exercise the simple RADAR review workflow in a Labelbox sandbox.
+"""Exercise the complete DeepECHO column-review v2 workflow in a Labelbox sandbox.
 
 This command accepts no input media or clinical metadata. It generates four
-small synthetic videos, imports the simple review proposal from PR #26,
-uploads safe context attachments, and creates one labeling batch in resources
-whose fixed names and descriptions identify them as synthetic-only.
+small synthetic videos, compiles fictional reports with the production v2
+compiler from PR #26, imports the complete nested prelabels, and creates one
+labeling batch per fictional study in resources whose fixed names and descriptions identify them
+as synthetic-only.
 
 Usage::
 
@@ -15,33 +16,46 @@ Usage::
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import logging
 import os
+import re
 import sys
 import tempfile
-import uuid
 from contextlib import redirect_stderr, redirect_stdout
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Mapping, Protocol, Sequence
 
-from tools.labelbox.simple_review import build_form, score_review
+from tools.labelbox.column_review import (
+    build_candidate,
+    build_form,
+    context_attachment,
+    prelabels,
+    score_review,
+)
 
 SANDBOX_PROJECT_NAME = "RADAR Caption Pilot Sandbox"
 SANDBOX_DATASET_NAME = "RADAR Caption Pilot Sandbox Dataset"
-SANDBOX_ONTOLOGY_NAME = "RADAR simple review proposal v3 - preselected view synthetic sandbox"
+SANDBOX_ONTOLOGY_NAME = "DeepECHO column review v2 - clip evidence synthetic sandbox"
 LEGACY_SANDBOX_ONTOLOGY_NAMES = {
+    "DeepECHO column review v2 - compact finding labels synthetic sandbox",
+    "DeepECHO column review v2 - reordered synthetic sandbox",
+    "DeepECHO column review v2 - synthetic sandbox",
+    "DeepECHO column review v2 - streamlined synthetic sandbox",
     "RADAR simple review proposal v1 - synthetic sandbox",
     "RADAR simple review proposal v2 - English synthetic sandbox",
+    "RADAR simple review proposal v3 - preselected view synthetic sandbox",
 }
-SANDBOX_BATCH_NAME = "RADAR synthetic pipeline v2"
-SANDBOX_VIEW_PREDICTIONS_NAME = "RADAR synthetic candidate views v5"
+SANDBOX_BATCH_PREFIX = "DeepECHO column review v2 synthetic study batch v1"
+SANDBOX_PREDICTIONS_NAME = "DeepECHO column review v2 synthetic prelabels v6"
 SANDBOX_PROJECT_DESCRIPTION = "Synthetic-only RADAR Labelbox pipeline test managed by EchoJEPA issue #22."
 SANDBOX_DATASET_DESCRIPTION = "Generated synthetic videos only; no clinical data or source file paths."
-GLOBAL_KEY_PREFIX = "radar-synthetic-v2-"
-CANDIDATE_ATTACHMENT = "radar_candidate_v1"
-SUMMARY_SCHEMA = "radar-synthetic-review-summary-v1"
+GLOBAL_KEY_PREFIX = "deepecho-v2-synthetic-v3-"
+STUDY_KEY_PREFIX = "deepecho-v2-synthetic-study-"
+CANDIDATE_ATTACHMENT = "deepecho_column_review_v2_candidate"
+SUMMARY_SCHEMA = "deepecho-column-review-v2-synthetic-summary-v1"
 
 
 class SandboxError(RuntimeError):
@@ -53,72 +67,172 @@ class SyntheticCase:
     """One entirely synthetic review item and its safe display context."""
 
     slug: str
+    study_slug: str
     title: str
     scenario: str
     view: str
     modality: str
-    claims: tuple[Mapping[str, Any], ...]
+    report: Mapping[str, Any]
     marker: str
+    targets: tuple[str, ...] | None = None
+    level: str = "not_applicable"
     marker_outside_crop: bool = False
 
     @property
     def global_key(self) -> str:
         return f"{GLOBAL_KEY_PREFIX}{self.slug}"
 
+    @property
+    def study_key(self) -> str:
+        return f"{STUDY_KEY_PREFIX}{self.study_slug}"
+
+    @property
+    def clip_key(self) -> str:
+        return self.global_key
+
     def candidate(self) -> dict[str, Any]:
-        return {
-            "schema": "radar-simple-candidate-v1",
-            "synthetic": True,
-            "global_key": self.global_key,
-            "view": self.view,
-            "modality": self.modality,
-            "claims": [dict(claim) for claim in self.claims],
-            "input_provenance_verified": True,
-            "crop_geometry": {"x": 48, "y": 16, "width": 224, "height": 224},
-            "selected_frame_indices": list(range(12)),
+        candidate = build_candidate(
+            self.report,
+            self.view,
+            self.modality,
+            global_key=self.global_key,
+            targets=list(self.targets) if self.targets is not None else None,
+            level=self.level,
+            input_kind="video",
+            input_provenance_verified=True,
+        )
+        candidate.update(
+            study_key=self.study_key,
+            clip_key=self.clip_key,
+            synthetic=True,
+            synthetic_title=self.title,
+            synthetic_scenario=self.scenario,
+            crop_geometry={"x": 48, "y": 16, "width": 224, "height": 224},
+            selected_frame_indices=list(range(12)),
+        )
+        return candidate
+
+
+def _labelbox_candidate(candidate: Mapping[str, Any]) -> dict[str, Any]:
+    """Return the safe candidate context stored with a synthetic data row."""
+
+    safe = {
+        key: value
+        for key, value in candidate.items()
+        if key != "report_context"
+    }
+    safe["columns"] = [
+        {
+            key: value
+            for key, value in column.items()
+            if key != "source_text"
         }
+        for column in candidate["columns"]
+    ]
+    return safe
+
+
+def _study_batch_plan(
+    candidates: Sequence[Mapping[str, Any]], *, prefix: str
+) -> dict[str, list[str]]:
+    """Group clips by opaque study key without exposing that key in batch names."""
+
+    grouped: dict[str, list[str]] = {}
+    for candidate in candidates:
+        grouped.setdefault(candidate["study_key"], []).append(candidate["global_key"])
+    return {
+        f"{prefix} {hashlib.sha256(study_key.encode()).hexdigest()[:12]}": keys
+        for study_key, keys in sorted(grouped.items())
+    }
+
+
+def _validate_synthetic_candidates(candidates: Sequence[Mapping[str, Any]]) -> None:
+    """Validate production prelabels plus synthetic study and clip identities."""
+
+    global_keys: set[str] = set()
+    clip_keys: set[str] = set()
+    for candidate in candidates:
+        global_key = candidate.get("global_key")
+        study_key = candidate.get("study_key")
+        clip_key = candidate.get("clip_key")
+        if (
+            not isinstance(global_key, str)
+            or not global_key.startswith(GLOBAL_KEY_PREFIX)
+            or global_key in global_keys
+            or not isinstance(study_key, str)
+            or not study_key.startswith(STUDY_KEY_PREFIX)
+            or not isinstance(clip_key, str)
+            or clip_key in clip_keys
+        ):
+            raise ValueError("Synthetic candidates need unique reserved identities")
+        global_keys.add(global_key)
+        clip_keys.add(clip_key)
+        prelabels(candidate)
 
 
 def synthetic_cases() -> tuple[SyntheticCase, ...]:
-    """Return deterministic cases that cover supported, rejected, unresolved and routing behavior."""
+    """Return fictional reports covering representative v2 routing and fields."""
 
     return (
         SyntheticCase(
-            slug="supported",
-            title="Synthetic supported claims",
-            scenario="The two candidate findings are represented inside the model-input square.",
+            slug="a4c-chambers",
+            study_slug="01",
+            title="Synthetic A4C chamber and wall-motion proposals",
+            scenario="UI-only example covering chamber function, size, wall motion and a valve proposal.",
             view="A4C",
             modality="bmode",
-            claims=({"concept": "lv_function", "value": "normal"}, {"concept": "lv_size", "value": "normal"},),
-            marker="SUPPORTED",
+            report={
+                "Left ventricule findings": (
+                    "Dysfonction légère du ventricule gauche. // Ventricule gauche non-dilaté"
+                ),
+                "Right ventricule findings": "Fonction systolique normale du ventricule droit",
+                "Tricuspid valve findings": "Valve tricuspide normale",
+                "Visually Estimated EF": 48,
+                "WMS Basal Inferoseptal": 2,
+            },
+            marker="A4C / CHAMBERS",
         ),
         SyntheticCase(
-            slug="unsupported",
-            title="Synthetic unsupported claim",
-            scenario="The candidate effusion claim is intentionally not represented in the synthetic loop.",
+            slug="plax-morphology",
+            study_slug="02",
+            title="Synthetic PLAX valve and aorta proposals",
+            scenario="UI-only example covering valve appearance, motion, aorta and pericardium fields.",
             view="PLAX",
             modality="bmode",
-            claims=({"concept": "pericardial_effusion", "value": "present"},),
-            marker="ABSENT",
+            report={
+                "Mitral valve findings": "Feuillets épaissis. // Prolapsus mitral",
+                "Aortic valve findings": "Valve aortique calcifiée avec ouverture réduite",
+                "Aorta findings": "Dilatation de la racine aortique. // Aorte ascendante non-dilatée",
+                "Pericardium findings": "Pas d’épanchement péricardique",
+            },
+            marker="PLAX / MORPHOLOGY",
         ),
         SyntheticCase(
-            slug="outside-crop",
-            title="Synthetic claim outside the model crop",
-            scenario="The marker exists only outside the square and should be answered Cannot assess.",
-            view="PLAX",
-            modality="bmode",
-            claims=({"concept": "pericardial_effusion", "value": "present"},),
-            marker="OUTSIDE",
-            marker_outside_crop=True,
-        ),
-        SyntheticCase(
-            slug="wrong-modality",
-            title="Synthetic modality mismatch",
-            scenario="A color-flow claim is paired with a B-mode candidate to exercise routing safeguards.",
+            slug="a4c-color",
+            study_slug="01",
+            title="Synthetic A4C Color Doppler proposals",
+            scenario="UI-only example covering demonstrated and not-demonstrated regurgitant jets.",
             view="A4C",
+            modality="color_flow",
+            report={
+                "Mitral valve findings": "Insuffisance mitrale légère",
+                "Tricuspid valve findings": "Pas d’insuffisance tricuspidienne",
+            },
+            marker="A4C / COLOR",
+        ),
+        SyntheticCase(
+            slug="psax-av",
+            study_slug="03",
+            title="Synthetic PSAX aortic-valve proposals",
+            scenario="UI-only example covering aortic cusp count, appearance and leaflet motion.",
+            view="PSAX_AV",
             modality="bmode",
-            claims=({"concept": "mitral_regurgitant_jet", "value": "demonstrated"},),
-            marker="MODE",
+            report={
+                "Aortic valve findings": "Valve aortique tricuspide, calcifiée, avec ouverture réduite",
+                "Tricuspid valve findings": "Valve tricuspide normale",
+                "Pulmonary valve findings": "Valve pulmonaire normale",
+            },
+            marker="PSAX AV",
         ),
     )
 
@@ -133,12 +247,14 @@ class Workspace:
 @dataclass(frozen=True)
 class PipelineResult:
     project_name: str
+    project_id: str
     dataset_name: str
     ontology_name: str
     total_rows: int
     uploaded_rows: int
-    batch_created: bool
-    view_predictions_imported: bool
+    total_study_batches: int
+    created_study_batches: int
+    prelabels_imported: bool
 
 
 class SandboxApi(Protocol):
@@ -153,10 +269,10 @@ class SandboxApi(Protocol):
     def upload_rows(self, workspace: Workspace, cases: Sequence[SyntheticCase], paths: Mapping[str, Path],) -> None:
         ...
 
-    def ensure_batch(self, workspace: Workspace, global_keys: Sequence[str]) -> bool:
+    def ensure_study_batches(self, workspace: Workspace, cases: Sequence[SyntheticCase]) -> int:
         ...
 
-    def ensure_view_predictions(self, workspace: Workspace, cases: Sequence[SyntheticCase]) -> bool:
+    def ensure_prelabels(self, workspace: Workspace, cases: Sequence[SyntheticCase]) -> bool:
         ...
 
     def export_rows(self, workspace: Workspace) -> Sequence[Mapping[str, Any]]:
@@ -234,23 +350,91 @@ def _difference_paths(expected: Any, actual: Any, path: str = "root", limit: int
     return [] if expected == actual else [path]
 
 
-def _view_schema_ids(ontology: Any, views: Sequence[str]) -> tuple[str, dict[str, str]]:
-    """Resolve the connected ontology's stable IDs for the view question and answers."""
+def _safe_error_summary(errors: Any) -> str:
+    """Return bounded server messages with URLs, paths and opaque tokens removed."""
 
-    normalized = ontology.normalized
-    if isinstance(normalized, str):
-        normalized = json.loads(normalized)
-    questions = [item for item in normalized.get("classifications", []) if item.get("name") == "view"]
-    if len(questions) != 1 or not questions[0].get("featureSchemaId"):
-        raise SandboxError("The connected ontology has no unique schema ID for the view question.")
-    answer_ids = {
-        option.get("value"): option.get("featureSchemaId")
-        for option in questions[0].get("options", [])
-        if option.get("value") and option.get("featureSchemaId")
-    }
-    if any(view not in answer_ids for view in views):
-        raise SandboxError("The connected ontology is missing a candidate-view answer schema ID.")
-    return questions[0]["featureSchemaId"], answer_ids
+    messages = []
+    for item in _walk(errors):
+        for key in ("message", "error", "description", "reason"):
+            value = item.get(key)
+            if not isinstance(value, str) or not value.strip():
+                continue
+            value = re.sub(r"https?://[^\s'\"]+", "<url>", value)
+            value = re.sub(r"(?<![A-Za-z0-9])/(?:[^\s/'\"]+/)*[^\s/'\"]+", "<path>", value)
+            value = re.sub(r"\b[A-Za-z0-9_-]{32,}\b", "<token>", value)
+            messages.append(" ".join(value.split())[:240])
+            if len(messages) == 3:
+                break
+        if len(messages) == 3:
+            break
+    return "; ".join(dict.fromkeys(messages)) or "no safe server message available"
+
+
+def _schema_id_predictions(
+    payloads: Sequence[Mapping[str, Any]], normalized_ontology: Any
+) -> list[dict[str, Any]]:
+    """Replace stable column-review names with connected server schema IDs."""
+
+    if isinstance(normalized_ontology, str):
+        normalized_ontology = json.loads(normalized_ontology)
+
+    def unique(nodes: Sequence[Mapping[str, Any]], key: str, value: Any) -> Mapping[str, Any]:
+        matches = [node for node in nodes if node.get(key) == value]
+        if len(matches) != 1:
+            raise ValueError("Connected ontology has no unique feature for a v2 prelabel")
+        return matches[0]
+
+    def convert_answer(
+        selected: Mapping[str, Any], options: Sequence[Mapping[str, Any]]
+    ) -> dict[str, Any]:
+        matches = [
+            option
+            for option in options
+            if selected.get("name") in {option.get("value"), option.get("name")}
+        ]
+        if len(matches) != 1:
+            raise ValueError("Connected ontology has no unique answer for a v2 prelabel")
+        option = matches[0]
+        schema_id = option.get("featureSchemaId")
+        if not schema_id:
+            raise ValueError("Connected ontology answer is missing its server schema ID")
+        converted = {
+            key: value
+            for key, value in selected.items()
+            if key not in {"name", "classifications"}
+        }
+        converted["schemaId"] = schema_id
+        children = selected.get("classifications", [])
+        if children:
+            converted["classifications"] = [
+                convert_question(child, option.get("options", [])) for child in children
+            ]
+        return converted
+
+    def convert_question(
+        record: Mapping[str, Any], questions: Sequence[Mapping[str, Any]]
+    ) -> dict[str, Any]:
+        question = unique(questions, "name", record.get("name"))
+        schema_id = question.get("featureSchemaId")
+        if not schema_id:
+            raise ValueError("Connected ontology question is missing its server schema ID")
+        converted = {
+            key: value for key, value in record.items() if key not in {"name", "answer"}
+        }
+        converted["schemaId"] = schema_id
+        answer = record.get("answer")
+        if isinstance(answer, list):
+            converted["answer"] = [
+                convert_answer(selected, question.get("options", [])) for selected in answer
+            ]
+        elif isinstance(answer, Mapping):
+            converted["answer"] = convert_answer(answer, question.get("options", []))
+        else:
+            converted["answer"] = answer
+        return converted
+
+    questions = normalized_ontology.get("classifications", [])
+    return [convert_question(payload, questions) for payload in payloads]
 
 
 class LabelboxSandboxApi:
@@ -297,7 +481,7 @@ class LabelboxSandboxApi:
             if actual != expected:
                 paths = ", ".join(_difference_paths(expected, actual))
                 raise SandboxError(
-                    f"The fixed-name ontology differs from the committed simple review form at: {paths}."
+                    f"The fixed-name ontology differs from the committed column-review v2 form at: {paths}."
                 )
 
     @staticmethod
@@ -349,9 +533,9 @@ class LabelboxSandboxApi:
         rows = []
         for case in cases:
             url = self.client.upload_file(str(paths[case.global_key]))
-            claims = "\n".join(
-                f"{index}. {claim['concept']} = {claim['value']}" for index, claim in enumerate(case.claims, start=1)
-            )
+            candidate = case.candidate()
+            safe_candidate = _labelbox_candidate(candidate)
+            context = context_attachment(candidate)
             rows.append(
                 {
                     "row_data": url,
@@ -360,69 +544,76 @@ class LabelboxSandboxApi:
                     "attachments": [
                         {"type": "RAW_TEXT", "name": "Synthetic notice", "value": "SYNTHETIC DATA ONLY"},
                         {"type": "RAW_TEXT", "name": "Review scenario", "value": case.scenario},
-                        {"type": "RAW_TEXT", "name": "Candidate modality", "value": case.modality},
-                        {"type": "RAW_TEXT", "name": "Numbered candidate claims", "value": claims},
+                        {
+                            "type": context["attachment_type"],
+                            "name": context["attachment_name"],
+                            "value": context["attachment_value"],
+                        },
                         {
                             "type": "RAW_TEXT",
                             "name": CANDIDATE_ATTACHMENT,
-                            "value": json.dumps(case.candidate(), ensure_ascii=True, sort_keys=True),
+                            "value": json.dumps(safe_candidate, ensure_ascii=True, sort_keys=True),
                         },
                     ],
                 }
             )
         task = workspace.dataset.create_data_rows(rows)
         task.wait_till_done()
-        if task.status == "FAILED" or task.errors:
-            raise SandboxError("Synthetic data-row creation failed.")
+        errors = task.errors
+        if task.status == "FAILED" or errors:
+            raise SandboxError(f"Synthetic data-row creation failed: {_safe_error_summary(errors)}.")
 
-    def ensure_batch(self, workspace: Workspace, global_keys: Sequence[str]) -> bool:
-        batches = [batch for batch in workspace.project.batches() if batch.name == SANDBOX_BATCH_NAME]
-        if len(batches) > 1:
-            raise SandboxError("Multiple batches use the fixed sandbox name.")
-        if batches:
-            if batches[0].size != len(global_keys):
-                raise SandboxError("The existing synthetic batch has an unexpected size.")
-            return False
-        workspace.project.create_batch(SANDBOX_BATCH_NAME, global_keys=list(global_keys))
-        return True
+    def ensure_study_batches(self, workspace: Workspace, cases: Sequence[SyntheticCase]) -> int:
+        plan = _study_batch_plan(
+            [case.candidate() for case in cases], prefix=SANDBOX_BATCH_PREFIX
+        )
+        existing = list(workspace.project.batches())
+        created = 0
+        for name, global_keys in plan.items():
+            batches = [batch for batch in existing if batch.name == name]
+            if len(batches) > 1:
+                raise SandboxError("Multiple batches use a fixed synthetic study-batch name.")
+            if batches:
+                if batches[0].size != len(global_keys):
+                    raise SandboxError("An existing synthetic study batch has an unexpected size.")
+                continue
+            workspace.project.create_batch(name, global_keys=global_keys)
+            created += 1
+        return created
 
-    def ensure_view_predictions(self, workspace: Workspace, cases: Sequence[SyntheticCase]) -> bool:
+    def ensure_prelabels(self, workspace: Workspace, cases: Sequence[SyntheticCase]) -> bool:
         from labelbox.schema.annotation_import import MALPredictionImport
         from labelbox.schema.enums import AnnotationImportState
 
         imports = [
             item
             for item in workspace.project.get_mal_prediction_imports()
-            if item.name == SANDBOX_VIEW_PREDICTIONS_NAME
+            if item.name == SANDBOX_PREDICTIONS_NAME
         ]
         if len(imports) > 1:
-            raise SandboxError("Multiple imports use the fixed candidate-view prediction name.")
+            raise SandboxError("Multiple imports use the fixed synthetic v2 prelabel name.")
         workspace.project.enable_model_assisted_labeling(True)
         if imports:
             imports[0].wait_till_done()
-            if imports[0].state == AnnotationImportState.FAILED or imports[0].errors:
-                raise SandboxError("The existing candidate-view prediction import failed.")
+            errors = imports[0].errors
+            if imports[0].state == AnnotationImportState.FAILED or errors:
+                raise SandboxError(
+                    f"The existing synthetic v2 prelabel import failed: {_safe_error_summary(errors)}."
+                )
             return False
 
-        question_id, answer_ids = _view_schema_ids(workspace.ontology, [case.view for case in cases])
-        predictions = [
-            {
-                "dataRow": {"globalKey": case.global_key},
-                "uuid": str(uuid.uuid5(uuid.NAMESPACE_URL, f"echojepa:{case.global_key}:candidate-view:v5")),
-                "schemaId": question_id,
-                "answer": {"schemaId": answer_ids[case.view]},
-            }
-            for case in cases
-        ]
+        named_predictions = [prediction for case in cases for prediction in prelabels(case.candidate())]
+        predictions = _schema_id_predictions(named_predictions, workspace.ontology.normalized)
         job = MALPredictionImport.create_from_objects(
             client=self.client,
             project_id=workspace.project.uid,
-            name=SANDBOX_VIEW_PREDICTIONS_NAME,
+            name=SANDBOX_PREDICTIONS_NAME,
             predictions=predictions,
         )
         job.wait_till_done()
-        if job.state == AnnotationImportState.FAILED or job.errors:
-            raise SandboxError("Candidate-view prediction import failed.")
+        errors = job.errors
+        if job.state == AnnotationImportState.FAILED or errors:
+            raise SandboxError(f"Synthetic v2 prelabel import failed: {_safe_error_summary(errors)}.")
         return True
 
     def export_rows(self, workspace: Workspace) -> Sequence[Mapping[str, Any]]:
@@ -469,6 +660,11 @@ def ensure_pipeline(
     renderer: Callable[[SyntheticCase, Path], None] = _render_video,
 ) -> PipelineResult:
     cases = tuple(cases or synthetic_cases())
+    candidates = [case.candidate() for case in cases]
+    try:
+        _validate_synthetic_candidates(candidates)
+    except ValueError as exc:
+        raise SandboxError("Synthetic cases need unique, valid clip identities.") from exc
     keys = [case.global_key for case in cases]
     if len(keys) != len(set(keys)) or any(not key.startswith(GLOBAL_KEY_PREFIX) for key in keys):
         raise SandboxError("Synthetic cases need unique, reserved global keys.")
@@ -483,16 +679,19 @@ def ensure_pipeline(
                 renderer(case, path)
                 paths[case.global_key] = path
             api.upload_rows(workspace, missing, paths)
-    batch_created = api.ensure_batch(workspace, keys)
-    view_predictions_imported = api.ensure_view_predictions(workspace, cases)
+    batch_plan = _study_batch_plan(candidates, prefix=SANDBOX_BATCH_PREFIX)
+    created_study_batches = api.ensure_study_batches(workspace, cases)
+    prelabels_imported = api.ensure_prelabels(workspace, cases)
     return PipelineResult(
         project_name=SANDBOX_PROJECT_NAME,
+        project_id=workspace.project.uid,
         dataset_name=SANDBOX_DATASET_NAME,
         ontology_name=SANDBOX_ONTOLOGY_NAME,
         total_rows=len(keys),
         uploaded_rows=len(missing),
-        batch_created=batch_created,
-        view_predictions_imported=view_predictions_imported,
+        total_study_batches=len(batch_plan),
+        created_study_batches=created_study_batches,
+        prelabels_imported=prelabels_imported,
     )
 
 
@@ -533,20 +732,44 @@ def _latest_label(row: Mapping[str, Any]) -> Mapping[str, Any] | None:
     return max(labels, key=created_at)
 
 
-def _answers_from_label(label: Mapping[str, Any]) -> dict[str, str]:
-    answers = {}
-    for item in _walk(label.get("annotations", {})):
-        name = item.get("name")
-        if not isinstance(name, str):
-            continue
-        radio = item.get("radio_answer")
-        text = item.get("text_answer")
-        if isinstance(radio, Mapping):
-            value = radio.get("value") or radio.get("name")
-            if isinstance(value, str):
-                answers[name] = value
-        elif isinstance(text, Mapping) and isinstance(text.get("content"), str):
-            answers[name] = text["content"]
+def _answers_from_label(label: Mapping[str, Any]) -> dict[str, Any]:
+    """Flatten submitted Labelbox radio, checklist and text answers for the v2 scorer."""
+
+    answers: dict[str, Any] = {}
+
+    def visit(items: Any) -> None:
+        if not isinstance(items, list):
+            return
+        for item in items:
+            if not isinstance(item, Mapping):
+                continue
+            name = item.get("name")
+            if not isinstance(name, str):
+                continue
+            radio = item.get("radio_answer")
+            checklist = item.get("checklist_answers")
+            text = item.get("text_answer")
+            if isinstance(radio, Mapping):
+                value = radio.get("value") or radio.get("name")
+                if isinstance(value, str):
+                    answers[name] = value
+                visit(radio.get("classifications"))
+            elif isinstance(checklist, list):
+                values = []
+                for selected in checklist:
+                    if not isinstance(selected, Mapping):
+                        continue
+                    value = selected.get("value") or selected.get("name")
+                    if isinstance(value, str):
+                        values.append(value)
+                    visit(selected.get("classifications"))
+                answers[name] = values
+            elif isinstance(text, Mapping) and isinstance(text.get("content"), str):
+                answers[name] = text["content"]
+
+    annotations = label.get("annotations", {})
+    if isinstance(annotations, Mapping):
+        visit(annotations.get("classifications"))
     return answers
 
 
@@ -565,10 +788,21 @@ def summarize_export(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
         seen.add(key)
         label = _latest_label(row)
         if label is None:
-            items.append({"global_key": key, "status": "unreviewed"})
+            items.append({
+                "global_key": key,
+                "study_key": candidate["study_key"],
+                "clip_key": candidate["clip_key"],
+                "status": "unreviewed",
+            })
             continue
-        score = score_review(candidate, _answers_from_label(label))
-        items.append({"global_key": key, "status": "scored", "score": score})
+        score = score_review(candidate, _answers_from_label(label), submitted=True)
+        items.append({
+            "global_key": key,
+            "study_key": candidate["study_key"],
+            "clip_key": candidate["clip_key"],
+            "status": "scored",
+            "score": score,
+        })
     return {"schema": SUMMARY_SCHEMA, "items": sorted(items, key=lambda item: item["global_key"])}
 
 
@@ -581,7 +815,7 @@ def export_summary(api: SandboxApi, output: Path) -> int:
 
 
 def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Exercise the RADAR simple-review workflow with synthetic data only.")
+    parser = argparse.ArgumentParser(description="Exercise DeepECHO column-review v2 with synthetic data only.")
     action = parser.add_mutually_exclusive_group()
     action.add_argument(
         "--apply", action="store_true", help="Create/reuse the sandbox and upload missing synthetic rows."
@@ -602,8 +836,9 @@ def main(
     if not args.apply and args.export_summary is None:
         print("Dry run: no Labelbox requests were made.")
         print(f"Would use synthetic-only project: {SANDBOX_PROJECT_NAME!r}")
-        print(f"Would import ontology: {SANDBOX_ONTOLOGY_NAME!r}")
+        print(f"Would import the complete 46-variable ontology: {SANDBOX_ONTOLOGY_NAME!r}")
         print(f"Would generate and upload {len(synthetic_cases())} synthetic videos.")
+        print("Would import view, modality, targets, clinical proposals and caption as v2 prelabels.")
         print("Run again with --apply after setting LABELBOX_API_KEY.")
         return 0
 
@@ -634,12 +869,16 @@ def main(
         logging.disable(previous_log_disable)
 
     if args.apply:
-        print(f"sandbox: ready; rows={result.total_rows}; uploaded={result.uploaded_rows}")
-        print(f"batch: {'created' if result.batch_created else 'reused'}; name={SANDBOX_BATCH_NAME!r}")
         print(
-            "candidate views: "
-            f"{'imported as pre-labels' if result.view_predictions_imported else 'existing pre-labels reused'}"
+            f"sandbox: ready; project={result.project_name!r}; id={result.project_id}; "
+            f"rows={result.total_rows}; uploaded={result.uploaded_rows}"
         )
+        print(
+            f"study batches: total={result.total_study_batches}; "
+            f"created={result.created_study_batches}; "
+            f"reused={result.total_study_batches - result.created_study_batches}"
+        )
+        print(f"v2 prelabels: {'imported' if result.prelabels_imported else 'existing import reused'}")
     else:
         print(f"summary: written; reviewed={reviewed}")
     return 0
