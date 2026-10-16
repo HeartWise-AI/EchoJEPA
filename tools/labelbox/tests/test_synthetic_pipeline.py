@@ -420,26 +420,56 @@ class SdkPayloadTests(unittest.TestCase):
         self.assertTrue(any(isinstance(prediction["answer"], str) for prediction in predictions))
 
     @unittest.skipUnless(importlib.util.find_spec("labelbox"), "Labelbox SDK not installed")
-    def test_existing_prediction_import_with_row_errors_is_not_reported_as_reused(self):
+    def test_failed_prediction_import_is_replaced_only_without_labels(self):
         from labelbox.schema.enums import AnnotationImportState
 
+        deleted = []
+        created = []
         job = SimpleNamespace(
             name=SANDBOX_PREDICTIONS_NAME,
             state=AnnotationImportState.FINISHED,
             errors=[{"errors": [{"name": "synthetic-test-error"}]}],
             wait_till_done=lambda: None,
+            delete=lambda: deleted.append(SANDBOX_PREDICTIONS_NAME),
         )
         project = SimpleNamespace(
+            uid="project-id",
             get_mal_prediction_imports=lambda: [job],
+            get_label_count=lambda: 0,
             enable_model_assisted_labeling=lambda enabled: self.assertTrue(enabled),
+        )
+        workspace = Workspace(project=project, dataset=object(), ontology=SimpleNamespace(normalized=server_form()))
+        api = LabelboxSandboxApi(object(), project_type=None, dataset_type=None, media_type="video")
+
+        class PredictionImport:
+            @classmethod
+            def create_from_objects(cls, **kwargs):
+                created.append(kwargs)
+                return SimpleNamespace(
+                    state=AnnotationImportState.FINISHED,
+                    errors=[],
+                    wait_till_done=lambda: None,
+                )
+
+        with mock.patch("labelbox.schema.annotation_import.MALPredictionImport", PredictionImport):
+            self.assertTrue(api.ensure_prelabels(workspace, synthetic_cases()))
+        self.assertEqual(deleted, [SANDBOX_PREDICTIONS_NAME])
+        self.assertEqual(len(created), 1)
+
+    def test_legacy_prediction_migration_refuses_submitted_labels(self):
+        legacy = SimpleNamespace(
+            name="DeepECHO column review v2 synthetic prelabels v7",
+            wait_till_done=lambda: None,
+            delete=lambda: self.fail("A prediction import with submitted labels must not be deleted"),
+        )
+        project = SimpleNamespace(
+            get_mal_prediction_imports=lambda: [legacy],
+            get_label_count=lambda: 1,
         )
         workspace = Workspace(project=project, dataset=object(), ontology=object())
         api = LabelboxSandboxApi(object(), project_type=None, dataset_type=None, media_type="video")
 
-        with self.assertRaisesRegex(
-            SandboxError,
-            "existing synthetic v2 prelabel import failed: no safe server message available",
-        ):
+        with self.assertRaisesRegex(SandboxError, "project has submitted labels"):
             api.ensure_prelabels(workspace, synthetic_cases())
 
 

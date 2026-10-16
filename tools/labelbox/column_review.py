@@ -6,6 +6,7 @@ A prelabel is never a submitted annotation.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 import unicodedata
@@ -290,6 +291,9 @@ def prelabels(candidate, spec=None):
     """Global video classifications; review_completed is intentionally absent."""
     spec = spec or load_spec()
     _validate_candidate(candidate, spec)
+    form_revision = hashlib.sha256(
+        json.dumps(build_form(spec), ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
     selected = [{"name": c["concept"], "classifications": [
         _answer(c["concept"]+"__value", c["value"]), _answer(c["concept"]+"__status", "yes")]} for c in candidate["columns"]]
     records = [
@@ -302,7 +306,10 @@ def prelabels(candidate, spec=None):
     ]
     for record in records:
         record["dataRow"] = {"globalKey": candidate["global_key"]}
-        record["uuid"] = str(uuid.uuid5(uuid.NAMESPACE_URL, f"{spec['schema']}:{spec['version']}:{candidate['global_key']}:{record['name']}"))
+        record["uuid"] = str(uuid.uuid5(
+            uuid.NAMESPACE_URL,
+            f"{spec['schema']}:{spec['version']}:{form_revision}:{candidate['global_key']}:{record['name']}",
+        ))
     validate_annotations(records, build_form(spec))
     return records
 

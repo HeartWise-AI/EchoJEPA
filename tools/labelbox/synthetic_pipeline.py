@@ -50,7 +50,11 @@ LEGACY_SANDBOX_ONTOLOGY_NAMES = {
     "RADAR simple review proposal v3 - preselected view synthetic sandbox",
 }
 SANDBOX_BATCH_PREFIX = "DeepECHO column review v2 synthetic study batch v1"
-SANDBOX_PREDICTIONS_NAME = "DeepECHO column review v2 synthetic prelabels v7"
+SANDBOX_PREDICTIONS_NAME = "DeepECHO column review v2 synthetic prelabels v8"
+LEGACY_SANDBOX_PREDICTION_NAMES = {
+    "DeepECHO column review v2 synthetic prelabels v6",
+    "DeepECHO column review v2 synthetic prelabels v7",
+}
 SANDBOX_PROJECT_DESCRIPTION = "Synthetic-only RADAR Labelbox pipeline test managed by EchoJEPA issue #22."
 SANDBOX_DATASET_DESCRIPTION = "Generated synthetic videos only; no clinical data or source file paths."
 GLOBAL_KEY_PREFIX = "deepecho-v2-synthetic-v3-"
@@ -586,21 +590,30 @@ class LabelboxSandboxApi:
         from labelbox.schema.annotation_import import MALPredictionImport
         from labelbox.schema.enums import AnnotationImportState
 
+        all_imports = list(workspace.project.get_mal_prediction_imports())
         imports = [
             item
-            for item in workspace.project.get_mal_prediction_imports()
+            for item in all_imports
             if item.name == SANDBOX_PREDICTIONS_NAME
         ]
         if len(imports) > 1:
             raise SandboxError("Multiple imports use the fixed synthetic v2 prelabel name.")
-        workspace.project.enable_model_assisted_labeling(True)
+        legacy_imports = [item for item in all_imports if item.name in LEGACY_SANDBOX_PREDICTION_NAMES]
+        current_failed = False
         if imports:
             imports[0].wait_till_done()
-            errors = imports[0].errors
-            if imports[0].state == AnnotationImportState.FAILED or errors:
-                raise SandboxError(
-                    f"The existing synthetic v2 prelabel import failed: {_safe_error_summary(errors)}."
-                )
+            current_failed = imports[0].state == AnnotationImportState.FAILED or bool(imports[0].errors)
+        obsolete = legacy_imports + (imports if current_failed else [])
+        if obsolete:
+            if workspace.project.get_label_count() != 0:
+                raise SandboxError("Synthetic prelabel migration refused because the project has submitted labels.")
+            for item in obsolete:
+                item.wait_till_done()
+                item.delete()
+            if current_failed:
+                imports = []
+        workspace.project.enable_model_assisted_labeling(True)
+        if imports:
             return False
 
         named_predictions = [prediction for case in cases for prediction in prelabels(case.candidate())]

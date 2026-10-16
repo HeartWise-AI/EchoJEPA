@@ -288,6 +288,12 @@ class TestColumnSubmissions(unittest.TestCase):
 
     def test_prefills_and_context_are_native_and_stable(self):
         self.assertEqual(prelabels(self.c), prelabels(self.c))
+        revised_spec = copy.deepcopy(load_spec())
+        revised_spec["modalities"]["bmode"] = "B-mode revised"
+        self.assertNotEqual(
+            {record["uuid"] for record in prelabels(self.c)},
+            {record["uuid"] for record in prelabels(self.c, revised_spec)},
+        )
         self.assertNotIn("review_completed", decode_annotations(prelabels(self.c)))
         attachment = context_attachment(self.c)
         self.assertEqual(attachment["attachment_type"], "RAW_TEXT")
