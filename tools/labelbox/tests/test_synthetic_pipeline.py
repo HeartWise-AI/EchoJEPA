@@ -551,6 +551,7 @@ class SdkPayloadTests(unittest.TestCase):
         self.assertEqual(deleted, [SANDBOX_PREDICTIONS_NAME])
         self.assertEqual(len(created), 1)
 
+    @unittest.skipUnless(importlib.util.find_spec("labelbox"), "Labelbox SDK not installed")
     def test_legacy_prediction_migration_refuses_submitted_labels(self):
         legacy = SimpleNamespace(
             name="DeepECHO column review v2 synthetic prelabels v7",
