@@ -1,8 +1,7 @@
 # RADAR caption review: instructions for reviewers (v1)
 
 Version: `radar-caption-ontology-v1`, with the [column review v2](column_review_v2.md) and the
-[view and type review](view_type_review_v1.md). Their medical approval is recorded in [approval_v1.md](approval_v1.md);
-no clinical data may be uploaded for review until that record is `approved`.
+[view and type review](view_type_review_v1.md).
 [Version française](labeling_instructions_v1.fr.md). Both versions describe the same forms, whose labels are in
 English, as in Labelbox.
 

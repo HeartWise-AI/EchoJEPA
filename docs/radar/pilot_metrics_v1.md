@@ -1,8 +1,8 @@
 # RADAR caption pilot: metrics and go/no-go rules (v1)
 
 **Need agreement on the thresholds below before any pilot clip is reviewed.** Until
-[approval_v1.md](approval_v1.md) links to the agreement, the thresholds are proposals. Once agreed, this document is
-frozen with the ontology, and the pilot outcome is reported under these rules whatever it is. A change made after
+[issue #21](https://github.com/HeartWise-AI/EchoJEPA/issues/21) records that agreement, the thresholds are proposals.
+Once agreed, the pilot outcome is reported under these rules whatever it is. A change made after
 seeing pilot results needs a new version and is judged on new pilot studies, never on the clips already reviewed.
 
 The pilot reviews every valid video of 2–3 training-split studies. It tests whether the caption-and-review workflow

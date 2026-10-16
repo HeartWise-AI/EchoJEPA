@@ -47,8 +47,8 @@ The latter may require additional views, spectral Doppler and measurements.
 
 The existing PR documents the view and structure taxonomies, source mappings, machine-readable form, EN/FR
 instructions, synthetic examples and pilot denominators. It separates visibility from pathology and excludes
-measurement-dependent concepts from captions. Its approval record is pending. The latest PR description already
-specified a crop outline; the team has since decided on whole-frame input instead (see
+measurement-dependent concepts from captions. The latest PR description already specified a crop outline; the team
+has since decided on whole-frame input instead (see
 [Review display contract](#review-display-contract)).
 
 Resolve these points before medical approval:
@@ -64,9 +64,8 @@ Resolve these points before medical approval:
 | Medium | Mapping report EF to visual EF conflates the quantity with its measurement method. | Keep provenance for visual, Simpson, 3D and unspecified report EF; do not imply method equivalence or clip support. |
 | Medium | Small pilot has optional second-reader review and broad aggregate rates. | Agree a blinded double-read subset before review; examine disagreements and study/view/modality strata. Treat all thresholds as feasibility proposals. |
 
-The approval verifier checks recorded content hashes and ancestry; it does not authenticate the reviewer behind a
-link. The approval procedure correctly requires a human to verify the GitHub sign-off. Do not fill that record from
-this review. Changes to v1 are allowed while pending; changes after approval require a new version and approval.
+Record material clinical decisions in the issue or pull request. Changes after clinical review require a new version
+and renewed review.
 
 ## Ontology and dataset contract
 
@@ -160,5 +159,5 @@ procedure; a larger external validation is a separate experiment.
 Request Dr. Avram's review of all v1 taxonomies, priors, mappings, EN/FR instructions and examples, then explicit
 decisions on numerical EF, regurgitation scope, absent findings, focused/zoomed views and pilot thresholds. Charlotte incorporates the decisions into YAML, generated documents and form; Jacques checks the input
 and dataset provenance contract. Run generation checks, the Labelbox SDK round trip and an editor inspection, then
-request medical approval naming the final content commit. The approval record remains pending until that evidence
-exists. No clinical pilot upload or training run is authorized by this document.
+record the medical review decision in issue #21 or its pull request. No clinical pilot upload or training run is
+authorized by this document.

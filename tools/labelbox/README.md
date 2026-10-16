@@ -1,7 +1,6 @@
 # Labelbox RADAR caption pilot
 
-The pilot reviews every valid video of its studies in one of two forms, approved together with the ontology in
-[approval_v1.md](../../docs/radar/approval_v1.md):
+The pilot reviews every valid video of its studies in one of two forms versioned with the ontology:
 
 - **DeepECHO column review v2**, for clips of a classified view:
   [design](../../docs/radar/column_review_v2.md),

@@ -3,8 +3,8 @@
 **The form for the clips the view classifier labels `OTHER`.** Not every `OTHER` clip is useless: one can show
 the inferior vena cava, another flow through a ventricle. Captions cannot be generated for them, because the view
 does not say which anatomy is shown, so they get this form instead of the caption review. It records what kind of
-item each one is and, for an echo cine loop, its view and acquisition mode, and needs no report and no caption. It is approved with ontology v1 and the
-column review ([approval_v1.md](approval_v1.md)), and reviewers follow the
+item each one is and, for an echo cine loop, its view and acquisition mode, and needs no report and no caption. It is
+versioned with ontology v1 and the column review, and reviewers follow the
 [instructions](labeling_instructions_v1.md#view-and-type-review-other-clips).
 
 It is used for every `OTHER` video of the 2–3 pilot studies, next to the caption review of their classified videos

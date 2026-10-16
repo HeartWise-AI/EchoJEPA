@@ -2,17 +2,17 @@
 
 This is the Labelbox review form for clips of a classified view in the RADAR caption pilot. It replaces the generic
 five-slot proposal with named clinical columns, dropdown values, report-based candidate captions, and typed omissions
-and unsupported statements. The demo website uses the same field IDs and answer choices as the approved
+and unsupported statements. The demo website uses the same field IDs and answer choices as the current
 labeling form, except for the clip-level "uninterpretable" question, which
-has not yet been implemented. The form is approved together with
+has not yet been implemented. The form is versioned together with
 [ontology v1](ontology_v1.md), the [reviewer instructions](labeling_instructions_v1.md) and the
-[pilot metrics](pilot_metrics_v1.md), in [approval_v1.md](approval_v1.md). The form's version (2) is independent of the approved package version (v1),
+[pilot metrics](pilot_metrics_v1.md). The form's version (2) is independent of the ontology package version (v1),
 which is reflected in the supporting document filenames (see [Versions](ontology_v1.md)).
 
 The current files and their roles are selected by
 [current_review.json](../../configs/radar/labelbox/current_review.json). The clinical ontology is YAML; the review
 specification is the hand-maintained JSON source, and the much larger Labelbox ontology JSON is generated from that
-specification and retained as the exact schema submitted for medical approval:
+specification and retained as the exact schema installed in Labelbox:
 
 - [Clinical ontology](../../configs/radar/radar-caption-ontology-v1.yaml)
 - [Source column/value/view specification](../../configs/radar/deepecho_video_clip_annotation_specification.json)
@@ -23,7 +23,7 @@ specification and retained as the exact schema submitted for medical approval:
 
 ## Changes since PR #26
 
-The form keeps version 2: nothing has been uploaded under it, and its approval freezes it. Changes since PR #26:
+The form keeps version 2 because nothing has been uploaded under it yet. Changes since PR #26:
 
 - Added a clip-level "Uninterpretable clip?" question (issue #21), defaulting
   to "No". Selecting "Yes" requires a reason, and selecting "Other" also

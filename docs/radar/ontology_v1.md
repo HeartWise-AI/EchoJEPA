@@ -1,9 +1,5 @@
 # RADAR caption ontology v1 (`radar-caption-ontology-v1`)
 
-**Approval.** The medical approval of this version (issue #21) is recorded in [approval_v1.md](approval_v1.md) and
-nowhere else. It covers this ontology together with the review forms, the reviewer instructions and the pilot metrics
-listed there. No clinical data may be uploaded for review until that record is `approved`.
-
 The ontology is the shared vocabulary for one echo clip: its view, its acquisition mode, the cardiac structures it may
 show and the findings it may support, and how DeepECHO, EchoPrime and PanEcho labels relate to them. The pilot reviews
 clips in two Labelbox forms that use its view classes (see [Review forms](#review-forms)): the
@@ -12,7 +8,8 @@ clips in two Labelbox forms that use its view classes (see [Review forms](#revie
 [reviewer instructions](labeling_instructions_v1.md) and the [pilot metrics](pilot_metrics_v1.md) are written for
 those forms.
 
-**Versions.** v1 denotes the approved package version, while each form is versioned separately: column review v2 and view/type review v1. This document defines the ontology; see [column_review_v2.md](column_review_v2.md) for captions.
+**Versions.** v1 denotes the ontology package version, while each form is versioned separately: column review v2 and
+view/type review v1. This document defines the ontology; see [column_review_v2.md](column_review_v2.md) for captions.
 
 The sources of truth are [`configs/radar/radar-caption-ontology-v1.yaml`](../../configs/radar/radar-caption-ontology-v1.yaml)
 and [`configs/radar/label_mappings_v1.yaml`](../../configs/radar/label_mappings_v1.yaml). The tables below are
@@ -195,7 +192,7 @@ value but no grade: it ranks neither above nor below the others.
 
 The code that selects clips, uploads them and imports reviews is outside issue #21. For both review forms, it must:
 
-- upload clips only under an approved ontology (`require_approval` in `app/radar/approval.py`);
+- record the ontology and form versions used for every uploaded clip;
 - upload only de-identified copies, whole and without overlays, and pair each review with the embedding of the same
   copy (see [Model input and review display](#model-input-and-review-display));
 - record each clip's opaque key and form version. For column reviews, also record the candidate view, acquisition mode, and prefilled columns. Do not upload report text; context attachments identify each proposal's report field and contain only numeric values.
@@ -387,8 +384,8 @@ PanEcho's study-level tasks, with their class names. A `|` inside a class name j
 
 ## Clinical choices in v1
 
-The medical review covers the whole package. These choices of the ontology rest most on clinical judgment. A change the
-review asks for is made in the approved files before their content commit (see [approval_v1.md](approval_v1.md)).
+These choices of the ontology rest most on clinical judgment and should be reviewed together with the Labelbox forms,
+reviewer instructions and pilot metrics. Material changes require a new version and renewed clinical review.
 
 1. **View class boundaries.** The descriptions are written to match how the DeepECHO classes were labelled, in
    particular the `_LV` and `_ZOOM` variants and `SUBCOSTAL`, which groups the subcostal four-chamber and IVC views.

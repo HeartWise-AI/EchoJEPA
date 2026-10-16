@@ -1,9 +1,8 @@
 # Revue des légendes RADAR : instructions aux relecteurs (v1)
 
 Version : `radar-caption-ontology-v1`, avec la [revue par colonnes v2](column_review_v2.md) et la
-[revue de coupe et de type](view_type_review_v1.md). Leur approbation médicale est consignée dans
-[approval_v1.md](approval_v1.md) ; aucune donnée clinique ne peut être téléversée pour revue avant que ce registre soit
-`approved`. [English version](labeling_instructions_v1.md). Les deux versions décrivent les mêmes formulaires, dont
+[revue de coupe et de type](view_type_review_v1.md). [English version](labeling_instructions_v1.md). Les deux versions
+décrivent les mêmes formulaires, dont
 les libellés sont en anglais, comme dans Labelbox.
 
 ## Ce que vous relisez
