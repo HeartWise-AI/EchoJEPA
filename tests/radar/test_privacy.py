@@ -61,7 +61,7 @@ class TestPrivacy(unittest.TestCase):
     def test_scanned_files_are_clean(self):
         paths = scanned_paths()
         self.assertIn("configs/radar/labelbox/deepecho_video_clip_annotation_ontology.json", paths)
-        self.assertIn("docs/radar/labeling_instructions_v1.fr.md", paths)
+        self.assertIn("docs/radar/labeling_instructions_v1.md", paths)
         problems = []
         for path in paths:
             with open(os.path.join(REPO_ROOT, path), encoding="utf-8") as f:

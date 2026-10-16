@@ -1,5 +1,5 @@
-"""The generated parts of the reviewer instructions: the questions of both review forms, the column review's reasons
-and the worked examples, in English and French.
+"""The generated parts of the English reviewer instructions: the questions of both review forms, the column review's
+reasons and the worked examples.
 
     python -m tools.labelbox.instructions            # rewrite the generated parts of the instructions.
     python -m tools.labelbox.instructions --check    # exit 1 if any part is out of date.
@@ -8,7 +8,7 @@ The worked examples (`configs/radar/review_examples_v1.yaml`) describe synthetic
 example is built the way a reviewer meets it: the candidate's prefilled form, the answers the reviewer changes, then
 "Review completed". `load_examples` refuses an example that is not a valid review under its form's own checks
 (`review_problems` of `column_review` and of `view_type_review`), and the rebuilt caption shown is the scorer's. Form
-labels stay in English in both languages, as reviewers see them in Labelbox.
+Labels stay in English, as reviewers see them in Labelbox.
 """
 
 from __future__ import annotations
@@ -27,9 +27,8 @@ from tools.labelbox import view_type_review as vt
 
 EXAMPLES_PATH = os.path.join(REPO_ROOT, "configs", "radar", "review_examples_v1.yaml")
 EXAMPLES_SCHEMA = "radar-review-examples"
-INSTRUCTIONS_PATHS = {"en": os.path.join(REPO_ROOT, "docs", "radar", "labeling_instructions_v1.md"),
-                      "fr": os.path.join(REPO_ROOT, "docs", "radar", "labeling_instructions_v1.fr.md")}
-TEXTS = ("title", "clip", "why")  # bilingual fields of every example.
+INSTRUCTIONS_PATHS = {"en": os.path.join(REPO_ROOT, "docs", "radar", "labeling_instructions_v1.md")}
+TEXTS = ("title", "clip", "why")
 # Nested answers whose choices depend on the column, by the end of their id.
 COLUMN_DEPENDENT = (("__value", "column_values"), ("__missing_value", "column_values"),
                     ("__correction", "remove_or_value"), ("__error", "error_reason"),
@@ -61,31 +60,6 @@ WORDS = {
            "asked_after": ", asked when `{question}` is `{answer}`",
            "not_asked": "view and acquisition mode not asked, recorded as not applicable",
            "colon": ":"},
-    "fr": {"question": "Question", "id": "Id", "required": "Obligatoire", "answers": "Réponses", "yes": "oui",
-           "no": "non", "free_text": "texte libre", "views": "une des 20 classes de coupe", "each": "chacune",
-           "review_columns": "les colonnes préremplies", "missing_columns": "toute colonne que la coupe porte",
-           "unsupported_columns": "toute colonne ou tout type d'énoncé",
-           "statement_type_also": "un type d'énoncé demande aussi",
-           "column_values": "une des valeurs de la colonne",
-           "remove_or_value": "`remove` Remove this claim, ou une des valeurs de la colonne",
-           "error_reason": "une raison d'erreur", "limitation": "une limite d'évaluation",
-           "uninterpretable_reason": "une raison ci-dessous", "label": "Libellé",
-           "error_kinds": "Raisons d'erreur (constatation fausse, énoncé supplémentaire)",
-           "cannot_assess_reasons": "Limites d'évaluation (constatation impossible à évaluer)",
-           "uninterpretable_reasons": "Clips ininterprétables",
-           "unsupported_columns_title": "Types d'énoncé supplémentaire (énoncé de la légende hors de ses colonnes)",
-           "clip": "Clip (synthétique)", "item": "Élément (synthétique)", "proposed": "Proposé",
-           "prefilled": "Constatations préremplies", "candidate_caption": "Légende proposée",
-           "changes": "Ce que le relecteur modifie", "none": "aucune", "nothing": "rien",
-           "rebuilt": "Légende reconstruite", "none_uninterpretable": "aucune : le clip est ininterprétable",
-           "none_rerouted": "aucune : la coupe ou le mode d'acquisition a été corrigé",
-           "none_empty": "aucune : aucune constatation n'a été confirmée", "why": "Pourquoi",
-           "answers_given": "Réponses", "next": "Ensuite",
-           "routed": "renvoyé à la revue par colonnes en `{view}`, {modality}",
-           "not_routed": "reste hors de la revue par colonnes",
-           "deleted": "supprimé de Labelbox : texte identifiant", "colon": " :",
-           "asked_after": ", demandée si `{question}` vaut `{answer}`",
-           "not_asked": "coupe et mode d'acquisition non demandés, enregistrés comme sans objet"},
 }
 
 
@@ -169,8 +143,8 @@ def render_view_type_form(lang: str) -> str:
 
 def _check_texts(example: dict) -> None:
     for key in TEXTS:
-        if any(not isinstance((example.get(key) or {}).get(lang), str) for lang in WORDS):
-            raise ValueError(f"example {example.get('id')!r}: {key} needs {list(WORDS)} text")
+        if not isinstance(example.get(key), str) or not example[key].strip():
+            raise ValueError(f"example {example.get('id')!r}: {key} needs English text")
 
 
 def _column_example(example: dict, spec: dict, form: dict) -> dict:
@@ -220,7 +194,7 @@ def load_examples(path: str = EXAMPLES_PATH) -> dict:
 
 
 def _quote(text: str, lang: str) -> str:
-    return f"« {text} »" if lang == "fr" else f"\"{text}\""
+    return f"\"{text}\""
 
 
 def _item(w: dict, key: str, value: str) -> str:
@@ -267,14 +241,14 @@ def render_column_examples(lang: str) -> str:
         prefilled = "; ".join(f"`{col['concept']}` {spec['fields'][col['concept']]['values'][col['value']]}"
                               for col in c["columns"])
         changes = _change_lines(e, lang, spec, index)
-        out += [f"### {i}. {e['title'][lang]}", "",
-                _item(w, "clip", " ".join(e["clip"][lang].split())),
+        out += [f"### {i}. {e['title']}", "",
+                _item(w, "clip", " ".join(e["clip"].split())),
                 _item(w, "proposed", f"`{c['view']}`, {spec['modalities'][c['modality']]}"),
                 _item(w, "prefilled", prefilled or w["none"]),
                 _item(w, "candidate_caption", _quote(c["candidate_caption"], lang)),
                 _item(w, "changes", "" if changes else w["nothing"]), *changes,
                 _item(w, "rebuilt", _rebuilt(e, lang)),
-                _item(w, "why", " ".join(e["why"][lang].split())), ""]
+                _item(w, "why", " ".join(e["why"].split())), ""]
     return "\n".join(out)
 
 
@@ -293,11 +267,11 @@ def render_view_type_examples(lang: str) -> str:
             then = w["routed"].format(view=e["route"]["view"], modality=modalities[e["route"]["modality"]])
         else:
             then = w["not_routed"]
-        out += [f"### {i}. {e['title'][lang]}", "",
-                _item(w, "item", " ".join(e["clip"][lang].split())),
+        out += [f"### {i}. {e['title']}", "",
+                _item(w, "item", " ".join(e["clip"].split())),
                 _item(w, "answers_given", given),
                 _item(w, "next", then),
-                _item(w, "why", " ".join(e["why"][lang].split())), ""]
+                _item(w, "why", " ".join(e["why"].split())), ""]
     return "\n".join(out)
 
 

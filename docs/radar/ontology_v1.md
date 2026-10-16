@@ -240,10 +240,10 @@ The columns are named for the DeepECHO report fields they are prefilled from. Th
 concepts of this ontology: the [label mappings](#how-deepecho-echoprime-and-panecho-labels-relate-to-v1) relate
 DeepECHO, EchoPrime and PanEcho labels to the concepts, not to the columns.
 
-The reviewer instructions, in [English](labeling_instructions_v1.md) and [French](labeling_instructions_v1.fr.md),
-explain every answer of both forms with worked synthetic examples. Their form tables and examples are generated from
-the forms and from [`configs/radar/review_examples_v1.yaml`](../../configs/radar/review_examples_v1.yaml), and every
-example is scored as a review (`python -m tools.labelbox.instructions --check`).
+The [reviewer instructions](labeling_instructions_v1.md) explain every answer of both forms in English with worked
+synthetic examples. Their form tables and examples are generated from the forms and from
+[`configs/radar/review_examples_v1.yaml`](../../configs/radar/review_examples_v1.yaml), and every example is scored as
+a review (`python -m tools.labelbox.instructions --check`).
 
 ## How DeepECHO, EchoPrime and PanEcho labels relate to v1
 

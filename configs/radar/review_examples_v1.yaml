@@ -1,7 +1,8 @@
 # configs/radar/review_examples_v1.yaml
 #
-# Worked examples for the RADAR caption reviewers, rendered into `docs/radar/labeling_instructions_v1{,.fr}.md` by
-# `python -m tools.labelbox.instructions`. Every clip is SYNTHETIC: described in words, never taken from a real study.
+# English worked examples for RADAR caption reviewers, rendered into
+# `docs/radar/labeling_instructions_v1.md` by `python -m tools.labelbox.instructions`. Every clip is SYNTHETIC:
+# described in words, never taken from a real study.
 #
 # A column review example gives the candidate (`view`, `modality`, optional `level`, and the prefilled `columns`,
 # column -> value) and `changes`: only the answers the reviewer changes in the prefilled form, by their Labelbox ids.
@@ -13,52 +14,33 @@ ontology: radar-caption-ontology-v1
 
 column_review:
   - id: supported
-    title: {fr: Constatations étayées, en: Supported findings}
-    clip:
-      fr: >-
-        Coupe apicale 4 cavités en mode B : ventricule gauche de taille normale, ventricule droit qui se contracte
-        normalement, feuillets tricuspides fins.
-      en: >-
-        Apical 4-chamber B-mode loop: a normal-sized LV, an RV that contracts normally, thin tricuspid leaflets.
+    title: Supported findings
+    clip: >-
+      Apical 4-chamber B-mode loop: a normal-sized LV, an RV that contracts normally, thin tricuspid leaflets.
     view: A4C
     modality: bmode
     columns: {lv_size: normal, rv_function: normal, tricuspid_appearance: normal}
     changes: {}
-    why:
-      fr: >-
-        Chaque constatation préremplie est visible sur ce clip, à la valeur indiquée, et rien d'important ne manque :
-        il suffit de confirmer et de soumettre.
-      en: >-
-        Each prefilled finding is visible in this clip at the stated value, and nothing important is left out: confirm
-        and submit.
+    why: >-
+      Each prefilled finding is visible in this clip at the stated value, and nothing important is left out: confirm
+      and submit.
 
   - id: wrong_severity
-    title: {fr: Sévérité fausse, en: Wrong severity}
-    clip:
-      fr: >-
-        Coupe apicale 4 cavités en mode B : le ventricule gauche se contracte nettement moins que la normale, une
-        atteinte modérée à l'œil.
-      en: >-
-        Apical 4-chamber B-mode loop: the LV contracts clearly less than normal, a moderate reduction by eye.
+    title: Wrong severity
+    clip: >-
+      Apical 4-chamber B-mode loop: the LV contracts clearly less than normal, a moderate reduction by eye.
     view: A4C
     modality: bmode
     columns: {lv_function: mildly_reduced}
     changes: {lv_function__status: "no", lv_function__error: wrong_severity, lv_function__correction: moderately_reduced}
-    why:
-      fr: >-
-        La constatation est juste mais pas sa sévérité : « Wrong severity », avec la valeur que montre le clip. La
-        légende reconstruite reprend la correction ; la valeur d'origine reste enregistrée.
-      en: >-
-        The finding is right but its severity is not: "Wrong severity", with the value the clip shows. The rebuilt
-        caption uses the correction; the original value stays recorded.
+    why: >-
+      The finding is right but its severity is not: "Wrong severity", with the value the clip shows. The rebuilt
+      caption uses the correction; the original value stays recorded.
 
   - id: contradicted
-    title: {fr: Constatation contredite, en: Contradicted finding}
-    clip:
-      fr: >-
-        Coupe parasternale grand axe en mode B : le péricarde postérieur est bien visible, sans liquide autour du cœur.
-      en: >-
-        Parasternal long-axis B-mode loop: the posterior pericardium is clearly seen, with no fluid around the heart.
+    title: Contradicted finding
+    clip: >-
+      Parasternal long-axis B-mode loop: the posterior pericardium is clearly seen, with no fluid around the heart.
     view: PLAX
     modality: bmode
     columns: {pericardial_effusion: present}
@@ -66,23 +48,14 @@ column_review:
       pericardial_effusion__status: "no"
       pericardial_effusion__error: contradicted
       pericardial_effusion__correction: not_demonstrated
-    why:
-      fr: >-
-        Le clip montre bien le péricarde et aucun épanchement : la constatation préremplie est contredite. Comme ce
-        clip peut montrer un épanchement, la correction peut dire qu'aucun n'est démontré ; s'il ne le pouvait pas, il
-        faudrait retirer l'énoncé (« Remove this claim »).
-      en: >-
-        The clip shows the pericardium well and no effusion: the prefilled finding is contradicted. Because this clip
-        can show an effusion, the correction can say none is demonstrated; if it could not, remove the claim instead.
+    why: >-
+      The clip shows the pericardium well and no effusion: the prefilled finding is contradicted. Because this clip
+      can show an effusion, the correction can say none is demonstrated; if it could not, remove the claim instead.
 
   - id: missing_jet
-    title: {fr: Constatation manquante, en: Missing finding}
-    clip:
-      fr: >-
-        Coupe apicale 4 cavités en Doppler couleur : un jet d'insuffisance mitrale et un jet d'insuffisance tricuspide
-        bien visible.
-      en: >-
-        Apical 4-chamber color Doppler loop: a mitral regurgitant jet and a clearly visible tricuspid regurgitant jet.
+    title: Missing finding
+    clip: >-
+      Apical 4-chamber color Doppler loop: a mitral regurgitant jet and a clearly visible tricuspid regurgitant jet.
     view: A4C
     modality: color_flow
     columns: {mitral_regurgitant_jet: demonstrated}
@@ -91,158 +64,93 @@ column_review:
       missing_columns: [tricuspid_regurgitant_jet]
       tricuspid_regurgitant_jet__missing_value: demonstrated
       tricuspid_regurgitant_jet__missing_visible: "yes"
-    why:
-      fr: >-
-        Ce qui est prérempli est étayé ; le jet tricuspide est visible, pertinent et absent des constatations : il est
-        ajouté comme manquant. Aucun des deux jets ne reçoit de grade : une boucle couleur montre si un jet est
-        démontré, pas une sévérité intégrée.
-      en: >-
-        What is prefilled is supported; the tricuspid jet is visible, relevant and not prefilled, so it is added as
-        missing. Neither jet gets a grade: a color loop shows whether a jet is demonstrated, not an integrated
-        severity.
+    why: >-
+      What is prefilled is supported; the tricuspid jet is visible, relevant and not prefilled, so it is added as
+      missing. Neither jet gets a grade: a color loop shows whether a jet is demonstrated, not an integrated
+      severity.
 
   - id: absence_not_covered
-    title: {fr: Absence impossible à juger, en: Absence that cannot be judged}
-    clip:
-      fr: >-
-        Coupe apicale 4 cavités en Doppler couleur, la boîte couleur placée sur la valve tricuspide ; la valve mitrale
-        est hors de la boîte couleur.
-      en: >-
-        Apical 4-chamber color Doppler loop with the color box over the tricuspid valve; the mitral valve is outside
-        the color box.
+    title: Absence that cannot be judged
+    clip: >-
+      Apical 4-chamber color Doppler loop with the color box over the tricuspid valve; the mitral valve is outside
+      the color box.
     view: A4C
     modality: color_flow
     columns: {mitral_regurgitant_jet: not_demonstrated}
     changes: {mitral_regurgitant_jet__status: cannot_assess, mitral_regurgitant_jet__limitation: target_outside}
-    why:
-      fr: >-
-        Un jet ne peut être dit absent que là où le Doppler couleur couvre la valve. Ici ce n'est pas le cas : l'absence ne
-        peut pas être jugée, ce qui n'est ni une erreur ni une constatation négative.
-      en: >-
-        A jet can be called absent only where the color covers the valve. Here it does not, so the absence cannot be
-        assessed: that is neither an error nor a negative finding.
+    why: >-
+      A jet can be called absent only where the color covers the valve. Here it does not, so the absence cannot be
+      assessed: that is neither an error nor a negative finding.
 
   - id: segment_quality
-    title: {fr: Segment non évaluable, en: Segment that cannot be assessed}
-    clip:
-      fr: >-
-        Coupe apicale 2 cavités en mode B : ventricule gauche de taille normale ; l'endocarde de la paroi inférieure
-        moyenne n'est pas visible (perte d'écho).
-      en: >-
-        Apical 2-chamber B-mode loop: a normal-sized LV; the endocardium of the mid inferior wall is not seen
-        (dropout).
+    title: Segment that cannot be assessed
+    clip: >-
+      Apical 2-chamber B-mode loop: a normal-sized LV; the endocardium of the mid inferior wall is not seen
+      (dropout).
     view: A2C
     modality: bmode
     columns: {lv_size: normal, wall_mid_inferior: normal_or_hyperkinetic}
     changes: {wall_mid_inferior__status: cannot_assess, wall_mid_inferior__limitation: poor_quality}
-    why:
-      fr: >-
-        Un segment dont l'endocarde n'est pas vu ne peut pas être gradé. « Cannot assess » avec sa limite retire
-        l'énoncé de la légende sans le compter comme une erreur ; l'autre constatation reste.
-      en: >-
-        A segment whose endocardium is not seen cannot be graded. "Cannot assess" with its limitation keeps the claim
-        out of the caption without counting it as an error; the other finding stays.
+    why: >-
+      A segment whose endocardium is not seen cannot be graded. "Cannot assess" with its limitation keeps the claim
+      out of the caption without counting it as an error; the other finding stays.
 
   - id: wrong_view
-    title: {fr: Coupe fausse, en: Wrong view}
-    clip:
-      fr: >-
-        Boucle en mode B classée apicale 4 cavités, mais la chambre de chasse du ventricule gauche et la valve aortique
-        sont ouvertes dans l'image : c'est une coupe apicale 5 cavités. Les deux ventricules sont de taille normale.
-      en: >-
-        B-mode loop labelled apical 4-chamber, but the LV outflow tract and the aortic valve are open in the image: it
-        is an apical 5-chamber view. Both ventricles are normal in size.
+    title: Wrong view
+    clip: >-
+      B-mode loop labelled apical 4-chamber, but the LV outflow tract and the aortic valve are open in the image: it
+      is an apical 5-chamber view. Both ventricles are normal in size.
     view: A4C
     modality: bmode
     columns: {lv_size: normal, rv_size: normal}
     changes: {view: A5C}
-    why:
-      fr: >-
-        Remplacer la coupe préremplie par la coupe que montre le clip. Les constatations préremplies
-        sont tout de même jugées sur le clip, car elles sont comptées. Le clip n'a pas de légende sous la coupe
-        proposée.
-      en: >-
-        Replace the prefilled view with the view shown by the clip. Still judge the prefilled findings on the
-        clip: they are counted. The clip gets no caption under the proposed view.
+    why: >-
+      Replace the prefilled view with the view shown by the clip. Still judge the prefilled findings on the clip: they
+      are counted. The clip gets no caption under the proposed view.
 
   - id: uninterpretable
-    title: {fr: Clip ininterprétable, en: Uninterpretable clip}
-    clip:
-      fr: >-
-        Boucle apicale en mode B envahie d'artéfacts du début à la fin : aucune paroi ni valve n'est reconnaissable.
-      en: >-
-        Apical B-mode loop with heavy artifacts throughout: no wall or valve can be made out.
+    title: Uninterpretable clip
+    clip: >-
+      Apical B-mode loop with heavy artifacts throughout: no wall or valve can be made out.
     view: A4C
     modality: bmode
     columns: {lv_function: normal}
     changes: {uninterpretable: "yes", uninterpretable_reason: poor_quality}
-    why:
-      fr: >-
-        Rien dans ce clip ne peut être jugé : répondre « Yes », donner la raison et soumettre ; les autres réponses ne
-        sont pas lues. Quand seules certaines constatations ne peuvent pas être jugées, le clip est interprétable :
-        utiliser « Cannot assess » pour celles-là.
-      en: >-
-        Nothing in this clip can be judged: answer "Yes", give the reason and submit; the other answers are not read.
-        When only some findings cannot be judged, the clip is interpretable: use "Cannot assess" for those.
+    why: >-
+      Nothing in this clip can be judged: answer "Yes", give the reason and submit; the other answers are not read.
+      When only some findings cannot be judged, the clip is interpretable: use "Cannot assess" for those.
 
 view_type_review:
   - id: ivc_loop
-    title: {fr: Veine cave inférieure classée OTHER, en: Inferior vena cava labelled OTHER}
-    clip:
-      fr: >-
-        Boucle sous-costale en mode B de la veine cave inférieure qui se jette dans l'oreillette droite.
-      en: >-
-        Subcostal B-mode loop of the inferior vena cava entering the right atrium.
+    title: Inferior vena cava labelled OTHER
+    clip: >-
+      Subcostal B-mode loop of the inferior vena cava entering the right atrium.
     answers: {input_type: cine_loop, view: SUBCOSTAL, modality: bmode, identifier_visible: "no"}
-    why:
-      fr: >-
-        Une boucle échographique d'une coupe que la revue par colonnes sait router : elle y retourne sous cette coupe.
-      en: >-
-        A moving echo image of a view the column review routes: it goes back to the column review under that view.
+    why: >-
+      A moving echo image of a view the column review routes: it goes back to the column review under that view.
 
   - id: off_axis
-    title: {fr: Coupe hors axe, en: Off-axis view}
-    clip:
-      fr: >-
-        Boucle en mode B entre les plans apicaux 4 et 5 cavités, raccourcie, sans coupe standard.
-      en: >-
-        B-mode loop between the apical 4- and 5-chamber planes, foreshortened, in no standard view.
+    title: Off-axis view
+    clip: >-
+      B-mode loop between the apical 4- and 5-chamber planes, foreshortened, in no standard view.
     answers: {input_type: cine_loop, view: OTHER, modality: bmode, identifier_visible: "no"}
-    why:
-      fr: >-
-        OTHER sert aux coupes échographiques hors axe ou non standard ; « Cannot tell the view » sert quand on ne
-        peut pas trancher.
-      en: >-
-        OTHER is for off-axis or non-standard echo views; "Cannot tell the view" is for when you cannot decide.
+    why: >-
+      OTHER is for off-axis or non-standard echo views; "Cannot tell the view" is for when you cannot decide.
 
   - id: analysis_screen
-    title: {fr: Écran d'analyse, en: Analysis screen}
-    clip:
-      fr: >-
-        Écran d'analyse de déformation : une coupe apicale 4 cavités aux segments colorés et une cible en œil de bœuf.
-      en: >-
-        Strain analysis screen: an apical 4-chamber image with colored segments and a bull's-eye plot.
+    title: Analysis screen
+    clip: >-
+      Strain analysis screen: an apical 4-chamber image with colored segments and a bull's-eye plot.
     answers: {input_type: analysis_screen, identifier_visible: "no"}
-    why:
-      fr: >-
-        Un écran d'analyse n'est pas un clip qu'une légende doit décrire : sa coupe et son mode ne sont pas demandés,
-        et il ne retourne pas à la revue par colonnes.
-      en: >-
-        An analysis screen is not a clip a caption should describe: its view and mode are not asked, and it does not
-        go back to the column review.
+    why: >-
+      An analysis screen is not a clip a caption should describe: its view and mode are not asked, and it does not
+      go back to the column review.
 
   - id: identifier_visible
-    title: {fr: Texte identifiant visible, en: Identifying text visible}
-    clip:
-      fr: >-
-        Boucle apicale 4 cavités en mode B où un nom reste lisible dans le bandeau du haut.
-      en: >-
-        Apical 4-chamber B-mode loop in which a name is still readable in the top banner.
+    title: Identifying text visible
+    clip: >-
+      Apical 4-chamber B-mode loop in which a name is still readable in the top banner.
     answers: {input_type: cine_loop, view: A4C, modality: bmode, identifier_visible: "yes"}
-    why:
-      fr: >-
-        Répondre « Yes » sans recopier le texte nulle part. L'élément est supprimé de Labelbox et l'étape de
-        dé-identification est corrigée.
-      en: >-
-        Answer "Yes" without copying the text anywhere. The item is deleted from Labelbox and the de-identification
-        step is fixed.
+    why: >-
+      Answer "Yes" without copying the text anywhere. The item is deleted from Labelbox and the de-identification
+      step is fixed.
