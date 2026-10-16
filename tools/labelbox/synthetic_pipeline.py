@@ -38,8 +38,9 @@ from tools.labelbox.column_review import (
 
 SANDBOX_PROJECT_NAME = "RADAR Caption Pilot Sandbox"
 SANDBOX_DATASET_NAME = "RADAR Caption Pilot Sandbox Dataset"
-SANDBOX_ONTOLOGY_NAME = "DeepECHO column review v2 - clip evidence synthetic sandbox"
+SANDBOX_ONTOLOGY_NAME = "DeepECHO column review v2 - editable view-mode synthetic sandbox"
 LEGACY_SANDBOX_ONTOLOGY_NAMES = {
+    "DeepECHO column review v2 - clip evidence synthetic sandbox",
     "DeepECHO column review v2 - compact finding labels synthetic sandbox",
     "DeepECHO column review v2 - reordered synthetic sandbox",
     "DeepECHO column review v2 - synthetic sandbox",
@@ -49,7 +50,7 @@ LEGACY_SANDBOX_ONTOLOGY_NAMES = {
     "RADAR simple review proposal v3 - preselected view synthetic sandbox",
 }
 SANDBOX_BATCH_PREFIX = "DeepECHO column review v2 synthetic study batch v1"
-SANDBOX_PREDICTIONS_NAME = "DeepECHO column review v2 synthetic prelabels v6"
+SANDBOX_PREDICTIONS_NAME = "DeepECHO column review v2 synthetic prelabels v7"
 SANDBOX_PROJECT_DESCRIPTION = "Synthetic-only RADAR Labelbox pipeline test managed by EchoJEPA issue #22."
 SANDBOX_DATASET_DESCRIPTION = "Generated synthetic videos only; no clinical data or source file paths."
 GLOBAL_KEY_PREFIX = "deepecho-v2-synthetic-v3-"
