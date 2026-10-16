@@ -364,6 +364,8 @@ class SdkPayloadTests(unittest.TestCase):
         row = dataset.items[0]
         serialized = json.dumps(row)
         self.assertEqual(row["global_key"], case.global_key)
+        for attachment in row["attachments"]:
+            self.assertTrue(attachment["name"].isascii())
         self.assertIn(CANDIDATE_ATTACHMENT, serialized)
         self.assertIn("SYNTHETIC DATA ONLY", serialized)
         self.assertNotIn("local-secret-path", serialized)

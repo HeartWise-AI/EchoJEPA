@@ -286,6 +286,8 @@ class TestColumnSubmissions(unittest.TestCase):
         self.assertNotIn("review_completed", decode_annotations(prelabels(self.c)))
         attachment = context_attachment(self.c)
         self.assertEqual(attachment["attachment_type"], "RAW_TEXT")
+        self.assertEqual(attachment["attachment_name"], "DeepECHO review v2 - original proposals")
+        self.assertTrue(attachment["attachment_name"].isascii())
         self.assertIn("tricuspid_appearance", attachment["attachment_value"])
         with self.assertRaises(ValueError):
             context_attachment({**self.c, "report_context": {"MRN": "not-allowed"}})

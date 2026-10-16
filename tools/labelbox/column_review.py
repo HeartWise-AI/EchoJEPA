@@ -545,7 +545,8 @@ def context_attachment(candidate, spec=None):
             lines.append("Report numbers (not local claims):")
             lines.extend(f"{key}: {value}" for key, value in numbers.items())
     lines += ["Original caption: "+candidate["candidate_caption"], "Suggestions require submitted human review."]
-    return dict(global_key=candidate["global_key"], attachment_type="RAW_TEXT", attachment_name="DeepECHO review v2 — original proposals", attachment_value="\n".join(lines))
+    return dict(global_key=candidate["global_key"], attachment_type="RAW_TEXT",
+                attachment_name="DeepECHO review v2 - original proposals", attachment_value="\n".join(lines))
 
 
 def main(argv=None):
