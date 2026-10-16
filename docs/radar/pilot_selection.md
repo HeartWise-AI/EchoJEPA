@@ -181,7 +181,7 @@ Of 249,084 cleaned reports (2006–2026), 88.7% contain no such moderate-or-wors
 
 `candidates` creates column-review-v2 prefills and view/type review items for retained classified clips, keyed by global key. It rejects incomplete selections, changed provenance since `select`, mismatched report files, and provisional screens unless `--provisional-screen` is supplied.
 
-Its summary records SHA-256 hashes of the report and `configs/radar/column_review_v2.json`. Patient identities, report text, and the key map remain in the private pilot folder.
+Its summary records SHA-256 hashes of the report and of the review spec (`SPEC` in `tools/labelbox/column_review.py`). Patient identities, report text, and the key map remain in the private pilot folder.
 
 ## Not done here
 

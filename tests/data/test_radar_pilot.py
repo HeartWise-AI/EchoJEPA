@@ -370,7 +370,7 @@ class TestPipeline(unittest.TestCase):
                          "--provisional-screen")
         with open(os.path.join(self.out, "candidates_summary.json")) as f:
             summary = json.load(f)
-        spec = os.path.join("configs", "radar", "column_review_v2.json")
+        spec = os.path.relpath(column_review.SPEC, REPO_ROOT)  # the review spec, whatever its file is named.
         self.assertEqual(summary["spec"], {spec: rp.sha256(os.path.join(REPO_ROOT, spec))})
 
     def test_clips_replaced_in_place_since_the_screen_stop_select_and_candidates(self):
