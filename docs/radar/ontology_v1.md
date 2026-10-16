@@ -2,14 +2,13 @@
 
 The ontology is the shared vocabulary for one echo clip: its view, its acquisition mode, the cardiac structures it may
 show and the findings it may support, and how DeepECHO, EchoPrime and PanEcho labels relate to them. The pilot reviews
-clips in two Labelbox forms that use its view classes (see [Review forms](#review-forms)): the
-[column review v2](column_review_v2.md) for clips of a classified view and the
-[view and type review](view_type_review_v1.md) for `OTHER` clips. The
-[reviewer instructions](labeling_instructions_v1.md) and the [pilot metrics](pilot_metrics_v1.md) are written for
-those forms.
+clips in two Labelbox forms that use its view classes (see [Review forms](#review-forms)): column review v2 for clips
+of a classified view and view/type review v1 for `OTHER` clips. The
+[reviewer instructions](labeling_instructions_v1.md) and the [pilot metrics](pilot_metrics_v1.md) cover both forms.
 
 **Versions.** v1 denotes the ontology package version, while each form is versioned separately: column review v2 and
-view/type review v1. This document defines the ontology; see [column_review_v2.md](column_review_v2.md) for captions.
+view/type review v1. This document defines the ontology; the [reviewer instructions](labeling_instructions_v1.md)
+define how captions and form answers are reviewed.
 
 The sources of truth are [`configs/radar/radar-caption-ontology-v1.yaml`](../../configs/radar/radar-caption-ontology-v1.yaml)
 and [`configs/radar/label_mappings_v1.yaml`](../../configs/radar/label_mappings_v1.yaml). The tables below are
@@ -52,7 +51,9 @@ Three further rules come with the prior:
 Visibility and disease are separate concepts: `mitral_valve_visible` says nothing about `mitral_regurgitation`, and a
 reported disease says nothing about what one clip shows.
 
-These priors define concepts, but ([routing](column_review_v2.md#routing-and-values)) determines which columns apply to each clip based on view, acquisition mode, and covered target.
+These priors define concepts, but the routes in the
+[`deepecho_video_clip_annotation_specification.json`](../../configs/radar/deepecho_video_clip_annotation_specification.json)
+determine which columns apply to each clip based on view, acquisition mode and covered target.
 
 ## Views
 
@@ -218,23 +219,20 @@ sees identifying text skips the clip and reports it (see the [instructions](labe
 the clip is removed from Labelbox and from the caption dataset. Random crops used as training augmentation are not
 part of this contract: a caption reviewed on the whole clip may not hold for a crop of it.
 
-The [ontology request and manuscript review](ontology_request.md) describes proposed schema extensions and
-contrastive dataset construction. Its proposals do not replace the approved v1 rules.
-
 ## Review forms
 
 Every valid video of a pilot study is reviewed in one of two Labelbox forms, each in its own project:
 
-- the [column review v2](column_review_v2.md), for clips of a classified view in B-mode or color Doppler: its
+- **column review v2**, for clips of a classified view in B-mode or color Doppler: its
   specification is [`configs/radar/deepecho_video_clip_annotation_specification.json`](../../configs/radar/deepecho_video_clip_annotation_specification.json) and its form
   [`configs/radar/labelbox/deepecho_video_clip_annotation_ontology.json`](../../configs/radar/labelbox/deepecho_video_clip_annotation_ontology.json)
   (`python -m tools.labelbox.column_review --check` fails when the form no longer matches the specification);
-- the [view and type review](view_type_review_v1.md), for clips the view classifier labels `OTHER` or does not
+- **view/type review v1**, for clips the view classifier labels `OTHER` or does not
   classify: its form is [`configs/radar/labelbox/view_type_review_v1.json`](../../configs/radar/labelbox/view_type_review_v1.json)
   (`python -m tools.labelbox.view_type_review --check`).
 
-Both use the 20 view classes of this ontology, and their unit tests check each form against the Labelbox SDK. What the
-column review's captions claim is described in [column_review_v2.md](column_review_v2.md#what-a-caption-claims).
+Both use the 20 view classes of this ontology, and their unit tests check each form against the Labelbox SDK. The
+[reviewer instructions](labeling_instructions_v1.md#the-caption) explain what the column-review captions claim.
 
 The columns are named for the DeepECHO report fields they are prefilled from. They are not mapped one by one to the
 concepts of this ontology: the [label mappings](#how-deepecho-echoprime-and-panecho-labels-relate-to-v1) relate

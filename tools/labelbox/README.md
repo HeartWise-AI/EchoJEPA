@@ -3,7 +3,6 @@
 The pilot reviews every valid video of its studies in one of two forms versioned with the ontology:
 
 - **DeepECHO column review v2**, for clips of a classified view:
-  [design](../../docs/radar/column_review_v2.md),
   [source specification](../../configs/radar/deepecho_video_clip_annotation_specification.json),
   [generated native Labelbox ontology](../../configs/radar/labelbox/deepecho_video_clip_annotation_ontology.json) and
   [current selection](../../configs/radar/labelbox/current_review.json). It prefills explicit report values,
@@ -11,7 +10,7 @@ The pilot reviews every valid video of its studies in one of two forms versioned
   per-column dropdowns for corrections, omissions and error reasons, and a clip-level answer for an uninterpretable
   clip.
 - **View and type review**, for clips the view classifier labels `OTHER` or does not classify
-  ([design](../../docs/radar/view_type_review_v1.md), `python -m tools.labelbox.view_type_review`). A later, larger
+  (`python -m tools.labelbox.view_type_review`). A later, larger
   dataset of `OTHER` items uses the same form.
 
 Reviewers follow the [English instructions](../../docs/radar/labeling_instructions_v1.md), whose form tables and

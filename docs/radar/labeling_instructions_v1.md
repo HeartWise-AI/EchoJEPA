@@ -1,7 +1,6 @@
 # RADAR caption review: instructions for reviewers (v1)
 
-Version: `radar-caption-ontology-v1`, with the [column review v2](column_review_v2.md) and the
-[view and type review](view_type_review_v1.md).
+Version: `radar-caption-ontology-v1`, with column review v2 and view/type review v1.
 The field names and choices below match the English labels shown in Labelbox.
 
 ## What you review
@@ -71,8 +70,9 @@ your confirmation.
 | 11 | I reviewed this input, checked the proposed values and targets, and confirmed or corrected the suggestions. | `review_completed` | yes | `yes` Review completed |
 <!-- END GENERATED: column_form -->
 
-The finding columns, their values and the views that carry them are listed in
-[column_review_v2.md](column_review_v2.md#clinical-columns-and-choices). The reasons:
+The finding columns, their values and the views that carry them are defined in the machine-readable
+[`deepecho_video_clip_annotation_specification.json`](../../configs/radar/deepecho_video_clip_annotation_specification.json).
+The reasons shown in the form are:
 
 <!-- BEGIN GENERATED: column_reasons -->
 **Error reasons (an incorrect finding, an additional statement)**

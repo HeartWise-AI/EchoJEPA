@@ -1,4 +1,4 @@
-"""The view and type review for `OTHER` items: its committed JSON and doc, the validity rules and the routing back
+"""The view and type review for `OTHER` items: its committed JSON, the validity rules and the routing back
 into the column review. The SDK round trip is skipped where the Labelbox SDK is not installed."""
 
 import importlib.util
@@ -24,7 +24,7 @@ def answers(**changes):
 
 
 class TestForm(unittest.TestCase):
-    def test_committed_json_and_doc_are_current(self):
+    def test_committed_json_is_current(self):
         with open(vt.FORM_PATH, encoding="utf-8") as f:
             self.assertEqual(json.load(f), vt.build_form())
         self.assertEqual(vt.main(["--check"]), 0)
