@@ -67,10 +67,8 @@ def build_form(spec=None):
             _option("no", "No, it can be interpreted"),
             _option("yes", "Yes, nothing in it can be judged", [
                 _choice("uninterpretable_reason", "Why?", spec["uninterpretable_reasons"])])], top_level=True),
-        _choice("view", "Proposed view", {v: v for v in spec["views"]}, top=True),
-        _choice("modality", "Acquisition mode", spec["modalities"], top=True),
-        _choice("view_ok", "View correct?", {"yes": "Yes", "no": "No — reroute", "cannot_assess": "Cannot assess"}, top=True),
-        _choice("modality_ok", "Acquisition mode correct?", {"yes": "Yes", "no": "No — reroute", "cannot_assess": "Cannot assess"}, top=True),
+        _choice("view", "View (prefilled - correct if needed)", {v: v for v in spec["views"]}, top=True),
+        _choice("modality", "Acquisition mode (prefilled - correct if needed)", spec["modalities"], top=True),
         _checklist("visible_targets", "Confirm targets actually covered and assessable", [_option(k, v) for k, v in spec["targets"].items()], top=True),
         _choice("psax_level", "PSAX slice / SUBCOSTAL subtype (when relevant)",
                 {"not_applicable": "Not applicable", "unresolved": "Unresolved", "mid": "PSAX mid / papillary level", "basal": "PSAX basal", "apical": "PSAX apical", "mitral": "PSAX mitral leaflet level", "ivc": "IVC focused", "four_chamber": "Subcostal four chamber"}, top=True),
@@ -297,7 +295,7 @@ def prelabels(candidate, spec=None):
     records = [
         _answer("uninterpretable", "no"),
         _answer("view", candidate["view"]), _answer("modality", candidate["modality"]),
-        _answer("view_ok", "yes"), _answer("modality_ok", "yes"), _answer("psax_level", candidate["level"]),
+        _answer("psax_level", candidate["level"]),
         {"name": "visible_targets", "answer": [{"name": t} for t in candidate["suggested_targets"]]},
         {"name": "review_columns", "answer": selected}, _answer("missing_information", "no"),
         _answer("unsupported_information", "no"), {"name": "candidate_caption", "answer": candidate["candidate_caption"]},
@@ -415,7 +413,8 @@ def score_review(candidate, answers, *, submitted=False, spec=None):
         pending = [] if reason in spec["uninterpretable_reasons"] and explained else ["uninterpretable_reason"]
         return dict(uninterpretable=True, uninterpretable_reason=reason, supported=[], rejected=[], cannot_assess=[],
                     corrections=[], omissions=[], errors=[], pending=pending, original_count=len(original),
-                    resolved_count=0, support_rate=None, error_rate=None, routing=False, submitted=completed,
+                    resolved_count=0, support_rate=None, error_rate=None, view_correct=None,
+                    modality_correct=None, routing=False, submitted=completed,
                     caption="", ready_for_validation=False)
     if set(answers.get("review_columns", [])) != set(original):
         raise ValueError("Original columns must be reviewed; additions go in missing_columns")
@@ -475,8 +474,9 @@ def score_review(candidate, answers, *, submitted=False, spec=None):
         pending.append("unsupported_information")
     actual = supported + corrections + omissions
     allowed = allowed_columns(answers.get("view"), answers.get("modality"), targets=answers.get("visible_targets", []), level=answers.get("psax_level"), input_kind=candidate.get("input_kind", "video"), spec=spec)
-    routing = (answers.get("view_ok") == answers.get("modality_ok") == "yes"
-               and answers.get("view") == candidate["view"] and answers.get("modality") == candidate["modality"]
+    view_correct = answers.get("view") == candidate["view"]
+    modality_correct = answers.get("modality") == candidate["modality"]
+    routing = (view_correct and modality_correct
                and candidate["view"] != "OTHER"
                and all(c["concept"] in allowed and value_allowed(c["concept"], c["value"], candidate["view"], spec) for c in actual))
     caption = " ".join(finding_sentence(c["concept"], c["value"], spec) for c in actual) if completed and routing and not pending else ""
@@ -486,14 +486,16 @@ def score_review(candidate, answers, *, submitted=False, spec=None):
                 errors=errors, pending=pending, original_count=len(original), resolved_count=resolved,
                 support_rate=len(supported)/len(original) if original else None,
                 error_rate=len(rejected)/resolved if resolved else None,
+                view_correct=view_correct, modality_correct=modality_correct,
                 routing=routing, submitted=completed, caption=caption,
                 ready_for_validation=bool(caption) and candidate.get("input_provenance_verified") is True)
 
 
 def review_problems(candidate, annotations, spec=None):
     """Why one submitted review cannot be counted; empty when it is valid. Valid reviews are the population of the
-    pilot metrics: every required answer in its place in the form, no detail left pending, nothing that contradicts
-    the candidate, and a view or acquisition mode answered "No" replaced by the one the clip shows."""
+    pilot metrics: every required answer in its place in the form, no detail left pending, and nothing that
+    contradicts the candidate. The original candidate view and mode remain available for comparison with the
+    reviewer-confirmed values."""
     spec = spec or load_spec()
     try:
         validate_annotations(annotations, build_form(spec), require_complete=True)
@@ -502,11 +504,6 @@ def review_problems(candidate, annotations, spec=None):
     except ValueError as e:
         return [str(e)]
     problems = list(score["pending"])
-    if score["uninterpretable"]:
-        return problems
-    for name in ("view", "modality"):
-        if (answers.get(name+"_ok") == "no") != (answers.get(name) != candidate[name]):
-            problems.append(f"{name}_ok is no exactly when {name} is changed from the proposal")
     return problems
 
 

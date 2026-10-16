@@ -153,7 +153,7 @@ class SyntheticCasesTests(unittest.TestCase):
             self.assertGreater(len(candidate["columns"]), 0)
             self.assertTrue(set(candidate["report_context"]).issubset(case.report))
 
-        self.assertEqual(len(build_form()["classifications"]), 13)
+        self.assertEqual(len(build_form()["classifications"]), 11)
 
     def test_renderer_creates_a_readable_mp4(self):
         with tempfile.TemporaryDirectory() as folder:

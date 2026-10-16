@@ -45,13 +45,13 @@ Les termes employés ci-dessous :
 1. Regardez la boucle entière, plusieurs fois si besoin.
 2. Décidez si le clip est interprétable (question 1). S'il ne l'est pas, donnez la raison, sélectionnez **Review
    completed** et soumettez : rien d'autre n'est lu.
-3. Vérifiez la coupe et le mode d'acquisition (questions 2 à 5).
-4. Vérifiez les cibles que le clip couvre réellement et, pour un clip PSAX ou sous-costal, son niveau (questions 6 et
-   7).
-5. Passez les constatations préremplies une à une : étayée, fausse ou impossible à évaluer (question 8).
-6. Cherchez une constatation importante et visible que la proposition omet (question 9), et un énoncé de la légende
-   hors de ses constatations (question 10).
-7. Ajoutez un commentaire seulement si nécessaire, sélectionnez **Review completed** (question 13) et soumettez.
+3. Vérifiez la coupe et le mode d'acquisition préremplis, et corrigez directement toute valeur erronée (questions 2 et 3).
+4. Vérifiez les cibles que le clip couvre réellement et, pour un clip PSAX ou sous-costal, son niveau (questions 4 et
+   5).
+5. Passez les constatations préremplies une à une : étayée, fausse ou impossible à évaluer (question 6).
+6. Cherchez une constatation importante et visible que la proposition omet (question 7), et un énoncé de la légende
+   hors de ses constatations (question 8).
+7. Ajoutez un commentaire seulement si nécessaire, sélectionnez **Review completed** (question 11) et soumettez.
 
 Toutes les réponses sauf **Review completed** sont préremplies : clip interprétable, coupe et mode corrects, chaque
 constatation étayée, rien de manquant ni de superflu. Modifiez ce que ce clip n'étaye pas ; une réponse laissée telle
@@ -63,18 +63,16 @@ quelle vaut confirmation.
 | # | Question | Id | Obligatoire | Réponses |
 |---|---|---|---|---|
 | 1 | Is this clip uninterpretable? | `uninterpretable` | oui | `no` No, it can be interpreted; `yes` Yes, nothing in it can be judged → Why? (une raison ci-dessous) |
-| 2 | Proposed view | `view` | oui | une des 20 classes de coupe |
-| 3 | Acquisition mode | `modality` | oui | `bmode` B-mode; `color_flow` Color Doppler; `spectral` Spectral Doppler; `m_mode` M-mode; `mixed` Mixed / analysis acquisition; `unresolved` Unresolved |
-| 4 | View correct? | `view_ok` | oui | `yes` Yes; `no` No — reroute; `cannot_assess` Cannot assess |
-| 5 | Acquisition mode correct? | `modality_ok` | oui | `yes` Yes; `no` No — reroute; `cannot_assess` Cannot assess |
-| 6 | Confirm targets actually covered and assessable | `visible_targets` | non | `lv` LV; `rv` RV; `la` LA; `ra` RA; `mitral` Mitral; `tricuspid` Tricuspid; `pericardium` Pericardium; `aortic` Aortic; `aorta_root` Aorta root; `aorta_ascending` Aorta ascending; `pulmonic` Pulmonic; `ivc` IVC; `aorta_arch` Aorta arch |
-| 7 | PSAX slice / SUBCOSTAL subtype (when relevant) | `psax_level` | oui | `not_applicable` Not applicable; `unresolved` Unresolved; `mid` PSAX mid / papillary level; `basal` PSAX basal; `apical` PSAX apical; `mitral` PSAX mitral leaflet level; `ivc` IVC focused; `four_chamber` Subcostal four chamber |
-| 8 | Prefilled findings — confirm or correct selected columns | `review_columns` | non | les colonnes préremplies, chacune : Proposed value (original retained in context) (une des valeurs de la colonne) + Confirm this finding (`yes` Supported in this input; `no` Incorrect / should not be here → Why should it not be here? (une raison d'erreur) + Correction (`remove` Remove this claim, ou une des valeurs de la colonne); `cannot_assess` Cannot assess → Why can it not be assessed? (une limite d'évaluation)) |
-| 9 | Important visible finding missing from the candidate? | `missing_information` | oui | `no` No; `yes` Yes → Select missing columns and values (toute colonne que la coupe porte, chacune : Missing visible value (une des valeurs de la colonne) + Visible in this input? (`yes` Yes; `cannot_assess` Cannot assess)) |
-| 10 | Additional statement that should not be here? | `unsupported_information` | oui | `no` No; `yes` Yes → Select offending columns / statements (toute colonne ou tout type d'énoncé, chacune : Why should this statement not be here? (une raison d'erreur); un type d'énoncé demande aussi Copy the offending statement (texte libre)) |
-| 11 | Original caption (for reference only; edits are ignored) | `candidate_caption` | non | texte libre |
-| 12 | Comments (no patient details) | `comments` | non | texte libre |
-| 13 | I reviewed this input, checked the proposed values and targets, and confirmed or corrected the suggestions. | `review_completed` | oui | `yes` Review completed |
+| 2 | View (prefilled - correct if needed) | `view` | oui | une des 20 classes de coupe |
+| 3 | Acquisition mode (prefilled - correct if needed) | `modality` | oui | `bmode` B-mode; `color_flow` Color Doppler; `spectral` Spectral Doppler; `m_mode` M-mode; `mixed` Mixed / analysis acquisition; `unresolved` Unresolved |
+| 4 | Confirm targets actually covered and assessable | `visible_targets` | non | `lv` LV; `rv` RV; `la` LA; `ra` RA; `mitral` Mitral; `tricuspid` Tricuspid; `pericardium` Pericardium; `aortic` Aortic; `aorta_root` Aorta root; `aorta_ascending` Aorta ascending; `pulmonic` Pulmonic; `ivc` IVC; `aorta_arch` Aorta arch |
+| 5 | PSAX slice / SUBCOSTAL subtype (when relevant) | `psax_level` | oui | `not_applicable` Not applicable; `unresolved` Unresolved; `mid` PSAX mid / papillary level; `basal` PSAX basal; `apical` PSAX apical; `mitral` PSAX mitral leaflet level; `ivc` IVC focused; `four_chamber` Subcostal four chamber |
+| 6 | Prefilled findings — confirm or correct selected columns | `review_columns` | non | les colonnes préremplies, chacune : Proposed value (original retained in context) (une des valeurs de la colonne) + Confirm this finding (`yes` Supported in this input; `no` Incorrect / should not be here → Why should it not be here? (une raison d'erreur) + Correction (`remove` Remove this claim, ou une des valeurs de la colonne); `cannot_assess` Cannot assess → Why can it not be assessed? (une limite d'évaluation)) |
+| 7 | Important visible finding missing from the candidate? | `missing_information` | oui | `no` No; `yes` Yes → Select missing columns and values (toute colonne que la coupe porte, chacune : Missing visible value (une des valeurs de la colonne) + Visible in this input? (`yes` Yes; `cannot_assess` Cannot assess)) |
+| 8 | Additional statement that should not be here? | `unsupported_information` | oui | `no` No; `yes` Yes → Select offending columns / statements (toute colonne ou tout type d'énoncé, chacune : Why should this statement not be here? (une raison d'erreur); un type d'énoncé demande aussi Copy the offending statement (texte libre)) |
+| 9 | Original caption (for reference only; edits are ignored) | `candidate_caption` | non | texte libre |
+| 10 | Comments (no patient details) | `comments` | non | texte libre |
+| 11 | I reviewed this input, checked the proposed values and targets, and confirmed or corrected the suggestions. | `review_completed` | oui | `yes` Review completed |
 <!-- END GENERATED: column_form -->
 
 Les colonnes de constatations, leurs valeurs et les coupes qui les portent sont listées dans
@@ -174,7 +172,7 @@ deux n'établit l'absence de jet.
 Les valeurs de fonction et de taille sont des impressions visuelles à l'échelle du clip, pas le diagnostic d'un
 examen complet. Un jet de régurgitation est seulement démontré ou non démontré dans cette acquisition : aucune
 constatation ne le grade, et une légende qui affirme un grade intégré, une FE exacte ou un nombre fait un énoncé
-supplémentaire (question 10). La cinétique segmentaire ne décrit que les segments que montre ce clip. Les scores de
+supplémentaire (question 8). La cinétique segmentaire ne décrit que les segments que montre ce clip. Les scores de
 cinétique du compte rendu gardent leur ambiguïté : le score 1 donne « Normal / hyperkinetic », le score 3
 « Akinetic / severely hypokinetic ». N'inférez pas une cinétique normale dans des segments non vus, une FE de l'étude,
 une sévérité de sténose, des pressions de remplissage ni une hypertension pulmonaire.
@@ -197,15 +195,15 @@ constatations sous-costales sur la VCI et sur les cavités ne se mélangent jama
 
 #### Information manquante
 
-Répondez « Yes » à la question 9 seulement pour une constatation **importante**, visible sur ce clip, que la coupe
+Répondez « Yes » à la question 7 seulement pour une constatation **importante**, visible sur ce clip, que la coupe
 porte et qu'aucune constatation préremplie n'énonce : choisissez la colonne et sa valeur, et confirmez qu'elle est
 visible. N'ajoutez pas de valeurs normales que le compte rendu omet, de constatations absentes, de mesures, ni ce que
-seuls d'autres clips montrent. Une constatation préremplie à la valeur fausse se corrige à la question 8 ; elle ne
+seuls d'autres clips montrent. Une constatation préremplie à la valeur fausse se corrige à la question 6 ; elle ne
 s'ajoute pas comme manquante.
 
 #### Énoncés supplémentaires
 
-La légende proposée est construite à partir de ses constatations, donc la question 10 est rarement « Yes ».
+La légende proposée est construite à partir de ses constatations, donc la question 8 est rarement « Yes ».
 Utilisez-la quand la légende affirme quelque chose hors de ses constatations, comme un grade, une FE exacte ou un
 nombre : choisissez la colonne ou le type d'énoncé et la raison, et recopiez l'énoncé quand le formulaire le demande.
 
@@ -221,11 +219,10 @@ pour celles-là.
 
 #### La coupe et le mode d'acquisition
 
-Répondez à la question 4 d'après les classes de coupe décrites dans [ontology_v1.md](ontology_v1.md#views). Si le clip
-appartient à une autre classe, répondez « No — reroute » et choisissez cette classe dans **Proposed view** ; utilisez
-`OTHER` pour les clips hors axe ou non standard. Si vous ne pouvez pas dire la classe, répondez « Cannot assess » : ne
-choisissez pas une classe au hasard, et n'utilisez pas `OTHER` pour cela. Le mode d'acquisition fonctionne de même
-(question 5 et **Acquisition mode**).
+Vérifiez la question 2 d'après les classes de coupe décrites dans [ontology_v1.md](ontology_v1.md#views). Si le clip
+appartient à une autre classe, remplacez la valeur préremplie par cette classe ; utilisez `OTHER` pour les clips hors
+axe ou non standard. Si rien dans le clip ne permet une classification fiable, marquez le clip ininterprétable au
+lieu de choisir au hasard. Vérifiez et corrigez directement le mode d'acquisition à la question 3.
 
 Jugez tout de même les constatations préremplies sur le clip : elles sont comptées dans tous les cas. Une coupe ou un
 mode corrigé ne donne pas de légende au clip.
@@ -243,9 +240,9 @@ Une revue est renvoyée pour correction quand :
 - une réponse obligatoire est vide, ou **Review completed** n'est pas sélectionné ;
 - une constatation fausse n'a pas de raison ou pas de correction, ou une constatation impossible à évaluer n'a pas de
   limite ;
-- la question 9 est « Yes » sans colonne, sans sa valeur ou sans « Visible in this input? Yes », ou liste une
+- la question 7 est « Yes » sans colonne, sans sa valeur ou sans « Visible in this input? Yes », ou liste une
   constatation déjà préremplie ;
-- la question 10 est « Yes » sans colonne ou type d'énoncé et sa raison, ou nomme une constatation laissée étayée ;
+- la question 8 est « Yes » sans colonne ou type d'énoncé et sa raison, ou nomme une constatation laissée étayée ;
 - la coupe ou le mode d'acquisition est répondu « No » mais laissé tel que proposé, ou modifié sans répondre « No » ;
 - une constatation préremplie est décochée, ou sa valeur proposée modifiée ;
 - le clip est ininterprétable sans raison, ou avec « Other » et sans commentaire.
@@ -338,10 +335,9 @@ Les clips sont synthétiques, décrits en mots.
 - **Constatations préremplies :** `lv_size` Normal; `rv_size` Normal
 - **Légende proposée :** « The visible LV cavity is not dilated. The visible RV cavity is not dilated. »
 - **Ce que le relecteur modifie :**
-  - View correct? **No — reroute**
-  - Proposed view : **A5C**
+  - View (prefilled - correct if needed) : **A5C**
 - **Légende reconstruite :** aucune : la coupe ou le mode d'acquisition a été corrigé
-- **Pourquoi :** Répondre « No » et choisir dans « Proposed view » la coupe que montre le clip. Les constatations préremplies sont tout de même jugées sur le clip, car elles sont comptées. Le clip n'a pas de légende sous la coupe proposée.
+- **Pourquoi :** Remplacer la coupe préremplie par la coupe que montre le clip. Les constatations préremplies sont tout de même jugées sur le clip, car elles sont comptées. Le clip n'a pas de légende sous la coupe proposée.
 
 ### 8. Clip ininterprétable
 
