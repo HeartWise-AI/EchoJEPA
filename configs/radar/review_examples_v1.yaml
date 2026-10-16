@@ -1,0 +1,156 @@
+# configs/radar/review_examples_v1.yaml
+#
+# English worked examples for RADAR caption reviewers, rendered into
+# `docs/radar/labeling_instructions_v1.md` by `python -m tools.labelbox.instructions`. Every clip is SYNTHETIC:
+# described in words, never taken from a real study.
+#
+# A column review example gives the candidate (`view`, `modality`, optional `level`, and the prefilled `columns`,
+# column -> value) and `changes`: only the answers the reviewer changes in the prefilled form, by their Labelbox ids.
+# The reviewer then selects "Review completed". A view and type example gives every `answers`. A unit test checks that
+# each example is a valid review under its form's own checks, and the rebuilt caption shown is the scorer's.
+
+schema: radar-review-examples
+ontology: radar-caption-ontology-v1
+
+column_review:
+  - id: supported
+    title: Supported findings
+    clip: >-
+      Apical 4-chamber B-mode loop: a normal-sized LV, an RV that contracts normally, thin tricuspid leaflets.
+    view: A4C
+    modality: bmode
+    columns: {lv_size: normal, rv_function: normal, tricuspid_appearance: normal}
+    changes: {}
+    why: >-
+      Each prefilled finding is visible in this clip at the stated value, and nothing important is left out: confirm
+      and submit.
+
+  - id: wrong_severity
+    title: Wrong severity
+    clip: >-
+      Apical 4-chamber B-mode loop: the LV contracts clearly less than normal, a moderate reduction by eye.
+    view: A4C
+    modality: bmode
+    columns: {lv_function: mildly_reduced}
+    changes: {lv_function__status: "no", lv_function__error: wrong_severity, lv_function__correction: moderately_reduced}
+    why: >-
+      The finding is right but its severity is not: "Wrong severity", with the value the clip shows. The rebuilt
+      caption uses the correction; the original value stays recorded.
+
+  - id: contradicted
+    title: Contradicted finding
+    clip: >-
+      Parasternal long-axis B-mode loop: the posterior pericardium is clearly seen, with no fluid around the heart.
+    view: PLAX
+    modality: bmode
+    columns: {pericardial_effusion: present}
+    changes:
+      pericardial_effusion__status: "no"
+      pericardial_effusion__error: contradicted
+      pericardial_effusion__correction: not_demonstrated
+    why: >-
+      The clip shows the pericardium well and no effusion: the prefilled finding is contradicted. Because this clip
+      can show an effusion, the correction can say none is demonstrated; if it could not, remove the claim instead.
+
+  - id: missing_jet
+    title: Missing finding
+    clip: >-
+      Apical 4-chamber color Doppler loop: a mitral regurgitant jet and a clearly visible tricuspid regurgitant jet.
+    view: A4C
+    modality: color_flow
+    columns: {mitral_regurgitant_jet: demonstrated}
+    changes:
+      missing_information: "yes"
+      missing_columns: [tricuspid_regurgitant_jet]
+      tricuspid_regurgitant_jet__missing_value: demonstrated
+      tricuspid_regurgitant_jet__missing_visible: "yes"
+    why: >-
+      What is prefilled is supported; the tricuspid jet is visible, relevant and not prefilled, so it is added as
+      missing. Neither jet gets a grade: a color loop shows whether a jet is demonstrated, not an integrated
+      severity.
+
+  - id: absence_not_covered
+    title: Absence that cannot be judged
+    clip: >-
+      Apical 4-chamber color Doppler loop with the color box over the tricuspid valve; the mitral valve is outside
+      the color box.
+    view: A4C
+    modality: color_flow
+    columns: {mitral_regurgitant_jet: not_demonstrated}
+    changes: {mitral_regurgitant_jet__status: cannot_assess, mitral_regurgitant_jet__limitation: target_outside}
+    why: >-
+      A jet can be called absent only where the color covers the valve. Here it does not, so the absence cannot be
+      assessed: that is neither an error nor a negative finding.
+
+  - id: segment_quality
+    title: Segment that cannot be assessed
+    clip: >-
+      Apical 2-chamber B-mode loop: a normal-sized LV; the endocardium of the mid inferior wall is not seen
+      (dropout).
+    view: A2C
+    modality: bmode
+    columns: {lv_size: normal, wall_mid_inferior: normal_or_hyperkinetic}
+    changes: {wall_mid_inferior__status: cannot_assess, wall_mid_inferior__limitation: poor_quality}
+    why: >-
+      A segment whose endocardium is not seen cannot be graded. "Cannot assess" with its limitation keeps the claim
+      out of the caption without counting it as an error; the other finding stays.
+
+  - id: wrong_view
+    title: Wrong view
+    clip: >-
+      B-mode loop labelled apical 4-chamber, but the LV outflow tract and the aortic valve are open in the image: it
+      is an apical 5-chamber view. Both ventricles are normal in size.
+    view: A4C
+    modality: bmode
+    columns: {lv_size: normal, rv_size: normal}
+    changes: {view: A5C}
+    why: >-
+      Replace the prefilled view with the view shown by the clip. Still judge the prefilled findings on the clip: they
+      are counted. The clip gets no caption under the proposed view.
+
+  - id: uninterpretable
+    title: Uninterpretable clip
+    clip: >-
+      Apical B-mode loop with heavy artifacts throughout: no wall or valve can be made out.
+    view: A4C
+    modality: bmode
+    columns: {lv_function: normal}
+    changes: {uninterpretable: "yes", uninterpretable_reason: poor_quality}
+    why: >-
+      Nothing in this clip can be judged: answer "Yes", give the reason and submit; the other answers are not read.
+      When only some findings cannot be judged, the clip is interpretable: use "Cannot assess" for those.
+
+view_type_review:
+  - id: ivc_loop
+    title: Inferior vena cava labelled OTHER
+    clip: >-
+      Subcostal B-mode loop of the inferior vena cava entering the right atrium.
+    answers: {input_type: cine_loop, view: SUBCOSTAL, modality: bmode, identifier_visible: "no"}
+    why: >-
+      A moving echo image of a view the column review routes: it goes back to the column review under that view.
+
+  - id: off_axis
+    title: Off-axis view
+    clip: >-
+      B-mode loop between the apical 4- and 5-chamber planes, foreshortened, in no standard view.
+    answers: {input_type: cine_loop, view: OTHER, modality: bmode, identifier_visible: "no"}
+    why: >-
+      OTHER is for off-axis or non-standard echo views; "Cannot tell the view" is for when you cannot decide.
+
+  - id: analysis_screen
+    title: Analysis screen
+    clip: >-
+      Strain analysis screen: an apical 4-chamber image with colored segments and a bull's-eye plot.
+    answers: {input_type: analysis_screen, identifier_visible: "no"}
+    why: >-
+      An analysis screen is not a clip a caption should describe: its view and mode are not asked, and it does not
+      go back to the column review.
+
+  - id: identifier_visible
+    title: Identifying text visible
+    clip: >-
+      Apical 4-chamber B-mode loop in which a name is still readable in the top banner.
+    answers: {input_type: cine_loop, view: A4C, modality: bmode, identifier_visible: "yes"}
+    why: >-
+      Answer "Yes" without copying the text anywhere. The item is deleted from Labelbox and the de-identification
+      step is fixed.

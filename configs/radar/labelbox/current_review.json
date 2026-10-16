@@ -1,0 +1,14 @@
+{
+  "schema": "radar-review-selection",
+  "version": 1,
+  "name": "DeepECHO column review v2",
+  "status": "proposed_labelbox_ontology",
+  "clinical_ontology": "configs/radar/radar-caption-ontology-v1.yaml",
+  "source_specification": "configs/radar/deepecho_video_clip_annotation_specification.json",
+  "generated_labelbox_ontology": "configs/radar/labelbox/deepecho_video_clip_annotation_ontology.json",
+  "builder": "tools.labelbox.column_review",
+  "importer": "tools.labelbox.import_column_review",
+  "instructions": "docs/radar/labeling_instructions_v1.md",
+  "prelabel_type": "MALPredictionImport",
+  "review_completed_is_prefilled": false
+}
