@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 from app.radar.ontology import VIEWS
 from tools.labelbox.column_review import (
-    FORM, allowed_columns, build_candidate, build_form, context_attachment,
+    FORM, ROOT, SPEC, allowed_columns, build_candidate, build_form, context_attachment,
     decode_annotations, encode_answers, finding_sentence, load_spec, prelabels, review_problems, score_review,
     validate_annotations,
 )
@@ -30,6 +30,21 @@ class TestColumnPrefills(unittest.TestCase):
         self.assertEqual(len(segments), 16)
         self.assertFalse(any("cap" in k for k in segments))
         self.assertEqual(json.loads(FORM.read_text()), build_form())
+
+    def test_review_selection_names_sources_and_generated_artifact(self):
+        selection = json.loads((ROOT / "configs/radar/labelbox/current_review.json").read_text())
+        self.assertEqual(selection["schema"], "radar-review-selection")
+        self.assertEqual(selection["version"], 1)
+        self.assertEqual(
+            selection["clinical_ontology"],
+            "configs/radar/radar-caption-ontology-v1.yaml",
+        )
+        self.assertEqual(selection["source_specification"], SPEC.relative_to(ROOT).as_posix())
+        self.assertEqual(
+            selection["generated_labelbox_ontology"], FORM.relative_to(ROOT).as_posix()
+        )
+        self.assertNotIn("ontology", selection)
+        self.assertNotIn("spec", selection)
 
     def test_explicit_normal_tricuspid_prefills_value_and_caption(self):
         for text in ["Valve tricuspide normale", "Normal tricuspid valve", "Tricuspid valve: normal", "Normal"]:
@@ -176,8 +191,11 @@ class TestColumnSubmissions(unittest.TestCase):
 
     def test_view_modality_target_and_input_provenance_gates(self):
         self.a["review_completed"] = "yes"
-        for change in [{"view_ok": "no"}, {"modality_ok": "cannot_assess"}, {"view": "A2C"}, {"visible_targets": ["lv"]}]:
+        for change in [{"view": "A2C"}, {"modality": "color_flow"}, {"visible_targets": ["lv"]}]:
             self.assertEqual(score_review(self.c, {**self.a, **change}, submitted=True)["caption"], "")
+        corrected = score_review(self.c, {**self.a, "view": "A5C"}, submitted=True)
+        self.assertFalse(corrected["view_correct"])
+        self.assertTrue(corrected["modality_correct"])
         self.assertFalse(score_review({**self.c, "input_provenance_verified": False}, self.a, submitted=True)["ready_for_validation"])
 
     def test_additional_unsupported_numeric_statement_is_scored_separately(self):
@@ -223,15 +241,12 @@ class TestColumnSubmissions(unittest.TestCase):
 
         self.assertEqual(review_problems(self.c, done), [])
         self.assertTrue(review_problems(self.c, prelabels(self.c)))  # not completed
-        self.assertEqual(review_problems(self.c, changed(done, view_ok={"name": "no"})),
-                         ["view_ok is no exactly when view is changed from the proposal"])
-        self.assertEqual(review_problems(self.c, changed(done, view_ok={"name": "no"}, view={"name": "A5C"})), [])
-        self.assertTrue(review_problems(self.c, changed(done, view={"name": "A5C"})))
-        self.assertTrue(review_problems(self.c, changed(done, modality_ok={"name": "no"})))
+        self.assertEqual(review_problems(self.c, changed(done, view={"name": "A5C"})), [])
+        self.assertEqual(review_problems(self.c, changed(done, modality={"name": "color_flow"})), [])
         self.assertTrue(review_problems(self.c, changed(done, uninterpretable={"name": "yes"})))  # no reason
         reason = [{"name": "uninterpretable_reason", "answer": {"name": "not_cardiac"}}]
         uninterpretable = {"name": "yes", "classifications": reason}
-        unread = changed(done, uninterpretable=uninterpretable, view_ok={"name": "no"})  # the view is not read
+        unread = changed(done, uninterpretable=uninterpretable)  # the other answers are not read
         self.assertEqual(review_problems(self.c, unread), [])
         self.assertEqual(review_problems(self.c, changed(done, review_columns=[])),
                          ["Original columns must be reviewed; additions go in missing_columns"])
@@ -249,7 +264,7 @@ class TestColumnSubmissions(unittest.TestCase):
         with self.assertRaises(ValueError):  # nested under an answer that is not selected
             encode_answers({**answers, "uninterpretable_reason": "poor_quality"}, build_form())
         with self.assertRaises(ValueError):
-            encode_answers({**answers, "view_ok": "maybe"}, build_form())
+            encode_answers({**answers, "view": "maybe"}, build_form())
 
     def test_nested_ndjson_path_validation_and_required_confirmation(self):
         p = prelabels(self.c)
@@ -261,16 +276,29 @@ class TestColumnSubmissions(unittest.TestCase):
         validate_annotations(p + [{"name": "comments", "answer": "jet partly outside the color box"}], build_form(),
                              require_complete=True)
         self.assertNotIn("comments", decode_annotations(prelabels(self.c)))
+        self.assertNotIn("view_ok", decode_annotations(prelabels(self.c)))
+        self.assertNotIn("modality_ok", decode_annotations(prelabels(self.c)))
+        labels = {q["name"]: q["instructions"] for q in build_form()["classifications"]}
+        self.assertEqual(labels["view"], "View (prefilled - correct if needed)")
+        self.assertEqual(labels["modality"], "Acquisition mode (prefilled - correct if needed)")
         wrong = copy.deepcopy(p)
-        next(r for r in wrong if r["name"] == "review_columns")["answer"][0]["classifications"][0]["name"] = "view_ok"
+        next(r for r in wrong if r["name"] == "review_columns")["answer"][0]["classifications"][0]["name"] = "view"
         with self.assertRaises(ValueError):
             validate_annotations(wrong, build_form())
 
     def test_prefills_and_context_are_native_and_stable(self):
         self.assertEqual(prelabels(self.c), prelabels(self.c))
+        revised_spec = copy.deepcopy(load_spec())
+        revised_spec["modalities"]["bmode"] = "B-mode revised"
+        self.assertNotEqual(
+            {record["uuid"] for record in prelabels(self.c)},
+            {record["uuid"] for record in prelabels(self.c, revised_spec)},
+        )
         self.assertNotIn("review_completed", decode_annotations(prelabels(self.c)))
         attachment = context_attachment(self.c)
         self.assertEqual(attachment["attachment_type"], "RAW_TEXT")
+        self.assertEqual(attachment["attachment_name"], "DeepECHO review v2 - original proposals")
+        self.assertTrue(attachment["attachment_name"].isascii())
         self.assertIn("tricuspid_appearance", attachment["attachment_value"])
         with self.assertRaises(ValueError):
             context_attachment({**self.c, "report_context": {"MRN": "not-allowed"}})

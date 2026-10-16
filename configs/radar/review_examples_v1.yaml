@@ -155,14 +155,14 @@ column_review:
     view: A4C
     modality: bmode
     columns: {lv_size: normal, rv_size: normal}
-    changes: {view_ok: "no", view: A5C}
+    changes: {view: A5C}
     why:
       fr: >-
-        Répondre « No » et choisir dans « Proposed view » la coupe que montre le clip. Les constatations préremplies
+        Remplacer la coupe préremplie par la coupe que montre le clip. Les constatations préremplies
         sont tout de même jugées sur le clip, car elles sont comptées. Le clip n'a pas de légende sous la coupe
         proposée.
       en: >-
-        Answer "No" and choose the view the clip shows in "Proposed view". Still judge the prefilled findings on the
+        Replace the prefilled view with the view shown by the clip. Still judge the prefilled findings on the
         clip: they are counted. The clip gets no caption under the proposed view.
 
   - id: uninterpretable

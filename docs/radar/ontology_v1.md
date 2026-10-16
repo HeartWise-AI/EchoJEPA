@@ -229,8 +229,8 @@ contrastive dataset construction. Its proposals do not replace the approved v1 r
 Every valid video of a pilot study is reviewed in one of two Labelbox forms, each in its own project:
 
 - the [column review v2](column_review_v2.md), for clips of a classified view in B-mode or color Doppler: its
-  specification is [`configs/radar/column_review_v2.json`](../../configs/radar/column_review_v2.json) and its form
-  [`configs/radar/labelbox/column_review_v2.json`](../../configs/radar/labelbox/column_review_v2.json)
+  specification is [`configs/radar/deepecho_video_clip_annotation_specification.json`](../../configs/radar/deepecho_video_clip_annotation_specification.json) and its form
+  [`configs/radar/labelbox/deepecho_video_clip_annotation_ontology.json`](../../configs/radar/labelbox/deepecho_video_clip_annotation_ontology.json)
   (`python -m tools.labelbox.column_review --check` fails when the form no longer matches the specification);
 - the [view and type review](view_type_review_v1.md), for clips the view classifier labels `OTHER` or does not
   classify: its form is [`configs/radar/labelbox/view_type_review_v1.json`](../../configs/radar/labelbox/view_type_review_v1.json)

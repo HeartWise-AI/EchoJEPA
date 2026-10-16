@@ -9,10 +9,14 @@ has not yet been implemented. The form is approved together with
 [pilot metrics](pilot_metrics_v1.md), in [approval_v1.md](approval_v1.md). The form's version (2) is independent of the approved package version (v1),
 which is reflected in the supporting document filenames (see [Versions](ontology_v1.md)).
 
-The current files are selected by [current_review.json](../../configs/radar/labelbox/current_review.json):
+The current files and their roles are selected by
+[current_review.json](../../configs/radar/labelbox/current_review.json). The clinical ontology is YAML; the review
+specification is the hand-maintained JSON source, and the much larger Labelbox ontology JSON is generated from that
+specification and retained as the exact schema submitted for medical approval:
 
-- [Column/value/view specification](../../configs/radar/column_review_v2.json)
-- [Native Labelbox ontology](../../configs/radar/labelbox/column_review_v2.json)
+- [Clinical ontology](../../configs/radar/radar-caption-ontology-v1.yaml)
+- [Source column/value/view specification](../../configs/radar/deepecho_video_clip_annotation_specification.json)
+- [Generated native Labelbox ontology](../../configs/radar/labelbox/deepecho_video_clip_annotation_ontology.json)
 - [Prefill builder and scorer](../../tools/labelbox/column_review.py)
 - [Ontology/context/MAL importer](../../tools/labelbox/import_column_review.py)
 - [Whole-study demonstration](https://deepecho-three-view-demo.papirobbi.chatgpt.site)
@@ -27,8 +31,8 @@ The form keeps version 2: nothing has been uploaded under it, and its approval f
   calculations and receive no caption.
 - Added an optional "Comments" field, which must not contain patient details.
 - Added `review_problems` to validate submitted reviews for inclusion in
-  pilot metrics. If a reviewer answers "No" to a proposed view or acquisition
-  mode, they must provide the correct one.
+  pilot metrics. Reviewers correct the prefilled view or acquisition mode
+  directly; the original uploaded candidate remains available for comparison.
 - Added `encode_answers` as the inverse of `decode_annotations`.
 - Removed report text from context attachments. Each proposal identifies its
   source report field, while report context contains only numeric values.
@@ -53,8 +57,8 @@ Explicitly reported normal findings are prefilled too:
 | Left ventricule findings | Ventricule gauche non-dilaté | lv_size = normal | The visible LV cavity is not dilated. |
 
 The native form selects applicable clinical columns, fills their values, and suggests **Supported**.
-It also suggests that the clip can be interpreted, that the view and mode are correct, and that no additional
-information is missing or unsupported.
+It also suggests that the clip can be interpreted, prefills the view and mode for direct correction, and suggests
+that no additional information is missing or unsupported.
 The reviewer checks the displayed input and target coverage, changes exceptions, and selects the required
 **Review completed** answer before submitting. That answer is never part of imported predictions.
 Imported suggestions cannot be scored as submitted annotations.
@@ -121,7 +125,8 @@ A candidate caption is built from the prefilled columns. Each column with its va
 construction, and the caption holds nothing else: no identifiers, dates, numbers or report text. Reviewers judge the
 columns, not the text, and the [pilot metrics](pilot_metrics_v1.md) count the columns.
 
-- **View and acquisition mode** are proposed with every clip and judged by their own questions. They are not columns.
+- **View and acquisition mode** are prefilled with every clip and corrected in place when needed. They are not
+  columns; accuracy is derived by comparing the submitted values with the immutable uploaded candidate.
 - **Findings.** A column names a clinical finding (for example `lv_function`) and holds one of its values. The clip's
   view, acquisition mode and covered targets decide which columns it may carry; only explicit report statements
   prefill them, and a report section that is empty prefills nothing.
@@ -196,8 +201,8 @@ Mutable caption text is not accepted as clinical evidence.
 - An uninterpretable clip must include a reason, with an additional comment required if "Other" is selected. It is excluded from all other evaluations, contributes to no rate calculations, and receives no caption.
 
 `review_problems` lists why a submitted review cannot be counted: an answer missing or misplaced in the form, a
-detail left pending, an answer that contradicts the candidate, or a view or acquisition mode answered "No" but left
-as proposed. The [pilot metrics](pilot_metrics_v1.md) are computed on the reviews it accepts.
+detail left pending, or an answer that contradicts the candidate. The [pilot metrics](pilot_metrics_v1.md) are
+computed on the reviews it accepts.
 
 The rebuilt caption includes supported findings and explicit visible corrections/omissions. Wrong or unresolved
 view, acquisition or target coverage, missing details or absent final confirmation prevents a clinical caption.

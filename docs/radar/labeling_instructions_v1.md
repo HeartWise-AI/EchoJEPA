@@ -44,12 +44,12 @@ The terms used below:
 1. Watch the whole loop, more than once if needed.
 2. Decide whether the clip can be interpreted at all (question 1). If it cannot, give the reason, select **Review
    completed** and submit: nothing else is read.
-3. Check the view and the acquisition mode (questions 2 to 5).
-4. Check the targets the clip actually covers and, for a PSAX or subcostal clip, its level (questions 6 and 7).
-5. Go through the prefilled findings one by one: supported, incorrect or cannot assess (question 8).
-6. Look for an important visible finding the candidate leaves out (question 9), and for a statement of the caption
-   outside its findings (question 10).
-7. Add a comment only if needed, select **Review completed** (question 13) and submit.
+3. Check the prefilled view and acquisition mode, correcting either value directly when needed (questions 2 and 3).
+4. Check the targets the clip actually covers and, for a PSAX or subcostal clip, its level (questions 4 and 5).
+5. Go through the prefilled findings one by one: supported, incorrect or cannot assess (question 6).
+6. Look for an important visible finding the candidate leaves out (question 7), and for a statement of the caption
+   outside its findings (question 8).
+7. Add a comment only if needed, select **Review completed** (question 11) and submit.
 
 Every answer except **Review completed** is prefilled: the clip interpretable, the view and mode correct, every
 finding supported, nothing missing or extra. Change what this clip does not support; an answer you leave unchanged is
@@ -61,18 +61,16 @@ your confirmation.
 | # | Question | Id | Required | Answers |
 |---|---|---|---|---|
 | 1 | Is this clip uninterpretable? | `uninterpretable` | yes | `no` No, it can be interpreted; `yes` Yes, nothing in it can be judged → Why? (a reason below) |
-| 2 | Proposed view | `view` | yes | one of the 20 view classes |
-| 3 | Acquisition mode | `modality` | yes | `bmode` B-mode; `color_flow` Color Doppler; `spectral` Spectral Doppler; `m_mode` M-mode; `mixed` Mixed / analysis acquisition; `unresolved` Unresolved |
-| 4 | View correct? | `view_ok` | yes | `yes` Yes; `no` No — reroute; `cannot_assess` Cannot assess |
-| 5 | Acquisition mode correct? | `modality_ok` | yes | `yes` Yes; `no` No — reroute; `cannot_assess` Cannot assess |
-| 6 | Confirm targets actually covered and assessable | `visible_targets` | no | `lv` LV; `rv` RV; `la` LA; `ra` RA; `mitral` Mitral; `tricuspid` Tricuspid; `pericardium` Pericardium; `aortic` Aortic; `aorta_root` Aorta root; `aorta_ascending` Aorta ascending; `pulmonic` Pulmonic; `ivc` IVC; `aorta_arch` Aorta arch |
-| 7 | PSAX slice / SUBCOSTAL subtype (when relevant) | `psax_level` | yes | `not_applicable` Not applicable; `unresolved` Unresolved; `mid` PSAX mid / papillary level; `basal` PSAX basal; `apical` PSAX apical; `mitral` PSAX mitral leaflet level; `ivc` IVC focused; `four_chamber` Subcostal four chamber |
-| 8 | Prefilled findings — confirm or correct selected columns | `review_columns` | no | the prefilled columns, each: Proposed value (original retained in context) (one of the column's values) + Confirm this finding (`yes` Supported in this input; `no` Incorrect / should not be here → Why should it not be here? (an error reason) + Correction (`remove` Remove this claim, or one of the column's values); `cannot_assess` Cannot assess → Why can it not be assessed? (an assessment limitation)) |
-| 9 | Important visible finding missing from the candidate? | `missing_information` | yes | `no` No; `yes` Yes → Select missing columns and values (any column the view carries, each: Missing visible value (one of the column's values) + Visible in this input? (`yes` Yes; `cannot_assess` Cannot assess)) |
-| 10 | Additional statement that should not be here? | `unsupported_information` | yes | `no` No; `yes` Yes → Select offending columns / statements (any column or statement type, each: Why should this statement not be here? (an error reason); a statement type also needs Copy the offending statement (free text)) |
-| 11 | Original caption (for reference only; edits are ignored) | `candidate_caption` | no | free text |
-| 12 | Comments (no patient details) | `comments` | no | free text |
-| 13 | I reviewed this input, checked the proposed values and targets, and confirmed or corrected the suggestions. | `review_completed` | yes | `yes` Review completed |
+| 2 | View (prefilled - correct if needed) | `view` | yes | one of the 20 view classes |
+| 3 | Acquisition mode (prefilled - correct if needed) | `modality` | yes | `bmode` B-mode; `color_flow` Color Doppler; `spectral` Spectral Doppler; `m_mode` M-mode; `mixed` Mixed / analysis acquisition; `unresolved` Unresolved |
+| 4 | Confirm targets actually covered and assessable | `visible_targets` | no | `lv` LV; `rv` RV; `la` LA; `ra` RA; `mitral` Mitral; `tricuspid` Tricuspid; `pericardium` Pericardium; `aortic` Aortic; `aorta_root` Aorta root; `aorta_ascending` Aorta ascending; `pulmonic` Pulmonic; `ivc` IVC; `aorta_arch` Aorta arch |
+| 5 | PSAX slice / SUBCOSTAL subtype (when relevant) | `psax_level` | yes | `not_applicable` Not applicable; `unresolved` Unresolved; `mid` PSAX mid / papillary level; `basal` PSAX basal; `apical` PSAX apical; `mitral` PSAX mitral leaflet level; `ivc` IVC focused; `four_chamber` Subcostal four chamber |
+| 6 | Prefilled findings — confirm or correct selected columns | `review_columns` | no | the prefilled columns, each: Proposed value (original retained in context) (one of the column's values) + Confirm this finding (`yes` Supported in this input; `no` Incorrect / should not be here → Why should it not be here? (an error reason) + Correction (`remove` Remove this claim, or one of the column's values); `cannot_assess` Cannot assess → Why can it not be assessed? (an assessment limitation)) |
+| 7 | Important visible finding missing from the candidate? | `missing_information` | yes | `no` No; `yes` Yes → Select missing columns and values (any column the view carries, each: Missing visible value (one of the column's values) + Visible in this input? (`yes` Yes; `cannot_assess` Cannot assess)) |
+| 8 | Additional statement that should not be here? | `unsupported_information` | yes | `no` No; `yes` Yes → Select offending columns / statements (any column or statement type, each: Why should this statement not be here? (an error reason); a statement type also needs Copy the offending statement (free text)) |
+| 9 | Original caption (for reference only; edits are ignored) | `candidate_caption` | no | free text |
+| 10 | Comments (no patient details) | `comments` | no | free text |
+| 11 | I reviewed this input, checked the proposed values and targets, and confirmed or corrected the suggestions. | `review_completed` | yes | `yes` Review completed |
 <!-- END GENERATED: column_form -->
 
 The finding columns, their values and the views that carry them are listed in
@@ -167,7 +165,7 @@ jet.
 
 Function and size values are clip-level visual impressions, not a complete examination's diagnosis. A regurgitant jet
 is only demonstrated or not demonstrated in this acquisition: no finding grades it, and a caption that states an
-integrated grade, an exact EF or any number makes an additional statement (question 10). Regional wall motion
+integrated grade, an exact EF or any number makes an additional statement (question 8). Regional wall motion
 describes only the segments this clip shows. Report wall-motion scores keep their ambiguity: score 1 gives "Normal /
 hyperkinetic", score 3 "Akinetic / severely hypokinetic". Do not infer normal motion in unseen segments, a whole-study
 EF, stenosis severity, filling pressures or pulmonary hypertension.
@@ -189,14 +187,14 @@ mix. For other views, leave "Not applicable".
 
 #### Missing information
 
-Answer "Yes" to question 9 only for an **important** finding that is visible in this clip, that the view carries, and
+Answer "Yes" to question 7 only for an **important** finding that is visible in this clip, that the view carries, and
 that no prefilled finding states: choose the column and its value, and confirm it is visible in this input. Do not add
 normal values the report left out, absent findings, measurements, or what only other clips show. A prefilled finding
-with a wrong value is corrected under question 8, not added as missing.
+with a wrong value is corrected under question 6, not added as missing.
 
 #### Additional statements
 
-The candidate caption is built from its findings, so question 10 is rarely "Yes". Use it when the caption states
+The candidate caption is built from its findings, so question 8 is rarely "Yes". Use it when the caption states
 something outside its findings, such as a grade, an exact EF or a number: choose the column or the statement type and
 the reason, and copy the statement when the form asks.
 
@@ -210,10 +208,10 @@ If only some findings cannot be judged, the clip is interpretable: use **Cannot 
 
 #### The view and the acquisition mode
 
-Answer question 4 against the view classes described in [ontology_v1.md](ontology_v1.md#views). If the clip belongs
-to another class, answer "No — reroute" and choose that class in **Proposed view**; use `OTHER` for off-axis or
-non-standard clips. If you cannot tell the class, answer "Cannot assess": do not pick a class at random, and do not
-use `OTHER` for it. The acquisition mode works the same way (question 5 and **Acquisition mode**).
+Check question 2 against the view classes described in [ontology_v1.md](ontology_v1.md#views). If the clip belongs
+to another class, replace the prefilled value with that class; use `OTHER` for off-axis or non-standard clips. If
+nothing in the clip can be classified reliably, mark the clip uninterpretable rather than choosing at random. Check
+and correct the acquisition mode directly in question 3.
 
 Still judge the prefilled findings on the clip: they are counted either way. A corrected view or mode gives the clip
 no caption.
@@ -230,9 +228,9 @@ A review is returned for correction when:
 
 - a required answer is empty, or **Review completed** is not selected;
 - an incorrect finding has no reason or no correction, or a finding that cannot be assessed has no limitation;
-- question 9 is "Yes" without a column, its value and "Visible in this input? Yes", or lists a finding that is
+- question 7 is "Yes" without a column, its value and "Visible in this input? Yes", or lists a finding that is
   already prefilled;
-- question 10 is "Yes" without a column or statement type and its reason, or names a finding you left supported;
+- question 8 is "Yes" without a column or statement type and its reason, or names a finding you left supported;
 - the view or the acquisition mode is answered "No" but left as proposed, or changed without answering "No";
 - a prefilled finding is unticked, or its proposed value changed;
 - the clip is uninterpretable without a reason, or with "Other" and no comment.
@@ -325,10 +323,9 @@ The clips are synthetic, described in words.
 - **Prefilled findings:** `lv_size` Normal; `rv_size` Normal
 - **Candidate caption:** "The visible LV cavity is not dilated. The visible RV cavity is not dilated."
 - **What the reviewer changes:**
-  - View correct? **No — reroute**
-  - Proposed view: **A5C**
+  - View (prefilled - correct if needed): **A5C**
 - **Rebuilt caption:** none: the view or acquisition mode was corrected
-- **Why:** Answer "No" and choose the view the clip shows in "Proposed view". Still judge the prefilled findings on the clip: they are counted. The clip gets no caption under the proposed view.
+- **Why:** Replace the prefilled view with the view shown by the clip. Still judge the prefilled findings on the clip: they are counted. The clip gets no caption under the proposed view.
 
 ### 8. Uninterpretable clip
 

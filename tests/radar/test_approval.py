@@ -199,7 +199,8 @@ class TestShippedRecord(unittest.TestCase):
 
     def test_the_review_forms_are_approved_with_the_ontology(self):
         files = approved_files(ONTOLOGY)
-        for path in ("configs/radar/column_review_v2.json", "configs/radar/labelbox/column_review_v2.json",
+        for path in ("configs/radar/deepecho_video_clip_annotation_specification.json",
+                     "configs/radar/labelbox/deepecho_video_clip_annotation_ontology.json",
                      "configs/radar/labelbox/view_type_review_v1.json"):
             self.assertIn(path, files)
         self.assertEqual(files[0], os.path.relpath(ONTOLOGY.path, REPO_ROOT))  # the ontology comes first
