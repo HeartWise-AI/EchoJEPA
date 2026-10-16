@@ -70,7 +70,7 @@
     },
     {
       "type": "radio",
-      "instructions": "Proposed view",
+      "instructions": "View (prefilled - correct if needed)",
       "name": "view",
       "required": true,
       "options": [
@@ -223,7 +223,7 @@
     },
     {
       "type": "radio",
-      "instructions": "Acquisition mode",
+      "instructions": "Acquisition mode (prefilled - correct if needed)",
       "name": "modality",
       "required": true,
       "options": [
@@ -267,74 +267,6 @@
           "featureSchemaId": null,
           "label": "Unresolved",
           "value": "unresolved",
-          "options": []
-        }
-      ],
-      "schemaNodeId": null,
-      "featureSchemaId": null,
-      "attributes": null,
-      "scope": "global",
-      "uiMode": "searchable"
-    },
-    {
-      "type": "radio",
-      "instructions": "View correct?",
-      "name": "view_ok",
-      "required": true,
-      "options": [
-        {
-          "schemaNodeId": null,
-          "featureSchemaId": null,
-          "label": "Yes",
-          "value": "yes",
-          "options": []
-        },
-        {
-          "schemaNodeId": null,
-          "featureSchemaId": null,
-          "label": "No — reroute",
-          "value": "no",
-          "options": []
-        },
-        {
-          "schemaNodeId": null,
-          "featureSchemaId": null,
-          "label": "Cannot assess",
-          "value": "cannot_assess",
-          "options": []
-        }
-      ],
-      "schemaNodeId": null,
-      "featureSchemaId": null,
-      "attributes": null,
-      "scope": "global",
-      "uiMode": "searchable"
-    },
-    {
-      "type": "radio",
-      "instructions": "Acquisition mode correct?",
-      "name": "modality_ok",
-      "required": true,
-      "options": [
-        {
-          "schemaNodeId": null,
-          "featureSchemaId": null,
-          "label": "Yes",
-          "value": "yes",
-          "options": []
-        },
-        {
-          "schemaNodeId": null,
-          "featureSchemaId": null,
-          "label": "No — reroute",
-          "value": "no",
-          "options": []
-        },
-        {
-          "schemaNodeId": null,
-          "featureSchemaId": null,
-          "label": "Cannot assess",
-          "value": "cannot_assess",
           "options": []
         }
       ],

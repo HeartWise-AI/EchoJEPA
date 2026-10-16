@@ -61,7 +61,7 @@ def findings(path: str, text: str) -> list[str]:
 class TestPrivacy(unittest.TestCase):
     def test_scanned_files_are_clean(self):
         paths = scanned_paths()
-        self.assertIn("configs/radar/labelbox/column_review_v2.json", paths)
+        self.assertIn("configs/radar/labelbox/deepecho_video_clip_annotation_ontology.json", paths)
         self.assertIn("docs/radar/labeling_instructions_v1.fr.md", paths)
         problems = []
         for path in paths:

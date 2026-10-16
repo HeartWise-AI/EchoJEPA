@@ -21,7 +21,7 @@ prefilled columns).
 | Item | Answers |
 |---|---|
 | **Uninterpretable clip?** (`uninterpretable`) | no; yes, with a reason |
-| **View correct?** (`view_ok`) and **Acquisition mode correct?** (`modality_ok`) | yes; no, with the view or mode the clip shows in place of the proposal; cannot assess |
+| **View** (`view`) and **Acquisition mode** (`modality`) | prefilled from the candidate and corrected in place; the immutable uploaded candidate provides the original values for accuracy calculations |
 | Targets and level (`visible_targets`, `psax_level`) | the targets the clip covers; the PSAX level or subcostal subtype |
 | **Each prefilled column** | supported; incorrect, with an error reason and a corrected value or "remove"; cannot assess, with a limitation |
 | **Missing information?** (`missing_information`) | no; yes, with each missing column, its value and the confirmation that it is visible |
@@ -87,8 +87,8 @@ The **review checks** are three, and a review that fails any of them is returned
   reason (and its copied text for a statement type), and an uninterpretable clip its reason (and a comment for
   "Other");
 - **consistency:** the reviewed columns are exactly the candidate's, with their original values; no missing column is
-  already a candidate column; no additional statement names a column left supported; and a view or acquisition mode
-  answered "no" differs from the proposal, while one that differs is answered "no".
+  already a candidate column; and no additional statement names a column left supported. Submitted view and mode
+  values are compared directly with the immutable uploaded candidate.
 
 An uninterpretable clip is checked only for its answers and its reason: its other answers are not read.
 
@@ -117,9 +117,9 @@ reported; the spread across studies is the measure of consistency.
 
 | | Metric | Numerator / denominator |
 |---|---|---|
-| C1 | View coverage | I answering "View correct?" yes or no / I |
+| C1 | View coverage | I with a submitted view and acquisition mode / I |
 | C2 | Column coverage | Resolved columns / all columns of I. A column is resolved when it is supported or incorrect; one that cannot be assessed is unresolved. |
-| M1 | View accuracy | "View correct? yes" / I answering yes or no. The confusions (proposed view → the view the clip shows) are listed. The acquisition mode is reported the same way. |
+| M1 | View accuracy | Submitted view equal to the candidate view / I. The confusions (candidate view → submitted view) are listed. Acquisition-mode accuracy is computed the same way. |
 | M2 | Confirmed captions | C with every column supported, no missing information, no additional statement, and the view and the acquisition mode correct / C |
 | M3 | Clips with an error (primary) | C with at least one incorrect column or one additional statement / C. Reported by error reason. |
 | M3s | Column error rate (secondary) | Incorrect columns / resolved columns of I: the scorer's original error rate. Also reported: its original support rate, supported columns / all columns of I. A column that cannot be assessed never counts as supported. |

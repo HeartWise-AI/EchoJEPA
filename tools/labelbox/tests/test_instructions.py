@@ -67,7 +67,7 @@ class TestInstructions(unittest.TestCase):
 
         refused(lambda b: first(b)["changes"].pop("lv_function__correction"))  # an error without its correction
         refused(lambda b: first(b)["columns"].update(aortic_regurgitant_jet="demonstrated"))  # not carried by A4C
-        refused(lambda b: first(b)["changes"].update(view_ok="no"))  # a wrong view left as proposed
+        refused(lambda b: first(b)["changes"].update(view="no_view"))
         refused(lambda b: first(b)["title"].pop("fr"))
         refused(lambda b: b["view_type_review"][0]["answers"].update(view="no_view"))
         refused(lambda b: next(e for e in b["view_type_review"] if e["id"] == "analysis_screen")["answers"].update(

@@ -48,8 +48,8 @@ class ApprovalError(ValueError):
 # clips of a classified view and the view and type review for OTHER clips. A new ontology version lists its forms here.
 REVIEW_FORMS = {
     1: (
-        "configs/radar/column_review_v2.json",
-        "configs/radar/labelbox/column_review_v2.json",
+        "configs/radar/deepecho_video_clip_annotation_specification.json",
+        "configs/radar/labelbox/deepecho_video_clip_annotation_ontology.json",
         "docs/radar/column_review_v2.md",
         "configs/radar/labelbox/view_type_review_v1.json",
         "docs/radar/view_type_review_v1.md",

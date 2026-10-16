@@ -16,8 +16,8 @@ The exact content of these files at the content commit:
 - `configs/radar/radar-caption-ontology-v1.yaml`: views, structures, concepts and priors;
 - `configs/radar/label_mappings_v1.yaml`: DeepECHO, EchoPrime and PanEcho mappings;
 - `docs/radar/ontology_v1.md`, including its handwritten rules and clinical choices;
-- `configs/radar/column_review_v2.json`: the column review's columns, values, view routes and reasons;
-- `configs/radar/labelbox/column_review_v2.json` and `docs/radar/column_review_v2.md`: its Labelbox form and how it
+- `configs/radar/deepecho_video_clip_annotation_specification.json`: the column review's columns, values, view routes and reasons;
+- `configs/radar/labelbox/deepecho_video_clip_annotation_ontology.json` and `docs/radar/column_review_v2.md`: its Labelbox form and how it
   prefills, routes and scores;
 - `configs/radar/labelbox/view_type_review_v1.json` and `docs/radar/view_type_review_v1.md`: the form for `OTHER`
   clips;
