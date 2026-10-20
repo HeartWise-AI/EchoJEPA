@@ -28,8 +28,8 @@ The list carries the columns `clip_screen.py features` needs (video_path, dicom_
 acq_category) and keeps the metadata (patient, study, view, frames, frame rate, EF). reference_clips.csv adds, for
 the scanner layouts of the list, random clips of patients not drawn, from which `flag` learns where each layout
 normally has ink. A sample that leaves no such clip is refused; validation.json counts the sample's layouts with
-fewer reference clips than a layout baseline needs (clip_screen.MIN_LAYOUT_CLIPS), whose clips `flag` would exclude
-as incomplete, and the console warns of them.
+fewer reference clips than a layout baseline needs (clip_screen.MIN_LAYOUT_CLIPS), whose clips get no results-box
+score (and are excluded as incomplete when the screen's measurement rules exclude), and the console warns of them.
 
 Outputs, in --out-dir (a folder only its owner can read; patient and study identifiers):
     validation_clips.csv   the sample: sample_stratum, sample_prob, patient_prob, clip_prob and the group sizes
@@ -182,8 +182,8 @@ def build(args):
     if sample.empty:
         raise SystemExit("The population is empty or every --n-* is 0: nothing to validate on.")
     reference = reference_sample(v, sample, args.reference_per_layout, rng).drop(columns="group")
-    # flag learns where each layout normally has ink from the reference clips: with none, every clip of the list would
-    # be excluded as incomplete, and the list would check none of the screen's ink rules.
+    # flag learns where each layout normally has ink from the reference clips: with none, no clip of the list would get
+    # a results-box score, and the list would check none of the screen's ink rules.
     if reference.empty:
         raise SystemExit("No reference clips: every patient with clips of the sample's layouts was drawn into the "
                          "sample, so none is left from which flag learns where each layout normally has ink. Draw "
@@ -226,9 +226,9 @@ def build(args):
           + f"; {len(reference)} reference clips.")
     if short:
         print(f"[validation]  WARNING: {short} of the sample's {len(sample_layouts)} layouts have fewer than "
-              f"{clip_screen.MIN_LAYOUT_CLIPS} reference clips, too few for a layout baseline: flag excludes their "
-              "clips as incomplete unless flagged otherwise, so the list checks the results-box rule on none of "
-              "them. Draw fewer clips of those layouts or widen the population.", file=sys.stderr)
+              f"{clip_screen.MIN_LAYOUT_CLIPS} reference clips, too few for a layout baseline: their clips get no "
+              "results-box score, so the list checks the results-box rule on none of them. Draw fewer clips of "
+              "those layouts or widen the population.", file=sys.stderr)
 
 
 def main(argv=None):

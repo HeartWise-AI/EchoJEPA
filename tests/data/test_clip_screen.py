@@ -121,7 +121,7 @@ class TestClipFeatures(unittest.TestCase):
         features, cells, _ = cs.clip_features(frames)
         self.assertEqual(features["inside_glyphs"], 2)
         flags = cs.apply_flags(pd.DataFrame([{**feature_row(cells), **features}]), {})
-        self.assertEqual((bool(flags.measurement.iloc[0]), flags.exclude_reason.iloc[0]), (True, "measurement"))
+        self.assertTrue(flags.measurement.iloc[0])
 
     @staticmethod
     def sliding_tissue(n=48, step=1.0, seed=0):
@@ -148,7 +148,7 @@ class TestClipFeatures(unittest.TestCase):
         self.assertEqual((features["inside_glyphs"], features["inside_glyphs_clip"]), (4, 0))
         self.assertEqual((features["windows"], features["frozen_windows"]), (3, 0))
         flags = cs.apply_flags(pd.DataFrame([{**feature_row(cells), **features}]), {})
-        self.assertEqual(flags.exclude_reason.iloc[0], "measurement")
+        self.assertTrue(flags.measurement.iloc[0])
 
     def test_marks_shown_during_part_of_a_short_clip_are_counted(self):
         frames = speckle()  # 12 frames: windows of 6.
@@ -344,15 +344,19 @@ class TestClipFeatures(unittest.TestCase):
 
 def feature_row(cells, inside=0, motion=0.3, bbox=(30, 30, 169, 149), error=None, layout="ge"):
     return {"video_path": f"/synthetic/{np.random.default_rng().integers(1 << 40)}", "error": error,
-            "video_sha256": "synthetic",
+            "video_sha256": "synthetic", "dicom_status": "ok",
             "vendor": layout, "model": "m", "width": W, "height": H, "acq_category": "bmode",
             "motion_frac": motion, "inside_glyphs": inside, "region_bbox": json.dumps(bbox),
             "cells_shape": json.dumps(list(cells.shape)), "cells": np.packbits(cells.ravel()).tobytes()}
 
 
-def flag_rows(rows, reference):
+# The earlier policy, under which the pixel measurement rules exclude: what the detector tests check.
+MEASUREMENT_EXCLUDES = {**cs.THRESHOLDS, "measurement_excludes": True}
+
+
+def flag_rows(rows, reference, thresholds=cs.THRESHOLDS):
     baselines, _ = cs.layout_baselines(pd.DataFrame(reference))
-    return cs.apply_flags(pd.DataFrame(rows), baselines)
+    return cs.apply_flags(pd.DataFrame(rows), baselines, thresholds)
 
 
 class TestFlags(unittest.TestCase):
@@ -368,7 +372,7 @@ class TestFlags(unittest.TestCase):
 
     def test_ink_where_the_layout_has_none_is_extra(self):
         rows = self.rows(5) + [feature_row(self.box)]
-        flags = flag_rows(rows, self.rows())
+        flags = flag_rows(rows, self.rows(), MEASUREMENT_EXCLUDES)
         self.assertEqual(flags.extra_cells.iloc[-1], 18)
         self.assertTrue(flags.measurement.iloc[-1])
         self.assertEqual(flags.exclude_reason.iloc[-1], "measurement")
@@ -381,7 +385,7 @@ class TestFlags(unittest.TestCase):
         far[10:13, 19:23] = True
         flags = flag_rows([feature_row(far, bbox=(30, 30, 80, 80))], self.rows())
         self.assertEqual(flags.extra_cells.iloc[0], 12)
-        self.assertEqual(flags.exclude_reason.iloc[0], "measurement")
+        self.assertTrue(flags.measurement.iloc[0])
 
     def test_results_text_shown_partway_through_is_extra_ink(self):
         def row(frames):
@@ -402,7 +406,7 @@ class TestFlags(unittest.TestCase):
         flags = cs.apply_flags(pd.DataFrame([row(whole), row(half)]), baselines)
         self.assertGreaterEqual(int(flags.extra_cells.iloc[1]), cs.THRESHOLDS["extra_cells"])
         self.assertEqual(flags.extra_cells.iloc[1], flags.extra_cells.iloc[0])
-        self.assertEqual(flags.exclude_reason.tolist(), ["measurement", "measurement"])
+        self.assertEqual(flags.measurement.tolist(), [True, True])
 
     def test_a_box_common_among_the_screened_clips_is_still_extra(self):
         rows = self.rows(27) + [feature_row(self.box.copy()) for _ in range(3)]
@@ -463,15 +467,34 @@ class TestFlags(unittest.TestCase):
         self.assertEqual(flag_rows([feature_row(longer)], self.rows()).extra_cells.iloc[0], 0)
 
     def test_a_clip_that_could_not_be_checked_for_a_box_is_incomplete(self):
-        # 3 reference clips, fewer than MIN_LAYOUT_CLIPS: no baseline, so no results-box check. A clip no other flag
-        # excludes is excluded as incomplete, never passed.
-        flags = flag_rows([feature_row(self.box), feature_row(self.header, inside=5)], self.rows(3))
+        # 3 reference clips, fewer than MIN_LAYOUT_CLIPS: no baseline, so no results-box check. With the pixel
+        # measurement rules excluding, a clip no other flag excludes is excluded as incomplete, never passed.
+        rows = [feature_row(self.box), feature_row(self.header, inside=5)]
+        flags = flag_rows(rows, self.rows(3), MEASUREMENT_EXCLUDES)
         self.assertTrue(flags.extra_cells.isna().all())
         self.assertEqual(flags.exclude_reason.tolist(), ["incomplete", "measurement"])
+        # Under the default policy a missing baseline alone excludes nothing; the measurement flag is still set.
+        flags = flag_rows(rows, self.rows(3))
+        self.assertEqual((flags.exclude_reason.tolist(), flags.measurement.tolist()), (["", ""], [False, True]))
         # The reviewer's case: 25 reference clips, 3 with the box left out, 22 left: the same.
         reference = self.rows(22) + [feature_row(self.box.copy()) for _ in range(3)]
-        flags = flag_rows([feature_row(self.box.copy())], reference)
+        flags = flag_rows([feature_row(self.box.copy())], reference, MEASUREMENT_EXCLUDES)
         self.assertEqual((flags.extra_cells.iloc[0], flags.exclude_reason.iloc[0]), (pd.NA, "incomplete"))
+
+    def test_the_policy_excludes_by_header_and_motion_not_by_the_pixel_measurement_rules(self):
+        # Each header that gives no usable image region is its own reason, before still; the pixel measurement rules
+        # set their flag but exclude only with measurement_excludes.
+        statuses = ("ok", "no_regions", "size_mismatch", "unreadable_header", "", None)
+        rows = [dict(feature_row(self.box.copy()), dicom_status=s) for s in statuses]
+        rows.append(dict(feature_row(self.header.copy(), motion=0.001), dicom_status="no_regions"))
+        rows.append(feature_row(self.header.copy(), motion=0.001))
+        flags = flag_rows(rows, self.rows())
+        self.assertEqual(flags.exclude_reason.tolist(),
+                         ["", "no_image_region", "header_size_mismatch", "header_unreadable", "no_header", "no_header",
+                          "no_image_region", "still"])
+        self.assertTrue(flags.measurement.iloc[0])
+        self.assertEqual(flag_rows(rows[:1], self.rows(), MEASUREMENT_EXCLUDES).exclude_reason.tolist(),
+                         ["measurement"])
 
     def test_a_layout_key_is_the_same_whatever_missing_values_and_dtypes(self):
         reference = [dict(r, model=None) for r in self.rows()]
@@ -1063,9 +1086,11 @@ class TestDiagnostic(unittest.TestCase):
                          {"marks_inside": 2})
         self.assertEqual(five["reference_clips"]["by_acquisition"]["color_flow"]["left_out"], {"used": 2})
         self.assertEqual(five["reference_clips"]["used_with_measurement"], 0)
-        # Weighed up to the screened clips: at 5 px no clean clip is excluded and both measurements are found.
-        self.assertEqual((five["policy"]["fp"], five["policy"]["fn"]), (0.0, 0.0))
-        self.assertGreater(smallest["policy"]["fp"], 0)
+        # Weighed up to the screened clips: at 5 px the detector flags no clean clip and finds both measurements,
+        # which the default policy then keeps (the pixel measurement rules do not exclude); at 3 px it flags clean ones.
+        self.assertEqual((five["measurement"]["fp"], five["measurement"]["fn"]), (0.0, 0.0))
+        self.assertEqual((five["policy"]["fp"], five["policy"]["fn"]), (0.0, 2.0))
+        self.assertGreater(smallest["measurement"]["fp"], 0)
         # A reference population other than the one drawn from is refused.
         pd.read_parquet(self.paths["reference"]).iloc[:-1].to_parquet(self.paths["reference"])
         cs._write_info(self.paths["reference"], {"clips": "reference", "extractor": cs.extractor()})
@@ -1220,7 +1245,7 @@ class TestCalibration(unittest.TestCase):
     def test_the_policy_counts_every_reason_to_exclude(self):
         answers = self.answers.copy()
         answers.loc["kd", "other_exclusion"] = "yes"
-        report = cs.calibration_report(self.flags, self.reference, self.sheet, answers)
+        report = cs.calibration_report(self.flags, self.reference, self.sheet, answers, MEASUREMENT_EXCLUDES)
         keeps = report["policy"]["kept"]
         self.assertEqual((keeps["sampled"], keeps["ineligible"]), (2, 2))
         self.assertEqual(keeps["ineligible_by_question"], {"still": 0, "measurement": 1, "other_exclusion": 1})
@@ -1233,7 +1258,8 @@ class TestCalibration(unittest.TestCase):
     def test_a_validation_sample_estimates_the_excluded_share_and_reports_each_group(self):
         # The flags of a validation list are a sample: the excluded share is weighted, not counted on them.
         sheet = self.sheet.assign(stratum=["g1", "g2", "g1", "g2"], inclusion_prob=[0.5, 0.5, 0.1, 0.1])
-        report = cs.calibration_report(self.flags, self.reference, sheet, self.answers, flags_are_population=False)
+        report = cs.calibration_report(self.flags, self.reference, sheet, self.answers, MEASUREMENT_EXCLUDES,
+                                       flags_are_population=False)
         self.assertAlmostEqual(report["policy"]["excluded_share"], 4 / 24)
         self.assertEqual(report["policy"]["excluded_share_from"], "weighted sample")
         self.assertEqual(sorted(report["by_stratum"]), ["g1", "g2"])
@@ -1302,12 +1328,12 @@ class TestCalibration(unittest.TestCase):
         answers = pd.DataFrame({"still": "no", "measurement": ["no", "yes", "yes", "no"], "other_exclusion": "no",
                                 "cursor": ["no", "no", "no", "yes"]},
                                index=pd.Index(sheet.global_key, name="global_key"))
-        sweep = cs.calibration_report(clips, reference, sheet, answers)["inside_mark_px_sweep"]
+        sweep = cs.calibration_report(clips, reference, sheet, answers, MEASUREMENT_EXCLUDES)["inside_mark_px_sweep"]
         self.assertEqual(sorted(sweep, key=int), [str(px) for px in cs.INSIDE_MARK_SWEEP])
         smallest, five = sweep[str(cs.MIN_INK_PX)], sweep["5"]
         (layout, at_smallest), = smallest["baselines"].items()
         self.assertEqual((at_smallest["baseline"], at_smallest["reference_left_out"], at_smallest["incomplete"]),
-                         (False, {"marks_inside": 30}, 2))
+                         (False, {"marks_inside": 30}, 4))  # no clip has a results-box score.
         self.assertEqual((five["baselines"][layout]["baseline"], five["baselines"][layout]["reference_used"]),
                          (True, 30))
         policy = {px: [sweep[px]["policy"][k] for k in ("tp", "fp", "fn", "tn")] for px in (str(cs.MIN_INK_PX), "5")}
@@ -1318,7 +1344,7 @@ class TestCalibration(unittest.TestCase):
         self.assertEqual([sweep[px]["cursor_clips"]["eligible_excluded"] for px in (str(cs.MIN_INK_PX), "5")], [1, 0])
         self.assertEqual(sorted(five["by_acquisition"]), ["bmode"])
         # flag at a size gives the sweep's flags.
-        flags = cs.screen_flags(clips, reference, {**cs.THRESHOLDS, "inside_mark_px": 5})[0]
+        flags = cs.screen_flags(clips, reference, {**MEASUREMENT_EXCLUDES, "inside_mark_px": 5})[0]
         self.assertEqual(flags.exclude_reason.tolist(), ["", "measurement", "measurement", ""])
 
     def test_exact_upper_bound(self):
@@ -1370,7 +1396,8 @@ class TestCommandLine(unittest.TestCase):
                 write_mp4(path, frames)
                 clips.append({"video_path": path, "global_key": f"radar-pilot-{i:024x}", "vendor": "v", "model": "m",
                               "acq_category": "bmode", "view": "A4C"})
-            clips[1]["dicom_path"] = write_dicom(os.path.join(tmp, "clip1.dcm"))  # the other clip has none.
+            for i, clip in enumerate(clips):  # a header with image regions: without one a clip is excluded.
+                clip["dicom_path"] = write_dicom(os.path.join(tmp, f"clip{i}.dcm"))
             pd.DataFrame(clips).to_csv(os.path.join(tmp, "clips.csv"), index=False)
             features, flags, sheet = (os.path.join(tmp, n) for n in ("features.parquet", "flags.parquet", "sheet"))
             with contextlib.redirect_stdout(io.StringIO()):
@@ -1389,7 +1416,7 @@ class TestCommandLine(unittest.TestCase):
             out = pd.read_parquet(flags)
             self.assertEqual(out.exclude_reason.tolist(), ["", "still"])
             self.assertEqual(out.global_key.tolist(), [c["global_key"] for c in clips])
-            self.assertEqual(out.dicom_status.tolist(), ["", "ok"])
+            self.assertEqual(out.dicom_status.tolist(), ["ok", "ok"])
             self.assertEqual(out.duplicate_frac.tolist(), [0.0, 1.0])
             self.assertNotIn("cells", out)
             self.assertEqual(os.stat(flags + ".baselines").st_mode & 0o777, 0o700)
@@ -1452,7 +1479,7 @@ class TestCommandLine(unittest.TestCase):
             self.assertEqual(report["policy"]["kept"]["sampled"], 1)
             sweeps = report["still"]["sweeps"]
             self.assertEqual(set(sweeps), {c for c, _, _ in cs.STILL_SWEEPS})
-            self.assertEqual(sweeps["scan_motion_frac"]["labelled"], 1)  # only one clip has a scan area.
+            self.assertEqual(sweeps["scan_motion_frac"]["labelled"], 2)  # both clips have a scan area.
             self.assertEqual(sweeps["duplicate_frac"]["1.0"]["sensitivity"], 1.0)
             self.assertEqual(set(report["inside_mark_px_sweep"]), {str(px) for px in cs.INSIDE_MARK_SWEEP})
             # Flags that do not come back when recomputed from their features (edited after flag) are refused.

@@ -27,9 +27,9 @@ inputs that changed since the step that made them finished:
                 reference_clips.csv, a random sample of the same layouts from other studies, from which the screen
                 learns where each layout normally has ink.
     select      after `clip_screen.py features` on shortlist_clips.csv and reference_clips.csv and `flag`: flags
-                screened from other lists (an earlier shortlist) are refused. Remove every flagged clip
-                (unreadable, still, measurement or incomplete; no one is asked), then take per category the
-                best-ranked study that meets the criteria on its kept clips, one study per patient.
+                screened from other lists (an earlier shortlist) are refused. Remove every clip the screen's
+                policy excludes (unreadable, a header without image regions, still; no one is asked), then take per
+                category the best-ranked study that meets the criteria on its kept clips, one study per patient.
     candidates  column review v2 candidates for the pilot's classified clips and the list of its view and type
                 review items, from a selection whose files are unchanged since select and the report file
                 shortlist used. A screen at provisional thresholds (not yet calibrated on labelled clips) is
@@ -330,8 +330,8 @@ def shortlist(args):
 
 
 def screened_clips(clips, flags):
-    """The shortlisted clips with the screen's flags; `exclude` marks a flagged clip (unreadable, still,
-    measurement or incomplete), which is removed."""
+    """The shortlisted clips with the screen's flags; `exclude` marks a clip the screen's policy excludes (its
+    `exclude_reason`), which is removed."""
     missing = set(clips.video_path) - set(flags.video_path)
     if missing:
         raise SystemExit(f"{len(missing)} shortlisted clips were not screened; run clip_screen.py on "

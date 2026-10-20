@@ -15,9 +15,9 @@ forms:
 |---|---|---|
 | Single-frame DICOM objects: still B-mode measurement frames, spectral Doppler stills, report and measurement pages | They have no video in the archive | never candidates |
 | Classified views in other acquisition modes | not B-mode or color Doppler, or not read from a validated header (GE only); `OTHER` videos keep any mode, which their reviewer gives | `radar_pilot.py shortlist` |
+| Clips whose DICOM header gives no usable image region: on this archive, analysis screens (strain curves, segment values) and still images | no image region (`no_image_region`), or a header that cannot be used (`header_size_mismatch`, `header_unreadable`, `no_header`) | `clip_screen.py` |
 | Still clips, including a frozen frame saved as several frames | almost nothing in the sector moves (`still`) | `clip_screen.py` |
-| Clips with visible measurements: calipers, tracings, measurement text | static ink over the image (`measurement`) | `clip_screen.py` |
-| Clips the screen could not check for a results box | no layout baseline: too few clean reference clips (`incomplete`) | `clip_screen.py` |
+| Clips with visible measurements over a regular image | not removed by pixels: the measurement scores are reported, and exclude only with `measurement_excludes` (see **Policy**); the audit bounds how many such clips are kept | — |
 
 These removals are automatic: no person reviews a flagged clip, and the only human review is the caption review in
 Labelbox. No clip is removed for being short: a clip of a few frames goes to its form like any other. If a reviewer
@@ -40,7 +40,7 @@ The screen samples up to 48 evenly spaced frames per clip and reads the ultrasou
 
 A pixel counts as moving if its temporal standard deviation exceeds 6 intensity levels in any color channel, excluding thin moving cursors. `still_basis` records the criterion used. For calibration, the screen also records motion fractions at thresholds 3 and 10, plus `duplicate_frac` (near-duplicate consecutive frames).
 
-**Measurement.** Detected through two complementary methods:
+**Measurement.** Two pixel scores, computed and reported for every clip; they exclude a clip only with `measurement_excludes` (see **Policy**):
 
 - `inside_glyphs`: Detects static bright or colored marks over moving tissue, including calipers (+/x), traced contours, dotted/dashed lines, and other ink. Solid straight lines are ignored. Detection uses the full clip and, for clips with $\geq 12$ sampled frames, overlapping half-clip windows spaced one quarter apart. The maximum count is retained; `inside_glyphs_clip` stores the full-clip count, and `inside_marks_raw` counts all ink pieces. Frozen windows and locally static patches are excluded to avoid mistaking tissue for ink. End-bar calipers are not detected, and a single trace falls below the two-mark threshold.
 
@@ -53,7 +53,7 @@ A pixel counts as moving if its temporal standard deviation exceeds 6 intensity 
 
 At least 25 clean references are required per layout. `flag` saves baseline images to `flags.parquet.baselines/` (permissions 0700) and reference-exclusion counts to `layouts.csv`.
 
-**Exclusions.** `flag` excludes clips marked unreadable, still, or measurement. Clips with insufficient layout references ($<25$) or no image region are marked `incomplete` and also excluded. It reports incomplete counts; increase `shortlist --reference-per-layout` to obtain more references.
+**Policy.** `flag` excludes, in this order: unreadable clips; clips whose DICOM header gives no image region that applies to the video, each failure its own reason (`no_image_region`; `header_size_mismatch`, a header image size other than the video's; `header_unreadable`; `no_header`, no `dicom_path`); and still clips. The measurement flag (`measurement`) and its scores are computed and reported, but exclude only when the `measurement_excludes` threshold is set, and so does a missing layout baseline (`incomplete`: fewer than 25 clean references), which otherwise only leaves a clip without a results-box score. The header rule is an eligibility rule for this archive, set by the labelled sample below: there it captured the measured clips but one, but DICOM regions describe the image data, not whether anything was measured, so it does not show that every measured clip lacks them.
 
 **A limit found in testing.** Through H.264 encoding (synthetic tissue, libx264 4:4:4 at CRF 18 and 23), the
 pixels of a caliper over moving tissue vary by a median of 4 to 9 levels between frames, more than the 2 levels
@@ -81,6 +81,8 @@ those left out for extra ink rise from 26 to 45, leaving 10 to 21 usable. Calipe
 these clips, counting extra cells over the whole screen brought no B-mode clip to 8, and traced
 contours added one mark in 2 clips and changed no exclusion.
 
+**Labelled diagnostic sample (the pilot's shortlist).** 216 clips (97 screened, 119 reference) were labelled blind. At the earlier policy, under which the pixel measurement scores excluded, the screen excluded 77% of the 1,061 shortlisted clips, nearly all through `extra_cells`, and flagged none of the 27 clips labelled with measurements. None of the 162 regular B-mode and color clips labelled (1016 x 708, with image regions) had measurements, including the 20 drawn as results boxes. 26 of the 27 measured clips, and all 12 still ones, had no image region in their header: analysis screens such as strain displays (acquisition mode unknown, view `OTHER`). The 27th has a usable header at an unusual size (1236 x 854, its image region 7% of the frame), and the current policy keeps it. The still flag classified both still screened clips correctly, a small sample. With the current policy the screen excludes 10 of the 1,061 clips. About 10 clips were drawn per stratum, so a minority of measured regular clips is not ruled out (0 measured of 10 in a stratum of 423 clips leaves up to about a quarter at 95%): the audit below bounds it.
+
 ## Tuning the thresholds (outside the pipeline)
 
 All screening thresholds are initially **provisional**:
@@ -88,6 +90,7 @@ All screening thresholds are initially **provisional**:
 - **Still:** motion $<5\%$ of scan area, or $<1\%$ of frame without a scan area.
 - **Measurement:** `inside_glyphs` $\geq 2$ or `extra_cells` $\geq 8$.
 - **Minimum mark size:** `inside_mark_px` = 3 pixels.
+- **Policy:** `measurement_excludes` = false, so the measurement scores exclude nothing (see **Policy**); `calibrate --thresholds '{"measurement_excludes": true}'` evaluates the earlier policy on the same labels.
 - **Clean references:** motion $\geq 20\%$ of scan area or $\geq 5\%$ of frame, with no unusual ink block of $\geq 8$ cells.
 
 `select` warns about provisional flags; `candidates` rejects them unless `--provisional-screen` is set for a trial run.
@@ -115,7 +118,7 @@ Calibration uses separate `clip_screen.py` commands, not the main pipeline:
 
    All sheet clips must be reviewed. Calibration rejects unrelated flags or (for diagnostic sheets) reference clips, and incompatible flag rules, pass-1 extractors, or library versions.
 
-4. **Independent validation:** Tune on the pilot diagnostic sample, then validate on different patients. Run `screen_validation.py --exclude-patients` with the pilot's clip lists, followed by `features`, `flag`, `sheet --all-clips`, and `calibrate` at the chosen thresholds.
+4. **Audit, then independent validation:** Tune on the pilot diagnostic sample. Rerun `flag` with the chosen policy, then label a fresh random audit sample of 100 kept clips (with the excluded ones): zero ineligible among them bounds the share of ineligible kept clips at 2.95% (exact one-sided 95% binomial bound; showing below 1% takes 299). This bounds prevalence among the pilot's kept clips, not a detector's sensitivity or other patients. Then freeze the policy and validate on different patients: `screen_validation.py --exclude-patients` with the pilot's `shortlist_clips.csv` and `reference_clips.csv`, followed by `features`, `flag`, `sheet --all-clips`, and `calibrate`.
 
 5. **Finalize:** Make the chosen thresholds the defaults. Update `CALIBRATION` in `clip_screen.py` with the report date and SHA-256, evaluated screen, and thresholds. A test checks that these match the defaults. Only the evaluated screen/configuration is calibrated; changes to code, constants, library versions, or thresholds make flags provisional again.
 

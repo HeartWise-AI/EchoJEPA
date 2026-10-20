@@ -18,13 +18,20 @@ list gives `dicom_path`, the DICOM header's region boxes also give a scan area f
   else the moving region), anywhere on the screen, where reference clips of the same scanner
   layout have none (a measurement results box sits next to the sector, where other clips are black).
 
+The policy (which flags exclude a clip) is set by the labels: an unreadable clip; a clip whose DICOM header gives no
+image region that applies to its video, each header failure its own reason (HEADER_REASONS; the measured clips of the
+pilot's labelled sample were, but for one, analysis screens without regions); and a still clip. The measurement flag
+and its scores are computed and reported, but exclude only with `measurement_excludes` (and then so does a clip
+whose layout has no baseline, 'incomplete'): on the labelled sample they flagged three quarters of the clips and
+none of the measured ones.
+
 Subcommands, every output outside the repository:
     features   pass 1, per clip: motion and ink statistics and a coarse map of where static ink is.
     flag       pass 2: per scanner layout, where static ink normally is, from reference clips that clearly move,
                have no marks inside the image and no block of ink beside it that most clips of their layout lack
                (a rule fixed apart from the thresholds); then both flags for
-               every clip. A flagged clip (unreadable, still, measurement, or incomplete: no layout baseline to
-               check it for a results box) is excluded: the pipeline asks no one.
+               every clip, and the policy: a clip excluded (unreadable, a header reason, still; measurement or
+               incomplete only with `measurement_excludes`) is removed, and the pipeline asks no one.
                The baselines, with the clips behind each and those left out, go to a 0700 folder next to the flags.
 
 Tuning the thresholds, outside the pipeline:
@@ -181,8 +188,16 @@ FEATURE_COLUMNS = ("error", "video_sha256", *NUMERIC_FEATURES, "dicom_status", "
 # inside the image counts only from inside_mark_px ink pixels (a straight dotted line: its dots together), in the
 # screened clips and in the reference clips alike; MIN_INK_PX counts every mark. It applies to marks inside the
 # image only: the cell map beside it, where results text is, keeps every ink component of MIN_INK_PX.
+# The policy. A clip is eligible only when its DICOM header gives image regions that apply to its video (dicom_status
+# 'ok'); a header without them, or one that cannot be used, is its own reason to exclude. On the pilot's labelled
+# clips, all still clips and all measured ones but one lacked them (analysis screens). The pixel measurement rules
+# (`inside_glyphs`, `extra_cells`) flagged about three quarters of the pilot's clips, none of them measured in the
+# labels, so they exclude nothing unless `measurement_excludes` is set, and nor does a missing layout baseline
+# ('incomplete'); their scores and the `measurement` flag are computed and reported either way.
+HEADER_REASONS = {"no_regions": "no_image_region", "size_mismatch": "header_size_mismatch",
+                  "unreadable_header": "header_unreadable", "": "no_header"}
 THRESHOLDS = {"still_scan_motion_frac": 0.05, "still_motion_frac": 0.01, "inside_glyphs": 2, "extra_cells": 8,
-              "inside_mark_px": MIN_INK_PX}
+              "inside_mark_px": MIN_INK_PX, "measurement_excludes": False}
 # The labelled calibration the THRESHOLDS above were chosen with, or None while they are provisional: {"date": ...,
 # "report": SHA-256 of `calibrate`'s report, "screen": the `screen` it reports, the SHA-256 of the extractor and flag
 # rule its flags were made with, "thresholds": the thresholds it reports, which it measured}. `flag` records it only
@@ -933,12 +948,12 @@ def apply_flags(df, baselines, thresholds=THRESHOLDS):
 
 def flag_columns(df, thresholds=THRESHOLDS):
     """`df` (pass 1 features and `extra_cells`) with `still`, `still_basis` ('scan' or 'frame': the moving share
-    it read, `motion_share`), `measurement`, `exclude` and `exclude_reason` (unreadable, still, measurement,
-    incomplete) at `thresholds`. The flags are None for an unreadable clip, which is excluded. A readable clip
-    without `extra_cells` (its layout has no baseline: too few clean reference clips; or it has no image region)
-    could not be checked for a results box, and is excluded as 'incomplete' unless another flag already excludes it:
-    the screen never passes a clip it could not check. The baselines do not depend on the thresholds, so this gives a
-    rerun of `flag` exactly."""
+    it read, `motion_share`), `measurement`, `exclude` and `exclude_reason` at `thresholds`, the first that applies:
+    'unreadable'; the header's reason (HEADER_REASONS: no image region, a size other than the video's, an unreadable
+    header, no header); 'still'; and, only with `measurement_excludes`, 'measurement' and 'incomplete' (a readable
+    clip without `extra_cells`: its layout has no baseline, so it could not be checked for a results box). The flags
+    are None for an unreadable clip. The baselines do not depend on the thresholds, so this gives a rerun of `flag`
+    exactly."""
     df = df.copy()
     readable = df.error.isna()
     share, in_scan = motion_share(df)
@@ -948,10 +963,13 @@ def flag_columns(df, thresholds=THRESHOLDS):
     measured = (df.inside_glyphs >= thresholds["inside_glyphs"]) | (
         df.extra_cells.fillna(-1) >= thresholds["extra_cells"])
     df["measurement"] = pd.array(np.where(readable, measured, None), dtype="boolean")
-    incomplete = readable & df.extra_cells.isna()
+    status = df.dicom_status.fillna("") if "dicom_status" in df else pd.Series("", index=df.index)
+    header = status.map(lambda s: "" if s == "ok" else HEADER_REASONS.get(s, "header_unreadable")).to_numpy()
+    pixel = bool(thresholds["measurement_excludes"])
     df["exclude_reason"] = np.select(
-        [~readable, df.still.fillna(False), df.measurement.fillna(False), incomplete.to_numpy()],
-        ["unreadable", "still", "measurement", "incomplete"], default="")
+        [~readable.to_numpy(), header != "", df.still.fillna(False).to_numpy(bool),
+         pixel & df.measurement.fillna(False).to_numpy(bool), pixel & df.extra_cells.isna().to_numpy()],
+        ["unreadable", header, "still", "measurement", "incomplete"], default="")
     df["exclude"] = df.exclude_reason != ""
     return df
 
@@ -1017,9 +1035,9 @@ def run_flag(args):
     calibrated = CALIBRATION is not None and not differs
     reference = inputs.parquet(args.reference)
     if reference.empty:  # features of an empty list: a table with every column and no rows.
-        raise SystemExit("--reference has no clips (an empty reference list): no layout would get a baseline, and "
-                         "every readable clip would be excluded as incomplete. Make a list with reference clips of the "
-                         "screened layouts, then rerun features on it.")
+        raise SystemExit("--reference has no clips (an empty reference list): no layout would get a baseline, so no "
+                         "clip a results-box score. Make a list with reference clips of the screened layouts, then "
+                         "rerun features on it.")
     df, baselines, sources, left_out = screen_flags(inputs.parquet(args.features), reference, thresholds)
     df.drop(columns=["cells"]).to_parquet(args.out, index=False)
     write_baselines(args.out + ".baselines", baselines, sources, left_out)
@@ -1040,7 +1058,7 @@ def run_flag(args):
     if CALIBRATION is not None and not calibrated:
         print(f"[screen]  WARNING: these flags are provisional: their {' and '.join(differs)} differ from those "
               "CALIBRATION measured.", file=sys.stderr)
-    if no_baseline:
+    if no_baseline and thresholds["measurement_excludes"]:
         print(f"[screen]  WARNING: {no_baseline} readable clips could not be checked for a results box (their "
               f"layout has fewer than {MIN_LAYOUT_CLIPS} clean reference clips, see layouts.csv, or no image "
               "region); those not flagged otherwise are excluded as incomplete. More reference clips of their "
@@ -1496,7 +1514,8 @@ def _cursor_clips(lab):
 
 def baseline_availability(screened, baselines, left_out):
     """Per layout (its key names its acquisition mode): whether it has a baseline, its reference clips used and left
-    out by reason, and its screened readable clips, incomplete and excluded. Counts, not estimates."""
+    out by reason, and its screened readable clips, those without a results-box score (`extra_cells`: incomplete,
+    whatever the policy) and those excluded. Counts, not estimates."""
     keys = layout_keys(screened)
     out = {}
     for key in sorted(set(baselines) | set(left_out.index) | set(keys)):
@@ -1505,7 +1524,7 @@ def baseline_availability(screened, baselines, left_out):
         out[key] = {"baseline": baselines.get(key) is not None, "reference_clips": int(len(reasons)),
                     "reference_used": int((reasons == "").sum()),
                     "reference_left_out": {r: int(n) for r, n in reasons[reasons != ""].value_counts().items()},
-                    "screened_clips": int(len(clips)), "incomplete": int((clips.exclude_reason == "incomplete").sum()),
+                    "screened_clips": int(len(clips)), "incomplete": int(clips.extra_cells.isna().sum()),
                     "excluded": int(clips.exclude.sum())}
     return out
 
