@@ -1,0 +1,133 @@
+# configs/eval/vitl/study_multitask_frozen.yaml
+#
+# Frozen study-level multi-task probe, DeepCORO_CLIP style: every study is read as a bag of
+# `num_videos` videos (a random subset, in random order, at every training read; the first
+# videos in path order in evaluation), the frozen EchoJEPA encoder embeds every clip, one probe
+# pools the study and reads it with one head per target. Heads, losses and weights follow the
+# DeepCORO_CLIP linear-probing keys (`target_label`, `head_task`, `head_structure`,
+# `loss_structure`, `head_weights`, `head_dropout`, `labels_map`). Options: a view filter and a
+# learned view embedding per video, and fine-tuning of the encoder's top blocks.
+#
+# Results go to `<folder>/study_multitask_frozen/<tag>/`. Once the probe has finished,
+# `python -m evals.main --fname <this config> --test_only` scores the test split with the epoch
+# and probe chosen on validation (`best.pt`) and writes `test_metrics.json` and
+# `test_predictions.csv`. Protocol, metrics and reproduction: `docs/study_multitask_probe.md`.
+
+app: vjepa
+eval_name: study_multitask_frozen
+folder: /your_folder/cooldown/vitl-coro-cooldown-ep60     # the run (or folder) that holds the encoder checkpoint.
+tag: study-multitask
+nodes: 1
+tasks_per_node: 4
+cpus_per_task: 32
+num_workers: 8
+resume_checkpoint: true
+
+meta:
+  seed: 0                                         # probe initialization, video selection, data order and augmentation.
+  wandb_project: null
+  wandb_entity: mhi_ai
+
+experiment:
+  data:
+    # One long CSV with a header: one row per video, a study column, the target columns, and a
+    # split column (train / val / test). `dataset_train` / `dataset_val` / `dataset_test` (one CSV
+    # per split, same columns) can replace `data_filename` + `split_column`.
+    data_filename: /your_manifests/videos_with_targets.csv
+    split_column: split
+    datapoint_loc_label: video_path               # the video path column.
+    groupby_column: study_id                      # videos sharing it form one study (one item).
+    view_column: view                             # optional: for `views` and `view_labels_map`.
+    views: null                                   # e.g. [A4C, A2C, PLAX]; null keeps every video.
+    view_labels_map:                              # view -> class, for `classifier.use_view_embedding`; a view the
+      A4C: 0                                      # map lacks takes `Other`. Null: no view classes.
+      A2C: 1
+      A3C: 2
+      PLAX: 3
+      PSAX: 4
+      Other: 5
+    num_videos: 8                                 # video slots per study; shorter studies are padded and masked.
+    shuffle_videos: true                          # training: a random subset in random order at every read.
+    min_videos: 1                                 # studies with fewer videos are left out.
+    num_clips_per_video: 1                        # clips per video (each of `frames_per_clip` frames).
+    frames_per_clip: 16
+    frame_step: 2
+    resolution: 224
+
+  # The encoder stays frozen with `trainable_blocks: 0`. Otherwise its top `trainable_blocks`
+  # transformer blocks (and final norm) train with their own AdamW setting (EJ-FT style); then
+  # `multihead_kwargs` must hold one setting, and `best.pt` saves the fine-tuned encoder.
+  encoder:
+    trainable_blocks: 0                           # e.g. 20 of ViT-L's 24 blocks, as the EJ-FT stenosis probe.
+    lr: 6.4e-6
+    weight_decay: 1.0e-4
+    final_lr: 0.0
+    warmup: 0.0
+
+  classifier:
+    pooling_mode: attentive                       # attentive | mean | max | attention (gated MIL over videos).
+    num_heads: 16                                 # attentive pooler (cross-attention over every token of the study).
+    num_probe_blocks: 4
+    attention_hidden: 256                         # gated attention (`pooling_mode: attention`).
+    dropout: 0.0                                  # inside the gated attention.
+    use_view_embedding: true                      # add a learned embedding of each video's view class (needs
+                                                  # `data.view_column` and `data.view_labels_map`).
+    target_label: [lvef, rvsp, lv_dysfunction]    # target columns of the manifest, one head each.
+    head_task:
+      lvef: regression
+      rvsp: regression
+      lv_dysfunction: binary
+    head_structure:                               # outputs: 1 for regression and binary, classes for classification.
+      lvef: 1
+      rvsp: 1
+      lv_dysfunction: 1
+    loss_structure:                               # regression: huber | mse | l1; binary: bce; classification: ce.
+      lvef: huber
+      rvsp: huber
+      lv_dysfunction: bce
+    head_weights:
+      lvef: 1.0
+      rvsp: 1.0
+      lv_dysfunction: 1.0
+    head_dropout:
+      lvef: 0.1
+      rvsp: 0.1
+      lv_dysfunction: 0.1
+    # Regression targets are z-scored with the train split's mean and population std unless
+    # given here per head: target_mean: {lvef: 57.06}, target_std: {lvef: 11.33}.
+    target_mean: null
+    target_std: null
+    labels_map:                                   # string labels of a column -> integers (optional).
+      lv_dysfunction: {normal: 0, abnormal: 1}
+
+  evaluation:
+    # `weighted_loss`: the training objective on validation (sum of head_weights x head loss),
+    # or `<head>/<metric>` such as `lvef/mae` or `lv_dysfunction/auroc`.
+    selection: weighted_loss
+
+  optimization:
+    batch_size: 2                                 # studies per GPU (x num_videos x num_clips_per_video clips).
+    num_epochs: 20
+    use_bfloat16: true
+    # One probe per setting, all trained in parallel on the same frozen features.
+    multihead_kwargs:
+    - {start_lr: 1.0e-4, lr: 1.0e-4, final_lr: 0.0, warmup: 0.0, weight_decay: 0.01, final_weight_decay: 0.01}
+    - {start_lr: 1.0e-4, lr: 1.0e-4, final_lr: 0.0, warmup: 0.0, weight_decay: 0.1, final_weight_decay: 0.1}
+    - {start_lr: 5.0e-5, lr: 5.0e-5, final_lr: 0.0, warmup: 0.0, weight_decay: 0.01, final_weight_decay: 0.01}
+    - {start_lr: 5.0e-5, lr: 5.0e-5, final_lr: 0.0, warmup: 0.0, weight_decay: 0.1, final_weight_decay: 0.1}
+
+model_kwargs:
+  checkpoint: /your_folder/cooldown/vitl-coro-cooldown-ep60/checkpoint.pt
+  module_name: evals.video_classification_frozen.modelcustom.vit_encoder_multiclip
+  pretrain_kwargs:
+    encoder:
+      checkpoint_key: target_encoder
+      img_temporal_dim_size: null
+      model_name: vit_large
+      patch_size: 16
+      tubelet_size: 2
+      uniform_power: true
+      use_rope: true
+  wrapper_kwargs:
+    max_frames: 128
+    use_pos_embed: false
