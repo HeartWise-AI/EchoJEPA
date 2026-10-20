@@ -64,8 +64,13 @@ PROTOCOL = {
     "train": {"videos": "random when `shuffle_videos`, else fixed", "clip_positions": "random", "drop_last": True},
     "evaluation": {"videos": "fixed", "clip_positions": "fixed", "drop_last": False},
 }
-# Metrics a selection rule `<head>/<metric>` may name, and the direction that is better.
-HIGHER_IS_BETTER = {"auroc", "auprc", "acc", "pearson_r", "r2"}
+# Metrics a selection rule `<head>/<metric>` may name, per head task (as `head_metrics` reports
+# them), and the direction that is better.
+TASK_METRICS = {
+    "regression": {"loss", "mae", "rmse", "r2", "pearson_r"},
+    "binary": {"loss", "auroc", "auprc", "acc"},
+    "classification": {"loss", "acc", "auroc"},
+}
 LOWER_IS_BETTER = {"loss", "mae", "rmse"}
 
 
@@ -89,6 +94,7 @@ def main(args_eval, resume_preempt=False):
     args_exp = args_eval["experiment"]
     # -- DATA (DeepCORO_CLIP's dataset keys)
     args_data = args_exp["data"]
+    split_column = args_data.get("split_column", "split") if args_data.get("data_filename") else None
     path_column = args_data.get("datapoint_loc_label", "video_path")
     group_column = args_data.get("groupby_column", "study_id")
     view_column = args_data.get("view_column")
@@ -197,6 +203,7 @@ def main(args_eval, resume_preempt=False):
 
     train_dataset = make_dataset("train", training=True)
     val_dataset = make_dataset("val", training=False)
+    check_disjoint({"train": train_dataset, "val": val_dataset})
     normalization_targets = target_normalization(specs, train_dataset.targets, args_classifier)
     train_sampler = torch.utils.data.distributed.DistributedSampler(
         train_dataset, num_replicas=world_size, rank=rank, shuffle=True, drop_last=PROTOCOL["train"]["drop_last"])
@@ -255,8 +262,9 @@ def main(args_eval, resume_preempt=False):
                        "attention_hidden": attention_hidden, "dropout": probe_dropout, "heads": specs,
                        "labels_map": labels_map, "use_view_embedding": use_view_embedding},
         "encoder_training": {"trainable_blocks": trainable_blocks, "optimization": encoder_opt_kwargs},
-        "data": {"path_column": path_column, "group_column": group_column, "view_column": view_column,
-                 "views": list(views) if views else None, "view_labels_map": view_labels_map,
+        "data": {"split_column": split_column, "path_column": path_column, "group_column": group_column,
+                 "view_column": view_column, "views": list(views) if views else None,
+                 "view_labels_map": view_labels_map,
                  "num_videos": num_videos, "shuffle_videos": shuffle_videos,
                  "num_clips_per_video": num_clips_per_video, "frames_per_clip": frames_per_clip,
                  "frame_step": frame_step, "clip_duration": duration, "fps": fps, "resolution": resolution,
@@ -307,6 +315,7 @@ def main(args_eval, resume_preempt=False):
 
     if test_only:
         test_dataset = make_dataset("test", training=False)
+        check_disjoint({"train": train_dataset, "val": val_dataset, "test": test_dataset})
         run_test(folder=folder, probes=probes, probe_names=probe_names, val_dataset=val_dataset, trainable=bool(trainable),
                  test_dataset=test_dataset, num_epochs=num_epochs, fingerprint=fingerprint,
                  selection_rule=selection_rule, run_info=run_info, wandb_run=wandb_run, step=num_epochs * ipe,
@@ -330,11 +339,14 @@ def main(args_eval, resume_preempt=False):
         train_losses, train_head_losses = train_one_epoch(
             device=device, encoder=encoder, probes=probes, optimizers=optimizers, schedulers=schedulers,
             wd_schedulers=wd_schedulers, loader=train_loader, use_bfloat16=use_bfloat16, specs=specs,
-            normalization=normalization_targets, encoder_trainable=bool(trainable))
+            normalization=normalization_targets, encoder_trainable=bool(trainable), world_size=world_size)
         val = [evaluate(prediction, specs, normalization_targets, selection_rule)
                for prediction in score_studies(dataset=val_dataset, probes=probes, **score_kwargs)]
         scores = np.asarray([v["score"] for v in val], dtype=float)
-        probe = int(np.nanargmin(scores)) if np.isfinite(scores).any() else 0
+        if not np.isfinite(scores).any():
+            raise RuntimeError(f"No probe has a finite validation {selection} at epoch {epoch + 1}: the selection "
+                               "metric is undefined on this validation split (e.g. one class only, or no target).")
+        probe = int(np.nanargmin(scores))
         score = float(scores[probe])
         is_best = score < best_score
         if is_best:
@@ -396,7 +408,8 @@ def manifest_paths(args_data):
 
 def parse_selection(selection, specs):
     """The selection rule: `weighted_loss` (the training objective on validation, lower is better)
-    or `<head>/<metric>` (e.g. `lvef/mae`, `as_present/auroc`)."""
+    or `<head>/<metric>`, a metric `head_metrics` reports for that head's task (e.g. `lvef/mae`,
+    `as_present/auroc`)."""
     if selection == "weighted_loss":
         return {"head": None, "metric": "weighted_loss", "lower_is_better": True}
     if "/" not in selection:
@@ -404,9 +417,22 @@ def parse_selection(selection, specs):
     head, metric = selection.split("/", 1)
     if head not in specs:
         raise ValueError(f"Selection head {head!r} is not in `target_label` {list(specs)}.")
-    if metric not in HIGHER_IS_BETTER | LOWER_IS_BETTER:
-        raise ValueError(f"Selection metric {metric!r} is one of {sorted(HIGHER_IS_BETTER | LOWER_IS_BETTER)}.")
+    task = specs[head]["task"]
+    if metric not in TASK_METRICS[task]:
+        raise ValueError(f"Selection metric {metric!r} is not reported for the {task} head {head!r}; "
+                         f"choose one of {sorted(TASK_METRICS[task])}.")
     return {"head": head, "metric": metric, "lower_is_better": metric in LOWER_IS_BETTER}
+
+
+def check_disjoint(datasets):
+    """Refuse splits that share a study: a study trained on would be validated or tested on."""
+    names = list(datasets)
+    for i, a in enumerate(names):
+        for b in names[i + 1:]:
+            shared = set(datasets[a].study_ids) & set(datasets[b].study_ids)
+            if shared:
+                raise ValueError(f"{len(shared)} studies are in both the {a} and the {b} split (e.g. "
+                                 f"{sorted(map(str, shared))[:3]}): every study belongs to one split.")
 
 
 def target_normalization(specs, train_targets, args_classifier):
@@ -494,12 +520,14 @@ def encode(encoder, clips, clip_indices, device, use_bfloat16, grad=False):
 
 
 def train_one_epoch(device, encoder, probes, optimizers, schedulers, wd_schedulers, loader, use_bfloat16, specs,
-                    normalization, encoder_trainable=False):
-    """One pass over the training studies for every probe (and the encoder's trainable blocks).
-    Returns each probe's mean loss and each probe's mean loss per head, averaged over the studies
-    of every rank."""
+                    normalization, encoder_trainable=False, world_size=1):
+    """One pass over the training studies for every probe (and the encoder's trainable blocks,
+    with the encoder in training mode). Each head's loss is the mean over the labeled studies of
+    the global batch (the present targets are counted over every rank). Returns each probe's
+    mean loss and each probe's mean loss per head, averaged over the studies of every rank."""
     for p in probes:
         p.train()
+    encoder.train(mode=encoder_trainable)
     loss_meters = [AverageMeter() for _ in probes]
     head_meters = [{h: AverageMeter() for h in specs} for _ in probes]
     for itr, (clips, targets, video_mask, clip_indices, view_ids) in enumerate(loader):
@@ -507,11 +535,16 @@ def train_one_epoch(device, encoder, probes, optimizers, schedulers, wd_schedule
         video_mask = video_mask.to(device, non_blocking=True)
         view_ids = view_ids.to(device, non_blocking=True)
         targets = normalize_targets(targets, specs, normalization).to(device, non_blocking=True)
+        # Present targets per head over every rank, so each head's loss is normalized the same way
+        # on every rank whatever the sampler gave each one.
+        local_counts = torch.isfinite(targets).sum(dim=0).to(torch.float64)
+        global_counts = AllReduceSum.apply(local_counts.clone()).cpu().tolist()
+        counts = {name: int(c) for name, c in zip(specs, global_counts)}
         batch_losses, batch_parts = [], []
         for probe in probes:
             with autocast(device.type, dtype=torch.bfloat16, enabled=use_bfloat16):
                 outputs = probe(features, video_mask, view_ids)
-            loss, parts = multitask_loss(specs, outputs, targets)
+            loss, parts = multitask_loss(specs, outputs, targets, counts=counts, world_size=world_size)
             batch_losses.append(loss)
             batch_parts.append(parts)
         local = any(not bool(torch.isfinite(loss.detach()).item()) for loss in batch_losses)
@@ -525,17 +558,18 @@ def train_one_epoch(device, encoder, probes, optimizers, schedulers, wd_schedule
             optimizer.step()
             optimizer.zero_grad()
 
-        # Sum over the ranks' studies, then divide by their count.
+        # Sum over the ranks' studies, then divide by their count. Each rank's loss is already
+        # scaled by `world_size` / global count, so the rank-sum of losses is the global mean.
         with torch.no_grad():
             count = float(targets.shape[0])
-            values = [count] + [float(loss.detach()) * count for loss in batch_losses]
+            values = [count] + [float(loss.detach()) for loss in batch_losses]
             for parts in batch_parts:
                 for h in specs:
                     values += [float(parts[h][0].detach()), float(parts[h][1])]
             totals = AllReduceSum.apply(torch.tensor(values, device=device, dtype=torch.float64)).cpu().tolist()
             n = totals[0]
             for meter, total in zip(loss_meters, totals[1:1 + len(probes)]):
-                meter.update(total / n, n=n)
+                meter.update(total / world_size, n=n)
             rest = totals[1 + len(probes):]
             for i in range(len(probes)):
                 for j, h in enumerate(specs):
@@ -546,13 +580,15 @@ def train_one_epoch(device, encoder, probes, optimizers, schedulers, wd_schedule
             losses = np.array([m.avg for m in loss_meters])
             mem = torch.cuda.max_memory_allocated() / 1024.0**2 if device.type == "cuda" else 0.0
             logger.info("[%5d] loss %.4f [mean %.4f] [mem: %.2e]" % (itr, losses.min(), losses.mean(), mem))
+    encoder.eval()
     return (np.array([m.avg for m in loss_meters]),
             [{h: (m.avg if m.count else float("nan")) for h, m in meters.items()} for meters in head_meters])
 
 
 class _EachStudyOnce(torch.utils.data.Dataset):
     """Some of a `VideoStudyDataset`'s studies, each read once and returned with its index; a
-    study that cannot be read gives `None` instead of being replaced."""
+    study whose videos cannot be read gives `None` (`get_item_study`) instead of being replaced.
+    Any other error (a transform or shape problem) propagates and stops the evaluation."""
 
     def __init__(self, dataset, indices):
         self.dataset, self.indices = dataset, list(indices)
@@ -562,10 +598,7 @@ class _EachStudyOnce(torch.utils.data.Dataset):
 
     def __getitem__(self, i):
         index = self.indices[i]
-        try:
-            return index, self.dataset.get_item_study(index)
-        except Exception:
-            return index, None
+        return index, self.dataset.get_item_study(index)
 
 
 def _collate_loaded(batch):
@@ -585,6 +618,7 @@ def score_studies(device, encoder, probes, dataset, batch_size, num_workers, use
     modules = [getattr(p, "module", p) for p in probes]
     for m in modules:
         m.eval()
+    encoder.eval()
     loader = torch.utils.data.DataLoader(_EachStudyOnce(dataset, range(rank, len(dataset), world_size)),
                                          batch_size=batch_size, num_workers=num_workers, collate_fn=_collate_loaded,
                                          pin_memory=True)

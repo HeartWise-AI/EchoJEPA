@@ -171,6 +171,12 @@ def head_loss(spec, output, target):
         return output.sum() * 0.0, 0
     output, target = output[valid].float(), target[valid].float()
     task, loss = spec["task"], spec["loss"]
+    if task == "binary" and not bool(((target == 0) | (target == 1)).all()):
+        raise ValueError("A binary head's targets must be 0 or 1 (or missing).")
+    if task == "classification" and not bool(((target == target.round()) & (target >= 0)
+                                              & (target < output.shape[1])).all()):
+        raise ValueError(f"A classification head's targets must be whole numbers in [0, {output.shape[1]}) "
+                         "(or missing).")
     if task == "regression":
         if loss == "huber":
             value = F.smooth_l1_loss(output.squeeze(-1), target, reduction="sum")
@@ -185,19 +191,24 @@ def head_loss(spec, output, target):
     return value, count
 
 
-def multitask_loss(specs, outputs, targets):
+def multitask_loss(specs, outputs, targets, counts=None, world_size=1):
     """The weighted sum of the heads' mean losses over a batch, and each head's (loss sum, count).
 
-    `targets`: [B, heads] in `specs` order. A head without a present target in the batch adds
-    nothing. Returns (loss, {head: (sum, count)}).
+    `targets`: [B, heads] in `specs` order. Every head's term stays in the graph, so the set of
+    parameters that take part in the backward pass is the same whatever the batch holds (as
+    DDP's static graph needs); a head without a present target contributes zero.
+
+    Under DDP the gradients are averaged over the ranks, so each rank divides a head's loss sum
+    by the number of present targets over every rank (`counts`, {head: global count}) and
+    multiplies by `world_size`: the mean over all the labeled studies of the global batch, not a
+    mean of per-rank means. Without `counts`, the local counts are used.
+    Returns (loss, {head: (sum, count)}).
     """
     total, parts = None, {}
     for i, (name, spec) in enumerate(specs.items()):
         value, count = head_loss(spec, outputs[name], targets[:, i])
         parts[name] = (value, count)
-        if count:
-            term = spec["weight"] * value / count
-            total = term if total is None else total + term
-    if total is None:
-        total = sum(v for v, _ in parts.values())  # zero, attached to the graph.
+        denominator = count if counts is None else counts[name]
+        term = spec["weight"] * value * (world_size / denominator if denominator else 0.0)
+        total = term if total is None else total + term
     return total, parts

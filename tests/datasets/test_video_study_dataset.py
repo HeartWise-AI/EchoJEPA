@@ -130,6 +130,20 @@ class TestVideoStudyDataset(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "no `missing` column"):
             group_studies(self.table, "video_path", "study_id", ["missing"])
 
+    def test_a_conflict_on_a_filtered_out_video_is_still_refused(self):
+        table = self.table.copy()
+        a2c = (table.study_id == "s0") & (table.view == "A2C")
+        table.loc[a2c, "lvef"] = 61.0
+        with self.assertRaisesRegex(ValueError, "different values"):
+            group_studies(table, "video_path", "study_id", ["lvef"], view_column="view", views=["A4C"])
+
+    def test_training_stops_after_bounded_retries(self):
+        broken = self.table[self.table.video_path.str.endswith("s2/1.mp4")]
+        ds = VideoStudyDataset(broken, target_columns=["lvef"], num_videos=1, frames_per_clip=FRAMES, frame_step=1,
+                               training=True)
+        with self.assertRaisesRegex(RuntimeError, "could be read"):
+            ds[0]
+
     def test_read_split(self):
         path = os.path.join(self.tmp, "videos.csv")
         table = self.table.copy()
