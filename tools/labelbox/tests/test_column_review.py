@@ -73,6 +73,9 @@ class TestColumnPrefills(unittest.TestCase):
         self.assertEqual(
             selection["generated_labelbox_ontology"], FORM.relative_to(ROOT).as_posix()
         )
+        self.assertEqual(
+            selection["instructions"], "docs/radar/labeling_instructions_v1.md"
+        )
         self.assertNotIn("ontology", selection)
         self.assertNotIn("spec", selection)
 

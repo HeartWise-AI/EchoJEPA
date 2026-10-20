@@ -1,15 +1,14 @@
 # RADAR caption pilot: metrics and go/no-go rules (v1)
 
 **Need agreement on the thresholds below before any pilot clip is reviewed.** Until
-[approval_v1.md](approval_v1.md) links to the agreement, the thresholds are proposals. Once agreed, this document is
-frozen with the ontology, and the pilot outcome is reported under these rules whatever it is. A change made after
+[issue #21](https://github.com/HeartWise-AI/EchoJEPA/issues/21) records that agreement, the thresholds are proposals.
+Once agreed, the pilot outcome is reported under these rules whatever it is. A change made after
 seeing pilot results needs a new version and is judged on new pilot studies, never on the clips already reviewed.
 
 The pilot reviews every valid video of 2–3 training-split studies. It tests whether the caption-and-review workflow
-is feasible under [`radar-caption-ontology-v1`](ontology_v1.md) with the [column review v2](column_review_v2.md). It
-does not measure clinical accuracy or model performance, and its small size allows only coarse decisions. The
-metrics follow the column review's scoring ([Scoring](column_review_v2.md#scoring), `score_review` in
-`tools/labelbox/column_review.py`).
+is feasible under [`radar-caption-ontology-v1`](ontology_v1.md) with column review v2. It does not measure clinical
+accuracy or model performance, and its small size allows only coarse decisions. The metrics follow `score_review`
+in `tools/labelbox/column_review.py`.
 
 ## What each review records
 
@@ -46,8 +45,8 @@ crop effect.
 ### View and type review (`OTHER` clips)
 
 Each review records the item's type, its view, its acquisition mode, whether identifying text is visible, and optional
-comments ([view_type_review_v1.md](view_type_review_v1.md)). These items have no caption and enter no metric below
-except the counts listed under [Metrics](#metrics).
+comments, as described in the [reviewer instructions](labeling_instructions_v1.md#view-and-type-review-other-clips).
+These items have no caption and enter no metric below except the counts listed under [Metrics](#metrics).
 
 ## Display readiness and training eligibility
 

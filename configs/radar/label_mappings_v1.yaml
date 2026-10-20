@@ -19,7 +19,7 @@
 # Task classes map to the ontology values they represent. For numeric concepts, a class maps to a range defined
 # by a lower bound {at_least: x}, an upper bound {below: y}, or both. `also_related` lists additional concepts
 # that the label provides information about without assigning them specific values.
-# Once the ontology is approved, any change to this file needs a new version and a new approval.
+# Once this mapping is used for a clinical pilot, material changes require a new version and renewed clinical review.
 
 schema: radar-label-mappings
 version: 1

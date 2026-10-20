@@ -3,9 +3,8 @@
 Scanned: the files under configs/radar, docs/radar, app/radar and tests/radar, the review form builders and their
 tests. This file is left out: it holds the patterns and the synthetic strings that check them. The rules target patient
 identifiers (DICOM UIDs, long digit runs such as record or accession numbers, e-mail addresses outside the reserved
-example domains), clinical dates (allowed only in the approval records and the approval test, for the approval
-itself), patient-file paths and names, report-style text and credentials. Concept ids, hashes and repository paths are
-allowed.
+example domains), clinical dates, patient-file paths and names, report-style text and credentials. Concept ids,
+hashes and repository paths are allowed.
 """
 
 import fnmatch
@@ -21,7 +20,7 @@ SCANNED_FILES = ("tools/labelbox/review_ontology.py", "tools/labelbox/column_rev
                  "tools/labelbox/tests/test_column_review.py", "tools/labelbox/tests/test_view_type_review.py",
                  "tools/labelbox/tests/test_instructions.py")
 SUFFIXES = (".py", ".md", ".yaml", ".json")
-DATES_ALLOWED = ("docs/radar/approval_v*.md", "tests/radar/test_approval.py")
+DATES_ALLOWED = ()
 THIS_FILE = os.path.relpath(os.path.abspath(__file__), REPO_ROOT)
 
 RULES = {
@@ -62,7 +61,7 @@ class TestPrivacy(unittest.TestCase):
     def test_scanned_files_are_clean(self):
         paths = scanned_paths()
         self.assertIn("configs/radar/labelbox/deepecho_video_clip_annotation_ontology.json", paths)
-        self.assertIn("docs/radar/labeling_instructions_v1.fr.md", paths)
+        self.assertIn("docs/radar/labeling_instructions_v1.md", paths)
         problems = []
         for path in paths:
             with open(os.path.join(REPO_ROOT, path), encoding="utf-8") as f:
@@ -91,7 +90,6 @@ class TestPrivacy(unittest.TestCase):
                    "Coupe apicale 4 cavités (A4C), Doppler couleur. Insuffisance mitrale : modérée.")
         for text in allowed:
             self.assertEqual(findings("docs/radar/example.md", text), [], text)
-        self.assertEqual(findings("docs/radar/approval_v1.md", "date: 2026-10-20"), [])
         self.assertTrue(findings("docs/radar/ontology_v1.md", "date: 2026-10-20"))
 
 

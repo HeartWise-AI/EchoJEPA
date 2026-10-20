@@ -29,8 +29,8 @@
 #     and acronyms (case-sensitive whole-word matches).
 #   - scales: value aliases that must be verified against actual column distributions before extraction results are trusted.
 #
-# The tag `<name>-v<version>` (radar-caption-ontology-v1) is recorded by captions, reviews and checkpoints. Once a
-# version is approved, any change to this file needs a new version and a new approval.
+# The tag `<name>-v<version>` (radar-caption-ontology-v1) is recorded by captions, reviews and checkpoints. Once this
+# version is used for a clinical pilot, material changes require a new version and renewed clinical review.
 
 schema: radar-caption-ontology
 name: radar-caption-ontology

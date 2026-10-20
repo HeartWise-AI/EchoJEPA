@@ -7,8 +7,8 @@ item. An item the screen should have removed is reported in the comments. The an
 and `route` sends a relabelled cine loop back into the column review v2
 (`tools.labelbox.column_review.build_candidate`).
 
-    python -m tools.labelbox.view_type_review            # write the form JSON and the generated table of its doc.
-    python -m tools.labelbox.view_type_review --check    # exit 1 if either is out of date.
+    python -m tools.labelbox.view_type_review            # write the form JSON.
+    python -m tools.labelbox.view_type_review --check    # exit 1 if it is out of date.
 
 The view and the acquisition mode are nested under the cine loop answer, the way Labelbox shows a question only after
 a given answer; the other questions are global classifications. The view labels come from the RADAR ontology and the
@@ -20,7 +20,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import re
 import sys
 from dataclasses import dataclass
 
@@ -30,7 +29,6 @@ from tools.labelbox.review_ontology import _classification, _option
 
 FORM_NAME = "DeepECHO view and type review v1"
 FORM_PATH = os.path.join(REPO_ROOT, "configs", "radar", "labelbox", "view_type_review_v1.json")
-DOC_PATH = os.path.join(REPO_ROOT, "docs", "radar", "view_type_review_v1.md")
 
 CINE_LOOP = "cine_loop"
 INPUT_TYPES = {
@@ -139,46 +137,22 @@ def route(answers: dict) -> dict | None:
     return {"view": view, "modality": modality, "input_kind": "video"}
 
 
-def render_form_table() -> str:
-    lines = ["| Question | Id | Required | Answers |", "|---|---|---|---|"]
-    for q in questions():
-        answers = "free text" if q.choices is None else "; ".join(f"`{v}` {label}" for v, label in q.choices.items())
-        required = "yes" if q.required else "no"
-        if q.asked_after:
-            required += f", asked when `{q.asked_after[0]}` is `{q.asked_after[1]}`"
-        lines.append(f"| {q.text} | `{q.name}` | {required} | {answers} |")
-    return "\n".join(lines) + "\n"
-
-
-_BLOCK = re.compile(r"(<!-- BEGIN GENERATED: view_type_form -->\n).*?(<!-- END GENERATED: view_type_form -->)", re.S)
-
-
-def synced_doc(text: str) -> str:
-    if not _BLOCK.search(text):
-        raise ValueError(f"{DOC_PATH} has no generated view_type_form block")
-    return _BLOCK.sub(lambda m: m.group(1) + render_form_table() + m.group(2), text)
-
-
 def _form_json() -> str:
     return json.dumps(build_form(), ensure_ascii=False, indent=2) + "\n"
 
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--check", action="store_true", help="exit 1 if the form JSON or its doc is out of date")
+    parser.add_argument("--check", action="store_true", help="exit 1 if the form JSON is out of date")
     args = parser.parse_args(argv)
-    with open(DOC_PATH, encoding="utf-8") as f:
-        doc = f.read()
-    form_json, new_doc = _form_json(), synced_doc(doc)
+    form_json = _form_json()
     if args.check:
-        stale = [path for path, current, wanted in ((FORM_PATH, _read(FORM_PATH), form_json), (DOC_PATH, doc, new_doc))
-                 if current != wanted]
-        for path in stale:
-            print(f"Out of date: {os.path.relpath(path, REPO_ROOT)}", file=sys.stderr)
-        return 1 if stale else 0
-    for path, text in ((FORM_PATH, form_json), (DOC_PATH, new_doc)):
-        with open(path, "w", encoding="utf-8") as f:
-            f.write(text)
+        if _read(FORM_PATH) != form_json:
+            print(f"Out of date: {os.path.relpath(FORM_PATH, REPO_ROOT)}", file=sys.stderr)
+            return 1
+        return 0
+    with open(FORM_PATH, "w", encoding="utf-8") as f:
+        f.write(form_json)
     return 0
 
 
