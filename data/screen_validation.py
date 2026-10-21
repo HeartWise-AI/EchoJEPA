@@ -6,8 +6,9 @@ population it was drawn from.
 
 Each clip of the population falls in exactly one group, the first that applies:
 
-    frozen_suspect    a clip of at most --frozen-max-frames frames, or at most --frozen-max-fps frames per second:
-                      where frozen frames saved as videos are expected (metadata only: no clip is decoded here)
+    frozen_suspect    a clip of at most --frozen-max-frames frames, or, when --frozen-max-fps is above 0 (the
+                      manifest then needs fps), at most that many frames per second: where frozen frames saved as
+                      videos are expected (metadata only: no clip is decoded here)
     vendor:<name>     a clip of a scanner vendor other than the most common one, one group per vendor
     low_ef            a clip of a study whose EF is at most --low-ef (reduced function, so less motion)
     general           every other clip
@@ -78,7 +79,10 @@ def assign_groups(clips, frozen_max_frames, frozen_max_fps, low_ef):
     """The group of each clip (see the module docstring), the first that applies."""
     vendor = clips.vendor.fillna("<missing>").astype(str)
     main_vendor = vendor.value_counts().idxmax()
-    frozen = ((clips.n_frames <= frozen_max_frames) | (clips.fps <= frozen_max_fps)).fillna(False).astype(bool)
+    frozen = clips.n_frames <= frozen_max_frames
+    if frozen_max_fps > 0:  # 0: the frame rate is not used, and the manifest need not have it.
+        frozen = frozen | (clips.fps <= frozen_max_fps)
+    frozen = frozen.fillna(False).astype(bool)
     low = (clips.ef <= low_ef).fillna(False).astype(bool)
     group = np.where(low, "low_ef", "general").astype(object)
     group = np.where(vendor != main_vendor, ("vendor:" + vendor).to_numpy(), group)
@@ -130,8 +134,9 @@ def build(args):
     ensure_outside_repo(args.out_dir, "--out-dir")
     clip_screen.private_dir(args.out_dir)
     clip_screen.clear_outputs(*(os.path.join(args.out_dir, n) for n in OUTPUTS))
-    if args.clips_per_patient < 1 or min(args.n_frozen, args.n_low_ef, args.n_per_vendor, args.n_general) < 0:
-        raise SystemExit("--clips-per-patient must be at least 1 and every --n-* at least 0.")
+    if args.clips_per_patient < 1 or min(args.n_frozen, args.n_low_ef, args.n_per_vendor, args.n_general,
+                                         args.frozen_max_fps) < 0:
+        raise SystemExit("--clips-per-patient must be at least 1, and every --n-* and --frozen-max-fps at least 0.")
     rng = np.random.default_rng(args.seed)
     # Every input as read (Inputs): the record names those, and is written only if none changed meanwhile.
     inputs = clip_screen.Inputs(__file__)
@@ -140,6 +145,9 @@ def build(args):
 
     present = set(pq.read_schema(io.BytesIO(inputs.read(args.videos))).names)
     built_at = radar_pilot.manifest_build(args.videos, set(MANIFEST_COLUMNS) - {"reason", "fps"}, inputs)
+    if args.frozen_max_fps > 0 and "fps" not in present:
+        raise SystemExit("--frozen-max-fps needs the manifest's fps column, which --videos lacks: leave it at 0 (the "
+                         "frame rate not used) or use a manifest with frame rates.")
     v = inputs.parquet(args.videos, columns=[c for c in MANIFEST_COLUMNS if c in present],
                        filters=[("split", "in", list(args.splits))])
     if "reason" in v:  # a manifest row with a reason is a known failure (an undecodable clip).
@@ -244,7 +252,8 @@ def main(argv=None):
     p.add_argument("--n-general", type=int, default=100, help="clips drawn from the general group.")
     p.add_argument("--clips-per-patient", type=int, default=1, help="at most this many clips per patient and group.")
     p.add_argument("--frozen-max-frames", type=int, default=10)
-    p.add_argument("--frozen-max-fps", type=float, default=0.0, help="0: frame rate not used.")
+    p.add_argument("--frozen-max-fps", type=float, default=0.0,
+                   help="0: frame rate not used (the manifest may then lack fps); above 0, the manifest needs fps.")
     p.add_argument("--low-ef", type=float, default=35.0)
     p.add_argument("--reference-per-layout", type=int, default=200)
     p.add_argument("--exclude-patients", nargs="*", default=[],

@@ -48,6 +48,12 @@ class TestGroups(unittest.TestCase):
                           f"vendor:{OTHER_VENDOR}"])
         clips.loc[2, "fps"] = 4.0
         self.assertEqual(sv.assign_groups(clips, 10, 5, 35).iloc[2], "frozen_suspect")
+        # --frozen-max-fps 0: the frame rate is not used, so a manifest without it works (a rate of 0 is no rule).
+        clips.loc[3, "fps"] = 0.0
+        self.assertEqual(sv.assign_groups(clips, 10, 0, 35).iloc[3], "general")
+        self.assertEqual(sv.assign_groups(clips.drop(columns="fps"), 10, 0, 35).tolist(),
+                         ["frozen_suspect", "low_ef", "general", "general", "frozen_suspect",
+                          f"vendor:{OTHER_VENDOR}"])
 
 
 class TestTwoStageSample(unittest.TestCase):
@@ -186,6 +192,16 @@ class TestBuild(unittest.TestCase):
             self.build("no_vendor")
         self.assertIn("['vendor']", str(stop.exception))
         self.assertIn("commit 57204d1", str(stop.exception))
+
+    def test_a_manifest_without_frame_rates_works_unless_the_rate_rule_is_on(self):
+        videos = pd.read_parquet(os.path.join(self.tmp, "videos.parquet")).drop(columns="fps")
+        videos.to_parquet(os.path.join(self.tmp, "videos.parquet"))
+        sample, _, info, _ = self.build("no_fps")
+        self.assertEqual(info["groups"]["frozen_suspect"]["clips"], 25)  # by the number of frames alone.
+        self.assertNotIn("fps", sample)
+        with self.assertRaises(SystemExit) as stop:
+            self.build("fps_rule", "--frozen-max-fps", "5")
+        self.assertIn("fps column", str(stop.exception))
 
     def test_the_seed_fixes_the_sample(self):
         first, _, _, _ = self.build("a")

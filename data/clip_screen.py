@@ -1,59 +1,73 @@
 # data/clip_screen.py
 
-"""Screen echo clips before caption review: flag still clips and clips with visible measurements.
+"""Screen echo clips before caption review: keep a clip, exclude it, or leave it uncertain, from its evidence.
 
 Reviewers only see moving B-mode or color Doppler clips without measurements. Single-frame DICOM objects never
-became videos, but the video archive still holds frozen frames saved as several identical frames, and clips with
-calipers, tracings or measurement text drawn over the image. Both flags come from the decoded video; when the clip
-list gives `dicom_path`, the DICOM header's region boxes also give a scan area found without motion:
+became videos, but the video archive still holds frozen frames saved as several identical frames, analysis screens
+(strain curves, segment values) and clips with calipers, tracings or measurement text drawn over the image. A clip is
+excluded only on evidence of such a condition, and left uncertain when the evidence is partial or conflicting; a
+header without image regions, a missing baseline or many small static marks are recorded, never a reason on their
+own. The evidence, in three independent parts:
 
-- **still:** almost nothing in the scan area moves (`scan_motion_frac`); for a clip without a scan area, almost
-  nothing in the whole frame (`motion_frac`), each with its own threshold. Also recorded for calibration: the
-  moving shares at other pixel thresholds and the share of near-duplicate consecutive frames (`duplicate_frac`).
-- **measurement:** static ink over the image. Calipers, tracings and measurement text do not move while the tissue
-  under them does (over the whole clip, or over half of it when they are drawn partway through), and they are bright
-  or colored. Two scores: `inside_glyphs`, ink marks inside the moving region,
-  a straight dotted or dashed line counting as one and each caliper (a + or an x) as one even when a line joins
-  them (`inside_marks_raw` counts every piece), and `extra_cells`, ink beside the image (outside the scan area,
-  else the moving region), anywhere on the screen, where reference clips of the same scanner
-  layout have none (a measurement results box sits next to the sector, where other clips are black).
+- **video and motion:** the decoder's verdict (unreadable), and the moving share of the field of view
+  (`region_motion_frac`), read over the DICOM scan area, else over a field of view found from the pixels
+  (`image_field`: appearance, not motion, so a frozen clip has one too), else over the whole frame
+  (`region_source`: dicom, image, whole_frame). A still reading over the whole frame is certain only when the frames
+  also repeat (`duplicate_frac`). The earlier scan-area or frame shares stay recorded for calibration.
+- **analysis screen:** the header's account of its image (`dicom_header_evidence`: the image data it names, whether
+  it derives from an acquired image, the ECG) and, from the pixels, static graphics beside the field of view
+  (`outside_ink_frac`: plots, tables, segment maps). Either alone makes a clip uncertain; both exclude it.
+- **measurement overlay:** a header naming a measurement (GE's ImageType MEASURE); measurement text read by an OCR
+  engine when one is installed (`measurement_text`; without one the evidence is unavailable, not absent: a named
+  measurement excludes, a number with a measurement unit alone makes a clip uncertain, a velocity alone is a
+  setting, `text_evidence`); and
+  measurement structures among the static marks over the moving image (`geometry_evidence`): a caliper pair (two
+  calipers static together, joined by their line or alike and apart) excludes, a traced contour or a single caliper
+  makes a clip uncertain. The earlier pixel scores stay as diagnostics: `inside_glyphs`, ink marks inside the moving
+  region (a straight dotted line counting as one, each caliper as one), and `extra_cells`, ink beside the image where
+  reference clips of the same scanner layout have none.
 
-The policy (which flags exclude a clip) is set by the labels: an unreadable clip; a clip whose DICOM header gives no
-image region that applies to its video, each header failure its own reason (HEADER_REASONS; the measured clips of the
-pilot's labelled sample were, but for one, analysis screens without regions); and a still clip. The measurement flag
-and its scores are computed and reported, but exclude only with `measurement_excludes` (and then so does a clip
-whose layout has no baseline, 'incomplete'): on the labelled sample they flagged three quarters of the clips and
-none of the measured ones.
+The policy (`policy` in the thresholds) decides from the evidence (`flag_columns`); 'header' and 'pixel', the earlier
+policies, stay to be compared on the same labels.
 
 Subcommands, every output outside the repository:
-    features   pass 1, per clip: motion and ink statistics and a coarse map of where static ink is.
+    features   pass 1, per clip: motion and ink statistics, the field of view, the header's evidence, the marks
+               inside the image with their kind, place and color, text when OCR is installed, and a coarse map of
+               where static ink is.
     flag       pass 2: per scanner layout, where static ink normally is, from reference clips that clearly move,
                have no marks inside the image and no block of ink beside it that most clips of their layout lack
-               (a rule fixed apart from the thresholds); then both flags for
-               every clip, and the policy: a clip excluded (unreadable, a header reason, still; measurement or
-               incomplete only with `measurement_excludes`) is removed, and the pipeline asks no one.
+               (a rule fixed apart from the thresholds); then the evidence and the decision for every clip (keep,
+               exclude, uncertain, with its reasons), which the pipeline acts on without asking anyone: only kept
+               clips go on, and uncertain ones are listed apart, never taken for invalid.
                The baselines, with the clips behind each and those left out, go to a 0700 folder next to the flags.
 
 Tuning the thresholds, outside the pipeline:
     sheet      private HTML pages for a person to answer four questions per clip (still, measurements, another
                reason to exclude, a cursor line), from a playable copy of the whole clip: the audit sample (a fixed
-               random sample of flagged and unflagged clips, each with its inclusion probability, and a record of
+               random sample of excluded, uncertain and kept clips, each with its inclusion probability, and a record of
                the screen's population); with --diagnostic, a random sample per role (screened or reference clip),
                acquisition mode and detector case; with --all-clips, every clip of a validation list from
                screen_validation.py, with its sampling probability; or, with --keys, chosen clips, the only sheet
                that shows the detector's view (on the others it would steer the answers). The frames carry
                burned-in identifiers: the pages and copies stay on the server, in a 0700 folder.
-    calibrate  the screen against the answers of an audit, diagnostic or validation sheet, recomputed from the
-               features behind the flags at any threshold set (--thresholds): each detector, and the policy
-               (flagged clips are excluded, the others kept) with the share of ineligible clips among the kept ones,
-               overall, per stratum and per acquisition mode; the cursor clips; for each minimum mark size, the
-               screen recomputed from the reference clips' eligibility on, with per layout whether it has a
-               baseline; and a diagnostic sheet's reference clips on their own.
+    challenge  an enriched challenge set to label: per evidence signal, random clips the screen may get wrong
+               (caliper pairs, single calipers, traces, a header naming a measurement, partial analysis evidence,
+               unseen layouts; kept clips with many marks, a results-box score, a dotted line, color Doppler), for
+               `sheet --keys --blind`. Its labels are counted, never weighed up to a population.
+    calibrate  the screen against the answers of an audit, diagnostic, validation or challenge sheet, recomputed
+               from the features behind the flags at any threshold set (--thresholds): each detector, and the
+               policy (removed: excluded or uncertain) with the share of ineligible clips among the kept ones,
+               overall, per stratum and per acquisition mode; the decisions per answer group under each policy
+               (counts), by acquisition mode, header regions and analysis-header pattern; the cursor clips; for each
+               minimum mark size, the screen recomputed from the reference clips' eligibility on, with per layout
+               whether it has a baseline; and a diagnostic sheet's reference clips on their own.
 
 Every clip is named by its `global_key`, an opaque key given in the clip list (the one Labelbox uses), on the sheet
 and in the exported labels, so labels from several sheets name the same clips. A clip keeps its key when its video
 is replaced in place, so the labels also name the video bytes each answer is of (`video_sha256`), and `calibrate`
-uses only answers of the bytes its sheet's copies were made from.
+uses only answers of the bytes its sheet's copies were made from. A sheet also records the media of every clip of the
+screen it was drawn from (`population`), sampled or not, and `calibrate` refuses flags whose clips hold others (an
+older sheet: checked against the flags it was drawn from, --drawn-flags).
 
 Example:
     python data/clip_screen.py features --clips <clips.csv> --out <screen_dir>/features.parquet --workers 16
@@ -91,6 +105,7 @@ import faulthandler
 import hashlib
 import html
 import io
+import itertools
 import json
 import math
 import os
@@ -106,13 +121,31 @@ import pandas as pd
 
 from build_manifests import REPO_ROOT, ensure_outside_repo, git_commit, sha256
 
-MAX_FRAMES = 48       # frames read per clip, evenly spaced.
+MAX_FRAMES = 48       # frames read per clip, spread over it (`frame_indices`),
+FRAME_JITTER = 0.4    # each up to this share of the step from even spacing, so that a periodic loop is not aliased.
 MOVE_STD = 6.0        # temporal std (levels) of any color channel above which a pixel moves.
 MOVE_STDS = (3.0, 10.0)  # other such thresholds whose moving shares are recorded too, for calibration.
 STATIC_STD = 2.0      # temporal std below which, in every channel, a pixel is static (H.264 noise stays under it).
 SCAN_TYPES = (1, 2, 3, 4)  # DICOM Region Data Types holding image data: tissue, color flow, PW and CW Doppler.
 SCAN_LEVEL = 12       # the scan area: what reaches this level (any channel) in some frame inside those regions,
 SCAN_OPEN_PX = 7      # after an opening of this size that removes text and tick marks.
+# Measurement text (`measurement_text`), when an OCR engine is installed: a measurement name followed by a number, or
+# a number with a measurement unit; a line that starts with a scanner setting is interface text. Only a name counts
+# as measurement evidence (`text_evidence`): a unit alone makes a clip uncertain, and a velocity unit not even that.
+MEASUREMENT_NAMES = (r"(?:LV)?EF|EDV|ESV|SV|CO|LVID[ds]?|IVS[ds]?|LVPW[ds]?|LAVI?|LA|Ao|TAPSE|MAPSE|E/A|E/e'?|"
+                     r"DT|IVRT|V ?max|V ?mean|VTI|(?:max|mean) ?PG|PG|AVA|MVA|PISA|EROA?|RVol|VC|RVSP|GLS|"
+                     r"Dist|Area|Vol")
+MEASUREMENT_TEXT = re.compile(rf"\b(?:{MEASUREMENT_NAMES})(?!\w)\s*[:=]?\s*-?\d+(?:[.,]\d+)?"
+                              r"|-?\d+(?:[.,]\d+)?\s*(?:ml|mL|cm2|cm²|m/s|cm/s|mmHg)(?![\w/])")
+INTERFACE_TEXT = re.compile(r"^\s*(?:Gn|Gain|Frq|MHz|Hz|FR|fps|dB|DR|MI|TI[SB]?|PRF|kHz|WF|Comp|Rej|HR|bpm|Depth)\b",
+                            re.IGNORECASE)
+# The field of view found from the pixels when the header gives no usable region (`image_field`): content opened by
+# FIELD_OPEN_PX; a component whose hull covers FIELD_MIN_SHARE..FIELD_MAX_SHARE of the frame, fills FIELD_MIN_SOLIDITY
+# of that hull, and of which FIELD_MIN_TEXTURE is speckle (5-px neighbourhood standard deviation above
+# FIELD_TEXTURE_STD). On 563 pilot clips with regions it was found in all, matching the DICOM scan area (median IoU
+# 0.99): agreement with the header, not labels.
+FIELD_OPEN_PX = 11
+FIELD_MIN_SHARE, FIELD_MAX_SHARE, FIELD_MIN_SOLIDITY, FIELD_MIN_TEXTURE, FIELD_TEXTURE_STD = 0.05, 0.85, 0.6, 0.1, 6.0
 DUP_DIFF = 10.0       # between two read frames a pixel changed when a channel moved by more than this; the frames
 DUP_SHARE = 0.002     # are near-duplicates when, after the ECG opening, less than this share of the area changed.
 DOT_PX, DOT_FILL = 6, 0.6  # a dot or dash fits in DOT_PX x DOT_PX and fills DOT_FILL of its box (a plus does not).
@@ -176,11 +209,15 @@ MOTION_COLUMNS = ("motion_frac", *(f"motion_frac_std{s:g}" for s in MOVE_STDS), 
                   *(f"scan_motion_frac_std{s:g}" for s in MOVE_STDS))
 # Pass 1 columns, present even when no clip could be read.
 NUMERIC_FEATURES = ("n_frames_total", "frames_read", "height", "width", *MOTION_COLUMNS, "duplicate_frac",
+                    "region_motion_frac", "field_frac", "field_iou_dicom", "outside_ink_frac",
                     "scan_frac", "region_fill", "region_frac", "inside_glyphs", "inside_marks_raw", "inside_ink_px",
                     "inside_glyphs_clip", *(f"inside_glyphs_static{s:g}" for s in STATIC_STDS), "windows",
                     "frozen_windows", "ink_cells")
-FEATURE_COLUMNS = ("error", "video_sha256", *NUMERIC_FEATURES, "dicom_status", "dicom_regions", "inside_marks",
-                   "region_bbox", "cells_shape", "cells")
+# The header's evidence about its image (`dicom_header_evidence`), None without a DICOM header.
+HEADER_EVIDENCE = ("dicom_image_content", "dicom_measure_flag", "dicom_source_image", "dicom_ecg")
+FEATURE_COLUMNS = ("error", "video_sha256", *NUMERIC_FEATURES, "dicom_status", "dicom_regions", *HEADER_EVIDENCE,
+                   "region_source", "text_status", "text_measurements", "inside_marks", "region_bbox", "cells_shape",
+                   "cells")
 
 # still: the scan area's moving share below still_scan_motion_frac, or for a clip without a scan area the frame's
 # below still_motion_frac. measurement: at least inside_glyphs marks inside the image (two calipers of one distance
@@ -188,21 +225,45 @@ FEATURE_COLUMNS = ("error", "video_sha256", *NUMERIC_FEATURES, "dicom_status", "
 # inside the image counts only from inside_mark_px ink pixels (a straight dotted line: its dots together), in the
 # screened clips and in the reference clips alike; MIN_INK_PX counts every mark. It applies to marks inside the
 # image only: the cell map beside it, where results text is, keeps every ink component of MIN_INK_PX.
-# The policy. A clip is eligible only when its DICOM header gives image regions that apply to its video (dicom_status
-# 'ok'); a header without them, or one that cannot be used, is its own reason to exclude. On the pilot's labelled
-# clips, all still clips and all measured ones but one lacked them (analysis screens). The pixel measurement rules
-# (`inside_glyphs`, `extra_cells`) flagged about three quarters of the pilot's clips, none of them measured in the
-# labels, so they exclude nothing unless `measurement_excludes` is set, and nor does a missing layout baseline
-# ('incomplete'); their scores and the `measurement` flag are computed and reported either way.
+# The policy (`policy`), which decides from the evidence whether a clip is kept, excluded or uncertain:
+# - 'hybrid' (the default): a clip is excluded only on evidence of a disallowed condition (unreadable; still, read in a
+#   field of view; an analysis screen by header and by pixels; a measurement named by the header, read as text, or
+#   drawn as a caliper pair); uncertain on partial or conflicting evidence (motion readable only over the whole frame,
+#   an analysis screen by one source only, a traced contour or a single caliper); kept otherwise. A header without
+#   image regions, a missing baseline or many small static marks are recorded, never a reason on their own.
+# - 'header' and 'pixel', the earlier policies, kept to compare on the same labels: exclusion by a header without
+#   usable image regions and still; or by still and the pixel measurement scores (`inside_glyphs`, `extra_cells`),
+#   with a missing baseline excluded as 'incomplete'.
+POLICIES = ("hybrid", "header", "pixel")
 HEADER_REASONS = {"no_regions": "no_image_region", "size_mismatch": "header_size_mismatch",
                   "unreadable_header": "header_unreadable", "": "no_header"}
+# An analysis screen (`analysis_evidence`): a header naming no tissue or flow data (ImageType value '0000'), without the
+# acquired image it derives from and without the ECG, which every pilot recording had; and, from the pixels, static
+# graphics beside the field of view on at least ANALYSIS_OUTSIDE_INK of the frame (plots, tables, segment maps: 0.3%
+# to 3% on the 28 labelled analysis screens, below 0.07% on 90% of 387 clean clips and 0.65% at most).
+ANALYSIS_CONTENT, ANALYSIS_OUTSIDE_INK = "0000", 0.003
+# A caliper pair (`geometry_evidence`): two calipers static together (over the whole clip or in one window), of about
+# one size (areas within PAIR_AREA_RATIO) and one color (channels within PAIR_COLOR_DIFF), at least PAIR_MIN_PX apart:
+# the two ends of one distance. Calipers joined by their line in one ink component are a pair already.
+PAIR_AREA_RATIO, PAIR_COLOR_DIFF, PAIR_MIN_PX = 2.0, 40, 20
+GEOMETRY_ORDER = ("caliper_pair", "trace", "caliper")
+# Motion read over the whole frame only (no field of view found) makes a still clip certain only when its frames also
+# repeat (`duplicate_frac` at least FROZEN_DUP_SHARE); else it is uncertain.
+FROZEN_DUP_SHARE = 0.9
+# An enriched challenge set (`challenge_set`): kept clips with at least CHALLENGE_MANY_MARKS marks inside the image are
+# drawn as clips the measurement structures may have missed, or bright tissue (hard negatives).
+CHALLENGE_MANY_MARKS = 4
 THRESHOLDS = {"still_scan_motion_frac": 0.05, "still_motion_frac": 0.01, "inside_glyphs": 2, "extra_cells": 8,
-              "inside_mark_px": MIN_INK_PX, "measurement_excludes": False}
+              "inside_mark_px": MIN_INK_PX, "policy": "hybrid"}
+# What each threshold may be (`check_thresholds`): (type, minimum, maximum or None); `policy` one of POLICIES.
+THRESHOLD_RANGES = {"still_scan_motion_frac": (float, 0.0, 1.0), "still_motion_frac": (float, 0.0, 1.0),
+                    "inside_glyphs": (int, 1, None), "extra_cells": (int, 1, None), "inside_mark_px": (int, 1, None)}
 # The labelled calibration the THRESHOLDS above were chosen with, or None while they are provisional: {"date": ...,
 # "report": SHA-256 of `calibrate`'s report, "screen": the `screen` it reports, the SHA-256 of the extractor and flag
 # rule its flags were made with, "thresholds": the thresholds it reports, which it measured}. `flag` records it only
 # with flags of that same screen at those same thresholds (changing THRESHOLDS alone leaves flags provisional), and
-# `radar_pilot.py candidates` refuses provisional flags unless told the run is a trial (--provisional-screen).
+# `radar_pilot.py candidates` refuses provisional flags unless told the run is a trial (--provisional-screen). Set
+# only once an independent-patient validation and blind challenge sets with positives are labelled and reported.
 CALIBRATION = None
 # Still scores `calibrate` sweeps: (column, a clip is still when the score is 'below' or 'at_least' a value, values).
 STILL_SWEEPS = (*((c, "below", (0.002, 0.005, 0.01, 0.02, 0.05)) for c in MOTION_COLUMNS if not c.startswith("scan")),
@@ -215,15 +276,48 @@ STILL_SWEEPS = (*((c, "below", (0.002, 0.005, 0.01, 0.02, 0.05)) for c in MOTION
 # --------------------------------------------------------------------------- #
 
 def frame_indices(n, max_frames=MAX_FRAMES):
-    return np.unique(np.linspace(0, n - 1, num=min(n, max_frames)).round().astype(int))
+    """Up to `max_frames` frame indices over a clip of `n` frames, in order: every frame of a short clip; else one
+    per equal step, each moved by a deterministic jitter of up to FRAME_JITTER of the step (golden-ratio sequence).
+    Evenly spaced samples of a loop whose cycle divides the step would all show one phase, and a moving loop would
+    read as still; jittered, they fall on many phases of any cycle."""
+    if n <= max_frames:
+        return np.arange(n)
+    step = (n - 1) / (max_frames - 1)
+    i = np.arange(max_frames)
+    jitter = ((i * 0.6180339887498949) % 1.0 - 0.5) * 2 * FRAME_JITTER * step
+    jitter[[0, -1]] = 0  # the first and last frames stay.
+    return np.unique(np.clip(np.round(i * step + jitter), 0, n - 1).astype(int))
 
 
 def read_frames(video, max_frames=MAX_FRAMES):
-    """`(T, H, W, 3)` uint8 RGB frames, evenly spaced over the clip, from its bytes (or its path)."""
+    """`(T, H, W, 3)` uint8 RGB frames spread over the clip (`frame_indices`), from its bytes (or its path)."""
     from decord import VideoReader, cpu
 
     vr = VideoReader(io.BytesIO(video) if isinstance(video, bytes) else video, ctx=cpu(0), num_threads=1)
     return vr.get_batch(list(frame_indices(len(vr), max_frames))).asnumpy(), len(vr)
+
+
+def dicom_header_evidence(path):
+    """What a DICOM header says about its image beyond the regions, as GE Vivid exports write it (checked on the
+    pilot's clips): `dicom_image_content`, the fourth ImageType value, which names the image data it holds ('0001'
+    tissue, '0011' tissue and color flow, '0000' neither: a screen composed after acquisition, such as an analysis
+    display); `dicom_measure_flag`, ImageType naming MEASURE (an image saved with measurements); `dicom_source_image`,
+    whether it references the acquired image it derives from; and `dicom_ecg`, whether it carries the ECG (HeartRate
+    or RWaveTimeVector). All None for a header that cannot be parsed. A file that cannot be opened stops the run."""
+    import pydicom
+
+    with open(path, "rb") as f:
+        try:
+            ds = pydicom.dcmread(f, stop_before_pixels=True,
+                                 specific_tags=["ImageType", "SourceImageSequence", "HeartRate", "RWaveTimeVector"])
+            values = [str(v) for v in (ds.get("ImageType") or [])]
+        except (MemoryError, OSError):  # the machine or the storage, not the header.
+            raise
+        except Exception:
+            return dict.fromkeys(HEADER_EVIDENCE)
+    return {"dicom_image_content": values[3] if len(values) > 3 else "", "dicom_measure_flag": "MEASURE" in values,
+            "dicom_source_image": "SourceImageSequence" in ds,
+            "dicom_ecg": "HeartRate" in ds or "RWaveTimeVector" in ds}
 
 
 def dicom_bounds(path, size):
@@ -289,6 +383,69 @@ def scan_area(f, boxes):
     kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (SCAN_OPEN_PX, SCAN_OPEN_PX))
     content = cv2.morphologyEx(content.astype(np.uint8), cv2.MORPH_OPEN, kernel).astype(bool)
     return imaging_region(content) & inside
+
+
+def image_field(f):
+    """The ultrasound field of view from the pixels alone, for a clip whose header gives no usable region: what
+    reaches SCAN_LEVEL in some frame, opened by FIELD_OPEN_PX to drop text, lines and curves; of its largest
+    components, the first plausible one (FIELD_*: its hull's share of the frame, how much of the hull it fills, and
+    speckle texture inside it in the middle frame, which flat panels, filled plots and text lack), as its convex hull.
+    Appearance, not motion, so a frozen clip has one too. Empty when none is plausible. `f`: (T, H, W, 3) float."""
+    import cv2
+
+    t, h, w, _ = f.shape
+    # Blurred first: in a frozen clip the darkest specks of the one frame would otherwise break the opening.
+    content = (cv2.blur(f.max(axis=0).max(axis=2), (5, 5)) >= SCAN_LEVEL).astype(np.uint8)
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (FIELD_OPEN_PX, FIELD_OPEN_PX))
+    n, labels, stats, _ = cv2.connectedComponentsWithStats(cv2.morphologyEx(content, cv2.MORPH_OPEN, kernel),
+                                                           connectivity=8)
+    gray = f[t // 2].mean(axis=2)
+    mean, square = cv2.blur(gray, (5, 5)), cv2.blur(gray * gray, (5, 5))
+    speckle = np.sqrt(np.maximum(square - mean * mean, 0)) > FIELD_TEXTURE_STD
+    for i in np.argsort(-stats[1:, cv2.CC_STAT_AREA])[:4] + 1:
+        component = labels == i
+        hull = np.zeros((h, w), np.uint8)
+        cv2.fillPoly(hull, [cv2.convexHull(np.column_stack(np.nonzero(component))[:, ::-1].astype(np.int32))], 1)
+        hull = hull.astype(bool)
+        # Texture inside, away from the component's edges, which any flat bar or panel has too.
+        interior = cv2.erode(component.astype(np.uint8), kernel).astype(bool)
+        if (FIELD_MIN_SHARE <= hull.mean() <= FIELD_MAX_SHARE and component.sum() >= FIELD_MIN_SOLIDITY * hull.sum()
+                and interior.any() and speckle[interior].mean() >= FIELD_MIN_TEXTURE):
+            return hull
+    return np.zeros((h, w), bool)
+
+
+def ocr_backend():
+    """The installed OCR engine as (name, read), `read(frame)` giving the text lines of an RGB frame, or None when
+    none is installed (pytesseract with its tesseract binary). None means text evidence is unavailable, not absent.
+    Everything runs on this machine: nothing is sent anywhere."""
+    import importlib.util
+
+    if importlib.util.find_spec("pytesseract") is None or shutil.which("tesseract") is None:
+        return None
+    import pytesseract
+
+    def read(frame):
+        return pytesseract.image_to_string(frame).splitlines()
+
+    return f"tesseract {pytesseract.get_tesseract_version()}", read
+
+
+def measurement_text(frames, backend=None):
+    """Measurement text in the first, middle and last frame, read by `backend` (`ocr_backend()` when None):
+    ('checked', JSON list of the measurement expressions found, MEASUREMENT_TEXT, leaving out lines that start with
+    a scanner setting, INTERFACE_TEXT), or ('unavailable', None) without an OCR engine: missing evidence, which is
+    never taken for the absence of text. Only the matched expressions are kept, not the text read."""
+    backend = ocr_backend() if backend is None else backend
+    if not backend:
+        return "unavailable", None
+    _, read = backend
+    found = set()
+    for i in sorted({0, len(frames) // 2, len(frames) - 1}):
+        for line in read(frames[i]):
+            if not INTERFACE_TEXT.match(line):
+                found |= {" ".join(m.split()) for m in MEASUREMENT_TEXT.findall(line)}
+    return "checked", json.dumps(sorted(found))
 
 
 def duplicate_share(f, area):
@@ -434,11 +591,11 @@ def line_art(component):
 
 def ink_components(ink):
     """Ink components that are marks (glyphs, calipers, dashes, traced contours), not line art: list of
-    (x, y, w, h, area, cx, cy, kind), kind 'caliper', 'piece' or 'trace' (a long sparse component that is not
-    `line_art`: a contour traced over the image), or 'line' once `chain_dots` joins a dotted line. A component
-    holding several calipers (`caliper_centers`: calipers joined by the line of their distance) gives one mark per
-    caliper, and so does a long sparse line holding any; line art alone (a cursor, a color box outline, a scale)
-    gives none."""
+    (x, y, w, h, area, cx, cy, kind), kind 'piece', 'caliper' (a component that is one caliper, `caliper_centers`),
+    'joined_caliper', 'trace' (a long sparse component that is not `line_art`: a contour traced over the image), or
+    'line' once `chain_dots` joins a dotted line. A component holding several calipers (calipers joined by the line of
+    their distance) gives one 'joined_caliper' mark per caliper, with a ninth field, the component's label, and so does
+    a long sparse line holding any; line art alone (a cursor, a color box outline, a scale) gives none."""
     import cv2
 
     n, labels, stats, centroids = cv2.connectedComponentsWithStats(ink.astype(np.uint8), connectivity=8)
@@ -457,11 +614,13 @@ def ink_components(ink):
                 px, py = int(round(cx)), int(round(cy))
                 x0, y0 = max(px - CALIPER_MAX_ARM, x), max(py - CALIPER_MAX_ARM, y)
                 x1, y1 = min(px + CALIPER_MAX_ARM + 1, x + w), min(py + CALIPER_MAX_ARM + 1, y + h)
-                marks.append((x0, y0, x1 - x0, y1 - y0, int((labels[y0:y1, x0:x1] == i).sum()), cx, cy, "caliper"))
+                marks.append((x0, y0, x1 - x0, y1 - y0, int((labels[y0:y1, x0:x1] == i).sum()), cx, cy,
+                              "joined_caliper", i))  # the component: calipers on one line share it.
             continue
         if line and line_art(labels[y:y + h, x:x + w] == i):
             continue
-        marks.append((x, y, w, h, area, float(centroids[i][0]), float(centroids[i][1]), "trace" if line else "piece"))
+        kind = "trace" if line else "caliper" if own else "piece"
+        marks.append((x, y, w, h, area, float(centroids[i][0]), float(centroids[i][1]), kind))
     return marks
 
 
@@ -511,6 +670,11 @@ def clip_features(frames, boxes=None, dicom_status=""):
 
     region, inner = regions(moving[MOVE_STD])
     scan = scan_area(f, boxes) if boxes else np.zeros((h, w), bool)
+    # The field of view motion is read in: the DICOM scan area, else the one found from the pixels, else the frame.
+    found = image_field(f)
+    field = scan if scan.any() else found
+    region_source = "dicom" if scan.any() else "image" if found.any() else "whole_frame"
+    area = field if field.any() else np.ones((h, w), bool)
 
     def inked(static, part, inside_of):
         """The ink of the frames `part` (static, and bright or colored), its marks, and the marks inside
@@ -525,13 +689,26 @@ def clip_features(frames, boxes=None, dicom_status=""):
 
     mark_mask = np.zeros((h, w), bool)
 
+    def records(marks, ink, part):
+        """The marks as `inside_marks` keeps them: [pixels, kind, x, y, [r, g, b]], each with its centre and the
+        mean color of its ink over the frames `part`, and for a joined caliper its component (calipers on one line
+        share it), so that pass 2 can pair calipers (`geometry_evidence`)."""
+        mean_rgb = f[part].mean(axis=0)
+        out = []
+        for x, y, mw, mh, area, cx, cy, kind, *component in marks:
+            own = ink[y:y + mh, x:x + mw]
+            rgb = mean_rgb[y:y + mh, x:x + mw][own].mean(axis=0) if own.any() else np.zeros(3)
+            out.append([int(area), kind, round(float(cx), 1), round(float(cy), 1), [int(round(v)) for v in rgb],
+                        *map(int, component)])
+        return out
+
     def add_to_mark_mask(ink, marks):
         for x, y, mw, mh, *_ in marks:
             mark_mask[y:y + mh, x:x + mw] |= ink[y:y + mh, x:x + mw]
 
     ink, marks, inside_raw, inside = inked(change < STATIC_STD, slice(None), inner)
     add_to_mark_mask(ink, marks)
-    inside_clip, evidence = len(inside), {"clip": [[m[4], m[7]] for m in inside], "windows": []}
+    inside_clip, evidence = len(inside), {"clip": records(inside, ink, slice(None)), "windows": []}
     # Ink static in part of the clip only, in windows of half the clip, one every quarter. Beside the image, every
     # window's marks join the cell map (a results box shown partway through). Inside it, the most marks in a window
     # that is not frozen count, within the region that moves in that window: a part of the image frozen during it
@@ -549,7 +726,7 @@ def clip_features(frames, boxes=None, dicom_status=""):
         frozen_windows += frozen
         if not frozen:
             windows.append((part, std, inner_w))
-            evidence["windows"].append([[m[4], m[7]] for m in marked])
+            evidence["windows"].append(records(marked, ink_w, part))
             if len(marked) > len(inside):
                 inside_raw, inside = raw, marked
     at_levels = {}
@@ -572,6 +749,8 @@ def clip_features(frames, boxes=None, dicom_status=""):
     else:
         bbox = None
 
+    # Static graphics beside the field of view (plots, tables, segment maps): an analysis screen's evidence.
+    beside_field = ~cv2.dilate(field.astype(np.uint8), np.ones((2 * HULL_MARGIN + 1,) * 2, np.uint8)).astype(bool)
     shares = {}
     for s, mask in moving.items():
         suffix = "" if s == MOVE_STD else f"_std{s:g}"
@@ -581,16 +760,24 @@ def clip_features(frames, boxes=None, dicom_status=""):
     features = {
         "frames_read": int(t), "height": int(h), "width": int(w), **shares,
         # The opening inside duplicate_share removes the ECG trace when the whole frame is used.
-        "duplicate_frac": duplicate_share(f, scan if scan.any() else np.ones((h, w), bool)),
+        "duplicate_frac": duplicate_share(f, area),
         "dicom_status": dicom_status,
+        # Where motion is read (`region_source`: dicom, image or whole_frame) and its moving share there; the field
+        # found from the pixels and its overlap with the DICOM scan area when both exist (agreement, not labels).
+        "region_source": region_source, "region_motion_frac": float(moving[MOVE_STD][area].mean()),
+        "field_frac": float(field.mean()),
+        "field_iou_dicom": float((found & scan).sum() / (found | scan).sum()) if scan.any() and found.any() else float(
+            "nan"),
+        "outside_ink_frac": float((ink & beside_field).mean()) if field.any() else float("nan"),
         "scan_frac": float(scan.mean()) if boxes else float("nan"),
         "region_fill": float(scan.sum() / boxes_area) if boxes_area else float("nan"),
         "region_frac": float(region.mean()),
         # The most marks inside the image, over the whole clip or in any window that is not frozen; the whole
         # clip's count alone; the windows looked at and those frozen.
         "inside_glyphs": len(inside), "inside_marks_raw": len(inside_raw),
-        # Each mark counted inside, [pixels, kind], over the whole clip and in each window that is not frozen: a
-        # minimum mark size (`at_mark_size`) can be tried without extracting again.
+        # Each mark counted inside, [pixels, kind, x, y, [r, g, b]], over the whole clip and in each window that is
+        # not frozen: a minimum mark size (`at_mark_size`) and caliper pairs (`geometry_evidence`) are found from it
+        # without extracting again.
         "inside_marks": json.dumps(evidence),
         "inside_ink_px": int(sum(m[4] for m in inside)), "inside_glyphs_clip": inside_clip, **at_levels,
         "windows": len(starts), "frozen_windows": frozen_windows,
@@ -688,17 +875,27 @@ def _features_worker(item):
             raise
         return {"video_path": path, "error": error, "video_sha256": digest}
     boxes, status = dicom_bounds(dicom_path, frames.shape[1:3]) if dicom_path else (None, "")
+    header = dicom_header_evidence(dicom_path) if dicom_path else dict.fromkeys(HEADER_EVIDENCE)
     features, cells, _ = clip_features(frames, boxes, status)
+    text_status, text_found = measurement_text(frames)
     return {"video_path": path, "error": None, "video_sha256": digest, "n_frames_total": int(n), **features,
-            "dicom_regions": json.dumps(boxes) if dicom_path else None,
+            "dicom_regions": json.dumps(boxes) if dicom_path else None, **header,
+            "text_status": text_status, "text_measurements": text_found,
             "cells_shape": json.dumps(list(cells.shape)), "cells": np.packbits(cells.ravel()).tobytes()}
+
+
+def _header_values(values):
+    """Header evidence (HEADER_EVIDENCE order) in one comparable form: a missing value is None, a flag a bool."""
+    return [None if v is None or (isinstance(v, float) and np.isnan(v)) else v if isinstance(v, str) else bool(v)
+            for v in values]
 
 
 def changed_media(rows, log, dicom=True):
     """The global keys of `rows` (pass 1 rows: video_path, video_sha256 and, with `dicom`, dicom_path, dicom_status,
-    dicom_regions, height, width) whose video file no longer holds the bytes pass 1 decoded, or, with `dicom`, whose
-    DICOM header no longer gives the regions it used: a clip replaced or re-masked in place since, which no record
-    of a clip list or table shows. A missing file counts as changed. Any other failure to read one (a folder there,
+    dicom_regions, the header evidence HEADER_EVIDENCE, height, width) whose video file no longer holds the bytes pass
+    1 decoded, or, with `dicom`, whose DICOM header no longer gives the regions or the evidence the decision used: a
+    clip replaced or re-masked in place since, which no record of a clip list or table shows. A missing file, or a
+    row that does not record the header evidence, counts as changed. Any other failure to read one (a folder there,
     permissions, storage) stops the run: its message and traceback name the clip's path, so they go to the private
     `log` only."""
     import warnings
@@ -713,7 +910,11 @@ def changed_media(rows, log, dicom=True):
                 with warnings.catch_warnings():  # a reader's warning can name the path: the console stays aggregate.
                     warnings.simplefilter("ignore")
                     boxes, status = dicom_bounds(dicom_path, (int(row.height), int(row.width)))
-                same = status == row.dicom_status and json.dumps(boxes) == row.dicom_regions
+                    header = dicom_header_evidence(dicom_path)
+                same = (status == row.dicom_status and json.dumps(boxes) == row.dicom_regions
+                        and all(c in row for c in HEADER_EVIDENCE)
+                        and _header_values(header[c] for c in HEADER_EVIDENCE)
+                        == _header_values(row[c] for c in HEADER_EVIDENCE))
         except FileNotFoundError:
             same = False
         except Exception as exc:
@@ -946,14 +1147,110 @@ def apply_flags(df, baselines, thresholds=THRESHOLDS):
     return flag_columns(df, thresholds)
 
 
+def _paired(a, b):
+    """Whether two caliper marks (`inside_marks` records) are the ends of one distance (PAIR_*)."""
+    if len(a) < 5 or len(b) < 5:  # no position or color recorded.
+        return False
+    sizes = sorted((a[0], b[0]))
+    return (sizes[1] <= PAIR_AREA_RATIO * sizes[0] and max(abs(x - y) for x, y in zip(a[4], b[4])) <= PAIR_COLOR_DIFF
+            and math.hypot(a[2] - b[2], a[3] - b[3]) >= PAIR_MIN_PX)
+
+
+def geometry_evidence(evidence, min_px):
+    """The strongest measurement structure among a clip's marks inside the image (`inside_marks`, those of at least
+    `min_px` pixels), over the whole clip or within one window: 'caliper_pair' (two calipers on one line, that is of
+    one ink component, or alike and apart, `_paired`), 'trace' (a traced contour), 'caliper' (one caliper alone) or
+    'none'; None for an unreadable clip."""
+    if not isinstance(evidence, str):
+        return None
+    marks, found = json.loads(evidence), set()
+    for detection in (marks["clip"], *marks["windows"]):
+        kept = [m for m in detection if m[0] >= min_px]
+        calipers = [m for m in kept if m[1] in ("caliper", "joined_caliper")]
+        lines = [m[5] for m in calipers if m[1] == "joined_caliper" and len(m) > 5]
+        if (len(lines) > len(set(lines))  # two calipers of one component: the ends of one line.
+                or any(_paired(a, b) for a, b in itertools.combinations(calipers, 2))):
+            found.add("caliper_pair")
+        found |= {"trace"} if any(m[1] == "trace" for m in kept) else set()
+        found |= {"caliper"} if calipers else set()
+    return next((kind for kind in GEOMETRY_ORDER if kind in found), "none")
+
+
+VELOCITY_UNIT = re.compile(r"m/s$")  # a velocity scale and Nyquist limit read so on every Doppler display.
+
+
+def text_evidence(found):
+    """The evidence of one clip's measurement expressions read by OCR (`measurement_text`'s JSON list):
+    `measurement_text` when one names a measurement (a name, then a number); else `measurement_unit` when a number
+    has a measurement unit other than a velocity one (no name read: uncertain, never an exclusion on its own); else
+    `none`. A velocity alone (`Scale 64 cm/s`, `Nyquist 64 cm/s`, a color bar's limit) is a setting, not evidence."""
+    expressions = json.loads(found) if isinstance(found, str) else []
+    if any(e[:1].isalpha() for e in expressions):  # MEASUREMENT_TEXT's named form: every name starts with a letter.
+        return "measurement_text"
+    if any(not VELOCITY_UNIT.search(e) for e in expressions):
+        return "measurement_unit"
+    return "none"
+
+
+def screen_evidence(df, thresholds=THRESHOLDS):
+    """The evidence the policy decides from, one column each, None for an unreadable clip: `video_status` (ok,
+    unreadable); `dicom_region_status` (ok or the header's reason, HEADER_REASONS); `still_status` (moving, still, or
+    still_low_confidence when motion could only be read over the whole frame and the frames do not repeat);
+    `analysis_evidence` (header_and_visual, header_only, visual_only, none); `measurement_header` (measure_flag,
+    none, unavailable); `text_evidence` (`text_evidence`: measurement_text, measurement_unit, none; unavailable: no
+    OCR engine, which is not absence);
+    `geometry_evidence` (`geometry_evidence`); and `evidence_missing`, what could not be checked (header, field of
+    view, text)."""
+    readable = df.error.isna()
+    status = df.dicom_status.fillna("")
+    header = df.dicom_image_content.notna()
+    out = pd.DataFrame(index=df.index)
+    out["video_status"] = np.where(readable, "ok", "unreadable")
+    out["dicom_region_status"] = status.map(lambda v: "ok" if v == "ok" else HEADER_REASONS.get(v, "header_unreadable"))
+    in_field = df.region_source.isin(["dicom", "image"])
+    still = df.region_motion_frac < np.where(in_field, thresholds["still_scan_motion_frac"],
+                                             thresholds["still_motion_frac"])
+    confident = in_field | (df.duplicate_frac >= FROZEN_DUP_SHARE)
+    out["still_status"] = np.where(~still, "moving", np.where(confident, "still", "still_low_confidence"))
+    by_header = (header & (df.dicom_image_content == ANALYSIS_CONTENT) & (df.dicom_source_image == False)  # noqa: E712
+                 & (df.dicom_ecg == False))  # noqa: E712
+    by_pixels = df.outside_ink_frac >= ANALYSIS_OUTSIDE_INK
+    out["analysis_evidence"] = np.select([by_header & by_pixels, by_header, by_pixels],
+                                         ["header_and_visual", "header_only", "visual_only"], default="none")
+    out["measurement_header"] = np.where(~header, "unavailable",
+                                         np.where(df.dicom_measure_flag == True, "measure_flag", "none"))  # noqa: E712
+    out["text_evidence"] = np.where(df.text_status != "checked", "unavailable", df.text_measurements.map(text_evidence))
+    marks = df["inside_marks"] if "inside_marks" in df else pd.Series(None, index=df.index, dtype=object)
+    out["geometry_evidence"] = marks.map(lambda e: geometry_evidence(e, thresholds["inside_mark_px"]))
+    missing = pd.DataFrame({"header": ~header, "field_of_view": ~in_field, "text": out.text_evidence == "unavailable"})
+    out["evidence_missing"] = missing.apply(lambda row: ";".join(k for k, v in row.items() if v), axis=1)
+    out = out.astype(object)
+    out.loc[~readable, [c for c in out if c != "video_status"]] = None
+    return out
+
+
+def _decisions(df, exclusions, uncertainties):
+    """`decision` (exclude when any exclusion holds, else uncertain when any uncertainty does, else keep),
+    `decision_reasons` (those that hold, exclusions first), `exclude` and `exclude_reason` (the first exclusion)."""
+    ex = pd.DataFrame(exclusions, index=df.index).fillna(False).astype(bool)
+    un = pd.DataFrame(uncertainties or {"_": False}, index=df.index).fillna(False).astype(bool)
+    reasons = [";".join([k for k in ex if ex.at[i, k]] + [k for k in un if k != "_" and un.at[i, k]])
+               for i in df.index]
+    df["decision"] = np.where(ex.any(axis=1), "exclude", np.where(un.any(axis=1), "uncertain", "keep"))
+    df["decision_reasons"] = reasons
+    df["exclude"] = df.decision == "exclude"
+    df["exclude_reason"] = [r.split(";")[0] if d == "exclude" else "" for r, d in zip(reasons, df.decision)]
+    return df
+
+
 def flag_columns(df, thresholds=THRESHOLDS):
-    """`df` (pass 1 features and `extra_cells`) with `still`, `still_basis` ('scan' or 'frame': the moving share
-    it read, `motion_share`), `measurement`, `exclude` and `exclude_reason` at `thresholds`, the first that applies:
-    'unreadable'; the header's reason (HEADER_REASONS: no image region, a size other than the video's, an unreadable
-    header, no header); 'still'; and, only with `measurement_excludes`, 'measurement' and 'incomplete' (a readable
-    clip without `extra_cells`: its layout has no baseline, so it could not be checked for a results box). The flags
-    are None for an unreadable clip. The baselines do not depend on the thresholds, so this gives a rerun of `flag`
-    exactly."""
+    """`df` (pass 1 features and `extra_cells`) with the evidence (`screen_evidence`), the diagnostic flags of the
+    earlier screen (`still` and `still_basis`, read over the DICOM scan area else the frame; `measurement`, the pixel
+    scores at `inside_glyphs` and `extra_cells`) and the decision of `thresholds["policy"]` (POLICIES): `decision`
+    (keep, exclude, uncertain), `decision_reasons`, `exclude` and `exclude_reason`. The baselines do not depend on
+    the thresholds, so this gives a rerun of `flag` exactly."""
+    if thresholds["policy"] not in POLICIES:
+        raise ValueError(f"policy must be one of {POLICIES}")
     df = df.copy()
     readable = df.error.isna()
     share, in_scan = motion_share(df)
@@ -963,15 +1260,32 @@ def flag_columns(df, thresholds=THRESHOLDS):
     measured = (df.inside_glyphs >= thresholds["inside_glyphs"]) | (
         df.extra_cells.fillna(-1) >= thresholds["extra_cells"])
     df["measurement"] = pd.array(np.where(readable, measured, None), dtype="boolean")
-    status = df.dicom_status.fillna("") if "dicom_status" in df else pd.Series("", index=df.index)
-    header = status.map(lambda s: "" if s == "ok" else HEADER_REASONS.get(s, "header_unreadable")).to_numpy()
-    pixel = bool(thresholds["measurement_excludes"])
-    df["exclude_reason"] = np.select(
-        [~readable.to_numpy(), header != "", df.still.fillna(False).to_numpy(bool),
-         pixel & df.measurement.fillna(False).to_numpy(bool), pixel & df.extra_cells.isna().to_numpy()],
-        ["unreadable", header, "still", "measurement", "incomplete"], default="")
-    df["exclude"] = df.exclude_reason != ""
-    return df
+    evidence = screen_evidence(df, thresholds)
+    for column in evidence:
+        df[column] = evidence[column]
+    unreadable, still = ~readable, df.still.fillna(False).astype(bool)
+    if thresholds["policy"] == "pixel":
+        return _decisions(df, {"unreadable": unreadable, "still": still,
+                               "measurement": df.measurement.fillna(False).astype(bool),
+                               "incomplete": readable & df.extra_cells.isna()}, {})
+    if thresholds["policy"] == "header":
+        reasons = {r: readable & (df.dicom_region_status == r) for r in HEADER_REASONS.values()}
+        return _decisions(df, {"unreadable": unreadable, **reasons, "still": still}, {})
+    return _decisions(df, {
+        "unreadable": unreadable,
+        "still": df.still_status == "still",
+        "analysis_screen": df.analysis_evidence == "header_and_visual",
+        "measurement_header": df.measurement_header == "measure_flag",
+        "measurement_text": df.text_evidence == "measurement_text",
+        "measurement_calipers": df.geometry_evidence == "caliper_pair",
+    }, {
+        "still_low_confidence": df.still_status == "still_low_confidence",
+        "analysis_header_only": df.analysis_evidence == "header_only",
+        "analysis_visual_only": df.analysis_evidence == "visual_only",
+        "measurement_trace": df.geometry_evidence == "trace",
+        "measurement_single_caliper": df.geometry_evidence == "caliper",
+        "measurement_unit_text": df.text_evidence == "measurement_unit",
+    })
 
 
 def at_mark_size(df, min_px):
@@ -985,9 +1299,47 @@ def at_mark_size(df, min_px):
         if not isinstance(evidence, str):
             return np.nan
         marks = json.loads(evidence)
-        return max(sum(area >= min_px for area, _ in found) for found in (marks["clip"], *marks["windows"]))
+        return max(sum(mark[0] >= min_px for mark in found) for found in (marks["clip"], *marks["windows"]))
 
     return df.assign(inside_glyphs=df.inside_marks.map(count).astype(float))
+
+
+def check_thresholds(thresholds):
+    """`thresholds` when it names every threshold of THRESHOLDS and nothing else, each value of its type and range
+    (THRESHOLD_RANGES: a share a finite number from 0 to 1, a count or size a whole number of at least 1, the policy
+    one of POLICIES); else SystemExit naming the values refused. A NaN compares false with everything, so it would
+    silently switch a rule off."""
+    if set(thresholds) != set(THRESHOLDS):
+        raise SystemExit(f"--thresholds keys must be among {sorted(THRESHOLDS)}.")
+    refused = []
+    for name, value in thresholds.items():
+        if name == "policy":
+            valid = value in POLICIES
+        else:
+            kind, low, high = THRESHOLD_RANGES[name]
+            typed = isinstance(value, (int, float) if kind is float else int) and not isinstance(value, bool)
+            valid = typed and math.isfinite(value) and value >= low and (high is None or value <= high)
+        if not valid:
+            refused.append(f"{name}={value!r}")
+    if refused:
+        raise SystemExit(f"Thresholds out of their type or range: {', '.join(refused)} (shares are numbers from 0 to "
+                         f"1, counts and sizes whole numbers of at least 1, the policy one of {list(POLICIES)}).")
+    return thresholds
+
+
+def parse_thresholds(text, base):
+    """`base` (THRESHOLDS, or the thresholds flags were made at) with the JSON object `text` (--thresholds) over it,
+    checked (`check_thresholds`). NaN and Infinity, which JSON parsing would accept, are refused."""
+    def refuse(constant):
+        raise SystemExit(f"--thresholds holds {constant}: every threshold must be a finite number.")
+
+    try:
+        given = json.loads(text, parse_constant=refuse) if text else {}
+    except json.JSONDecodeError as e:
+        raise SystemExit(f"--thresholds is not valid JSON ({e.msg}).")
+    if not isinstance(given, dict):
+        raise SystemExit("--thresholds must be a JSON object of thresholds.")
+    return check_thresholds({**base, **given})
 
 
 def screen_flags(features, reference, thresholds):
@@ -1015,9 +1367,7 @@ def run_flag(args):
     ensure_outside_repo(args.out, "--out")
     private_dir(os.path.dirname(os.path.abspath(args.out)))
     clear_outputs(args.out, args.out + ".info.json", args.out + ".baselines")
-    thresholds = {**THRESHOLDS, **(json.loads(args.thresholds) if args.thresholds else {})}
-    if set(thresholds) != set(THRESHOLDS):
-        raise SystemExit(f"--thresholds keys must be among {sorted(THRESHOLDS)}.")
+    thresholds = parse_thresholds(args.thresholds, THRESHOLDS)
     inputs, pass1 = Inputs(__file__), _code_record(*PASS1)
     extracted = {role: extracted_by(getattr(args, role), pass1, inputs) for role in ("features", "reference")}
     libraries = {k for k in {**extracted["features"]["libraries"], **extracted["reference"]["libraries"]}
@@ -1041,24 +1391,29 @@ def run_flag(args):
     df, baselines, sources, left_out = screen_flags(inputs.parquet(args.features), reference, thresholds)
     df.drop(columns=["cells"]).to_parquet(args.out, index=False)
     write_baselines(args.out + ".baselines", baselines, sources, left_out)
-    counts = {k: int(n) for k, n in df.exclude_reason.replace("", "kept").value_counts().items()}
+    counts = {k: int(n) for k, n in df.decision.value_counts().items()}
+    reasons = {k: int(n) for k, n in df.decision_reasons.str.split(";").explode().replace("", np.nan).dropna()
+               .value_counts().items()}
+    missing = {k: int(n) for k, n in df.evidence_missing.dropna().str.split(";").explode().replace("", np.nan)
+               .dropna().value_counts().items()}
     no_baseline = int((df.error.isna() & df.extra_cells.isna()).sum())
     inputs.check(args.out, args.out + ".baselines")
     _write_info(args.out, {"features": _source(args.features, inputs), "reference": _source(args.reference, inputs),
                            "thresholds": thresholds, "calibration": CALIBRATION if calibrated else None,
                            "screen": screen_id, "extractor": extracted["features"], "rule": rule,
-                           "counts": counts,
+                           "counts": counts, "reasons": reasons, "evidence_missing": missing,
                            "layouts_with_baseline": sum(b is not None for b in baselines.values()),
                            "layouts_without_baseline": sum(b is None for b in baselines.values()),
                            "clips_without_layout_baseline": no_baseline,
                            "reference_left_out": {k: int(n) for k, n in
                                                   left_out[left_out != ""].value_counts().items()},
                            "still_basis": {k: int(n) for k, n in df.still_basis.dropna().value_counts().items()}})
-    print(f"[screen]  {counts}; baselines and their reference clips in {args.out}.baselines (0700).")
+    print(f"[screen]  {thresholds['policy']} policy: {counts}; reasons {reasons}; evidence missing (clips) "
+          f"{missing}; baselines and their reference clips in {args.out}.baselines (0700).")
     if CALIBRATION is not None and not calibrated:
         print(f"[screen]  WARNING: these flags are provisional: their {' and '.join(differs)} differ from those "
               "CALIBRATION measured.", file=sys.stderr)
-    if no_baseline and thresholds["measurement_excludes"]:
+    if no_baseline and thresholds["policy"] == "pixel":
         print(f"[screen]  WARNING: {no_baseline} readable clips could not be checked for a results box (their "
               f"layout has fewer than {MIN_LAYOUT_CLIPS} clean reference clips, see layouts.csv, or no image "
               "region); those not flagged otherwise are excluded as incomplete. More reference clips of their "
@@ -1227,30 +1582,79 @@ def _radio(name, key):
                    for v in ("yes", "no"))
 
 
-def audit_sample(flags, n_flagged, n_unflagged, seed):
-    """A fixed random sample of the readable clips, for `calibrate`: up to `n_flagged` flagged and `n_unflagged`
-    unflagged clips (at the flags' thresholds), shuffled so that the labeller does not see the stratum. Each clip's
-    inclusion probability (sampled / population of its stratum) is recorded at draw time; a later change of
-    thresholds does not change it, so the sample still weighs up to the same population.
+AUDIT_STRATA = {"exclude": "excluded", "uncertain": "uncertain", "keep": "kept"}  # an audit sample's, by decision.
+
+
+def audit_strata(flags):
+    """Each readable clip's audit stratum (its decision at the flags' thresholds), by global key."""
+    readable = flags[flags.error.isna()]
+    return pd.Series(readable.decision.map(AUDIT_STRATA).to_numpy(), index=readable.global_key.to_numpy())
+
+
+def strata_digest(strata):
+    """One SHA-256 of every clip's stratum (`audit_strata`), as an audit sample records them and `calibrate` checks
+    them."""
+    return hashlib.sha256("\n".join(f"{k}\t{v}" for k, v in sorted(strata.items())).encode()).hexdigest()
+
+
+def audit_sample(flags, n_flagged, n_unflagged, seed, n_uncertain=0):
+    """A fixed random sample of the readable clips, for `calibrate`, one stratum per decision: up to `n_flagged`
+    excluded, `n_uncertain` uncertain and `n_unflagged` kept clips (at the flags' policy and thresholds), shuffled so
+    that the labeller does not see the stratum. Each clip's inclusion probability (sampled / population of its
+    stratum) is recorded at draw time; a later change of thresholds does not change it, so the sample still weighs up
+    to the same population. Each stratum is a simple random sample of the screen's clips of that decision, drawn
+    whatever their patients and independently of the others (one random stream, so that strata of one size do not
+    draw the same positions): the kept one bounds the share of these kept clips that are ineligible
+    (`_bound_design`), not that of other patients' clips.
 
     Returns `(rows, strata)`."""
     readable = flags[flags.error.isna()]
+    rng = np.random.default_rng(seed)
     parts, strata = [], {}
-    for stratum, n, members in (("flagged", n_flagged, readable[readable.exclude]),
-                                ("unflagged", n_unflagged, readable[~readable.exclude])):
+    for decision, stratum in AUDIT_STRATA.items():
+        n = {"exclude": n_flagged, "uncertain": n_uncertain, "keep": n_unflagged}[decision]
+        members = readable[readable.decision == decision]
         if len(members) and n < 1:  # its clips could not be weighed up: the estimates would leave them out.
             raise SystemExit(f"The audit sample needs at least one of the {len(members)} {stratum} clips.")
-        drawn = members.sample(n=min(n, len(members)), random_state=seed)
+        drawn = members.sample(n=min(n, len(members)), random_state=rng)
         strata[stratum] = {"population": int(len(members)), "sampled": int(len(drawn))}
         parts.append(drawn.assign(stratum=stratum, inclusion_prob=len(drawn) / len(members) if len(members) else 0.0))
-    return pd.concat(parts).sample(frac=1.0, random_state=seed).reset_index(drop=True), strata
+    return pd.concat(parts).sample(frac=1.0, random_state=rng).reset_index(drop=True), strata
+
+
+MEDIA_IDENTITY = ("video_sha256", "dicom_regions", *HEADER_EVIDENCE)  # each clip's media, as pass 1 read them.
+
+
+def media_identities(flags, columns=MEDIA_IDENTITY):
+    """Each readable clip's media as pass 1 read them (`columns`, a missing value or column reading ''): one string
+    per clip, indexed by global key in order."""
+    readable = flags[flags.error.isna()]
+    values = readable.reindex(columns=list(columns)).astype(object)
+    values = values.where(values.notna(), "")
+    return pd.Series(["\t".join(map(str, row)) for row in values.itertuples(index=False)],
+                     index=readable.global_key.to_numpy()).sort_index()
 
 
 def population(flags):
-    """The readable clips of a screen, as an audit sample records them and `calibrate` checks them: their number and
-    a digest of their global keys."""
+    """The readable clips of a screen, as a sheet records them and `calibrate` checks them: their number, a digest of
+    their global keys and one of their media (`media_identities`), so that a sample's weights are never applied to
+    a screen whose clips, sampled or not, hold other videos or DICOM evidence than those it was drawn from."""
     keys = sorted(flags.global_key[flags.error.isna()])
-    return {"readable_clips": len(keys), "keys_sha256": hashlib.sha256("\n".join(keys).encode()).hexdigest()}
+    media = "\n".join(f"{k}\t{v}" for k, v in media_identities(flags).items())
+    return {"readable_clips": len(keys), "keys_sha256": hashlib.sha256("\n".join(keys).encode()).hexdigest(),
+            "media_sha256": hashlib.sha256(media.encode()).hexdigest()}
+
+
+def changed_population(before, after):
+    """How many readable clips of the flags `before` hold other media in `after` (or are missing there), compared on
+    the MEDIA_IDENTITY columns both record, and those columns: for a sheet made before sheets recorded their
+    population's media, against the flags it was drawn from."""
+    columns = [c for c in MEDIA_IDENTITY if c in before and c in after]
+    if "video_sha256" not in columns:
+        raise SystemExit("The flags the sheet was drawn from do not record their videos' SHA-256: their media cannot "
+                         "be checked. Make a new sheet.")
+    old = media_identities(before, columns)
+    return int((media_identities(after, columns).reindex(old.index) != old).sum()), columns
 
 
 def diagnostic_cases(df, thresholds):
@@ -1264,7 +1668,7 @@ def diagnostic_cases(df, thresholds):
     marks = df.inside_marks.map(lambda e: json.loads(e) if isinstance(e, str) else {"clip": [], "windows": []})
     detections = marks.map(lambda m: [m["clip"], *m["windows"]])
     large = (at_mark_size(df, DIAGNOSTIC_LARGE_PX).inside_glyphs >= thresholds["inside_glyphs"]).to_numpy()
-    dotted, traced = (detections.map(lambda ds: any(kind == k for found in ds for _, kind in found)).to_numpy(bool)
+    dotted, traced = (detections.map(lambda ds: any(mark[1] == k for found in ds for mark in found)).to_numpy(bool)
                       for k in ("line", "trace"))
     any_marks = detections.map(lambda ds: any(ds)).to_numpy(bool)
     in_clip = marks.map(lambda m: bool(m["clip"])).to_numpy(bool)
@@ -1281,24 +1685,26 @@ def diagnostic_sample(flags, reference_flags, thresholds, n_per_stratum, seed):
     clips; `reference`, the reference clips, with their flags against the baselines), acquisition mode and case
     (`diagnostic_cases` at the flags' `thresholds`), up to `n_per_stratum` random readable clips, at least one of
     every stratum that has clips, each with its inclusion probability (sampled / population of its stratum),
-    recorded at draw time. Shuffled, so that the labeller does not see the strata.
+    recorded at draw time, each stratum drawn independently of the others (one random stream). Shuffled, so that
+    the labeller does not see the strata.
 
     Returns `(rows, strata)`."""
     if n_per_stratum < 1:  # a stratum's clips could not be weighed up: the estimates would leave them out.
         raise SystemExit("--n-per-stratum must be at least 1: every stratum that has clips needs one.")
+    rng = np.random.default_rng(seed)
     parts, strata = [], {}
     for role, df in (("target", flags), ("reference", reference_flags)):
         readable = df[df.error.isna()]
         names = (f"{role}:" + readable.acq_category.fillna("<missing>").astype(str) + ":"
                  + diagnostic_cases(readable, thresholds).astype(str))
         for name, members in readable.groupby(names, sort=True):
-            drawn = members.sample(n=min(n_per_stratum, len(members)), random_state=seed)
+            drawn = members.sample(n=min(n_per_stratum, len(members)), random_state=rng)
             strata[name] = {"population": int(len(members)), "sampled": int(len(drawn))}
             parts.append(drawn.assign(stratum=name, role=role, inclusion_prob=len(drawn) / len(members)))
     rows = pd.concat(parts) if parts else flags.iloc[:0].assign(stratum="", role="", inclusion_prob=0.0)
     if rows.global_key.duplicated().any():
         raise SystemExit("A clip is both screened and a reference clip: its answers would weigh in twice.")
-    return rows.sample(frac=1.0, random_state=seed).reset_index(drop=True), strata
+    return rows.sample(frac=1.0, random_state=rng).reset_index(drop=True), strata
 
 
 def validation_set(flags, seed):
@@ -1336,6 +1742,63 @@ def review_set(flags, keys):
     return rows.assign(stratum="review", inclusion_prob=np.nan).reset_index(drop=True)
 
 
+def challenge_set(flags, thresholds, per_signal, seed):
+    """An enriched set of readable clips to label, for the measured clips the screen may miss and the clean clips
+    it may take for measured: per signal, up to `per_signal` random clips (seeded), each listed with the signals it
+    was drawn for. Likely measurements, whatever the decision: a caliper pair, a single caliper, a traced contour, a
+    header naming a measurement, measurement text, partial analysis-screen evidence, a layout without reference
+    clips. Kept clips that look measured to the pixel scores or resemble measurements (hard negatives, or misses):
+    many marks inside the image (bright tissue), a results-box score, a dotted line (a cursor), color Doppler. Not a
+    probability sample: its labels describe these clips only, never a population. Returns `(rows, signals)`,
+    `signals` {name: {"population": ..., "drawn": ...}}."""
+    readable = flags[flags.error.isna()]
+    keep = readable.decision == "keep"
+    kinds = readable.inside_marks.map(lambda e: {m[1] for d in (json.loads(e)["clip"], *json.loads(e)["windows"])
+                                                 for m in d} if isinstance(e, str) else set())
+    masks = {
+        "caliper_pair": readable.geometry_evidence == "caliper_pair",
+        "single_caliper": readable.geometry_evidence == "caliper",
+        "trace": readable.geometry_evidence == "trace",
+        "measure_header": readable.measurement_header == "measure_flag",
+        "measurement_text": readable.text_evidence == "measurement_text",
+        "measurement_unit_text": readable.text_evidence == "measurement_unit",
+        "analysis_partial": readable.analysis_evidence.isin(["header_only", "visual_only"]),
+        "unseen_layout": readable.extra_cells.isna(),
+        "kept_many_marks": keep & (readable.inside_glyphs >= CHALLENGE_MANY_MARKS),
+        "kept_results_box_score": keep & (readable.extra_cells.fillna(-1) >= thresholds["extra_cells"]),
+        "kept_dotted_line": keep & kinds.map(lambda k: "line" in k),
+        "kept_color": keep & (readable.acq_category == "color_flow"),
+    }
+    drawn_for, signals = {}, {}
+    for name, mask in masks.items():
+        members = readable[mask.fillna(False).astype(bool).to_numpy()]
+        drawn = members.sample(n=min(per_signal, len(members)), random_state=seed)
+        signals[name] = {"population": int(len(members)), "drawn": int(len(drawn))}
+        for key in drawn.global_key:
+            drawn_for.setdefault(key, []).append(name)
+    rows = pd.DataFrame({"global_key": list(drawn_for), "signals": [";".join(v) for v in drawn_for.values()]})
+    return rows.sample(frac=1.0, random_state=seed).reset_index(drop=True), signals
+
+
+def run_challenge(args):
+    ensure_outside_repo(args.out, "--out")
+    private_dir(os.path.dirname(os.path.abspath(args.out)))
+    clear_outputs(args.out, args.out + ".info.json")
+    inputs = Inputs(__file__)
+    flags = inputs.parquet(completed(args.flags, "flag", inputs))
+    if "decision" not in flags:
+        raise SystemExit("--flags record no decisions (an older flag run): rerun flag.")
+    thresholds = inputs.json(args.flags + ".info.json")["thresholds"]
+    rows, signals = challenge_set(flags, thresholds, args.per_signal, args.seed)
+    rows.to_csv(args.out, index=False)
+    inputs.check(args.out)
+    _write_info(args.out, {"flags": inputs.digest(args.flags), "seed": args.seed, "per_signal": args.per_signal,
+                           "signals": signals, "clips": int(len(rows)), "population": population(flags)})
+    print(f"[screen]  challenge set: {len(rows)} clips; per signal (drawn of population): "
+          + ", ".join(f"{k} {v['drawn']}/{v['population']}" for k, v in signals.items())
+          + f". Label it blind: sheet --keys {os.path.basename(args.out)} --blind.")
+
+
 def run_sheet(args):
     ensure_outside_repo(args.out_dir, "--out-dir")
     if os.path.exists(args.out_dir) and os.listdir(args.out_dir):
@@ -1343,6 +1806,9 @@ def run_sheet(args):
                          "record and its pages stay together.")
     inputs = Inputs(__file__)
     flags = inputs.parquet(completed(args.flags, "flag", inputs))
+    if "decision" not in flags:
+        raise SystemExit("--flags record no decisions (keep, exclude, uncertain): an older flag run. Rerun features "
+                         "and flag.")
     ffmpeg = find_ffmpeg()
     if sum(map(bool, (args.keys, args.all_clips, args.diagnostic))) > 1:
         raise SystemExit("--keys, --all-clips and --diagnostic make different sheets: give one.")
@@ -1351,7 +1817,16 @@ def run_sheet(args):
                          "own probabilities: a sample of them would replace those, and its estimates would describe "
                          "the list, not the population it was drawn from. Use --all-clips (or --keys to look at "
                          "chosen clips).")
-    if args.keys:
+    if args.blind and not args.keys:
+        raise SystemExit("--blind makes a sheet of the --keys clips without the detector's view: give --keys.")
+    if args.keys and args.blind:  # an enriched challenge set: labelled blind, counted only, never weighed up.
+        keys = inputs.csv(args.keys, dtype=str)
+        rows = review_set(flags, keys)
+        stratum = keys.set_index("global_key")["signals"] if "signals" in keys else pd.Series(dtype=str)
+        rows = rows.assign(stratum=rows.global_key.map(stratum).fillna("challenge"), inclusion_prob=1.0)
+        info = {"purpose": "challenge", "keys": inputs.digest(args.keys), "population": population(flags)}
+        described = f"challenge set: {len(rows)} clips, labelled blind"
+    elif args.keys:
         rows = review_set(flags, inputs.csv(args.keys, dtype=str))
         info = {"purpose": "review", "keys": inputs.digest(args.keys)}
         described = f"{len(rows)} clips to review"
@@ -1369,8 +1844,10 @@ def run_sheet(args):
         info = {"purpose": "validation", "strata": strata, "seed": args.seed, "population": population(flags)}
         described = "validation list: " + ", ".join(f"{v['sampled']} {k}" for k, v in strata.items())
     else:
-        rows, strata = audit_sample(flags, args.n_flagged, args.n_unflagged, args.seed)
-        info = {"purpose": "audit", "strata": strata, "seed": args.seed, "population": population(flags)}
+        rows, strata = audit_sample(flags, args.n_flagged, args.n_unflagged, args.seed, args.n_uncertain)
+        # Every screened clip's stratum, so that calibrate knows which strata the clips it keeps were drawn from.
+        info = {"purpose": "audit", "strata": strata, "seed": args.seed, "population": population(flags),
+                "clip_strata": strata_digest(audit_strata(flags))}
         described = ("audit sample: " + ", ".join(f"{v['sampled']} of {v['population']} {k}"
                                                   for k, v in strata.items()))
     private_dir(args.out_dir)
@@ -1486,28 +1963,53 @@ def _labelled(screened, sheet_clips, answers):
         raise SystemExit("Every clip of an audit sample needs a positive inclusion probability.")
     lab["ineligible"] = (lab[[f"answer_{f}" for f in EXCLUSION_FIELDS]] == "yes").any(axis=1)
     lab["weight"] = 1.0 / lab.inclusion_prob.astype(float)
+    if "decision" in lab:  # excluded or uncertain: kept out of the pilot either way.
+        lab["removed"] = lab.decision != "keep"
     return lab.drop(columns="_merge")
 
 
-def _excluded_share(lab, screened, flags_are_population):
-    """The share of readable clips excluded: counted on all of `screened` when they are the whole population (an
-    audit sample's screen), else estimated from the weighted sample (a validation list's flags)."""
+def _excluded_share(lab, screened, flags_are_population, decision="exclude"):
+    """The share of readable clips with `decision`: counted on all of `screened` when they are the whole population
+    (an audit sample's screen), else estimated from the weighted sample (a validation list's flags)."""
     if flags_are_population:
         readable = screened[screened.error.isna()]
-        return float(readable.exclude.mean()) if len(readable) else None
-    return float(lab.weight[lab.exclude].sum() / lab.weight.sum()) if len(lab) else None
+        return float((readable.decision == decision).mean()) if len(readable) else None
+    return float(lab.weight[lab.decision == decision].sum() / lab.weight.sum()) if len(lab) else None
+
+
+def decision_summary(lab):
+    """Counts of labelled clips, not estimates (the sample's design is left aside): their decisions per answer group
+    (measured, a 'yes' to measurements; still, still and not measured; other, another reason only; clean, eligible),
+    and for measurements, a measured clip caught when it is removed (excluded or uncertain): tp, fn (measured and
+    kept), fp (clean and removed), tn; the measured clips excluded and removed, the clean clips excluded (false
+    exclusion) and uncertain, and the uncertain share of all."""
+    group = np.select([lab.answer_measurement == "yes", lab.answer_still == "yes", lab.answer_other_exclusion == "yes"],
+                      ["measured", "still", "other"], default="clean")
+    table = pd.crosstab(pd.Series(group, index=lab.index), lab.decision)
+    counts = {g: {d: int(table.at[g, d]) if g in table.index and d in table else 0
+                  for d in ("keep", "exclude", "uncertain")} for g in ("measured", "still", "other", "clean")}
+    m, c = counts["measured"], counts["clean"]
+    n_m, n_c = sum(m.values()), sum(c.values())
+    share = lambda part, whole: part / whole if whole else None  # noqa: E731
+    return {"labelled": int(len(lab)), "by_answer": counts,
+            "measurement": {"tp": m["exclude"] + m["uncertain"], "fn": m["keep"], "fp": c["exclude"] + c["uncertain"],
+                            "tn": c["keep"], "recall_excluded": share(m["exclude"], n_m),
+                            "recall_removed": share(m["exclude"] + m["uncertain"], n_m),
+                            "specificity": share(c["keep"], n_c)},
+            "clean_false_exclusion": share(c["exclude"], n_c), "clean_uncertain": share(c["uncertain"], n_c),
+            "uncertain_share": share(int((lab.decision == "uncertain").sum()), len(lab))}
 
 
 def _cursor_clips(lab):
     """The clips answered as having a cursor line over the image: how many of the eligible ones the screen
-    excludes (weighted share), and how many without measurements it flags for measurements."""
+    removes (excluded or uncertain; weighted share), and how many without measurements the pixel scores flag."""
     cursor = lab[lab.answer_cursor == "yes"]
     eligible = cursor[~cursor.ineligible]
     unmeasured = cursor[cursor.answer_measurement == "no"]
     return {"labelled": int(len(cursor)), "eligible": int(len(eligible)),
-            "eligible_excluded": int(eligible.exclude.sum()),
-            "eligible_excluded_share": (float(eligible.weight[eligible.exclude].sum() / eligible.weight.sum())
-                                        if len(eligible) else None),
+            "eligible_removed": int(eligible.removed.sum()),
+            "eligible_removed_share": (float(eligible.weight[eligible.removed].sum() / eligible.weight.sum())
+                                       if len(eligible) else None),
             "without_measurement": int(len(unmeasured)),
             "without_measurement_flagged": int(unmeasured.measurement.fillna(False).astype(bool).sum())}
 
@@ -1550,7 +2052,66 @@ def _reference_clips(reference, sheet_rows, answers, thresholds):
                                                lab.groupby(lab.acq_category.fillna("<missing>"), sort=True)}}
 
 
-def calibration_report(features, reference, sheet_clips, answers, thresholds=THRESHOLDS, flags_are_population=True):
+def _policy_comparison(features, reference, sheet_clips, references, answers, thresholds):
+    """The labelled clips' decisions under `thresholds` (one policy), counted (`decision_summary`): overall, per
+    acquisition mode, by whether the DICOM header gives usable image regions, and by whether the header has the
+    analysis-screen pattern; and the same for a diagnostic sheet's reference clips, screened like the others."""
+    def summaries(lab):
+        analysis = lab.analysis_evidence.isin(["header_and_visual", "header_only"])
+        return {"all": decision_summary(lab),
+                "by_acquisition": {str(a): decision_summary(p) for a, p in
+                                   lab.groupby(lab.acq_category.fillna("<missing>"), sort=True)},
+                "by_dicom_region": {k: decision_summary(lab[m]) for k, m in
+                                    (("usable", lab.dicom_region_status == "ok"),
+                                     ("missing_or_unusable", lab.dicom_region_status != "ok")) if m.any()},
+                "by_analysis_header": {k: decision_summary(lab[m]) for k, m in
+                                       (("analysis_pattern", analysis), ("recording", ~analysis)) if m.any()}}
+
+    out = summaries(_labelled(screen_flags(features, reference, thresholds)[0], sheet_clips, answers))
+    if len(references):
+        out["reference_clips"] = summaries(_labelled(screen_flags(reference, reference, thresholds)[0], references,
+                                                     answers))
+    return out
+
+
+BOUND_WITHHELD = {  # the designs whose kept clips are no simple random sample of the clips a screen keeps.
+    None: "the sample's design is not known",
+    "diagnostic": "a diagnostic sample draws clips per case at unequal probabilities, not as a random sample of the "
+                  "kept clips",
+    "validation": "a validation list draws patients, then clips of each: a cluster sample, whose clips of one patient "
+                  "are not independent draws, and no design-based bound for it is implemented",
+    "challenge": "an enriched challenge set estimates nothing",
+}
+
+
+def _bound_design(design, drawn, screened):
+    """Whether the exact binomial bound on the share of kept clips that are ineligible holds, decided by how the
+    sample was drawn, never by the kept clips it happens to hold (a cluster sample can hold one clip per patient).
+    It holds for an audit sample (`audit_sample`) when every clip the screen keeps at the evaluated thresholds was
+    drawn from one of its strata (`drawn`: each screened clip's stratum, by global key, None when unknown): the
+    kept clips sampled are then a simple random sample of them, whatever their patients, and the bound (conservative
+    for a sample drawn without replacement) describes them, the finite set this screen keeps, not other patients'
+    clips. Kept clips of several strata are a stratified sample, even at equal probabilities, for which no bound is
+    implemented.
+
+    Returns `(reason withheld, None)` or `(None, the clips the bound describes)`."""
+    if design != "audit":
+        return BOUND_WITHHELD.get(design, BOUND_WITHHELD[None]), None
+    if drawn is None:
+        return ("the screened clips' decisions are not those the audit sample was drawn from (flags of other "
+                "decisions, or an older sheet that does not record them)"), None
+    kept = screened[screened.error.isna() & (screened.decision == "keep")]
+    strata = kept.global_key.map(drawn)
+    if strata.isna().any() or strata.nunique() > 1:
+        return ("at these thresholds the kept clips span several audit strata (another threshold set than the "
+                "sample's): a stratified sample of them, for which no bound is implemented"), None
+    patients = f" of {kept.patient_id.nunique()} patients" if "patient_id" in kept else ""
+    return None, (f"the {len(kept)} clips this screen keeps{patients}, of which those sampled are a simple random "
+                  "sample; not other patients' clips")
+
+
+def calibration_report(features, reference, sheet_clips, answers, thresholds=THRESHOLDS, flags_are_population=True,
+                       design=None, drawn=None):
     """Population estimates for the screen at `thresholds`, from an audit or validation sheet's clips (global_key,
     video_path, stratum, inclusion_prob) and their human `answers` (read_labels), each clip weighted by 1 / its
     inclusion probability, which stays as drawn. The screen is recomputed from the screened clips' `features` and
@@ -1559,7 +2120,9 @@ def calibration_report(features, reference, sheet_clips, answers, thresholds=THR
     - per detector: sensitivity and specificity against the answer to its own question, and sweeps;
     - `policy` (a flag excludes a clip, no flag keeps it): the same against eligibility (no 'yes' to a reason to
       exclude); the share of readable clips excluded (`_excluded_share`); and among kept clips the share that are
-      not eligible, with an exact upper bound when those clips were all drawn with one probability;
+      not eligible, with an exact upper bound only when the sample's `design` makes them a simple random sample of
+      the clips the screen keeps (`_bound_design`: an audit sample, `drawn` giving each screened clip's stratum;
+      else withheld, `upper_95_withheld` saying why);
     - `cursor_clips`: the clips with a cursor line over the image (`_cursor_clips`);
     - `by_stratum` and `by_acquisition`: the measurement and policy confusions within each stratum (for a validation
       list, its groups) and each acquisition mode;
@@ -1605,21 +2168,33 @@ def calibration_report(features, reference, sheet_clips, answers, thresholds=THR
                 str(v): confusion((lab.inside_glyphs >= thresholds["inside_glyphs"]) | (extra >= v), truth,
                                   lab.weight)
                 for v in (2, 4, 8, 12, 20)}
-    flagged = lab.exclude
-    kept, kept_ineligible = lab[~flagged], lab.ineligible[~flagged]
-    one_probability = kept.inclusion_prob.nunique() == 1
+    still_evidence = lab.still_status.isin(["still", "still_low_confidence"])
+    report["still"]["still_status"] = {"still": confusion(lab.still_status == "still", lab[answer["still"]] == "yes",
+                                                          lab.weight),
+                                       "still_or_low_confidence": confusion(still_evidence,
+                                                                            lab[answer["still"]] == "yes", lab.weight)}
+    removed = lab.removed
+    kept, kept_ineligible = lab[~removed], lab.ineligible[~removed]
+    patients = kept.patient_id if "patient_id" in kept else pd.Series(np.nan, index=kept.index)
+    withheld, describes = _bound_design(design, drawn, screened)
     report["policy"] = {
-        "at_thresholds": confusion(flagged, lab.ineligible, lab.weight),
+        "name": thresholds["policy"],
+        # Removed: excluded or uncertain, both kept out of the pilot.
+        "at_thresholds": confusion(removed, lab.ineligible, lab.weight),
         "screened_clips": int(screened.error.isna().sum()),
         "excluded_share": _excluded_share(lab, screened, flags_are_population),
+        "uncertain_share": _excluded_share(lab, screened, flags_are_population, "uncertain"),
         "excluded_share_from": "all screened clips" if flags_are_population else "weighted sample",
+        "decisions": decision_summary(lab),
         "kept": {
             "sampled": int(len(kept)), "ineligible": int(kept_ineligible.sum()),
             "ineligible_by_question": {f: int((kept[answer[f]] == "yes").sum()) for f in EXCLUSION_FIELDS},
             "share_ineligible": (float(kept.weight[kept_ineligible].sum() / kept.weight.sum())
                                  if len(kept) else None),
-            # Exact only for an equal-probability sample; after a threshold change the kept clips can mix strata.
-            "upper_95": upper_bound(int(kept_ineligible.sum()), len(kept)) if one_probability else None,
+            "patients": int(patients.nunique()),
+            "upper_95": upper_bound(int(kept_ineligible.sum()), len(kept)) if len(kept) and not withheld else None,
+            "upper_95_withheld": withheld if len(kept) else None,
+            "upper_95_describes": describes if len(kept) else None,
         },
     }
     report["cursor_clips"] = _cursor_clips(lab)
@@ -1628,7 +2203,7 @@ def calibration_report(features, reference, sheet_clips, answers, thresholds=THR
         return {"labelled": int(len(part)),
                 "measurement": confusion(part.measurement.fillna(False), part[answer["measurement"]] == "yes",
                                          part.weight),
-                "policy": confusion(part.exclude, part.ineligible, part.weight)}
+                "policy": confusion(part.removed, part.ineligible, part.weight)}
 
     report["by_stratum"] = {stratum: {**confusions(part),
                                       "still": confusion(part.still.fillna(False), part[answer["still"]] == "yes",
@@ -1638,6 +2213,8 @@ def calibration_report(features, reference, sheet_clips, answers, thresholds=THR
                                 for acq, part in lab.groupby(lab.acq_category.fillna("<missing>"), sort=True)}
     if len(references):
         report["reference_clips"] = _reference_clips(reference, references, answers, thresholds)
+    report["policies"] = {policy: _policy_comparison(features, reference, sheet_clips, references, answers,
+                                                     {**thresholds, "policy": policy}) for policy in POLICIES}
     report["inside_mark_px_sweep"] = {}
     for px in INSIDE_MARK_SWEEP:
         at = {**thresholds, "inside_mark_px": px}
@@ -1658,6 +2235,19 @@ def calibration_report(features, reference, sheet_clips, answers, thresholds=THR
     return report
 
 
+def _drawn_flags(args, sheet_info, inputs):
+    """For a sheet made before sheets recorded their population's media: the flags it was drawn from
+    (--drawn-flags), checked by their SHA-256 against the sheet's record, as read."""
+    if not args.drawn_flags:
+        raise SystemExit("The sheet records which clips it was drawn from but not their media (an older sheet): give "
+                         "the flags it was drawn from (--drawn-flags), against which the videos and DICOM regions of "
+                         "every clip of --flags are checked, or make a new sheet.")
+    if inputs.digest(args.drawn_flags) != sheet_info.get("flags"):
+        raise SystemExit("--drawn-flags are not the flags the sheet was drawn from (their SHA-256 is not the sheet's "
+                         "record).")
+    return inputs.parquet(args.drawn_flags)
+
+
 def run_calibrate(args):
     # Every input as read (Inputs): the report names those, and is printed only if none changed meanwhile.
     inputs = Inputs(__file__)
@@ -1665,26 +2255,40 @@ def run_calibrate(args):
     if not os.path.exists(record):
         raise SystemExit("--sheet-dir has no record of a completed sheet (sheet.info.json, written last).")
     sheet_info = inputs.json(record)
-    if sheet_info.get("purpose") not in ("audit", "diagnostic", "validation"):
-        raise SystemExit("--sheet-dir is a sheet of chosen clips, not a random sample: calibrate needs an audit "
-                         "sample (`sheet` without --keys), a diagnostic sample (`sheet --diagnostic`) or a validation "
-                         "list (`sheet --all-clips`).")
-    if any(s["population"] and not s["sampled"] for s in sheet_info["strata"].values()):
+    if sheet_info.get("purpose") not in ("audit", "diagnostic", "validation", "challenge"):
+        raise SystemExit("--sheet-dir is a sheet of chosen clips shown with the detector's view: calibrate needs an "
+                         "audit sample (`sheet` without --keys), a diagnostic sample (`sheet --diagnostic`), a "
+                         "validation list (`sheet --all-clips`) or a challenge set labelled blind (`sheet --keys "
+                         "--blind`).")
+    if any(s["population"] and not s["sampled"] for s in sheet_info.get("strata", {}).values()):
         raise SystemExit("The audit sample left out a whole stratum, which no estimate can then cover.")
     sheet_clips = os.path.join(args.sheet_dir, "sheet_clips.csv")
     if not os.path.exists(sheet_clips) or inputs.digest(sheet_clips) != sheet_info.get("sheet_clips"):
         raise SystemExit("sheet_clips.csv is missing or changed since the sheet was made.")
     flags = inputs.parquet(completed(args.flags, "flag", inputs))
-    drawn_from, here = sheet_info.get("population"), population(flags)
+    drawn_from, here = sheet_info.get("population") or {}, population(flags)
+    checked = {"population_media": list(MEDIA_IDENTITY)}
+    if drawn_from and "media_sha256" not in drawn_from:  # an older sheet: its media are the flags' it was drawn from.
+        drawn_flags = _drawn_flags(args, sheet_info, inputs)
+        changed, columns = changed_population(drawn_flags, flags)
+        if changed:
+            raise SystemExit(f"{changed} of the clips the sample was drawn from hold other media in --flags (videos "
+                             "replaced, or DICOM regions changed, since the sheet): the sample's weights describe "
+                             "other clips. Make a new sheet of these flags.")
+        here = {k: here[k] for k in drawn_from}
+        checked = {"population_media": columns, "drawn_flags": inputs.digest(args.drawn_flags)}
     if drawn_from != here:
-        raise SystemExit(f"--flags does not screen the clips the audit sample was drawn from "
+        raise SystemExit(f"--flags does not screen the clips the sample was drawn from "
                          f"({here['readable_clips']} readable clips here, "
-                         f"{(drawn_from or {}).get('readable_clips', 'none recorded')} there, or other keys): the "
+                         f"{drawn_from.get('readable_clips', 'none recorded')} there, or other keys, or other media: "
+                         "videos replaced or DICOM evidence changed since the sheet, sampled clips or not): the "
                          "sample's weights describe those. Use the flags it was drawn from, or a rerun of `flag` on "
                          "the same features.")
-    if sheet_info["purpose"] != "validation" and "sample_prob" in flags:
+    # A challenge set estimates nothing, so the list's probabilities are not replaced: its labels are only counted.
+    if sheet_info["purpose"] not in ("validation", "challenge") and "sample_prob" in flags:
         raise SystemExit("The sheet sampled the flags of a validation list as if they were a whole screen: its "
-                         "probabilities replace the list's own. Make the sheet with --all-clips.")
+                         "probabilities replace the list's own. Make the sheet with --all-clips (or a challenge set "
+                         "labelled blind, which is only counted).")
     sheet_clips = inputs.csv(sheet_clips, dtype=str)
     flag_info = inputs.json(args.flags + ".info.json")
     # The report recomputes the flags with this script's rule and names the flags' screen: both must be this script's.
@@ -1698,9 +2302,7 @@ def run_calibrate(args):
             raise SystemExit(f"--flags were made by another {part} than this script's, or in another environment "
                              f"(they differ in {', '.join(changed)}): its report would recompute them here while "
                              f"naming their screen. Rerun {rerun}.")
-    thresholds = {**flag_info["thresholds"], **(json.loads(args.thresholds) if args.thresholds else {})}
-    if set(thresholds) != set(THRESHOLDS):
-        raise SystemExit(f"--thresholds keys must be among {sorted(THRESHOLDS)}.")
+    thresholds = parse_thresholds(args.thresholds, flag_info["thresholds"])
     # Every threshold set, a minimum mark size included, is recomputed from the features the flags were made from:
     # the size changes the reference clips' eligibility, so the baselines and extra_cells too.
     sources = screen_sources(args.flags, inputs)
@@ -1713,9 +2315,16 @@ def run_calibrate(args):
         raise SystemExit("Some of the sheet's clips were copied from other video bytes than those --flags "
                          "screened (the videos were replaced, and features run again, since the sheet): the answers "
                          "describe other clips. Make a sheet of these flags.")
-    if sheet_info["purpose"] == "diagnostic" and population(reference) != sheet_info.get("reference_population"):
-        raise SystemExit("The reference clips behind --flags are not those the diagnostic sample was drawn from: its "
-                         "weights describe those. Use the flags it was drawn from.")
+    if sheet_info["purpose"] == "diagnostic":
+        recorded, now = sheet_info.get("reference_population") or {}, population(reference)
+        if recorded and "media_sha256" not in recorded:  # an older sheet: against the drawn flags' reference clips.
+            _drawn_flags(args, sheet_info, inputs)
+            before = inputs.parquet(screen_sources(args.drawn_flags, inputs)["reference"]["path"])
+            changed = changed_population(before, reference)[0]
+            now = {**{k: now[k] for k in recorded}, **({"media_changed": changed} if changed else {})}
+        if now != recorded:
+            raise SystemExit("The reference clips behind --flags are not those the diagnostic sample was drawn from, "
+                             "or hold other media: its weights describe those. Use the flags it was drawn from.")
     again = screen_flags(features, reference, flag_info["thresholds"])[0]
     if not again.set_index("video_path").exclude_reason.sort_index().equals(
             flags.set_index("video_path").exclude_reason.sort_index()):
@@ -1731,9 +2340,17 @@ def run_calibrate(args):
                          "bytes than this sheet's copies (on a sheet made before the video was replaced in place): "
                          "the answers describe other clips. Answer them on this sheet, and leave the older label files "
                          "out.")
+    drawn = None  # an audit sample's stratum for each screened clip, as the sheet recorded them.
+    if sheet_info["purpose"] == "audit" and sheet_info.get("clip_strata") == strata_digest(audit_strata(flags)):
+        drawn = audit_strata(flags)
     report = calibration_report(features, reference, sheet_clips, answers, thresholds,
-                                flags_are_population=sheet_info["purpose"] in ("audit", "diagnostic"))
-    report["provenance"] = {"flags": inputs.digest(args.flags), "sheet_drawn_from_flags": sheet_info["flags"],
+                                flags_are_population=sheet_info["purpose"] in ("audit", "diagnostic", "challenge"),
+                                design=sheet_info["purpose"], drawn=drawn)
+    if sheet_info["purpose"] == "challenge":  # an enriched set: its counts describe its clips, nothing else.
+        report["sample_design"] = ("enriched challenge set: every count describes these clips only; no share or bound "
+                                   "estimates a population")
+        report["policy"]["kept"]["share_ineligible"] = None  # its bound is withheld by its design.
+    report["provenance"] = {"flags": inputs.digest(args.flags), "sheet_drawn_from_flags": sheet_info["flags"], **checked,
                             "labels": {os.path.basename(p): inputs.digest(p) for p in args.labels},
                             "population": here, "screen": flag_info.get("screen")}
     inputs.check()
@@ -1789,7 +2406,9 @@ def _versions(*names):
 def extractor():
     """What pass 1's output depends on besides the clips: its code and constants (`_code_record` of `PASS1`) and
     the versions of Python and of the libraries that decode and measure the frames."""
-    return {**_code_record(*PASS1), "libraries": _versions("numpy", "opencv", "decord", "pydicom")}
+    backend = ocr_backend()
+    return {**_code_record(*PASS1), "libraries": {**_versions("numpy", "opencv", "decord", "pydicom"),
+                                                  "ocr": backend[0] if backend else None}}
 
 
 def _differences(recorded, current):
@@ -1972,7 +2591,10 @@ def main(argv=None):
     s.add_argument("--flags", required=True)
     s.add_argument("--out-dir", required=True)
     s.add_argument("--keys", help="a sheet of these clips (CSV with global_key) instead of the audit sample; not a "
-                                  "random sample, so calibrate refuses it.")
+                                  "random sample, so calibrate refuses it unless --blind.")
+    s.add_argument("--blind", action="store_true",
+                   help="with --keys (a challenge set from `challenge`): no detector view, and calibrate counts its "
+                        "labels (an enriched set: never weighed up to a population).")
     s.add_argument("--all-clips", action="store_true",
                    help="a sheet of every readable clip of a validation list (screen_validation.py), weighted by its "
                         "sampling probabilities, instead of the audit sample.")
@@ -1980,20 +2602,29 @@ def main(argv=None):
                    help="a diagnostic sample (`diagnostic_sample`) of the screened and the reference clips, per "
                         "acquisition mode and detector case, instead of the audit sample.")
     s.add_argument("--n-per-stratum", type=int, default=10, help="diagnostic sample: random clips per stratum.")
-    s.add_argument("--n-flagged", type=int, default=50, help="audit sample: random flagged clips.")
-    s.add_argument("--n-unflagged", type=int, default=100, help="audit sample: random unflagged clips.")
+    s.add_argument("--n-flagged", type=int, default=50, help="audit sample: random excluded clips.")
+    s.add_argument("--n-uncertain", type=int, default=50, help="audit sample: random uncertain clips.")
+    s.add_argument("--n-unflagged", type=int, default=100, help="audit sample: random kept clips.")
     s.add_argument("--per-page", type=int, default=40)
     s.add_argument("--seed", type=int, default=20261014)
+    e = sub.add_parser("challenge")
+    e.add_argument("--flags", required=True)
+    e.add_argument("--out", required=True, help="the challenge set's CSV (global_key, signals), in a private folder.")
+    e.add_argument("--per-signal", type=int, default=10, help="random clips drawn per signal.")
+    e.add_argument("--seed", type=int, default=20261018)
     c = sub.add_parser("calibrate")
     c.add_argument("--flags", required=True)
     c.add_argument("--sheet-dir", required=True, help="an audit sample from `sheet`.")
     c.add_argument("--labels", required=True, nargs="+",
                    help="label files exported from sheet pages, of this sheet or others.")
     c.add_argument("--thresholds", help=f"JSON overriding the flags' thresholds, to evaluate another set exactly")
+    c.add_argument("--drawn-flags", help="for a sheet made before sheets recorded their population's media: the "
+                                         "flags it was drawn from, against which every clip's media are checked.")
     args = p.parse_args(argv)
     umask = os.umask(0o077)  # every file written is the owner's only.
     try:
-        {"features": run_features, "flag": run_flag, "sheet": run_sheet, "calibrate": run_calibrate}[args.command](
+        {"features": run_features, "flag": run_flag, "sheet": run_sheet, "challenge": run_challenge,
+         "calibrate": run_calibrate}[args.command](
             args)
     finally:
         os.umask(umask)

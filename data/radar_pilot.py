@@ -14,9 +14,10 @@ Clips are removed in two places before any upload:
 - **metadata rule** (`shortlist`): for a classified view, an acquisition mode other than B-mode or color Doppler,
   or one not read from a validated header. Single-frame DICOM objects (still B-mode measurement frames, spectral
   Doppler stills, report pages) have no video and never appear. No clip is removed for being short.
-- **pixel rules** (`data/clip_screen.py` on the shortlisted clips): still clips and visible measurements.
+- **the screen** (`data/clip_screen.py` on the shortlisted clips): unreadable and still clips, analysis screens and
+  visible measurements, on evidence; clips it is uncertain about are left out too, and listed.
 
-Studies are chosen on their classified clips left after both, so every pilot study still has the standard views.
+Studies are chosen on the classified clips the screen keeps, so every pilot study still has the standard views.
 
 Steps, every output in --out-dir, a folder outside the repository that only its owner can read (identities and
 report text stay there). A step first removes its earlier outputs and those of the steps after it, and refuses
@@ -27,9 +28,10 @@ inputs that changed since the step that made them finished:
                 reference_clips.csv, a random sample of the same layouts from other studies, from which the screen
                 learns where each layout normally has ink.
     select      after `clip_screen.py features` on shortlist_clips.csv and reference_clips.csv and `flag`: flags
-                screened from other lists (an earlier shortlist) are refused. Remove every clip the screen's
-                policy excludes (unreadable, a header without image regions, still; no one is asked), then take per
-                category the best-ranked study that meets the criteria on its kept clips, one study per patient.
+                screened from other lists (an earlier shortlist) are refused. Only clips the screen keeps go on:
+                excluded ones are removed and uncertain ones listed apart (uncertain_clips.csv), no one is asked;
+                then take per category the best-ranked study that meets the criteria on its kept clips, one study
+                per patient, or stop with the counts when too few do.
     candidates  column review v2 candidates for the pilot's classified clips and the list of its view and type
                 review items, from a selection whose files are unchanged since select and the report file
                 shortlist used. A screen at provisional thresholds (not yet calibrated on labelled clips) is
@@ -83,7 +85,8 @@ CLIP_COLUMNS = ("patient_id", "study_id", "view", "video_path", "dicom_path", "v
                 "n_frames", "form", "global_key")
 LAYOUT_COLUMNS = ("vendor", "model", "acq_category")  # the screen's layouts before the frame size is known.
 # What the screen read of each clip's media (clip_screen.changed_media checks the files still hold it).
-MEDIA_COLUMNS = ("error", "video_sha256", "dicom_status", "dicom_regions", "height", "width")
+MEDIA_COLUMNS = ("error", "video_sha256", "dicom_status", "dicom_regions", *clip_screen.HEADER_EVIDENCE, "height",
+                 "width")
 # --videos must come from the producer that joins the DICOM acquisition index: this branch's build_manifests.py
 # keeps neither dicom_path, vendor and model nor the acq_* columns.
 MANIFEST_PRODUCER = ("the archive manifest of build_manifests.py with the DICOM acquisition index (commit 57204d1, "
@@ -106,7 +109,7 @@ SECRET_NAME = ".global_key_secret"
 # What each step writes in --out-dir. A step first removes its own outputs and those of the steps after it, so a
 # run that stops leaves nothing a later step could take for its result.
 SHORTLIST_OUTPUTS = ("shortlist.csv", "shortlist_clips.csv", "reference_clips.csv", "shortlist.json")
-SELECTION_OUTPUTS = ("pilot_studies.csv", "pilot_clips.csv", "selection.json", "summary.md")
+SELECTION_OUTPUTS = ("pilot_studies.csv", "pilot_clips.csv", "uncertain_clips.csv", "selection.json", "summary.md")
 CANDIDATE_OUTPUTS = ("candidates.json", "view_type_items.csv", "global_keys.csv", "candidates_summary.json")
 
 
@@ -330,14 +333,15 @@ def shortlist(args):
 
 
 def screened_clips(clips, flags):
-    """The shortlisted clips with the screen's flags; `exclude` marks a clip the screen's policy excludes (its
-    `exclude_reason`), which is removed."""
+    """The shortlisted clips with the screen's decisions; `exclude` marks every clip the pilot leaves out: those
+    the screen excludes and those it is uncertain about (`decision` other than keep), which are listed apart, never
+    taken for invalid."""
     missing = set(clips.video_path) - set(flags.video_path)
     if missing:
         raise SystemExit(f"{len(missing)} shortlisted clips were not screened; run clip_screen.py on "
                          "shortlist_clips.csv first.")
     screened = clips.merge(flags, on="video_path", how="left", validate="one_to_one")
-    return screened.assign(exclude=screened.exclude.astype(bool))
+    return screened.assign(exclude=screened.decision != "keep")
 
 
 def choose_studies(short, clips, min_clips, n_studies):
@@ -382,10 +386,10 @@ def select(args):
         raise SystemExit("shortlist_clips.csv has no global_key: rerun shortlist.")
     min_clips = inputs.json(listed[2])["criteria"]["min_clips"]
     flags = inputs.parquet(args.flags)
-    if "video_sha256" not in flags:
-        raise SystemExit("The flags do not record the video bytes they screened (an older features run): rerun "
-                         "clip_screen.py features and flag.")
-    flags = flags[["video_path", "exclude", "exclude_reason", *MEDIA_COLUMNS]]
+    if "video_sha256" not in flags or "decision" not in flags:
+        raise SystemExit("The flags do not record the video bytes they screened or the screen's decisions (an older "
+                         "features or flag run): rerun clip_screen.py features and flag.")
+    flags = flags[["video_path", "decision", "decision_reasons", *MEDIA_COLUMNS]]
     flag_info = inputs.json(args.flags + ".info.json")
     clips = screened_clips(clips, flags)
     chosen = choose_studies(short, clips, min_clips, args.n_studies)
@@ -393,11 +397,12 @@ def select(args):
         counts = {c: len(p) for c, p in qualifying_studies(short, clips, min_clips, args.n_studies).items()}
         reason = (f"none for {', '.join(c for c, n in counts.items() if not n)}" if not all(counts.values()) else
                   "but no combination of one study per category has different patients")
+        decisions = {k: int(n) for k, n in clips.decision.value_counts().items()}
         raise SystemExit(f"No {args.n_studies} studies of different patients, one per category, meet the criteria on "
-                         f"the clips the screen keeps (qualifying studies per category: {counts}; {reason}): no "
-                         "selection was written. Shortlist more studies per category (shortlist --per-category), or "
-                         "check the screen's exclusions (flags.parquet.info.json counts, layouts without a "
-                         "baseline).")
+                         f"the clips the screen keeps (qualifying studies per category: {counts}; {reason}; the "
+                         f"shortlisted clips' decisions: {decisions}): no selection was written. Shortlist more "
+                         "studies per category (shortlist --per-category), or look into the uncertain and excluded "
+                         "clips (flags.parquet.info.json reasons).")
     screened = clips[clips.study_id.isin(set(chosen.study_id))]
     # The flags describe the videos and DICOM headers as features read them: a clip replaced in place since (re-masked,
     # re-exported) would reach the reviewers unscreened.
@@ -406,10 +411,13 @@ def select(args):
         raise SystemExit(f"{len(changed)} clips of the chosen studies no longer hold the video or DICOM regions the "
                          "screen read (replaced in place since features): no selection was written. Rerun "
                          "clip_screen.py features and flag on this shortlist.")
-    outputs = [os.path.join(args.out_dir, n) for n in ("pilot_studies.csv", "pilot_clips.csv")]
+    outputs = [os.path.join(args.out_dir, n) for n in ("pilot_studies.csv", "pilot_clips.csv", "uncertain_clips.csv")]
     chosen.to_csv(outputs[0], index=False)
     pilot = screened[~screened.exclude]
     pilot[[*CLIP_COLUMNS, "video_sha256"]].to_csv(outputs[1], index=False)
+    # Uncertain clips of every shortlisted study, for a separate look: left out of the pilot, not judged invalid.
+    uncertain = clips[clips.decision == "uncertain"]
+    uncertain[[*CLIP_COLUMNS, "decision_reasons"]].to_csv(outputs[2], index=False)
 
     summary = {
         "created_utc": _now(), "code_commit": git_commit(),
@@ -417,9 +425,12 @@ def select(args):
         "flags": os.path.abspath(args.flags), "inputs": chain, "outputs": file_hashes(*outputs),
         "screen_thresholds": flag_info["thresholds"], "screen_calibration": flag_info.get("calibration"),
         "n_studies": args.n_studies, "studies": int(len(chosen)), "categories": chosen.category.tolist(),
-        "clips_kept": int(len(pilot)), "clips_excluded": int(screened.exclude.sum()),
-        "screen_flags_in_pilot_studies": {k: int(n) for k, n in
-                                          screened.exclude_reason.replace("", "kept").value_counts().items()},
+        "clips_kept": int(len(pilot)), "clips_excluded": int((screened.decision == "exclude").sum()),
+        "clips_uncertain": int((screened.decision == "uncertain").sum()),
+        "screen_decisions_in_pilot_studies": {k: int(n) for k, n in screened.decision.value_counts().items()},
+        "screen_reasons_in_pilot_studies": {k: int(n) for k, n in screened.decision_reasons.str.split(";").explode()
+                                            .replace("", np.nan).dropna().value_counts().items()},
+        "uncertain_clips_shortlisted": int(len(uncertain)),
         "clips_by_acquisition": {k: int(n) for k, n in pilot.acq_category.value_counts().items()},
         "clips_by_form": {k: int(n) for k, n in pilot.form.value_counts().items()},
         "clips_by_view": {k: int(n) for k, n in pilot.view.fillna("<none>").value_counts().items()},
@@ -428,8 +439,9 @@ def select(args):
     _write_json(os.path.join(args.out_dir, "selection.json"), summary)
     lines = ["# RADAR pilot selection", "", "Aggregate only.", "",
              f"- Studies: {summary['studies']} ({', '.join(summary['categories'])})",
-             f"- Clips kept: {summary['clips_kept']}; excluded: {summary['clips_excluded']}",
-             f"- Screen flags in the pilot studies: {summary['screen_flags_in_pilot_studies']}",
+             f"- Clips kept: {summary['clips_kept']}; excluded: {summary['clips_excluded']}; uncertain (left out, "
+             f"listed in uncertain_clips.csv): {summary['clips_uncertain']}",
+             f"- Screen reasons in the pilot studies: {summary['screen_reasons_in_pilot_studies']}",
              f"- Screen thresholds: {summary['screen_thresholds']}, "
              + (f"calibrated ({summary['screen_calibration']})" if summary["screen_calibration"]
                 else "provisional (no labelled calibration yet)"),
@@ -439,7 +451,8 @@ def select(args):
     with open(os.path.join(args.out_dir, "summary.md"), "w") as f:
         f.write("\n".join(lines) + "\n")
     print(f"[pilot]  {summary['studies']} studies ({', '.join(summary['categories'])}), {summary['clips_kept']} "
-          f"clips kept, {summary['clips_excluded']} excluded; {summary['screen_flags_in_pilot_studies']}.")
+          f"clips kept, {summary['clips_excluded']} excluded, {summary['clips_uncertain']} uncertain; "
+          f"{summary['screen_reasons_in_pilot_studies']}.")
     if not summary["screen_calibration"]:
         print("[pilot]  WARNING: the screen's thresholds are provisional (no labelled calibration yet), so its "
               "exclusions are not validated; candidates refuses this selection unless --provisional-screen.",

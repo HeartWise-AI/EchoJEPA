@@ -110,7 +110,7 @@ class TestClipRules(unittest.TestCase):
         self.assertEqual(rp.clip_rule(clips).tolist(), ["", "", "", "acquisition", "", "acquisition", "", ""])
 
 
-def write_flags(flags, path, out, calibration=None):
+def write_flags(flags, path, out, calibration=None, decisions=True):
     """Flags as completed clip_screen.py features and flag runs leave them for the shortlist in `out`: the features
     of its clip and reference lists, each with its record naming the list's SHA-256, then the flags with theirs
     naming those files."""
@@ -121,7 +121,11 @@ def write_flags(flags, path, out, calibration=None):
         rp.clip_screen._write_info(table, {"clips": rp.sha256(os.path.join(out, listed))})
         sources[role] = rp.clip_screen._source(table)
     media = {"error": None, "video_sha256": "synthetic", "dicom_status": "ok", "dicom_regions": "[]", "height": 1,
-             "width": 1}
+             "width": 1, "dicom_image_content": "0001", "dicom_measure_flag": False, "dicom_source_image": True,
+             "dicom_ecg": True}
+    if decisions and "decision" not in flags:  # the screen's decision, from the exclusion given (no uncertain clip).
+        flags = flags.assign(decision=np.where(flags.exclude, "exclude", "keep"),
+                             decision_reasons=flags.exclude_reason)
     flags.assign(**{k: v for k, v in media.items() if k not in flags}).to_parquet(path)
     rp.clip_screen._write_info(path, {**sources, "thresholds": rp.clip_screen.THRESHOLDS,
                                       "calibration": calibration})
@@ -286,6 +290,38 @@ class TestPipeline(unittest.TestCase):
         with open(os.path.join(self.out, "shortlist.json")) as f:
             self.assertEqual(json.load(f)["clips_removed_by_metadata_rule"], {})
 
+    def test_uncertain_clips_are_left_out_listed_and_never_count_for_a_study(self):
+        self.shortlist()
+        clips = pd.read_csv(os.path.join(self.out, "shortlist_clips.csv"))
+        flags_path = os.path.join(self.tmp, "flags.parquet")
+        # Every clip uncertain: no study qualifies on them, the stop says why, and nothing is written.
+        uncertain = clips[["video_path"]].assign(decision="uncertain", decision_reasons="measurement_trace",
+                                                 exclude=False, exclude_reason="")
+        write_flags(uncertain, flags_path, self.out)
+        with self.assertRaises(SystemExit) as stop:
+            self.run_cmd("select", "--out-dir", self.out, "--flags", flags_path)
+        self.assertIn("'uncertain': ", str(stop.exception))
+        self.assertFalse(set(os.listdir(self.out)) & set(rp.SELECTION_OUTPUTS))
+        # One clip uncertain: left out of the pilot, listed with its reasons, counted apart from the excluded ones.
+        flags = uncertain.assign(decision="keep", decision_reasons="")
+        flags.loc[0, ["decision", "decision_reasons"]] = ["uncertain", "measurement_trace"]
+        write_flags(flags, flags_path, self.out)
+        self.run_cmd("select", "--out-dir", self.out, "--flags", flags_path)
+        pilot = pd.read_csv(os.path.join(self.out, "pilot_clips.csv"))
+        listed = pd.read_csv(os.path.join(self.out, "uncertain_clips.csv"))
+        self.assertEqual(listed.global_key.tolist(), [clips.global_key.iloc[0]])
+        self.assertEqual(listed.decision_reasons.tolist(), ["measurement_trace"])
+        self.assertNotIn(clips.global_key.iloc[0], set(pilot.global_key))
+        with open(os.path.join(self.out, "selection.json")) as f:
+            selection = json.load(f)
+        self.assertEqual(selection["uncertain_clips_shortlisted"], 1)
+        # Flags of a screen that records no decisions (an older flag run) are refused.
+        write_flags(clips[["video_path"]].assign(exclude=False, exclude_reason=""), flags_path, self.out,
+                    decisions=False)
+        with self.assertRaises(SystemExit) as stop:
+            self.run_cmd("select", "--out-dir", self.out, "--flags", flags_path)
+        self.assertIn("the screen's decisions", str(stop.exception))
+
     def test_a_pilot_short_of_its_studies_is_not_a_selection(self):
         self.shortlist()
         clips = pd.read_csv(os.path.join(self.out, "shortlist_clips.csv"))
@@ -425,7 +461,7 @@ class TestPipeline(unittest.TestCase):
         self.assertNotIn(clips.global_key[still].iloc[0], set(pilot.global_key))
         with open(os.path.join(self.out, "selection.json")) as f:
             selection = json.load(f)
-        self.assertEqual((selection["clips_excluded"], selection["screen_flags_in_pilot_studies"]["still"]), (1, 1))
+        self.assertEqual((selection["clips_excluded"], selection["screen_reasons_in_pilot_studies"]["still"]), (1, 1))
         self.assertEqual(selection["inputs"][os.path.abspath(flags_path)], rp.sha256(flags_path))
         self.assertEqual(set(selection["code_sha256"]),
                          {os.path.join("data", "radar_pilot.py"), os.path.join("data", "clip_screen.py")})

@@ -54,8 +54,9 @@ def half_frozen(seed=0):
     return frames
 
 
-def write_dicom(path, rows=H, cols=W, regions=((1, SECTOR_BOX[0]),)):
-    """A header-only DICOM file with a Sequence of Ultrasound Regions: (Region Data Type, (x0, y0, x1, y1))."""
+def write_dicom(path, rows=H, cols=W, regions=((1, SECTOR_BOX[0]),), image_type=None):
+    """A header-only DICOM file with a Sequence of Ultrasound Regions: (Region Data Type, (x0, y0, x1, y1)), and
+    `image_type` (the ImageType values) when given."""
     from pydicom.dataset import Dataset, FileMetaDataset
     from pydicom.uid import ExplicitVRLittleEndian, generate_uid
 
@@ -70,6 +71,8 @@ def write_dicom(path, rows=H, cols=W, regions=((1, SECTOR_BOX[0]),)):
         item.RegionLocationMaxX1, item.RegionLocationMaxY1 = x1, y1
         items.append(item)
     ds.SequenceOfUltrasoundRegions = items
+    if image_type is not None:
+        ds.ImageType = list(image_type)
     ds.file_meta = FileMetaDataset()
     ds.file_meta.TransferSyntaxUID = ExplicitVRLittleEndian
     ds.file_meta.MediaStorageSOPClassUID, ds.file_meta.MediaStorageSOPInstanceUID = ds.SOPClassUID, ds.SOPInstanceUID
@@ -202,11 +205,12 @@ class TestClipFeatures(unittest.TestCase):
         dotted[:, 60, 50:150:6] = dotted[:, 61, 50:150:6] = dotted[:, 60, 51:150:6] = dotted[:, 61, 51:150:6] = 255
         late = caliper(caliper(speckle(n=48), 60, 60), 110, 140)
         late[:24] = speckle(seed=3, n=24)  # the calipers drawn halfway through: found in windows only.
-        for name, frames, kinds in (("joined", joined, ["caliper", "caliper"]), ("dotted", dotted, ["line"]),
+        for name, frames, kinds in (("joined", joined, ["joined_caliper", "joined_caliper"]),
+                                    ("dotted", dotted, ["line"]),
                                     ("late", late, [])):
             features, _, _ = cs.clip_features(frames, SECTOR_BOX, "ok")
             marks = json.loads(features["inside_marks"])
-            self.assertEqual(sorted(k for _, k in marks["clip"]), kinds, name)
+            self.assertEqual(sorted(m[1] for m in marks["clip"]), kinds, name)
             self.assertEqual(len(marks["windows"]), features["windows"] - features["frozen_windows"])
             # Recounted at the smallest size, the marks give pass 1's own count.
             row = pd.DataFrame([{"inside_marks": features["inside_marks"], "inside_glyphs": -1}])
@@ -226,7 +230,7 @@ class TestClipFeatures(unittest.TestCase):
                 cv2.ellipse(img, (128, 95), (16, 28), 10, 180, 540 if closed else 380, (255, 255, 0), 1)
                 frames[t] = img
             features, _, _ = cs.clip_features(frames, SECTOR_BOX, "ok")
-            self.assertEqual([k for _, k in json.loads(features["inside_marks"])["clip"]], ["trace", "trace"])
+            self.assertEqual([m[1] for m in json.loads(features["inside_marks"])["clip"]], ["trace", "trace"])
             self.assertEqual(features["inside_glyphs"], cs.THRESHOLDS["inside_glyphs"])
         # Line art stays none: a box, a box crossed by a cursor, lines crossing at a shallow angle, a long line.
         box = speckle()
@@ -237,6 +241,77 @@ class TestClipFeatures(unittest.TestCase):
                              ("long line", line(speckle(), 35, 95, 145, 105))):
             features, _, _ = cs.clip_features(frames, SECTOR_BOX, "ok")
             self.assertEqual(features["inside_glyphs"], 0, name)
+
+    def test_two_calipers_of_one_distance_are_a_pair(self):
+        # Two calipers of one color, apart, static together: the ends of one distance, whatever inside_glyphs says;
+        # calipers of two colors are two single calipers.
+        for colors, expected in (([(255, 255, 0)] * 2, "caliper_pair"), ([(255, 255, 0), (0, 255, 255)], "caliper")):
+            frames = caliper(caliper(speckle(), 60, 60, colors[0]), 120, 140, colors[1])
+            features, _, _ = cs.clip_features(frames, SECTOR_BOX, "ok")
+            self.assertEqual(cs.geometry_evidence(features["inside_marks"], cs.MIN_INK_PX), expected, colors)
+        late = caliper(caliper(speckle(n=48), 60, 60), 120, 140)
+        late[:24] = speckle(seed=3, n=24)  # drawn halfway through: a pair within one window.
+        features, _, _ = cs.clip_features(late, SECTOR_BOX, "ok")
+        self.assertEqual(cs.geometry_evidence(features["inside_marks"], cs.MIN_INK_PX), "caliper_pair")
+        self.assertEqual(cs.geometry_evidence(json.dumps({"clip": [], "windows": []}), cs.MIN_INK_PX), "none")
+        # Calipers joined by one line are a pair whatever their colors; two calipers of two colors, each on a line of
+        # its own, are not: each is joined to its own line, not to the other.
+        joined = line(caliper(caliper(speckle(), 60, 60), 120, 140), 60, 60, 120, 140)
+        features, _, _ = cs.clip_features(joined, SECTOR_BOX, "ok")
+        self.assertEqual(cs.geometry_evidence(features["inside_marks"], cs.MIN_INK_PX), "caliper_pair")
+        apart = caliper(caliper(speckle(), 50, 50), 130, 150, (0, 255, 255))
+        line(apart, 50, 50, 90, 90)
+        line(apart, 130, 150, 90, 110, (0, 255, 255))
+        features, _, _ = cs.clip_features(apart, SECTOR_BOX, "ok")
+        marks = json.loads(features["inside_marks"])["clip"]
+        self.assertEqual(sorted(m[1] for m in marks), ["joined_caliper", "joined_caliper"])
+        self.assertEqual(cs.geometry_evidence(features["inside_marks"], cs.MIN_INK_PX), "caliper")
+
+    def test_the_field_of_view_is_found_from_the_pixels_without_regions_even_when_frozen(self):
+        for frozen in (False, True):
+            features, _, _ = cs.clip_features(speckle(frozen=frozen))  # no DICOM regions.
+            self.assertEqual(features["region_source"], "image")
+            self.assertAlmostEqual(features["field_frac"], 0.525, delta=0.05)  # REGION: 120 x 140 of 160 x 200.
+            self.assertEqual(features["region_motion_frac"] < 0.01, frozen)
+        features, _, _ = cs.clip_features(speckle(), SECTOR_BOX, "ok")
+        self.assertEqual(features["region_source"], "dicom")
+        self.assertGreater(features["field_iou_dicom"], 0.9)  # the two agree.
+        blank = np.zeros((T, H, W, 3), np.uint8)
+        blank[:, 20:30, 20:180] = 255  # a bar, no speckle: no field of view.
+        self.assertEqual(cs.clip_features(blank)[0]["region_source"], "whole_frame")
+
+    def test_plots_beside_the_field_are_an_analysis_screens_evidence(self):
+        frames = speckle()
+        for y in (10, 14, 18, 22):  # colored curves above the image, static throughout.
+            frames[:, y, 20:180] = (0, 200, 255)
+        features, _, _ = cs.clip_features(frames, SECTOR_BOX, "ok")
+        self.assertGreaterEqual(features["outside_ink_frac"], cs.ANALYSIS_OUTSIDE_INK)
+        self.assertEqual(cs.clip_features(speckle(), SECTOR_BOX, "ok")[0]["outside_ink_frac"], 0.0)
+
+    def test_measurement_text_is_read_only_with_an_ocr_engine(self):
+        lines = ["EF 55 %", "LVIDd 4.5 cm", "EDV 120 ml", "Gn 50 dB", "HR 72 bpm", "Depth 16 cm", "16 cm", "2.1 m/s",
+                 "E/e' 12", "E/e 9"]
+        status, found = cs.measurement_text(speckle(), ("stand-in", lambda frame: lines))
+        # A name with its number, or a number with a measurement unit; settings, the heart rate and depths are not.
+        self.assertEqual((status, json.loads(found)),
+                         ("checked", ["2.1 m/s", "E/e 9", "E/e' 12", "EDV 120", "EF 55", "LVIDd 4.5"]))
+        self.assertEqual(cs.measurement_text(speckle(), ("stand-in", lambda frame: ["Gn 50", "FR 54 Hz"]))[1], "[]")
+        with mock.patch.object(cs, "ocr_backend", return_value=None):
+            self.assertEqual(cs.measurement_text(speckle()), ("unavailable", None))  # missing, not absent.
+
+    def test_a_periodic_loop_is_not_sampled_at_one_phase(self):
+        # A 941-frame clip repeating a moving 20-frame cycle: evenly spaced samples (one every 20 frames) would show
+        # 48 copies of one phase, a still clip; the jittered ones fall on most phases, and the loop moves.
+        indices = cs.frame_indices(941)
+        self.assertEqual((len(indices), indices[0], indices[-1]), (48, 0, 940))
+        self.assertTrue(np.all(np.diff(indices) > 0))
+        self.assertGreaterEqual(len(set(indices % 20)), 10)
+        cycle = speckle(n=20)
+        even = np.unique(np.linspace(0, 940, 48).round().astype(int))
+        for sampled, still in ((even, True), (indices, False)):
+            features, _, _ = cs.clip_features(cycle[sampled % 20], SECTOR_BOX, "ok")
+            self.assertEqual(features["region_motion_frac"] < cs.THRESHOLDS["still_scan_motion_frac"], still)
+        self.assertEqual(cs.frame_indices(12).tolist(), list(range(12)))  # a short clip: every frame.
 
     def test_lines_alone_are_not_calipers(self):
         # Lines crossing at any angle, a box crossed by a cursor and a ruler with crossing ticks have no caliper.
@@ -342,16 +417,30 @@ class TestClipFeatures(unittest.TestCase):
         self.assertEqual(features["inside_glyphs"], 0)
 
 
+# What pass 1 records for an ordinary recording: a header with image regions and the ECG, motion read over the
+# DICOM scan area, nothing beside the field of view, no OCR engine.
+RECORDING = {"dicom_status": "ok", "dicom_image_content": "0001", "dicom_measure_flag": False,
+             "dicom_source_image": True, "dicom_ecg": True, "region_source": "dicom", "duplicate_frac": 0.0,
+             "outside_ink_frac": 0.0, "text_status": "unavailable", "text_measurements": None}
+# An analysis screen as the pilot's labelled ones: no regions, a header naming no image data, without the acquired
+# image or the ECG; plots beside its field of view.
+ANALYSIS_SCREEN = {"dicom_status": "no_regions", "dicom_image_content": "0000", "dicom_source_image": False,
+                   "dicom_ecg": False, "region_source": "image", "outside_ink_frac": 0.012}
+
+
 def feature_row(cells, inside=0, motion=0.3, bbox=(30, 30, 169, 149), error=None, layout="ge"):
     return {"video_path": f"/synthetic/{np.random.default_rng().integers(1 << 40)}", "error": error,
-            "video_sha256": "synthetic", "dicom_status": "ok",
+            "video_sha256": "synthetic", **RECORDING,
             "vendor": layout, "model": "m", "width": W, "height": H, "acq_category": "bmode",
-            "motion_frac": motion, "inside_glyphs": inside, "region_bbox": json.dumps(bbox),
+            "motion_frac": motion, "region_motion_frac": motion, "inside_glyphs": inside,
+            "region_bbox": json.dumps(bbox),
             "cells_shape": json.dumps(list(cells.shape)), "cells": np.packbits(cells.ravel()).tobytes()}
 
 
-# The earlier policy, under which the pixel measurement rules exclude: what the detector tests check.
-MEASUREMENT_EXCLUDES = {**cs.THRESHOLDS, "measurement_excludes": True}
+# The earlier policies, kept for comparison: the pixel measurement rules exclude (what the detector tests check), or a
+# header without usable image regions does.
+PIXEL_POLICY = {**cs.THRESHOLDS, "policy": "pixel"}
+HEADER_POLICY = {**cs.THRESHOLDS, "policy": "header"}
 
 
 def flag_rows(rows, reference, thresholds=cs.THRESHOLDS):
@@ -372,7 +461,7 @@ class TestFlags(unittest.TestCase):
 
     def test_ink_where_the_layout_has_none_is_extra(self):
         rows = self.rows(5) + [feature_row(self.box)]
-        flags = flag_rows(rows, self.rows(), MEASUREMENT_EXCLUDES)
+        flags = flag_rows(rows, self.rows(), PIXEL_POLICY)
         self.assertEqual(flags.extra_cells.iloc[-1], 18)
         self.assertTrue(flags.measurement.iloc[-1])
         self.assertEqual(flags.exclude_reason.iloc[-1], "measurement")
@@ -470,7 +559,7 @@ class TestFlags(unittest.TestCase):
         # 3 reference clips, fewer than MIN_LAYOUT_CLIPS: no baseline, so no results-box check. With the pixel
         # measurement rules excluding, a clip no other flag excludes is excluded as incomplete, never passed.
         rows = [feature_row(self.box), feature_row(self.header, inside=5)]
-        flags = flag_rows(rows, self.rows(3), MEASUREMENT_EXCLUDES)
+        flags = flag_rows(rows, self.rows(3), PIXEL_POLICY)
         self.assertTrue(flags.extra_cells.isna().all())
         self.assertEqual(flags.exclude_reason.tolist(), ["incomplete", "measurement"])
         # Under the default policy a missing baseline alone excludes nothing; the measurement flag is still set.
@@ -478,23 +567,97 @@ class TestFlags(unittest.TestCase):
         self.assertEqual((flags.exclude_reason.tolist(), flags.measurement.tolist()), (["", ""], [False, True]))
         # The reviewer's case: 25 reference clips, 3 with the box left out, 22 left: the same.
         reference = self.rows(22) + [feature_row(self.box.copy()) for _ in range(3)]
-        flags = flag_rows([feature_row(self.box.copy())], reference, MEASUREMENT_EXCLUDES)
+        flags = flag_rows([feature_row(self.box.copy())], reference, PIXEL_POLICY)
         self.assertEqual((flags.extra_cells.iloc[0], flags.exclude_reason.iloc[0]), (pd.NA, "incomplete"))
 
-    def test_the_policy_excludes_by_header_and_motion_not_by_the_pixel_measurement_rules(self):
-        # Each header that gives no usable image region is its own reason, before still; the pixel measurement rules
-        # set their flag but exclude only with measurement_excludes.
+    def test_the_header_policy_excludes_each_header_failure_before_still(self):
+        # The earlier header policy, kept for comparison: each header without a usable image region is its own reason.
         statuses = ("ok", "no_regions", "size_mismatch", "unreadable_header", "", None)
         rows = [dict(feature_row(self.box.copy()), dicom_status=s) for s in statuses]
         rows.append(dict(feature_row(self.header.copy(), motion=0.001), dicom_status="no_regions"))
         rows.append(feature_row(self.header.copy(), motion=0.001))
-        flags = flag_rows(rows, self.rows())
+        flags = flag_rows(rows, self.rows(), HEADER_POLICY)
         self.assertEqual(flags.exclude_reason.tolist(),
                          ["", "no_image_region", "header_size_mismatch", "header_unreadable", "no_header", "no_header",
                           "no_image_region", "still"])
+        self.assertEqual(set(flags.decision), {"keep", "exclude"})  # no uncertain clip under an earlier policy.
         self.assertTrue(flags.measurement.iloc[0])
-        self.assertEqual(flag_rows(rows[:1], self.rows(), MEASUREMENT_EXCLUDES).exclude_reason.tolist(),
-                         ["measurement"])
+        self.assertEqual(flag_rows(rows[:1], self.rows(), PIXEL_POLICY).exclude_reason.tolist(), ["measurement"])
+
+    def hybrid(self, **changes):
+        """The hybrid decision and its reasons for one recording with these feature changes."""
+        flags = flag_rows([dict(feature_row(self.header.copy()), **changes)], self.rows())
+        return flags.decision.iloc[0], flags.decision_reasons.iloc[0], flags.iloc[0]
+
+    def test_a_clean_recording_without_image_regions_is_kept(self):
+        # A header without regions but naming tissue data, with the acquired image and the ECG, motion read in the
+        # field of view found from the pixels: nothing says it is measured.
+        decision, reasons, row = self.hybrid(dicom_status="no_regions", region_source="image")
+        self.assertEqual((decision, reasons), ("keep", ""))
+        self.assertEqual((row.dicom_region_status, row.analysis_evidence), ("no_image_region", "none"))
+
+    def test_an_analysis_screen_is_excluded_on_its_evidence_and_uncertain_on_half_of_it(self):
+        self.assertEqual(self.hybrid(**ANALYSIS_SCREEN)[:2], ("exclude", "analysis_screen"))
+        # The header pattern without plots beside the field, or plots beside the field of an ordinary recording.
+        self.assertEqual(self.hybrid(**{**ANALYSIS_SCREEN, "outside_ink_frac": 0.0})[:2],
+                         ("uncertain", "analysis_header_only"))
+        self.assertEqual(self.hybrid(outside_ink_frac=0.012)[:2], ("uncertain", "analysis_visual_only"))
+
+    def test_a_measured_recording_with_image_regions_is_not_taken_for_clean(self):
+        # The header names a measurement (GE's ImageType MEASURE), or two calipers of one distance are drawn.
+        self.assertEqual(self.hybrid(dicom_measure_flag=True)[:2], ("exclude", "measurement_header"))
+        pair = {"clip": [[13, "caliper", 60.0, 60.0, [255, 255, 0]], [13, "caliper", 140.0, 120.0, [255, 255, 0]]],
+                "windows": []}
+        decision, reasons, row = self.hybrid(inside_marks=json.dumps(pair), inside_glyphs=2)
+        self.assertEqual((decision, reasons, row.geometry_evidence),
+                         ("exclude", "measurement_calipers", "caliper_pair"))
+        # Two calipers of different colors are not one distance; one alone, or a traced contour, is uncertain.
+        mixed = {"clip": [pair["clip"][0], [13, "caliper", 140.0, 120.0, [0, 255, 255]]], "windows": []}
+        self.assertEqual(self.hybrid(inside_marks=json.dumps(mixed))[:2], ("uncertain", "measurement_single_caliper"))
+        traced = {"clip": [[140, "trace", 75.0, 85.0, [255, 255, 0]]], "windows": []}
+        self.assertEqual(self.hybrid(inside_marks=json.dumps(traced))[:2], ("uncertain", "measurement_trace"))
+
+    def test_bright_tissue_marks_alone_exclude_nothing(self):
+        # Many small static pieces (bright, slowly moving tissue): the pixel score flags them, the policy keeps it.
+        specks = {"clip": [[4, "piece", 50.0 + 9 * i, 80.0, [230, 230, 230]] for i in range(10)], "windows": []}
+        decision, reasons, row = self.hybrid(inside_marks=json.dumps(specks), inside_glyphs=10)
+        self.assertEqual((decision, bool(row.measurement), row.geometry_evidence), ("keep", True, "none"))
+
+    def test_missing_evidence_is_not_negative_evidence(self):
+        decision, _, row = self.hybrid()
+        self.assertEqual((decision, row.text_evidence, row.evidence_missing), ("keep", "unavailable", "text"))
+        _, _, row = self.hybrid(text_status="checked", text_measurements="[]")
+        self.assertEqual((row.text_evidence, row.evidence_missing), ("none", ""))
+        self.assertEqual(self.hybrid(text_status="checked", text_measurements='["EF 55"]')[:2],
+                         ("exclude", "measurement_text"))
+
+    def test_text_names_a_measurement_before_it_excludes(self):
+        # Doppler settings read as a velocity (the scale, the Nyquist limit, a color bar's): no evidence at all.
+        lines = ["Scale 64 cm/s", "Nyquist 64 cm/s", "-64.0 cm/s", "0.8 m/s"]
+        status, found = cs.measurement_text(speckle(), ("stand-in", lambda frame: lines))
+        self.assertEqual(json.loads(found), ["-64.0 cm/s", "0.8 m/s", "64 cm/s"])  # what pass 1 keeps,
+        decision, reasons, row = self.hybrid(text_status=status, text_measurements=found)
+        self.assertEqual((decision, reasons, row.text_evidence), ("keep", "", "none"))  # and what counts.
+        # A number with a measurement unit but no name read: uncertain, never an exclusion on its own.
+        self.assertEqual(self.hybrid(text_status="checked", text_measurements='["120 ml", "64 cm/s"]')[:2],
+                         ("uncertain", "measurement_unit_text"))
+        # A named velocity is a measurement.
+        self.assertEqual(self.hybrid(text_status="checked", text_measurements='["64 cm/s", "V max 2.1"]')[:2],
+                         ("exclude", "measurement_text"))
+        # No header at all: its evidence is missing, not clean; the pixels still decide what they can.
+        _, _, row = self.hybrid(dicom_status=None, dicom_image_content=None, dicom_measure_flag=None,
+                                dicom_source_image=None, dicom_ecg=None)
+        self.assertEqual((row.measurement_header, row.evidence_missing), ("unavailable", "header;text"))
+
+    def test_uncertain_is_never_an_exclusion(self):
+        # Motion only readable over the whole frame and frames that do not repeat: a still reading is uncertain;
+        # repeated frames make it certain.
+        decision, reasons, row = self.hybrid(region_source="whole_frame", region_motion_frac=0.001)
+        self.assertEqual((decision, reasons, bool(row.exclude), row.exclude_reason),
+                         ("uncertain", "still_low_confidence", False, ""))
+        self.assertEqual(self.hybrid(region_source="whole_frame", region_motion_frac=0.001, duplicate_frac=1.0)[:2],
+                         ("exclude", "still"))
+        self.assertEqual(self.hybrid(region_motion_frac=0.01)[:2], ("exclude", "still"))  # read in the scan area.
 
     def test_a_layout_key_is_the_same_whatever_missing_values_and_dtypes(self):
         reference = [dict(r, model=None) for r in self.rows()]
@@ -644,6 +807,10 @@ class TestExtractor(unittest.TestCase):
                 info, warned = self.flag(tmp, current, None, "--thresholds", '{"inside_glyphs": 3}')
                 self.assertIsNone(info["calibration"])
                 self.assertIn("their thresholds differ", warned)
+                # Another policy is another screen decision: a calibration of the hybrid one does not hold for it.
+                info, warned = self.flag(tmp, current, None, "--thresholds", '{"policy": "pixel"}')
+                self.assertIsNone(info["calibration"])
+                self.assertIn("their thresholds differ", warned)
                 other = {**current, "libraries": {**current["libraries"], "decord": "0.0"}}
                 info, warned = self.flag(tmp, other)  # extracted with another decoder.
                 self.assertIsNone(info["calibration"])
@@ -743,10 +910,11 @@ def flag_record():
 class TestSheet(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
+        decision = ["exclude"] * 8 + ["uncertain"] * 2 + ["keep"] * 10
         self.flags = pd.DataFrame({"video_path": [f"/synthetic/{i}.mp4" for i in range(20)],
                                    "global_key": [f"key-{i}" for i in range(20)], "error": [None] * 20,
-                                   "exclude": [i < 8 for i in range(20)], "view": "A4C", "acq_category": "bmode",
-                                   "video_sha256": "synthetic"})
+                                   "decision": decision, "exclude": [d == "exclude" for d in decision],
+                                   "view": "A4C", "acq_category": "bmode", "video_sha256": "synthetic"})
         self.flags.to_parquet(os.path.join(self.tmp, "flags.parquet"))
         cs._write_info(os.path.join(self.tmp, "flags.parquet"), flag_record())
 
@@ -764,11 +932,14 @@ class TestSheet(unittest.TestCase):
             return pd.read_csv(os.path.join(out, "sheet_clips.csv")), json.load(f), out
 
     def test_the_audit_sample_records_each_clip_inclusion_probability(self):
-        clips, info, out = self.sheet("audit", "--n-flagged", "4", "--n-unflagged", "6")
+        clips, info, out = self.sheet("audit", "--n-flagged", "4", "--n-uncertain", "1", "--n-unflagged", "5")
         self.assertEqual(info["purpose"], "audit")
-        self.assertEqual(info["strata"], {"flagged": {"population": 8, "sampled": 4},
-                                          "unflagged": {"population": 12, "sampled": 6}})
-        self.assertEqual(clips.groupby("stratum").inclusion_prob.first().to_dict(), {"flagged": 0.5, "unflagged": 0.5})
+        # One stratum per decision: the kept clips alone, drawn with one probability, bound the ineligible kept ones.
+        self.assertEqual(info["strata"], {"excluded": {"population": 8, "sampled": 4},
+                                          "uncertain": {"population": 2, "sampled": 1},
+                                          "kept": {"population": 10, "sampled": 5}})
+        self.assertEqual(clips.groupby("stratum").inclusion_prob.first().to_dict(),
+                         {"excluded": 0.5, "uncertain": 0.5, "kept": 0.5})
         with open(os.path.join(out, "clip-audit-01.html"), encoding="utf-8") as f:
             page = f.read()
         self.assertTrue(all(f"id={k} data-video='synthetic'>" in page for k in clips.global_key))
@@ -777,16 +948,29 @@ class TestSheet(unittest.TestCase):
             self.sheet("audit")
         self.assertEqual(len(pd.read_csv(os.path.join(out, "sheet_clips.csv"))), 10)
 
+    def test_strata_of_one_size_are_drawn_independently(self):
+        # 50 excluded and 50 kept clips in the same order: a seed reused per stratum drew the same positions in both.
+        flags = pd.DataFrame({"global_key": [f"k{i}" for i in range(100)], "error": None,
+                              "decision": ["exclude"] * 50 + ["keep"] * 50})
+        same = 0
+        for seed in range(20):
+            rows, _ = cs.audit_sample(flags, 10, 10, seed)
+            drawn = rows.global_key.str[1:].astype(int)
+            same += sorted(drawn[drawn < 50]) == sorted(drawn[drawn >= 50] - 50)
+            again, _ = cs.audit_sample(flags, 10, 10, seed)  # seeded: the same sample again.
+            pd.testing.assert_frame_equal(rows, again)
+        self.assertEqual(same, 0)
+
     def test_every_nonempty_stratum_is_sampled(self):
-        for option in ("--n-flagged", "--n-unflagged"):
+        for option in ("--n-flagged", "--n-uncertain", "--n-unflagged"):
             with self.assertRaises(SystemExit):
                 self.sheet(f"audit{option}", option, "0")
         # An audit sample recorded without one stratum (made by hand or by older code) is refused too.
         out = os.path.join(self.tmp, "partial")
         os.makedirs(out)
         with open(os.path.join(out, "sheet.info.json"), "w") as f:
-            json.dump({"purpose": "audit", "strata": {"flagged": {"population": 8, "sampled": 0},
-                                                      "unflagged": {"population": 12, "sampled": 6}}}, f)
+            json.dump({"purpose": "audit", "strata": {"excluded": {"population": 8, "sampled": 0},
+                                                      "kept": {"population": 12, "sampled": 6}}}, f)
         with self.assertRaises(SystemExit):
             cs.main(["calibrate", "--flags", os.path.join(self.tmp, "flags.parquet"), "--sheet-dir", out,
                      "--labels", os.path.join(out, "sheet.info.json")])
@@ -794,13 +978,62 @@ class TestSheet(unittest.TestCase):
     def test_calibrate_needs_the_population_the_sample_was_drawn_from(self):
         clips, info, out = self.sheet("audit", "--n-flagged", "2", "--n-unflagged", "2")
         self.assertEqual(info["population"]["readable_clips"], 20)
-        # The four sampled clips alone would give another review share while the weights still stand for 20.
+        # The six sampled clips alone would give another review share while the weights still stand for 20.
         sampled = os.path.join(self.tmp, "sampled.parquet")
         self.flags[self.flags.global_key.isin(clips.global_key)].to_parquet(sampled)
         cs._write_info(sampled, flag_record())
         with self.assertRaises(SystemExit) as stop:
             cs.main(["calibrate", "--flags", sampled, "--sheet-dir", out, "--labels", sampled])
-        self.assertIn("4 readable clips here, 20 there", str(stop.exception))
+        self.assertIn("6 readable clips here, 20 there", str(stop.exception))
+
+    def test_calibrate_needs_the_media_the_sample_was_drawn_from(self):
+        # The reviewer's case: the clips not sampled replaced by other videos (same keys), or a DICOM header giving
+        # other regions. The sampled clips' answers and their copies still match, but the weights would apply them to
+        # a screen of other clips: refused, whichever clips changed.
+        clips, info, out = self.sheet("audit", "--n-flagged", "2", "--n-uncertain", "1", "--n-unflagged", "2")
+        self.assertIn("media_sha256", info["population"])
+        flags = os.path.join(self.tmp, "flags.parquet")
+        original = os.path.join(self.tmp, "original.parquet")
+        shutil.copy(flags, original)
+        unsampled = ~self.flags.global_key.isin(clips.global_key)
+        calibrate = ["calibrate", "--flags", flags, "--sheet-dir", out, "--labels", flags]
+
+        def screened(df):
+            df.to_parquet(flags)
+            cs._write_info(flags, flag_record())
+
+        other = self.flags.global_key[unsampled].iloc[0]
+        for changed in (self.flags.assign(video_sha256=np.where(unsampled, "replaced", "synthetic")),
+                        self.flags.assign(dicom_regions=np.where(self.flags.global_key == other, "[[0, 0, 9, 9]]",
+                                                                 None))):
+            screened(changed)
+            with self.assertRaises(SystemExit) as stop:
+                cs.main(calibrate)
+            self.assertIn("or other media", str(stop.exception))
+        screened(self.flags)  # the same media: past the population (to the flags' missing features record).
+        with self.assertRaises(SystemExit) as stop:
+            cs.main(calibrate)
+        self.assertIn("which features file", str(stop.exception))
+        # A sheet made before sheets recorded their population's media: checked against the flags it was drawn from.
+        with open(os.path.join(out, "sheet.info.json")) as f:
+            record = json.load(f)
+        record["population"].pop("media_sha256")
+        record["flags"] = cs.sha256(original)
+        with open(os.path.join(out, "sheet.info.json"), "w") as f:
+            json.dump(record, f)
+        for options, refused in (((), "older sheet"), (("--drawn-flags", flags + ".info.json"), "not the flags")):
+            with self.assertRaises(SystemExit) as stop:
+                cs.main(calibrate + list(options))
+            self.assertIn(refused, str(stop.exception))
+        screened(self.flags.assign(video_sha256=np.where(unsampled, "replaced", "synthetic")))
+        with self.assertRaises(SystemExit) as stop:
+            cs.main(calibrate + ["--drawn-flags", original])
+        self.assertIn(f"{int(unsampled.sum())} of the clips the sample was drawn from hold other media",
+                      str(stop.exception))
+        screened(self.flags)
+        with self.assertRaises(SystemExit) as stop:
+            cs.main(calibrate + ["--drawn-flags", original])
+        self.assertIn("which features file", str(stop.exception))
 
     def test_calibrate_needs_flags_of_this_scripts_rule_and_pass_1(self):
         # The report recomputes the flags with the current rule: flags of an edited rule would be reported under
@@ -1054,6 +1287,132 @@ class TestDiagnostic(unittest.TestCase):
         self.assertIn("labels.csv changed while this step ran", str(stop.exception))
         self.assertEqual(printed.getvalue(), "")
 
+    def test_thresholds_out_of_their_type_or_range_are_refused(self):
+        # The reviewer's case: a NaN minimum mark size compares false with every mark, so a caliper pair would be
+        # kept; flag refuses it and leaves no completed record.
+        for given, refused in (('{"inside_mark_px": NaN}', "NaN"), ('{"still_motion_frac": Infinity}', "Infinity"),
+                               ('{"inside_mark_px": 2.5}', "inside_mark_px=2.5"),
+                               ('{"inside_glyphs": true}', "inside_glyphs=True"),
+                               ('{"extra_cells": 0}', "extra_cells=0"),
+                               ('{"still_scan_motion_frac": 1.5}', "still_scan_motion_frac=1.5"),
+                               ('{"still_motion_frac": "0.01"}', "still_motion_frac='0.01'"),
+                               ('{"policy": "strict"}', "policy='strict'"), ('{"cells": 3}', "keys must be among"),
+                               ('[1]', "JSON object"), ('{"inside_glyphs": }', "not valid JSON")):
+            with self.assertRaises(SystemExit) as stop, contextlib.redirect_stdout(io.StringIO()):
+                cs.main(["flag", "--features", self.paths["features"], "--reference", self.paths["reference"],
+                         "--out", self.flags, "--thresholds", given])
+            self.assertIn(refused, str(stop.exception), given)
+            self.assertFalse(os.path.exists(self.flags + ".info.json"))
+        # Whole numbers for counts and sizes, any finite share from 0 to 1 (an integer one too).
+        self.assertEqual(cs.check_thresholds({**cs.THRESHOLDS, "still_scan_motion_frac": 0, "inside_mark_px": 5}),
+                         {**cs.THRESHOLDS, "still_scan_motion_frac": 0, "inside_mark_px": 5})
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            cs.main(["flag", "--features", self.paths["features"], "--reference", self.paths["reference"],
+                     "--out", self.flags])
+        out = os.path.join(self.tmp, "diagnostic")  # calibrate checks its --thresholds alike.
+        with mock.patch.object(cs, "find_ffmpeg", return_value="f"), contextlib.redirect_stdout(io.StringIO()), \
+                mock.patch.object(cs, "clip_media", return_value="<video></video>"):
+            cs.main(["sheet", "--flags", self.flags, "--out-dir", out, "--diagnostic"])
+        with self.assertRaises(SystemExit) as stop:
+            cs.main(["calibrate", "--flags", self.flags, "--sheet-dir", out, "--labels", self.flags,
+                     "--thresholds", '{"inside_mark_px": NaN}'])
+        self.assertIn("NaN", str(stop.exception))
+
+    def test_an_older_sheet_is_checked_against_the_flags_it_was_drawn_from(self):
+        # The pilot's case: a diagnostic sheet made before sheets recorded their population's media, scored against
+        # flags of re-extracted features in another folder. The clips' media are checked against the flags it was
+        # drawn from, screened and reference clips alike.
+        out = os.path.join(self.tmp, "diagnostic")
+        with mock.patch.object(cs, "find_ffmpeg", return_value="f"), contextlib.redirect_stdout(io.StringIO()), \
+                mock.patch.object(cs, "clip_media", return_value="<video></video>"):
+            cs.main(["sheet", "--flags", self.flags, "--out-dir", out, "--diagnostic"])
+        with open(os.path.join(out, "sheet.info.json")) as f:
+            record = json.load(f)
+        for part in ("population", "reference_population"):
+            record[part].pop("media_sha256")
+        with open(os.path.join(out, "sheet.info.json"), "w") as f:
+            json.dump(record, f)
+        clips = pd.read_csv(os.path.join(out, "sheet_clips.csv"))
+        labels = write_labels(os.path.join(self.tmp, "labels.csv"),
+                              [(k, "no", "no", "no", "no") for k in clips.global_key])
+        os.mkdir(os.path.join(self.tmp, "again"), 0o700)
+        flags = os.path.join(self.tmp, "again", "flags.parquet")
+
+        def rescreen(reference):
+            for name, rows in (("features", pd.read_parquet(self.paths["features"])), ("reference", reference)):
+                path = os.path.join(self.tmp, "again", f"{name}.parquet")
+                rows.to_parquet(path)
+                cs._write_info(path, {"clips": name, "extractor": cs.extractor()})
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                cs.main(["flag", "--features", os.path.join(self.tmp, "again", "features.parquet"),
+                         "--reference", os.path.join(self.tmp, "again", "reference.parquet"), "--out", flags])
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                cs.main(["calibrate", "--flags", flags, "--sheet-dir", out, "--labels", labels,
+                         "--drawn-flags", self.flags])
+            return json.loads(buf.getvalue())
+
+        reference = pd.read_parquet(self.paths["reference"])
+        provenance = rescreen(reference)["provenance"]
+        self.assertEqual(provenance["drawn_flags"], cs.sha256(self.flags))
+        self.assertIn("video_sha256", provenance["population_media"])
+        with self.assertRaises(SystemExit) as stop, contextlib.redirect_stdout(io.StringIO()):
+            cs.main(["calibrate", "--flags", flags, "--sheet-dir", out, "--labels", labels])
+        self.assertIn("older sheet", str(stop.exception))
+        # A reference clip not on the sheet whose video was replaced since it: refused.
+        unsampled = reference.global_key[~reference.global_key.isin(clips.global_key)].iloc[0]
+        reference.loc[reference.global_key == unsampled, "video_sha256"] = "replaced"
+        with self.assertRaises(SystemExit) as stop:
+            rescreen(reference)
+        self.assertIn("or hold other media", str(stop.exception))
+
+    def test_a_challenge_set_is_drawn_per_signal_labelled_blind_and_only_counted(self):
+        listed = os.path.join(self.tmp, "challenge", "challenge.csv")
+        with contextlib.redirect_stdout(io.StringIO()):
+            cs.main(["challenge", "--flags", self.flags, "--out", listed, "--per-signal", "2"])
+        rows = pd.read_csv(listed)
+        with open(listed + ".info.json") as f:
+            info = json.load(f)
+        # The box clip has a results-box score but is kept; the color layout has no baseline (an unseen layout).
+        self.assertEqual(info["signals"]["kept_results_box_score"], {"population": 1, "drawn": 1})
+        self.assertEqual(info["signals"]["unseen_layout"], {"population": 4, "drawn": 2})
+        self.assertTrue(rows.signals.str.contains("kept_results_box_score").any())
+        with contextlib.redirect_stdout(io.StringIO()):  # seeded: the same list again.
+            cs.main(["challenge", "--flags", self.flags, "--out", listed, "--per-signal", "2"])
+        pd.testing.assert_frame_equal(pd.read_csv(listed), rows)
+        out = os.path.join(self.tmp, "challenge_sheet")
+        with self.assertRaises(SystemExit), contextlib.redirect_stdout(io.StringIO()), \
+                mock.patch.object(cs, "find_ffmpeg", return_value="f"):
+            cs.main(["sheet", "--flags", self.flags, "--out-dir", out, "--blind"])  # --blind needs --keys.
+        with contextlib.redirect_stdout(io.StringIO()), mock.patch.object(cs, "find_ffmpeg", return_value="f"), \
+                mock.patch.object(cs, "clip_media", return_value="<video></video>") as media:
+            cs.main(["sheet", "--flags", self.flags, "--out-dir", out, "--keys", listed, "--blind"])
+        self.assertEqual({c.args[3] for c in media.call_args_list}, {False})  # labelled blind.
+        sheet = pd.read_csv(os.path.join(out, "sheet_clips.csv"))
+        self.assertEqual(sorted(sheet.global_key), sorted(rows.global_key))
+        labels = write_labels(os.path.join(self.tmp, "challenge_labels.csv"),
+                              [(k, "no", "yes" if k == "tbox" else "no", "no", "no") for k in sheet.global_key])
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            cs.main(["calibrate", "--flags", self.flags, "--sheet-dir", out, "--labels", labels])
+        report = json.loads(buf.getvalue())
+        self.assertIn("enriched challenge set", report["sample_design"])
+        self.assertIsNone(report["policy"]["kept"]["upper_95"])
+        hybrid = report["policies"]["hybrid"]["all"]
+        self.assertEqual(hybrid["by_answer"]["measured"], {"keep": 1, "exclude": 0, "uncertain": 0})  # the box: a miss.
+        self.assertEqual(report["policies"]["pixel"]["all"]["by_answer"]["measured"]["exclude"], 1)
+        # Drawn from a validation list's flags (patients the screen was not tuned on): counted all the same.
+        listed_flags = pd.read_parquet(self.flags).assign(sample_prob=0.5)
+        listed_flags.to_parquet(self.flags)
+        with open(self.flags + ".info.json") as f:
+            record = json.load(f)
+        cs._write_info(self.flags, {k: v for k, v in record.items()
+                                    if k not in ("created_utc", "code_commit", "code_sha256", "output_sha256")})
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            cs.main(["calibrate", "--flags", self.flags, "--sheet-dir", out, "--labels", labels])
+        self.assertIn("enriched challenge set", json.loads(buf.getvalue())["sample_design"])
+
     def test_a_diagnostic_sheet_weighs_screened_and_reference_clips_apart(self):
         out = os.path.join(self.tmp, "diagnostic")
         with contextlib.redirect_stdout(io.StringIO()), mock.patch.object(cs, "find_ffmpeg", return_value="f"), \
@@ -1225,8 +1584,8 @@ class TestCalibration(unittest.TestCase):
         # Both flagged clips are on the sheet, and 2 of 100 unflagged ones.
         keys, paths = ["ka", "kb", "kc", "kd"], ["a", "b", "c", "d"]
         blank = np.zeros((H // cs.CELL, W // cs.CELL), bool)
-        self.flags = pd.DataFrame([dict(feature_row(blank.copy(), inside=n), video_path=p, global_key=k)
-                                   for p, k, n in zip(paths, keys, [5, 4, 0, 0])])
+        self.flags = pd.DataFrame([dict(feature_row(blank.copy(), inside=n), video_path=p, global_key=k,
+                                        patient_id=f"p{p}") for p, k, n in zip(paths, keys, [5, 4, 0, 0])])
         self.reference = pd.DataFrame([feature_row(blank.copy()) for _ in range(30)])
         self.sheet = pd.DataFrame({"global_key": keys, "video_path": paths,
                                    "stratum": ["flagged", "flagged", "unflagged", "unflagged"],
@@ -1245,7 +1604,10 @@ class TestCalibration(unittest.TestCase):
     def test_the_policy_counts_every_reason_to_exclude(self):
         answers = self.answers.copy()
         answers.loc["kd", "other_exclusion"] = "yes"
-        report = cs.calibration_report(self.flags, self.reference, self.sheet, answers, MEASUREMENT_EXCLUDES)
+        # An audit sample: each screened clip's stratum, as drawn.
+        drawn = pd.Series(["excluded", "excluded", "kept", "kept"], index=self.flags.global_key)
+        report = cs.calibration_report(self.flags, self.reference, self.sheet, answers, PIXEL_POLICY, design="audit",
+                                       drawn=drawn)
         keeps = report["policy"]["kept"]
         self.assertEqual((keeps["sampled"], keeps["ineligible"]), (2, 2))
         self.assertEqual(keeps["ineligible_by_question"], {"still": 0, "measurement": 1, "other_exclusion": 1})
@@ -1255,10 +1617,74 @@ class TestCalibration(unittest.TestCase):
         self.assertEqual((report["policy"]["screened_clips"], report["policy"]["excluded_share"]), (4, 0.5))
         self.assertEqual(report["policy"]["at_thresholds"]["fn"], 100.0)
 
+    def test_the_bound_follows_the_sampling_design(self):
+        blank = np.zeros((H // cs.CELL, W // cs.CELL), bool)
+
+        def screen(marked, n=100):  # n clips of 5 patients; the first `marked` carry marks the pixel policy excludes.
+            return pd.DataFrame([dict(feature_row(blank.copy(), inside=5 if i < marked else 0), video_path=f"v{i}",
+                                      global_key=f"k{i}", patient_id=f"p{i % 5}") for i in range(n)])
+
+        def answers(keys):
+            return pd.DataFrame({"still": "no", "measurement": "no", "other_exclusion": "no", "cursor": "no"},
+                                index=pd.Index(keys, name="global_key"))
+
+        def kept(clips, sheet, thresholds=cs.THRESHOLDS, **design):
+            return cs.calibration_report(clips, self.reference, sheet, answers(sheet.global_key), thresholds,
+                                         **design)["policy"]["kept"]
+
+        # The reviewer's case: a validation list draws 5 patients, then 20 clips of each, and the screen keeps one
+        # clip per patient, all of one probability. Holding one clip per patient does not make a cluster sample's
+        # clips independent draws: no bound (in the reviewer's population it claimed 45% where 69% were ineligible).
+        clips = screen(95).iloc[::-1].reset_index(drop=True)  # the five clean clips are of five patients.
+        sheet = pd.DataFrame({"global_key": clips.global_key, "video_path": clips.video_path, "stratum": "general",
+                              "inclusion_prob": 0.1})
+        listed = kept(clips, sheet, PIXEL_POLICY, flags_are_population=False, design="validation")
+        self.assertEqual((listed["sampled"], listed["patients"], listed["upper_95"]), (5, 5, None))
+        self.assertIn("cluster sample", listed["upper_95_withheld"])
+        unknown = kept(clips, sheet, PIXEL_POLICY, flags_are_population=False)  # no design given: none either.
+        self.assertEqual((unknown["upper_95"], unknown["upper_95_withheld"]), (None, cs.BOUND_WITHHELD[None]))
+        # An audit sample: its kept stratum is a simple random sample of the clips the screen keeps, whatever their
+        # patients (here 20 of 100 clips of 5 patients), so the bound holds, for those 100 clips.
+        clips = screen(0)
+        sheet = pd.DataFrame({"global_key": clips.global_key[:20], "video_path": clips.video_path[:20],
+                              "stratum": "kept", "inclusion_prob": 0.2})
+        audit = kept(clips, sheet, design="audit", drawn=pd.Series("kept", index=clips.global_key))
+        self.assertEqual((audit["sampled"], audit["patients"], audit["upper_95_withheld"]), (20, 5, None))
+        self.assertAlmostEqual(audit["upper_95"], 1 - 0.05 ** (1 / 20), places=6)
+        self.assertIn("the 100 clips this screen keeps of 5 patients", audit["upper_95_describes"])
+        # Flags whose decisions are not those the sample was drawn from leave its strata unknown: no bound.
+        self.assertIn("not those the audit sample was drawn from",
+                      kept(clips, sheet, design="audit")["upper_95_withheld"])
+        # Drawn under the pixel policy (10 marked clips excluded, all sampled; a fifth of the 90 clean ones), the
+        # sample bounds the clean clips that policy keeps; the hybrid policy keeps the marked ones too, of another
+        # stratum, so the kept clips sampled are no simple random sample of those it keeps.
+        clips = screen(10)
+        sheet = pd.DataFrame({"global_key": clips.global_key[:28], "video_path": clips.video_path[:28],
+                              "stratum": ["excluded"] * 10 + ["kept"] * 18, "inclusion_prob": [1.0] * 10 + [0.2] * 18})
+        drawn = pd.Series(["excluded"] * 10 + ["kept"] * 90, index=clips.global_key)
+        pixel = kept(clips, sheet, PIXEL_POLICY, design="audit", drawn=drawn)
+        self.assertAlmostEqual(pixel["upper_95"], 1 - 0.05 ** (1 / 18), places=6)
+        self.assertIn("the 90 clips this screen keeps", pixel["upper_95_describes"])
+        hybrid = kept(clips, sheet, design="audit", drawn=drawn)
+        self.assertEqual((hybrid["sampled"], hybrid["upper_95"]), (28, None))
+        self.assertIn("several audit strata", hybrid["upper_95_withheld"])
+        # The reviewer's case: strata of one probability (50 excluded and 50 kept clips, 10 of each) that the hybrid
+        # policy merges are still two strata, a stratified sample: no bound (it claimed 13.9% where 20% were).
+        clips = screen(50)
+        sheet = pd.DataFrame({"global_key": pd.concat([clips.global_key[:10], clips.global_key[50:60]]),
+                              "video_path": pd.concat([clips.video_path[:10], clips.video_path[50:60]]),
+                              "stratum": ["excluded"] * 10 + ["kept"] * 10, "inclusion_prob": 0.2})
+        drawn = pd.Series(["excluded"] * 50 + ["kept"] * 50, index=clips.global_key)
+        self.assertAlmostEqual(kept(clips, sheet, PIXEL_POLICY, design="audit", drawn=drawn)["upper_95"],
+                               1 - 0.05 ** (1 / 10), places=6)
+        merged = kept(clips, sheet, design="audit", drawn=drawn)
+        self.assertEqual((merged["sampled"], merged["upper_95"]), (20, None))
+        self.assertIn("several audit strata", merged["upper_95_withheld"])
+
     def test_a_validation_sample_estimates_the_excluded_share_and_reports_each_group(self):
         # The flags of a validation list are a sample: the excluded share is weighted, not counted on them.
         sheet = self.sheet.assign(stratum=["g1", "g2", "g1", "g2"], inclusion_prob=[0.5, 0.5, 0.1, 0.1])
-        report = cs.calibration_report(self.flags, self.reference, sheet, self.answers, MEASUREMENT_EXCLUDES,
+        report = cs.calibration_report(self.flags, self.reference, sheet, self.answers, PIXEL_POLICY,
                                        flags_are_population=False)
         self.assertAlmostEqual(report["policy"]["excluded_share"], 4 / 24)
         self.assertEqual(report["policy"]["excluded_share_from"], "weighted sample")
@@ -1328,7 +1754,7 @@ class TestCalibration(unittest.TestCase):
         answers = pd.DataFrame({"still": "no", "measurement": ["no", "yes", "yes", "no"], "other_exclusion": "no",
                                 "cursor": ["no", "no", "no", "yes"]},
                                index=pd.Index(sheet.global_key, name="global_key"))
-        sweep = cs.calibration_report(clips, reference, sheet, answers, MEASUREMENT_EXCLUDES)["inside_mark_px_sweep"]
+        sweep = cs.calibration_report(clips, reference, sheet, answers, PIXEL_POLICY)["inside_mark_px_sweep"]
         self.assertEqual(sorted(sweep, key=int), [str(px) for px in cs.INSIDE_MARK_SWEEP])
         smallest, five = sweep[str(cs.MIN_INK_PX)], sweep["5"]
         (layout, at_smallest), = smallest["baselines"].items()
@@ -1341,10 +1767,10 @@ class TestCalibration(unittest.TestCase):
         self.assertEqual(five["measurement"]["sensitivity"], 1.0)  # the box, found once a baseline exists.
         self.assertEqual(sweep["16"]["measurement"]["fn"], 1.0)  # the calipers, too small at 16 px.
         # The eligible clip with a cursor: excluded as incomplete at the smallest size only.
-        self.assertEqual([sweep[px]["cursor_clips"]["eligible_excluded"] for px in (str(cs.MIN_INK_PX), "5")], [1, 0])
+        self.assertEqual([sweep[px]["cursor_clips"]["eligible_removed"] for px in (str(cs.MIN_INK_PX), "5")], [1, 0])
         self.assertEqual(sorted(five["by_acquisition"]), ["bmode"])
         # flag at a size gives the sweep's flags.
-        flags = cs.screen_flags(clips, reference, {**MEASUREMENT_EXCLUDES, "inside_mark_px": 5})[0]
+        flags = cs.screen_flags(clips, reference, {**PIXEL_POLICY, "inside_mark_px": 5})[0]
         self.assertEqual(flags.exclude_reason.tolist(), ["", "measurement", "measurement", ""])
 
     def test_exact_upper_bound(self):
@@ -1434,7 +1860,7 @@ class TestCommandLine(unittest.TestCase):
             self.assertEqual(os.stat(sheet).st_mode & 0o777, 0o700)
             self.assertEqual({os.stat(p).st_mode & 0o777 for p in (features, flags, features + ".info.json")}, {0o600})
             sheet_clips = pd.read_csv(os.path.join(sheet, "sheet_clips.csv"))
-            self.assertEqual(sorted(sheet_clips.stratum), ["flagged", "unflagged"])
+            self.assertEqual(sorted(sheet_clips.stratum), ["excluded", "kept"])
             with open(os.path.join(sheet, "clip-audit-01.html"), encoding="utf-8") as f:
                 page = f.read()
             self.assertNotIn(tmp, page)
@@ -1477,6 +1903,26 @@ class TestCommandLine(unittest.TestCase):
             self.assertEqual(report["still"]["at_thresholds"]["specificity"], 1.0)
             self.assertEqual(report["labelled"], 2)
             self.assertEqual(report["policy"]["kept"]["sampled"], 1)
+            # An audit sample of the flags it was drawn from: its kept clip, answered eligible, bounds the one kept.
+            self.assertAlmostEqual(report["policy"]["kept"]["upper_95"], 0.95, places=6)
+            self.assertIn("the 1 clips this screen keeps", report["policy"]["kept"]["upper_95_describes"])
+            # Evaluated at thresholds that keep the still clip too, the kept clips span both strata: no bound.
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                cs.main(["calibrate", "--flags", flags, "--sheet-dir", sheet, "--labels", first, later,
+                         "--thresholds", json.dumps({"still_scan_motion_frac": 0})])
+            merged = json.loads(buf.getvalue())["policy"]["kept"]
+            self.assertEqual((merged["sampled"], merged["upper_95"]), (2, None))
+            self.assertIn("several audit strata", merged["upper_95_withheld"])
+            # A sheet that does not record each screened clip's stratum (an older one): the design is unknown.
+            with open(os.path.join(sheet, "sheet.info.json")) as f:
+                record = json.load(f)
+            with open(os.path.join(sheet, "sheet.info.json"), "w") as f:
+                json.dump({k: v for k, v in record.items() if k != "clip_strata"}, f)
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                cs.main(["calibrate", "--flags", flags, "--sheet-dir", sheet, "--labels", first, later])
+            self.assertIn("older sheet", json.loads(buf.getvalue())["policy"]["kept"]["upper_95_withheld"])
             sweeps = report["still"]["sweeps"]
             self.assertEqual(set(sweeps), {c for c, _, _ in cs.STILL_SWEEPS})
             self.assertEqual(sweeps["scan_motion_frac"]["labelled"], 2)  # both clips have a scan area.
@@ -1532,9 +1978,11 @@ class TestCommandLine(unittest.TestCase):
             # Screened again, the new bytes are the screen's, and the earlier sheet's answers are of other bytes.
             rescreened = screen()
             self.assertEqual(rescreened.exclude_reason.iloc[0], "still")
+            # The sheet's population is bound to its media: the flags of the new bytes are not the screen it was drawn
+            # from (before the sampled clips' own copies are compared).
             with contextlib.redirect_stdout(io.StringIO()), self.assertRaises(SystemExit) as stop:
                 cs.main(["calibrate", "--flags", flags, "--sheet-dir", sheet, "--labels", labels])
-            self.assertIn("copied from other video bytes", str(stop.exception))
+            self.assertIn("or other media", str(stop.exception))
             # A new sheet of the new flags: the clip keeps its key, and the earlier answers (of the moving clip)
             # would count as a false positive against the still flag. Only answers of the new bytes count.
             sheet_3 = os.path.join(tmp, "sheet_3")
@@ -1550,12 +1998,23 @@ class TestCommandLine(unittest.TestCase):
             with contextlib.redirect_stdout(buf):
                 cs.main(["calibrate", "--flags", flags, "--sheet-dir", sheet_3, "--labels", again])
             self.assertEqual(json.loads(buf.getvalue())["still"]["at_thresholds"]["tp"], 1.0)
-            # A DICOM header whose regions changed counts as replaced too.
+            # A DICOM header whose regions changed counts as replaced too, and so does one whose evidence changed
+            # with the same regions: an ImageType that now names a measurement.
             with open(video, "wb") as f:
                 f.write(moving)
             screened = screen()
             write_dicom(dicom, regions=((1, (10, 10, 100, 100)),))
             self.assertEqual(cs.changed_media(screened, os.path.join(tmp, "media.log")), ["k0"])
+            recording = ["DERIVED", "PRIMARY", "", "0001"]
+            write_dicom(dicom, image_type=recording)
+            screened = screen()
+            self.assertEqual((screened.dicom_image_content.iloc[0], screened.decision.iloc[0]), ("0001", "keep"))
+            self.assertEqual(cs.changed_media(screened, os.path.join(tmp, "media.log")), [])
+            write_dicom(dicom, image_type=[*recording, "GEMSMULTIFRAME", "", "", "", "MEASURE", ""])
+            self.assertEqual(cs.changed_media(screened, os.path.join(tmp, "media.log")), ["k0"])
+            # Rows that do not record the header evidence (an older flag run) cannot be checked: changed.
+            self.assertEqual(cs.changed_media(screened.drop(columns=["dicom_ecg"]), os.path.join(tmp, "media.log")),
+                             ["k0"])
 
     @unittest.skipUnless(HAS_DECODER, "needs decord")
     def test_the_console_never_shows_a_clip_path(self):
