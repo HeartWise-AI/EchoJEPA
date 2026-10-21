@@ -280,6 +280,19 @@ class TestClipFeatures(unittest.TestCase):
         blank[:, 20:30, 20:180] = 255  # a bar, no speckle: no field of view.
         self.assertEqual(cs.clip_features(blank)[0]["region_source"], "whole_frame")
 
+    def test_moving_red_or_blue_pixels_read_as_color_flow(self):
+        frames = speckle()
+        jet = np.random.default_rng(3).integers(0, 2, (T, 30, 40)).astype(bool)  # flow flickering red and blue.
+        patch = frames[:, 60:90, 80:120]
+        patch[jet], patch[~jet] = (220, 30, 30), (30, 60, 220)
+        self.assertGreaterEqual(cs.clip_features(frames)[0]["moving_color_frac"], cs.PIXEL_COLOR_FRAC)
+        # Gray speckle, a static color bar and a moving green ECG trace are no flow.
+        plain = speckle()
+        plain[:, 20:120, 185:192] = (200, 40, 40)
+        for t in range(T):
+            plain[t, 150:152, 10 + t:14 + t] = (0, 220, 0)
+        self.assertLess(cs.clip_features(plain)[0]["moving_color_frac"], cs.PIXEL_COLOR_FRAC)
+
     def test_plots_beside_the_field_are_an_analysis_screens_evidence(self):
         frames = speckle()
         for y in (10, 14, 18, 22):  # colored curves above the image, static throughout.
@@ -417,11 +430,19 @@ class TestClipFeatures(unittest.TestCase):
         self.assertEqual(features["inside_glyphs"], 0)
 
 
-# What pass 1 records for an ordinary recording: a header with image regions and the ECG, motion read over the
-# DICOM scan area, nothing beside the field of view, no OCR engine.
+# What pass 1 records for an ordinary recording: a multi-frame ultrasound image whose header has image regions and
+# the ECG, motion read over the DICOM scan area, nothing beside the field of view; no text pass.
+US_MULTIFRAME = "1.2.840.10008.5.1.4.1.1.3.1"
 RECORDING = {"dicom_status": "ok", "dicom_image_content": "0001", "dicom_measure_flag": False,
-             "dicom_source_image": True, "dicom_ecg": True, "region_source": "dicom", "duplicate_frac": 0.0,
-             "outside_ink_frac": 0.0, "text_status": "unavailable", "text_measurements": None}
+             "dicom_source_image": True, "dicom_ecg": True, "dicom_sop_class": US_MULTIFRAME, "region_source": "dicom",
+             "duplicate_frac": 0.0, "outside_ink_frac": 0.0}
+GE = "GE Vingmed Ultrasound"
+# A Philips header as the survey found them: no fourth ImageType value and no SourceImageSequence, with the ECG.
+PHILIPS = {"vendor": "Philips Medical Systems", "dicom_image_content": "", "dicom_source_image": False}
+TEXT_ON = {**cs.THRESHOLDS, "text_decides": "all"}
+# `flag` of synthetic clips, which have no header and no text pass: their text would decide, so the run says it is
+# without it.
+NO_TEXT = ("--thresholds", '{"text_decides": "none"}')
 # An analysis screen as the pilot's labelled ones: no regions, a header naming no image data, without the acquired
 # image or the ECG; plots beside its field of view.
 ANALYSIS_SCREEN = {"dicom_status": "no_regions", "dicom_image_content": "0000", "dicom_source_image": False,
@@ -584,9 +605,10 @@ class TestFlags(unittest.TestCase):
         self.assertTrue(flags.measurement.iloc[0])
         self.assertEqual(flag_rows(rows[:1], self.rows(), PIXEL_POLICY).exclude_reason.tolist(), ["measurement"])
 
-    def hybrid(self, **changes):
-        """The hybrid decision and its reasons for one recording with these feature changes."""
-        flags = flag_rows([dict(feature_row(self.header.copy()), **changes)], self.rows())
+    def hybrid(self, thresholds=cs.THRESHOLDS, **changes):
+        """The hybrid decision and its reasons for one recording, of a GE scanner unless the changes say otherwise,
+        with these feature changes."""
+        flags = flag_rows([{**feature_row(self.header.copy()), "vendor": GE, **changes}], self.rows(), thresholds)
         return flags.decision.iloc[0], flags.decision_reasons.iloc[0], flags.iloc[0]
 
     def test_a_clean_recording_without_image_regions_is_kept(self):
@@ -596,12 +618,64 @@ class TestFlags(unittest.TestCase):
         self.assertEqual((decision, reasons), ("keep", ""))
         self.assertEqual((row.dicom_region_status, row.analysis_evidence), ("no_image_region", "none"))
 
-    def test_an_analysis_screen_is_excluded_on_its_evidence_and_uncertain_on_half_of_it(self):
+    def test_a_ge_header_tells_an_analysis_screen_alone(self):
+        # The header pattern excludes, with or without plots beside the field; plots beside an ordinary recording's
+        # field are recorded only (on the pilot they made color recordings uncertain and added no exclusion).
         self.assertEqual(self.hybrid(**ANALYSIS_SCREEN)[:2], ("exclude", "analysis_screen"))
-        # The header pattern without plots beside the field, or plots beside the field of an ordinary recording.
         self.assertEqual(self.hybrid(**{**ANALYSIS_SCREEN, "outside_ink_frac": 0.0})[:2],
+                         ("exclude", "analysis_screen"))
+        decision, reasons, row = self.hybrid(outside_ink_frac=0.012)
+        self.assertEqual((decision, reasons, row.analysis_evidence), ("keep", "", "visual_only"))
+
+    def test_another_vendors_analysis_screen_is_excluded_on_both_sources_and_uncertain_on_one(self):
+        other = {"vendor": "SIEMENS"}
+        self.assertEqual(self.hybrid(**other, **ANALYSIS_SCREEN)[:2], ("exclude", "analysis_screen"))
+        self.assertEqual(self.hybrid(**other, **{**ANALYSIS_SCREEN, "outside_ink_frac": 0.0})[:2],
                          ("uncertain", "analysis_header_only"))
-        self.assertEqual(self.hybrid(outside_ink_frac=0.012)[:2], ("uncertain", "analysis_visual_only"))
+        self.assertEqual(self.hybrid(**PHILIPS, outside_ink_frac=0.012)[:2], ("uncertain", "analysis_visual_only"))
+
+    def test_a_ge_header_naming_unusual_image_data_makes_a_clip_uncertain(self):
+        # '0041' and '0051' (3D probe displays) are neither tissue, tissue and color, nor an analysis screen.
+        for code in ("0041", "0051", ""):
+            decision, reasons, row = self.hybrid(dicom_image_content=code)
+            self.assertEqual((decision, reasons, row.header_content), ("uncertain", "unusual_image_content", "unusual"))
+        self.assertEqual(self.hybrid()[2].header_content, "usual")
+        # Another vendor's header names no image data in that value, and no header names none.
+        self.assertEqual(self.hybrid(**PHILIPS)[2].header_content, "unavailable")
+        self.assertEqual(self.hybrid(**{**PHILIPS, "dicom_image_content": "0041"})[:2], ("keep", ""))
+        self.assertEqual(self.hybrid(dicom_image_content=None)[2].header_content, "unavailable")
+
+    def test_an_unverified_header_convention_is_missing_evidence_not_clean(self):
+        # A Philips header names no image data and no acquired image: that says nothing, and no MEASURE neither.
+        decision, _, row = self.hybrid(**PHILIPS)
+        self.assertEqual((decision, row.header_convention, row.analysis_evidence, row.measurement_header,
+                          row.evidence_missing),
+                         ("keep", "unverified", "none", "unavailable", "header_convention;text"))
+        self.assertEqual(self.hybrid(**PHILIPS, dicom_measure_flag=True)[:2], ("exclude", "measurement_header"))
+        for vendor in cs.GE_HEADER_VENDORS:  # GE's three vendor names write one convention.
+            _, _, row = self.hybrid(vendor=vendor)
+            self.assertEqual((row.header_convention, row.measurement_header, row.evidence_missing),
+                             ("ge", "none", "text"))
+
+    def test_an_object_that_is_no_ultrasound_image_is_excluded(self):
+        # A structured report and a secondary capture, which became videos in the archive too.
+        for sop_class in ("1.2.840.10008.5.1.4.1.1.88.33", "1.2.840.10008.5.1.4.1.1.7"):
+            decision, reasons, row = self.hybrid(**PHILIPS, dicom_sop_class=sop_class)
+            self.assertEqual((decision, reasons, row.dicom_object),
+                             ("exclude", "not_ultrasound_image", "not_ultrasound_image"))
+        # No class recorded is missing evidence, never a reason.
+        decision, reasons, row = self.hybrid(dicom_sop_class="")
+        self.assertEqual((decision, reasons, row.dicom_object), ("keep", "", "unavailable"))
+
+    def test_the_pixel_mode_is_checked_against_the_header_where_it_gives_one(self):
+        rows = [{**feature_row(self.header.copy()), "vendor": vendor, "acq_category": header, "moving_color_frac": frac}
+                for vendor, header, frac in ((GE, "bmode", 0.0), (GE, "color_flow", 0.02), (GE, "color_flow", 0.001),
+                                             ("Philips Medical Systems", "bmode", 0.03))]
+        flags = flag_rows(rows, self.rows())
+        self.assertEqual(flags.pixel_mode.tolist(), ["bmode", "color_flow", "bmode", "color_flow"])
+        self.assertEqual(flags.decision.tolist(), ["keep"] * 4)  # the mode decides nothing in the screen.
+        # Only the GE clips count: a Philips header calls color loops B-mode.
+        self.assertEqual(cs.mode_agreement(flags), {"bmode": {"bmode": 1}, "color_flow": {"color_flow": 1, "bmode": 1}})
 
     def test_a_measured_recording_with_image_regions_is_not_taken_for_clean(self):
         # The header names a measurement (GE's ImageType MEASURE), or two calipers of one distance are drawn.
@@ -624,25 +698,43 @@ class TestFlags(unittest.TestCase):
         self.assertEqual((decision, bool(row.measurement), row.geometry_evidence), ("keep", True, "none"))
 
     def test_missing_evidence_is_not_negative_evidence(self):
-        decision, _, row = self.hybrid()
+        decision, _, row = self.hybrid()  # pass 1 output, without the text pass.
         self.assertEqual((decision, row.text_evidence, row.evidence_missing), ("keep", "unavailable", "text"))
         _, _, row = self.hybrid(text_status="checked", text_measurements="[]")
         self.assertEqual((row.text_evidence, row.evidence_missing), ("none", ""))
-        self.assertEqual(self.hybrid(text_status="checked", text_measurements='["EF 55"]')[:2],
-                         ("exclude", "measurement_text"))
+        _, _, row = self.hybrid(text_status="decode_failed", text_measurements=None)  # read by the text pass: no.
+        self.assertEqual((row.text_evidence, row.evidence_missing), ("unavailable", "text"))
+
+    def test_text_decides_where_no_header_can_name_a_measurement(self):
+        read = {"text_status": "checked", "text_measurements": '["EF 55"]'}
+        unit = {"text_status": "checked", "text_measurements": '["120 ml"]'}
+        # A GE header names a measurement itself (MEASURE): its clips' text is recorded only, by default.
+        decision, reasons, row = self.hybrid(**read)
+        self.assertEqual((decision, reasons, row.text_evidence), ("keep", "", "measurement_text"))
+        self.assertEqual(self.hybrid(**unit)[:2], ("keep", ""))
+        # Another vendor's header, or none, cannot: there the text decides.
+        self.assertEqual(self.hybrid(**PHILIPS, **read)[:2], ("exclude", "measurement_text"))
+        self.assertEqual(self.hybrid(**PHILIPS, **unit)[:2], ("uncertain", "measurement_unit_text"))
+        no_header = dict.fromkeys(["dicom_status", "dicom_image_content", "dicom_measure_flag", "dicom_source_image",
+                                   "dicom_ecg", "dicom_sop_class"])
+        self.assertEqual(self.hybrid(**no_header, **read)[:2], ("exclude", "measurement_text"))
+        # The other scopes: every clip's text, or none.
+        self.assertEqual(self.hybrid(TEXT_ON, **read)[:2], ("exclude", "measurement_text"))
+        off = {**cs.THRESHOLDS, "text_decides": "none"}
+        self.assertEqual(self.hybrid(off, **PHILIPS, **read)[:2], ("keep", ""))
 
     def test_text_names_a_measurement_before_it_excludes(self):
         # Doppler settings read as a velocity (the scale, the Nyquist limit, a color bar's): no evidence at all.
         lines = ["Scale 64 cm/s", "Nyquist 64 cm/s", "-64.0 cm/s", "0.8 m/s"]
         status, found = cs.measurement_text(speckle(), ("stand-in", lambda frame: lines))
-        self.assertEqual(json.loads(found), ["-64.0 cm/s", "0.8 m/s", "64 cm/s"])  # what pass 1 keeps,
-        decision, reasons, row = self.hybrid(text_status=status, text_measurements=found)
+        self.assertEqual(json.loads(found), ["-64.0 cm/s", "0.8 m/s", "64 cm/s"])  # what the text pass keeps,
+        decision, reasons, row = self.hybrid(TEXT_ON, text_status=status, text_measurements=found)
         self.assertEqual((decision, reasons, row.text_evidence), ("keep", "", "none"))  # and what counts.
         # A number with a measurement unit but no name read: uncertain, never an exclusion on its own.
-        self.assertEqual(self.hybrid(text_status="checked", text_measurements='["120 ml", "64 cm/s"]')[:2],
+        self.assertEqual(self.hybrid(TEXT_ON, text_status="checked", text_measurements='["120 ml", "64 cm/s"]')[:2],
                          ("uncertain", "measurement_unit_text"))
         # A named velocity is a measurement.
-        self.assertEqual(self.hybrid(text_status="checked", text_measurements='["64 cm/s", "V max 2.1"]')[:2],
+        self.assertEqual(self.hybrid(TEXT_ON, text_status="checked", text_measurements='["64 cm/s", "V max 2.1"]')[:2],
                          ("exclude", "measurement_text"))
         # No header at all: its evidence is missing, not clean; the pixels still decide what they can.
         _, _, row = self.hybrid(dicom_status=None, dicom_image_content=None, dicom_measure_flag=None,
@@ -678,7 +770,7 @@ class TestFlags(unittest.TestCase):
             cs._write_info(features, {"extractor": cs.extractor()})  # the record of a completed run.
             with contextlib.redirect_stdout(io.StringIO()):
                 cs.main(["flag", "--features", features, "--reference", features,
-                         "--out", os.path.join(tmp, "flags.parquet")])
+                         "--out", os.path.join(tmp, "flags.parquet"), *NO_TEXT])
             flags = pd.read_parquet(os.path.join(tmp, "flags.parquet"))
             self.assertEqual(flags.exclude_reason.tolist(), ["unreadable", "unreadable"])
 
@@ -750,6 +842,14 @@ class TestExtractor(unittest.TestCase):
 
         self.assertEqual(cs._code_record(documented())["code"], cs._code_record(bare())["code"])
         self.assertNotEqual(cs._code_record(changed())["code"], cs._code_record(bare())["code"])
+
+    def test_the_record_is_the_source_not_a_python_releases_rendering_of_it(self):
+        # ast.unparse renders an f-string's quotes differently in Python 3.12.3 (the OCR environment) and 3.12.14
+        # (the training one); the source as written, without docstring and comment, is the same in both.
+        import ast
+
+        source = 'def named():\n    """Named."""\n    return f"engine {str(\'x\')}"  # a comment.\n'
+        self.assertEqual(cs._bare_source(source, ast.parse(source)), 'def named():\n    return f"engine {str(\'x\')}"')
 
     def flag(self, tmp, extracted, reference_extracted=None, *more):
         """`flag` on features (and reference features) whose records name these extractors (no record when
@@ -1208,7 +1308,7 @@ class TestDiagnostic(unittest.TestCase):
         self.flags = os.path.join(self.tmp, "flags.parquet")
         with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
             cs.main(["flag", "--features", self.paths["features"], "--reference", self.paths["reference"],
-                     "--out", self.flags])
+                     "--out", self.flags, *NO_TEXT])
 
     def tearDown(self):
         shutil.rmtree(self.tmp)
@@ -1248,7 +1348,7 @@ class TestDiagnostic(unittest.TestCase):
         with self.replaced_during("screen_flags", self.paths["features"], measured.to_parquet), \
                 contextlib.redirect_stdout(io.StringIO()), self.assertRaises(SystemExit) as stop:
             cs.main(["flag", "--features", self.paths["features"], "--reference", self.paths["reference"],
-                     "--out", self.flags])
+                     "--out", self.flags, *NO_TEXT])
         self.assertIn("features.parquet changed while this step ran", str(stop.exception))
         self.assertFalse(any(os.path.exists(self.flags + x) for x in ("", ".info.json", ".baselines")))
         with self.assertRaises(SystemExit):  # no chain to follow.
@@ -1257,7 +1357,7 @@ class TestDiagnostic(unittest.TestCase):
         cs._write_info(self.paths["features"], {"clips": "features", "extractor": cs.extractor()})
         with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
             cs.main(["flag", "--features", self.paths["features"], "--reference", self.paths["reference"],
-                     "--out", self.flags])
+                     "--out", self.flags, *NO_TEXT])
         # sheet: the flags replaced while the pages are made.
         out = os.path.join(self.tmp, "diagnostic")
         flags = pd.read_parquet(self.flags)
@@ -1297,6 +1397,7 @@ class TestDiagnostic(unittest.TestCase):
                                ('{"still_scan_motion_frac": 1.5}', "still_scan_motion_frac=1.5"),
                                ('{"still_motion_frac": "0.01"}', "still_motion_frac='0.01'"),
                                ('{"policy": "strict"}', "policy='strict'"), ('{"cells": 3}', "keys must be among"),
+                               ('{"text_decides": true}', "text_decides=True"),
                                ('[1]', "JSON object"), ('{"inside_glyphs": }', "not valid JSON")):
             with self.assertRaises(SystemExit) as stop, contextlib.redirect_stdout(io.StringIO()):
                 cs.main(["flag", "--features", self.paths["features"], "--reference", self.paths["reference"],
@@ -1308,7 +1409,7 @@ class TestDiagnostic(unittest.TestCase):
                          {**cs.THRESHOLDS, "still_scan_motion_frac": 0, "inside_mark_px": 5})
         with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
             cs.main(["flag", "--features", self.paths["features"], "--reference", self.paths["reference"],
-                     "--out", self.flags])
+                     "--out", self.flags, *NO_TEXT])
         out = os.path.join(self.tmp, "diagnostic")  # calibrate checks its --thresholds alike.
         with mock.patch.object(cs, "find_ffmpeg", return_value="f"), contextlib.redirect_stdout(io.StringIO()), \
                 mock.patch.object(cs, "clip_media", return_value="<video></video>"):
@@ -1345,7 +1446,8 @@ class TestDiagnostic(unittest.TestCase):
                 cs._write_info(path, {"clips": name, "extractor": cs.extractor()})
             with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
                 cs.main(["flag", "--features", os.path.join(self.tmp, "again", "features.parquet"),
-                         "--reference", os.path.join(self.tmp, "again", "reference.parquet"), "--out", flags])
+                         "--reference", os.path.join(self.tmp, "again", "reference.parquet"), "--out", flags,
+                         *NO_TEXT])
             buf = io.StringIO()
             with contextlib.redirect_stdout(buf):
                 cs.main(["calibrate", "--flags", flags, "--sheet-dir", out, "--labels", labels,
@@ -1455,7 +1557,7 @@ class TestDiagnostic(unittest.TestCase):
         cs._write_info(self.paths["reference"], {"clips": "reference", "extractor": cs.extractor()})
         with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
             cs.main(["flag", "--features", self.paths["features"], "--reference", self.paths["reference"],
-                     "--out", self.flags])
+                     "--out", self.flags, *NO_TEXT])
         with self.assertRaises(SystemExit) as stop:
             cs.main(["calibrate", "--flags", self.flags, "--sheet-dir", out, "--labels", labels])
         self.assertIn("not those the diagnostic sample was drawn from", str(stop.exception))
@@ -1783,6 +1885,111 @@ class TestCalibration(unittest.TestCase):
         self.assertAlmostEqual(cs.upper_bound(1000, 2000), 0.5184, places=3)
 
 
+def word_box(x0, y0, x1, y1):
+    """An OCR word's corner points, as RapidOCR gives them."""
+    return np.array([[x0, y0], [x1, y0], [x1, y1], [x0, y1]], float)
+
+
+class TestTextPass(unittest.TestCase):
+    def test_words_of_a_row_are_joined_and_a_wide_gap_starts_another_line(self):
+        # A settings panel left of a results box on one row, the box's name and number boxed apart, and a second row.
+        words = [(word_box(10, 10, 30, 22), "Gn"), (word_box(34, 11, 60, 23), "50"),
+                 (word_box(300, 10, 320, 22), "EF"), (word_box(324, 11, 350, 23), "55 %"),
+                 (word_box(300, 40, 340, 52), "LVIDd"), (word_box(344, 40, 380, 52), "4.5 cm")]
+        lines = cs.text_lines(words)
+        self.assertEqual(lines, ["Gn 50", "EF 55 %", "LVIDd 4.5 cm"])
+        # Joined into one line, the row would start with a setting and its measurement would be left out.
+        status, found = cs.measurement_text([np.zeros((4, 4, 3), np.uint8)], ("stand-in", lambda frame: lines))
+        self.assertEqual((status, json.loads(found)), ("checked", ["EF 55", "LVIDd 4.5"]))
+
+    def test_a_name_glued_to_its_number_is_still_read(self):
+        # As RapidOCR read drawn text: the space dropped between a name and its number, and in a settings line.
+        lines = ["EF55%", "Gn50FR54Hz", "HR72bpm", "Depth16cm", "LAX", "E/e'12"]
+        found = cs.measurement_text([np.zeros((4, 4, 3), np.uint8)], ("stand-in", lambda frame: lines))[1]
+        self.assertEqual(json.loads(found), ["E/e'12", "EF55"])  # a name followed by a letter is another word.
+
+    def test_text_decides_names_a_scope(self):
+        self.assertEqual(cs.THRESHOLDS["text_decides"], "header_unavailable")
+        self.assertEqual(cs.parse_thresholds('{"text_decides": "all"}', cs.THRESHOLDS)["text_decides"], "all")
+        for value in ("true", "1", '"yes"', "null", '["all"]'):
+            with self.assertRaises(SystemExit):
+                cs.parse_thresholds(f'{{"text_decides": {value}}}', cs.THRESHOLDS)
+
+    def test_text_needs_the_ocr_environment(self):
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(cs, "ocr_version", return_value=None), \
+                self.assertRaises(SystemExit) as stop:
+            cs.main(["text", "--features", os.path.join(tmp, "f.parquet"),
+                     "--out", os.path.join(tmp, "t", "o.parquet")])
+        self.assertIn("OCR environment", str(stop.exception))
+        self.assertFalse(os.path.exists(os.path.join(tmp, "t")))
+
+    def test_the_worker_reads_three_frames_and_notices_a_replaced_video(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path, junk = os.path.join(tmp, "clip.mp4"), os.path.join(tmp, "junk.mp4")
+            write_mp4(path, speckle())
+            with open(junk, "wb") as f:
+                f.write(b"not a video")
+            seen = []
+            backend = ("stand-in", lambda frame: seen.append(frame.shape) or ["EDV 120 ml", "HR 72 bpm"])
+            with mock.patch.object(cs, "_OCR", backend):
+                row = cs._text_worker(("k", path, cs.sha256(path), T))
+                changed = cs._text_worker(("k", path, "0" * 64, T))
+                failed = cs._text_worker(("j", junk, cs.sha256(junk), T))
+        # The first, middle and last of the frames pass 1 read; only the matched expressions are kept.
+        self.assertEqual(row, {"global_key": "k", "text_status": "checked", "text_measurements": '["EDV 120"]',
+                               "text_frames": 3})
+        self.assertEqual(seen, [(H, W, 3)] * 3)
+        self.assertEqual(changed["text_status"], "changed")
+        self.assertEqual((failed["text_status"], failed["text_measurements"]), ("decode_failed", None))
+
+    def test_text_output_is_the_features_with_text_which_flag_takes_once(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "clip.mp4")
+            write_mp4(path, speckle())
+            features, out = os.path.join(tmp, "features.parquet"), os.path.join(tmp, "text", "features_text.parquet")
+            row = {**feature_row(np.zeros((H // cs.CELL, W // cs.CELL), bool)), "video_path": path, "global_key": "k",
+                   "video_sha256": cs.sha256(path), "n_frames_total": T}
+            broken = {**feature_row(np.zeros((H // cs.CELL, W // cs.CELL), bool), error="DECORDError"),
+                      "global_key": "b"}
+            pd.DataFrame([row, broken]).to_parquet(features)
+            cs._write_info(features, {"clips": "the clip list", "extractor": cs.extractor()})
+
+            def in_process(items, workers, log, clip_seconds, threads):
+                with mock.patch.object(cs, "_OCR", ("stand-in", lambda frame: ["EF 55 %"])):
+                    return [cs._text_worker(item) for item in items]
+
+            # The stand-in engine's version is part of the text code's record, so it is compared under it too.
+            with mock.patch.object(cs, "ocr_version", return_value="stand-in 1"), \
+                    mock.patch.object(cs, "_map_text", in_process), contextlib.redirect_stdout(io.StringIO()):
+                cs.main(["text", "--features", features, "--out", out])
+                with self.assertRaises(SystemExit):  # its output is not pass 1 output: text is read once.
+                    cs.main(["text", "--features", out, "--out", os.path.join(tmp, "text", "again.parquet")])
+                reader = cs.text_reader()
+                extracted = cs.extracted_by(out, cs._code_record(*cs.PASS1), cs.Inputs())
+            table = pd.read_parquet(out)
+            with open(out + ".info.json") as f:
+                info = json.load(f)
+            self.assertEqual(table.text_status.iloc[0], "checked")
+            self.assertTrue(pd.isna(table.text_status.iloc[1]))  # an unreadable clip is not read.
+            self.assertEqual(table.text_measurements.iloc[0], '["EF 55"]')
+            # The pass 1 record carries over, with what read the text: flag checks both.
+            self.assertEqual(info["clips"], "the clip list")
+            self.assertEqual((info["extractor"]["text"], extracted["text"]), (reader, reader))
+            self.assertEqual(info["text"]["status"], {"checked": 1})
+            flags = cs.apply_flags(table, {})  # the clip's vendor writes no GE header: its text decides.
+            self.assertEqual((flags.text_evidence.iloc[0], flags.decision.iloc[0]), ("measurement_text", "exclude"))
+            # flag refuses such clips' features without the text pass, and takes them with it.
+            with mock.patch.object(cs, "ocr_version", return_value="stand-in 1"), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                with self.assertRaises(SystemExit) as stop:
+                    cs.main(["flag", "--features", features, "--reference", features,
+                             "--out", os.path.join(tmp, "flags", "flags.parquet")])
+                self.assertIn("no text pass", str(stop.exception))
+                cs.main(["flag", "--features", out, "--reference", features,
+                         "--out", os.path.join(tmp, "flags", "flags.parquet")])
+            self.assertEqual(pd.read_parquet(os.path.join(tmp, "flags", "flags.parquet")).decision.iloc[0], "exclude")
+
+
 def write_mp4(path, frames):
     import cv2
 
@@ -1837,7 +2044,7 @@ class TestCommandLine(unittest.TestCase):
             self.assertEqual(extracted, cs.extractor())
             cs._write_info(reference, {"clips": "reference list", "extractor": extracted})
             with contextlib.redirect_stdout(io.StringIO()):
-                cs.main(["flag", "--features", features, "--reference", reference, "--out", flags])
+                cs.main(["flag", "--features", features, "--reference", reference, "--out", flags, *NO_TEXT])
                 cs.main(["sheet", "--flags", flags, "--out-dir", sheet, "--n-unflagged", "5"])
             out = pd.read_parquet(flags)
             self.assertEqual(out.exclude_reason.tolist(), ["", "still"])
@@ -1956,7 +2163,7 @@ class TestCommandLine(unittest.TestCase):
                                                global_key=[f"r{i}" for i in range(30)]).to_parquet(reference)
                     with open(features + ".info.json") as f:
                         cs._write_info(reference, {"clips": "reference list", "extractor": json.load(f)["extractor"]})
-                    cs.main(["flag", "--features", features, "--reference", reference, "--out", flags])
+                    cs.main(["flag", "--features", features, "--reference", reference, "--out", flags, *NO_TEXT])
                 return pd.read_parquet(flags)
 
             screened = screen()
@@ -2143,7 +2350,7 @@ class TestCommandLine(unittest.TestCase):
             self.assertEqual(info["listed_size_differs"], {"width": 1, "height": 0})
             self.assertIn("listed size differs", err.getvalue())
             with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
-                cs.main(["flag", "--features", features, "--reference", features, "--out", flags])
+                cs.main(["flag", "--features", features, "--reference", features, "--out", flags, *NO_TEXT])
             self.assertEqual(pd.read_parquet(flags).width.iloc[0], W)  # the layout uses the decoded size.
             # A list with both a size and listed_ size leaves no name for one of them: refused.
             pd.DataFrame([{"video_path": video, "global_key": "k", "vendor": "v", "model": "m", "acq_category": "bmode",
@@ -2166,7 +2373,7 @@ class TestCommandLine(unittest.TestCase):
             earlier.to_parquet(features)
             for _ in range(2):
                 with self.assertRaises(SystemExit) as stop:
-                    cs.main(["flag", "--features", features, "--reference", features, "--out", flags])
+                    cs.main(["flag", "--features", features, "--reference", features, "--out", flags, *NO_TEXT])
                 self.assertIn("not the output of a completed `features` run", str(stop.exception))
                 cs._write_info(features, {})
                 earlier.iloc[:0].to_parquet(features)

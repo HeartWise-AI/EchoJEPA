@@ -93,6 +93,20 @@ class TestReportCategories(unittest.TestCase):
         self.assertEqual(cat.normal.tolist(), [True, False, False, False, False, False, False])
         self.assertEqual(cat.lv_dysfunction.tolist(), [False, True, False, False, False, False, False])
         self.assertEqual(cat.valve_disease.tolist(), [False, False, True, True, False, True, False])
+        self.assertFalse(cat.right_heart.any())  # every RVSP is 30.
+
+    def test_right_heart_is_a_raised_rvsp_that_the_left_heart_does_not_account_for(self):
+        s = pd.DataFrame({"ef": [60, 30, 60, 60, 60, np.nan, 60],
+                          "av_mean_gradient": [10, 10, 45, 10, 10, 10, np.nan],
+                          "rvsp": [55, 55, 55, 55, 55, 55, 45],
+                          "Mitral valve findings": ["", "", "", "Insuffisance mitrale sévère", "", "", ""],
+                          "Aortic valve findings": [""] * 7,
+                          "Tricuspid valve findings": [""] * 4 + ["Insuffisance tricuspide sévère", "", ""]})
+        cat = rp.categorize(s)
+        # LV dysfunction, AV stenosis and severe MR account for the raised RVSP; severe TR goes with it (and is no
+        # valve disease, only a possible one); an EF must be present, and 45 is not raised enough.
+        self.assertEqual(cat.right_heart.tolist(), [True, False, False, False, True, False, False])
+        self.assertEqual(cat.valve_disease.tolist(), [False, False, True, True, False, False, False])
 
 
 class TestClipRules(unittest.TestCase):
@@ -109,6 +123,24 @@ class TestClipRules(unittest.TestCase):
         # both forms.
         self.assertEqual(rp.clip_rule(clips).tolist(), ["", "", "", "acquisition", "", "acquisition", "", ""])
 
+    def test_another_vendors_mode_is_left_to_the_pixels(self):
+        # A Philips header declares tissue imaging over color loops too: B-mode or color flow by its regions passes,
+        # the mode then read from the pixels; a header declaring spectral Doppler or no region fails as before.
+        clips = pd.DataFrame({"view": ["A4C", "A4C", "A4C", "A4C", "OTHER", "A4C"],
+                              "acq_category": ["bmode", "color_flow", "spectral_doppler", "unknown", "unknown", "bmode"],
+                              "acq_confidence": ["header"] * 5 + ["unknown"],
+                              "acq_vendor_validated": [False] * 5 + [True]})
+        self.assertEqual(rp.clip_rule(clips).tolist(), ["", "", "acquisition", "acquisition", "", "acquisition"])
+        self.assertEqual(rp.mode_source(clips).tolist(), ["pixels"] * 5 + ["header"])
+
+    def test_vendor_slots_are_named_once_each_with_a_number(self):
+        self.assertEqual(rp.vendor_slots(["Philips Medical Systems=1", "GEMS Ultrasound=2"], "GE Vingmed Ultrasound"),
+                         {"Philips Medical Systems": 1, "GEMS Ultrasound": 2})
+        for specs in (["Philips Medical Systems"], ["Philips Medical Systems=0"], ["GEMS Ultrasound=1"] * 2,
+                      ["GE Vingmed Ultrasound=1"]):
+            with self.assertRaises(SystemExit):
+                rp.vendor_slots(specs, "GE Vingmed Ultrasound")
+
 
 def write_flags(flags, path, out, calibration=None, decisions=True):
     """Flags as completed clip_screen.py features and flag runs leave them for the shortlist in `out`: the features
@@ -122,7 +154,7 @@ def write_flags(flags, path, out, calibration=None, decisions=True):
         sources[role] = rp.clip_screen._source(table)
     media = {"error": None, "video_sha256": "synthetic", "dicom_status": "ok", "dicom_regions": "[]", "height": 1,
              "width": 1, "dicom_image_content": "0001", "dicom_measure_flag": False, "dicom_source_image": True,
-             "dicom_ecg": True}
+             "dicom_ecg": True, "dicom_sop_class": "1.2.840.10008.5.1.4.1.1.3.1", "pixel_mode": "bmode"}
     if decisions and "decision" not in flags:  # the screen's decision, from the exclusion given (no uncertain clip).
         flags = flags.assign(decision=np.where(flags.exclude, "exclude", "keep"),
                              decision_reasons=flags.exclude_reason)
@@ -289,6 +321,111 @@ class TestPipeline(unittest.TestCase):
         self.assertTrue(reference.global_key.str.startswith("radar-pilot-").all())
         with open(os.path.join(self.out, "shortlist.json")) as f:
             self.assertEqual(json.load(f)["clips_removed_by_metadata_rule"], {})
+
+    def add_philips(self, study="s7", patient="p7"):
+        """A Philips study of 2013 (outside --years) with a linked report, its EF in no category; its headers read
+        every clip as B-mode, as the archive's do."""
+        rows = [dict(r, vendor="Philips Medical Systems", model="iE33", acq_category="bmode",
+                     acq_vendor_validated=False, study_date="20130101") for r in study_clips(study, patient)]
+        pd.concat([self.videos, pd.DataFrame(rows)]).to_parquet(os.path.join(self.tmp, "videos.parquet"))
+        for name, row in (("ef.parquet", {"study_id": study, "accession": "A7", "ef": 45}),
+                          ("rvsp.parquet", {"study_id": study, "rvsp": 30}),
+                          ("reports.parquet", {"AccessionNumber": "A7", "Mitral valve findings": "Valve mitrale normale",
+                                               "Aortic valve findings": "", "Tricuspid valve findings": "",
+                                               "AV Mean Gradient": 5.0, "Left ventricule findings": ""})):
+            path = os.path.join(self.tmp, name)
+            pd.concat([pd.read_parquet(path), pd.DataFrame([row])]).to_parquet(path)
+
+    def test_a_vendor_slot_adds_a_study_of_another_vendor_and_leaves_the_categories_alone(self):
+        self.shortlist()
+        before = {n: pd.read_csv(os.path.join(self.out, n), dtype=str) for n in rp.SHORTLIST_OUTPUTS[:3]}
+        self.add_philips()
+        self.shortlist()  # the Philips study is in no category and outside --years: nothing changes without a slot.
+        for name, table in before.items():
+            pd.testing.assert_frame_equal(pd.read_csv(os.path.join(self.out, name), dtype=str), table)
+        slot = ("--vendor-studies", "Philips Medical Systems=1")
+        self.run_cmd("shortlist", "--videos", os.path.join(self.tmp, "videos.parquet"),
+                     "--ef-labels", os.path.join(self.tmp, "ef.parquet"),
+                     "--rvsp-labels", os.path.join(self.tmp, "rvsp.parquet"),
+                     "--reports", os.path.join(self.tmp, "reports.parquet"), "--out-dir", self.out,
+                     "--min-clips", "12", *slot)
+        short = pd.read_csv(os.path.join(self.out, "shortlist.csv"), dtype=str)
+        clips = pd.read_csv(os.path.join(self.out, "shortlist_clips.csv"), dtype=str)
+        self.assertEqual(short[short.category == "vendor:Philips Medical Systems"].study_id.tolist(), ["s7"])
+        # The category studies, their clips and their reference clips are those of the shortlist without the slot.
+        pd.testing.assert_frame_equal(short.iloc[:len(before["shortlist.csv"])], before["shortlist.csv"])
+        pd.testing.assert_frame_equal(clips[clips.study_id != "s7"].reset_index(drop=True),
+                                      before["shortlist_clips.csv"])
+        reference = pd.read_csv(os.path.join(self.out, "reference_clips.csv"), dtype=str)
+        pd.testing.assert_frame_equal(reference[reference.vendor != "Philips Medical Systems"].reset_index(drop=True),
+                                      before["reference_clips.csv"])
+        self.assertEqual(clips.groupby("vendor").mode_source.agg(set).to_dict(),
+                         {"GE Vingmed Ultrasound": {"header"}, "Philips Medical Systems": {"pixels"}})
+        with open(os.path.join(self.out, "shortlist.json")) as f:
+            record = json.load(f)
+        self.assertEqual((record["criteria"]["vendor_studies"], record["pool_per_vendor_slot"]),
+                         ({"Philips Medical Systems": 1}, {"Philips Medical Systems": 1}))
+        # The patients of a validation list are drawn nowhere: without s7's patient no Philips study is left.
+        listed = os.path.join(self.tmp, "validation_clips.csv")
+        pd.DataFrame({"patient_id": ["p7"]}).to_csv(listed, index=False)
+        with self.assertRaises(SystemExit) as stop:
+            self.run_cmd("shortlist", "--videos", os.path.join(self.tmp, "videos.parquet"),
+                         "--ef-labels", os.path.join(self.tmp, "ef.parquet"),
+                         "--rvsp-labels", os.path.join(self.tmp, "rvsp.parquet"),
+                         "--reports", os.path.join(self.tmp, "reports.parquet"), "--out-dir", self.out,
+                         "--min-clips", "12", *slot, "--exclude-patients", listed)
+        self.assertIn("No training study of Philips Medical Systems", str(stop.exception))
+        pd.DataFrame({"patient_id": ["p1"]}).to_csv(listed, index=False)
+        self.run_cmd("shortlist", "--videos", os.path.join(self.tmp, "videos.parquet"),
+                     "--ef-labels", os.path.join(self.tmp, "ef.parquet"),
+                     "--rvsp-labels", os.path.join(self.tmp, "rvsp.parquet"),
+                     "--reports", os.path.join(self.tmp, "reports.parquet"), "--out-dir", self.out,
+                     "--min-clips", "12", *slot, "--exclude-patients", listed)
+        short = pd.read_csv(os.path.join(self.out, "shortlist.csv"), dtype=str)
+        self.assertNotIn("p1", set(short.patient_id))
+        self.assertNotIn("p1", set(pd.read_csv(os.path.join(self.out, "reference_clips.csv"), dtype=str).patient_id))
+
+    def test_select_takes_a_vendor_slot_study_at_the_mode_its_pixels_show(self):
+        self.add_philips()
+        self.run_cmd("shortlist", "--videos", os.path.join(self.tmp, "videos.parquet"),
+                     "--ef-labels", os.path.join(self.tmp, "ef.parquet"),
+                     "--rvsp-labels", os.path.join(self.tmp, "rvsp.parquet"),
+                     "--reports", os.path.join(self.tmp, "reports.parquet"), "--out-dir", self.out,
+                     "--min-clips", "12", "--vendor-studies", "Philips Medical Systems=1")
+        clips = pd.read_csv(os.path.join(self.out, "shortlist_clips.csv"), dtype=str)
+        flags_path = os.path.join(self.tmp, "flags.parquet")
+        philips = clips.vendor == "Philips Medical Systems"
+        # Read from the pixels, the Philips clips are B-mode in every view: no view in both modes, no slot study.
+        flags = clips[["video_path"]].assign(exclude=False, exclude_reason="", pixel_mode="bmode")
+        write_flags(flags, flags_path, self.out)
+        with self.assertRaises(SystemExit) as stop:
+            self.run_cmd("select", "--out-dir", self.out, "--flags", flags_path)
+        self.assertIn("none for vendor:Philips Medical Systems", str(stop.exception))
+        # Half of them color, as their pixels show it: the study qualifies at that mode.
+        color = philips & clips.video_path.str.contains(r"_[02]\.mp4$")
+        flags.loc[color, "pixel_mode"] = "color_flow"
+        write_flags(flags, flags_path, self.out)
+        self.run_cmd("select", "--out-dir", self.out, "--flags", flags_path)
+        studies = pd.read_csv(os.path.join(self.out, "pilot_studies.csv"), dtype=str)
+        self.assertEqual(studies.set_index("category").study_id.get("vendor:Philips Medical Systems"), "s7")
+        pilot = pd.read_csv(os.path.join(self.out, "pilot_clips.csv"), dtype=str)
+        s7 = pilot[pilot.study_id == "s7"]
+        self.assertEqual((set(s7.header_acq_category), set(s7.acq_category), set(s7.mode_source)),
+                         ({"bmode"}, {"bmode", "color_flow"}, {"pixels"}))
+        ge = pilot[pilot.study_id != "s7"]  # a header mode stays the header's, whatever the pixels show.
+        self.assertTrue((ge.acq_category == ge.header_acq_category).all())
+        with open(os.path.join(self.out, "selection.json")) as f:
+            selection = json.load(f)
+        self.assertEqual((selection["studies"], selection["vendor_slots"]), (4, ["vendor:Philips Medical Systems"]))
+        self.run_cmd("candidates", "--out-dir", self.out, "--reports", os.path.join(self.tmp, "reports.parquet"),
+                     "--provisional-screen")
+        with open(os.path.join(self.out, "candidates.json"), encoding="utf-8") as f:
+            candidates = json.load(f)
+        keys = clips.set_index("global_key")
+        modes = {c["modality"] for c in candidates if keys.loc[c["global_key"], "study_id"] == "s7"}
+        self.assertEqual(modes, {"bmode", "color_flow"})
+        with open(os.path.join(self.out, "candidates_summary.json")) as f:
+            self.assertEqual(json.load(f)["candidates_by_mode_source"]["pixels"], len(s7))
 
     def test_uncertain_clips_are_left_out_listed_and_never_count_for_a_study(self):
         self.shortlist()

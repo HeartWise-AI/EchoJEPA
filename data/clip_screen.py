@@ -14,13 +14,19 @@ own. The evidence, in three independent parts:
   (`image_field`: appearance, not motion, so a frozen clip has one too), else over the whole frame
   (`region_source`: dicom, image, whole_frame). A still reading over the whole frame is certain only when the frames
   also repeat (`duplicate_frac`). The earlier scan-area or frame shares stay recorded for calibration.
+- **object:** a header whose SOP class is no ultrasound image (a structured report, a secondary capture) excludes a
+  clip, whatever its vendor (`dicom_object`).
 - **analysis screen:** the header's account of its image (`dicom_header_evidence`: the image data it names, whether
-  it derives from an acquired image, the ECG) and, from the pixels, static graphics beside the field of view
-  (`outside_ink_frac`: plots, tables, segment maps). Either alone makes a clip uncertain; both exclude it.
-- **measurement overlay:** a header naming a measurement (GE's ImageType MEASURE); measurement text read by an OCR
-  engine when one is installed (`measurement_text`; without one the evidence is unavailable, not absent: a named
-  measurement excludes, a number with a measurement unit alone makes a clip uncertain, a velocity alone is a
-  setting, `text_evidence`); and
+  it derives from an acquired image, the ECG) and, from the pixels, static bright or colored graphics beside the
+  field of view (`outside_ink_frac`: plots, tables, segment maps). A GE header (`GE_HEADER_VENDORS`) decides alone:
+  its pattern excludes a clip and the graphics are only recorded. Other vendors write none of these header signals,
+  so for them both together exclude a clip and either alone makes it uncertain (`header_convention`).
+- **measurement overlay:** a header naming a measurement (GE's ImageType MEASURE; its absence counts only in a GE
+  header); measurement text, read by the separate `text` pass with RapidOCR (`measurement_text`; without that pass
+  the evidence is unavailable, not absent), recorded for every clip and deciding where `text_decides` says, by
+  default for the clips whose header cannot name a measurement (another vendor's, or none): a named measurement
+  excludes, a number with a measurement unit alone makes a clip uncertain, a velocity alone is a setting
+  (`text_evidence`); and
   measurement structures among the static marks over the moving image (`geometry_evidence`): a caliper pair (two
   calipers static together, joined by their line or alike and apart) excludes, a traced contour or a single caliper
   makes a clip uncertain. The earlier pixel scores stay as diagnostics: `inside_glyphs`, ink marks inside the moving
@@ -32,8 +38,10 @@ policies, stay to be compared on the same labels.
 
 Subcommands, every output outside the repository:
     features   pass 1, per clip: motion and ink statistics, the field of view, the header's evidence, the marks
-               inside the image with their kind, place and color, text when OCR is installed, and a coarse map of
-               where static ink is.
+               inside the image with their kind, place and color, and a coarse map of where static ink is.
+    text       optional, run with the OCR environment's Python: the measurement text of each readable clip of
+               `features` output, read with RapidOCR on the first, middle and last frame pass 1 read, written as
+               that output with the text columns added (`flag` takes it as its features), recording what read it.
     flag       pass 2: per scanner layout, where static ink normally is, from reference clips that clearly move,
                have no marks inside the image and no block of ink beside it that most clips of their layout lack
                (a rule fixed apart from the thresholds); then the evidence and the decision for every clip (keep,
@@ -52,8 +60,8 @@ Tuning the thresholds, outside the pipeline:
                burned-in identifiers: the pages and copies stay on the server, in a 0700 folder.
     challenge  an enriched challenge set to label: per evidence signal, random clips the screen may get wrong
                (caliper pairs, single calipers, traces, a header naming a measurement, partial analysis evidence,
-               unseen layouts; kept clips with many marks, a results-box score, a dotted line, color Doppler), for
-               `sheet --keys --blind`. Its labels are counted, never weighed up to a population.
+               unusual image data, unseen layouts; kept clips with many marks, a results-box score, a dotted line,
+               color Doppler), for `sheet --keys --blind`. Its labels are counted, never weighed up to a population.
     calibrate  the screen against the answers of an audit, diagnostic, validation or challenge sheet, recomputed
                from the features behind the flags at any threshold set (--thresholds): each detector, and the
                policy (removed: excluded or uncertain) with the share of ineligible clips among the kept ones,
@@ -73,7 +81,9 @@ Example:
     python data/clip_screen.py features --clips <clips.csv> --out <screen_dir>/features.parquet --workers 16
     python data/clip_screen.py features --clips <reference_clips.csv> --out <screen_dir>/reference.parquet \\
         --workers 16
-    python data/clip_screen.py flag --features <screen_dir>/features.parquet \\
+    <OCR environment>/bin/python -E -s data/clip_screen.py text --features <screen_dir>/features.parquet \\
+        --out <screen_dir>/features_text.parquet --workers 6 --threads 2
+    python data/clip_screen.py flag --features <screen_dir>/features_text.parquet \\
         --reference <screen_dir>/reference.parquet --out <screen_dir>/flags.parquet
     python data/clip_screen.py sheet --flags <screen_dir>/flags.parquet --out-dir <screen_dir>/audit
     python data/clip_screen.py calibrate --flags <screen_dir>/flags.parquet --sheet-dir <screen_dir>/audit \\
@@ -129,16 +139,25 @@ STATIC_STD = 2.0      # temporal std below which, in every channel, a pixel is s
 SCAN_TYPES = (1, 2, 3, 4)  # DICOM Region Data Types holding image data: tissue, color flow, PW and CW Doppler.
 SCAN_LEVEL = 12       # the scan area: what reaches this level (any channel) in some frame inside those regions,
 SCAN_OPEN_PX = 7      # after an opening of this size that removes text and tick marks.
-# Measurement text (`measurement_text`), when an OCR engine is installed: a measurement name followed by a number, or
-# a number with a measurement unit; a line that starts with a scanner setting is interface text. Only a name counts
-# as measurement evidence (`text_evidence`): a unit alone makes a clip uncertain, and a velocity unit not even that.
+# Measurement text (`measurement_text`), read by the `text` pass: a measurement name followed by a number, or a number
+# with a measurement unit; a line that starts with a scanner setting is interface text. Only a name counts as
+# measurement evidence (`text_evidence`): a unit alone makes a clip uncertain, and a velocity unit not even that. A
+# name ends where a letter does not follow (RapidOCR drops the space of 'EF 55 %' at times, reading 'EF55%').
 MEASUREMENT_NAMES = (r"(?:LV)?EF|EDV|ESV|SV|CO|LVID[ds]?|IVS[ds]?|LVPW[ds]?|LAVI?|LA|Ao|TAPSE|MAPSE|E/A|E/e'?|"
                      r"DT|IVRT|V ?max|V ?mean|VTI|(?:max|mean) ?PG|PG|AVA|MVA|PISA|EROA?|RVol|VC|RVSP|GLS|"
                      r"Dist|Area|Vol")
-MEASUREMENT_TEXT = re.compile(rf"\b(?:{MEASUREMENT_NAMES})(?!\w)\s*[:=]?\s*-?\d+(?:[.,]\d+)?"
+MEASUREMENT_TEXT = re.compile(rf"\b(?:{MEASUREMENT_NAMES})(?![A-Za-z_])\s*[:=]?\s*-?\d+(?:[.,]\d+)?"
                               r"|-?\d+(?:[.,]\d+)?\s*(?:ml|mL|cm2|cm²|m/s|cm/s|mmHg)(?![\w/])")
-INTERFACE_TEXT = re.compile(r"^\s*(?:Gn|Gain|Frq|MHz|Hz|FR|fps|dB|DR|MI|TI[SB]?|PRF|kHz|WF|Comp|Rej|HR|bpm|Depth)\b",
+INTERFACE_TEXT = re.compile(r"^\s*(?:Gn|Gain|Frq|MHz|Hz|FR|fps|dB|DR|MI|TI[SB]?|PRF|kHz|WF|Comp|Rej|HR|bpm|Depth)"
+                            r"(?![A-Za-z_])",
                             re.IGNORECASE)
+# The text pass's OCR (`ocr_backend`): RapidOCR, its PP-OCR ONNX models inside the pinned package, the settings the
+# de-identification check uses (frames upscaled TEXT_UPSCALE times, words kept from a score of TEXT_SCORE). The engine
+# boxes words or phrases, so a name and its number ('EF', '55 %') can be boxed apart: words whose heights overlap by
+# TEXT_ROW_OVERLAP of the smaller one are one row, read left to right, and a gap wider than TEXT_WORD_GAP row heights
+# starts another line (a settings panel and a results box side by side).
+TEXT_UPSCALE, TEXT_SCORE, TEXT_ROW_OVERLAP, TEXT_WORD_GAP = 2.0, 0.5, 0.5, 2.0
+TEXT_COLUMNS = ("text_status", "text_measurements", "text_frames")
 # The field of view found from the pixels when the header gives no usable region (`image_field`): content opened by
 # FIELD_OPEN_PX; a component whose hull covers FIELD_MIN_SHARE..FIELD_MAX_SHARE of the frame, fills FIELD_MIN_SOLIDITY
 # of that hull, and of which FIELD_MIN_TEXTURE is speckle (5-px neighbourhood standard deviation above
@@ -165,6 +184,15 @@ CORE_SHARE, REFERENCE_EXTRA_CELLS = 0.5, 8
 INK_GRAY = 170        # a static pixel at least this bright, or
 INK_CHROMA = 60       # at least this colored (max - min channel), is drawn ink, not tissue.
 OPEN_PX = 5           # opening applied to the moving mask: removes the ECG trace and blinking cursors.
+# Color Doppler from the pixels (`moving_color_frac`, `pixel_mode`): red or blue pixels (at least INK_CHROMA colored,
+# and COLOR_HUE above green, which the ECG trace is) that change over the clip (MOVE_STD), as a share of the frame; a
+# static color bar does not change. A clip is read as color flow from PIXEL_COLOR_FRAC. On 80 training clips per group,
+# one per patient: GE B-mode clips by header reached 0.0014 at most (GE Healthcare 0.0004); 97.5% of GE Vingmed and
+# 93.8% of GE Healthcare color clips by header reached 0.005, and so did 33.8% of Philips clips, which their headers
+# all call B-mode. With pass 1's own frames, on 25 other clips per group: GE B-mode up to 0.0033 (none read as color),
+# 92% of GE Vingmed and 96% of GEMS color clips read as color, 32% of Philips clips. The mode a clip goes to review
+# with when its header cannot give it; the reviewer confirms it.
+COLOR_HUE, PIXEL_COLOR_FRAC = 40, 0.005
 REGION_SHARE = 0.25   # moving components at least this share of the largest one belong to the imaging region.
 HULL_MARGIN = 6       # px eroded from the imaging region: its border is the sector edge, static and bright.
 MIN_INK_PX = 3        # smaller ink components are noise.
@@ -209,15 +237,26 @@ MOTION_COLUMNS = ("motion_frac", *(f"motion_frac_std{s:g}" for s in MOVE_STDS), 
                   *(f"scan_motion_frac_std{s:g}" for s in MOVE_STDS))
 # Pass 1 columns, present even when no clip could be read.
 NUMERIC_FEATURES = ("n_frames_total", "frames_read", "height", "width", *MOTION_COLUMNS, "duplicate_frac",
-                    "region_motion_frac", "field_frac", "field_iou_dicom", "outside_ink_frac",
+                    "region_motion_frac", "moving_color_frac", "field_frac", "field_iou_dicom", "outside_ink_frac",
                     "scan_frac", "region_fill", "region_frac", "inside_glyphs", "inside_marks_raw", "inside_ink_px",
                     "inside_glyphs_clip", *(f"inside_glyphs_static{s:g}" for s in STATIC_STDS), "windows",
                     "frozen_windows", "ink_cells")
 # The header's evidence about its image (`dicom_header_evidence`), None without a DICOM header.
-HEADER_EVIDENCE = ("dicom_image_content", "dicom_measure_flag", "dicom_source_image", "dicom_ecg")
+HEADER_EVIDENCE = ("dicom_image_content", "dicom_measure_flag", "dicom_source_image", "dicom_ecg", "dicom_sop_class")
 FEATURE_COLUMNS = ("error", "video_sha256", *NUMERIC_FEATURES, "dicom_status", "dicom_regions", *HEADER_EVIDENCE,
-                   "region_source", "text_status", "text_measurements", "inside_marks", "region_bbox", "cells_shape",
-                   "cells")
+                   "region_source", "inside_marks", "region_bbox", "cells_shape", "cells")
+# The SOP classes of an ultrasound image (single-frame, multi-frame and their retired forms, and a 3D volume). Any other
+# class in a header is no acquired ultrasound image, whatever the vendor: a structured report (one Philips object of
+# 400 surveyed training clips) or a secondary capture (a screenshot) became a video in the archive too.
+ULTRASOUND_IMAGE_CLASSES = ("1.2.840.10008.5.1.4.1.1.3.1", "1.2.840.10008.5.1.4.1.1.6.1", "1.2.840.10008.5.1.4.1.1.3",
+                            "1.2.840.10008.5.1.4.1.1.6", "1.2.840.10008.5.1.4.1.1.6.2")
+# The vendors whose headers follow GE's convention, by a survey of 400 training clips of each (headers only):
+# ImageType's fourth value names the image data ('0001' tissue, '0011' tissue and color flow), every clip references
+# the acquired image it derives from (SourceImageSequence) and 97% to 100% carry the ECG. For them the header alone
+# tells an analysis screen (ANALYSIS_CONTENT, no acquired image, no ECG) and a measured image (MEASURE), and the
+# absence of MEASURE counts. Philips headers have no fourth value and no SourceImageSequence on any surveyed clip, and
+# Siemens' were only surveyed on 5 patients: for them these signals are unverified (`header_convention`).
+GE_HEADER_VENDORS = ("GE Vingmed Ultrasound", "GE Healthcare Ultrasound", "GEMS Ultrasound")
 
 # still: the scan area's moving share below still_scan_motion_frac, or for a clip without a scan area the frame's
 # below still_motion_frac. measurement: at least inside_glyphs marks inside the image (two calipers of one distance
@@ -226,11 +265,14 @@ FEATURE_COLUMNS = ("error", "video_sha256", *NUMERIC_FEATURES, "dicom_status", "
 # screened clips and in the reference clips alike; MIN_INK_PX counts every mark. It applies to marks inside the
 # image only: the cell map beside it, where results text is, keeps every ink component of MIN_INK_PX.
 # The policy (`policy`), which decides from the evidence whether a clip is kept, excluded or uncertain:
-# - 'hybrid' (the default): a clip is excluded only on evidence of a disallowed condition (unreadable; still, read in a
-#   field of view; an analysis screen by header and by pixels; a measurement named by the header, read as text, or
-#   drawn as a caliper pair); uncertain on partial or conflicting evidence (motion readable only over the whole frame,
-#   an analysis screen by one source only, a traced contour or a single caliper); kept otherwise. A header without
-#   image regions, a missing baseline or many small static marks are recorded, never a reason on their own.
+# - 'hybrid' (the default): a clip is excluded only on evidence of a disallowed condition (unreadable; a header of no
+#   ultrasound image; still, read in a field of view; an analysis screen by a GE header, or by header and pixels for
+#   another vendor; a measurement named by the header, read as text where `text_decides`, or drawn as a caliper
+#   pair); uncertain on partial or conflicting evidence (motion readable only over the whole frame, another vendor's
+#   analysis screen by one source only, a GE header naming unusual image data, a traced contour or a single caliper,
+#   a measurement unit read where `text_decides`);
+#   kept otherwise. A header without image regions, a missing baseline or many small static marks are recorded, never
+#   a reason on their own.
 # - 'header' and 'pixel', the earlier policies, kept to compare on the same labels: exclusion by a header without
 #   usable image regions and still; or by still and the pixel measurement scores (`inside_glyphs`, `extra_cells`),
 #   with a missing baseline excluded as 'incomplete'.
@@ -239,9 +281,17 @@ HEADER_REASONS = {"no_regions": "no_image_region", "size_mismatch": "header_size
                   "unreadable_header": "header_unreadable", "": "no_header"}
 # An analysis screen (`analysis_evidence`): a header naming no tissue or flow data (ImageType value '0000'), without the
 # acquired image it derives from and without the ECG, which every pilot recording had; and, from the pixels, static
-# graphics beside the field of view on at least ANALYSIS_OUTSIDE_INK of the frame (plots, tables, segment maps: 0.3%
-# to 3% on the 28 labelled analysis screens, below 0.07% on 90% of 387 clean clips and 0.65% at most).
+# bright or colored graphics beside the field of view on at least ANALYSIS_OUTSIDE_INK of the frame (plots, tables,
+# segment maps: 0.3% to 3% on the 28 labelled analysis screens, below 0.07% on 90% of 387 clean clips and 0.65% at
+# most). The two overlap, and on the pilot's GE clips the pixels never added an exclusion to the header while they
+# made 9 color recordings uncertain, so a GE header decides alone; the pixels count only for other vendors.
 ANALYSIS_CONTENT, ANALYSIS_OUTSIDE_INK = "0000", 0.003
+# The image data a GE header names (`header_content`): tissue ('0001'), tissue and color flow ('0011'), or none (an
+# analysis screen, ANALYSIS_CONTENT). Any other value is unusual: of 46,293 surveyed GE training headers, 22 GE
+# Vingmed clips (0.1%, Vivid E9 and E95) named '0041' or '0051', and GE Healthcare and GEMS none. Labelled blind with
+# as many clips of the usual values (same view and models), all 22 were displays of a 3D probe (several panels, or a
+# rendered volume) and 18 were measured or no 2D recording, against none of the 22 others.
+GE_IMAGE_CONTENTS = ("0001", "0011", ANALYSIS_CONTENT)
 # A caliper pair (`geometry_evidence`): two calipers static together (over the whole clip or in one window), of about
 # one size (areas within PAIR_AREA_RATIO) and one color (channels within PAIR_COLOR_DIFF), at least PAIR_MIN_PX apart:
 # the two ends of one distance. Calipers joined by their line in one ink component are a pair already.
@@ -253,9 +303,19 @@ FROZEN_DUP_SHARE = 0.9
 # An enriched challenge set (`challenge_set`): kept clips with at least CHALLENGE_MANY_MARKS marks inside the image are
 # drawn as clips the measurement structures may have missed, or bright tissue (hard negatives).
 CHALLENGE_MANY_MARKS = 4
+# `text_decides`: whose measurement text, read by the `text` pass, takes part in the hybrid decision (TEXT_SCOPES):
+# 'header_unavailable' (the default), the clips whose header cannot name a measurement (`measurement_header`
+# unavailable: another vendor's, whose convention is unverified, or no header), for which the text and the marks over
+# the image are the only measurement evidence; 'all'; or 'none'. Of 266 labelled validation clips (160 of vendors
+# other than GE Vingmed, 58 of them without a GE header) the reading found measurement text on none: it excluded no
+# clean clip there, and how much measurement text it catches is not measured yet (no labelled clip of such a header
+# was measured). The evidence is recorded either way; `calibrate --thresholds '{"text_decides": "all"}'` evaluates
+# another scope on labelled clips.
+TEXT_SCOPES = ("none", "header_unavailable", "all")
 THRESHOLDS = {"still_scan_motion_frac": 0.05, "still_motion_frac": 0.01, "inside_glyphs": 2, "extra_cells": 8,
-              "inside_mark_px": MIN_INK_PX, "policy": "hybrid"}
-# What each threshold may be (`check_thresholds`): (type, minimum, maximum or None); `policy` one of POLICIES.
+              "inside_mark_px": MIN_INK_PX, "policy": "hybrid", "text_decides": "header_unavailable"}
+# What each threshold may be (`check_thresholds`): (type, minimum, maximum or None); `policy` one of POLICIES and
+# `text_decides` one of TEXT_SCOPES.
 THRESHOLD_RANGES = {"still_scan_motion_frac": (float, 0.0, 1.0), "still_motion_frac": (float, 0.0, 1.0),
                     "inside_glyphs": (int, 1, None), "extra_cells": (int, 1, None), "inside_mark_px": (int, 1, None)}
 # The labelled calibration the THRESHOLDS above were chosen with, or None while they are provisional: {"date": ...,
@@ -302,22 +362,25 @@ def dicom_header_evidence(path):
     pilot's clips): `dicom_image_content`, the fourth ImageType value, which names the image data it holds ('0001'
     tissue, '0011' tissue and color flow, '0000' neither: a screen composed after acquisition, such as an analysis
     display); `dicom_measure_flag`, ImageType naming MEASURE (an image saved with measurements); `dicom_source_image`,
-    whether it references the acquired image it derives from; and `dicom_ecg`, whether it carries the ECG (HeartRate
-    or RWaveTimeVector). All None for a header that cannot be parsed. A file that cannot be opened stops the run."""
+    whether it references the acquired image it derives from; `dicom_ecg`, whether it carries the ECG (HeartRate
+    or RWaveTimeVector); and `dicom_sop_class`, the SOP Class UID, which says what kind of object it is (empty when
+    absent). All None for a header that cannot be parsed. A file that cannot be opened stops the run."""
     import pydicom
 
     with open(path, "rb") as f:
         try:
             ds = pydicom.dcmread(f, stop_before_pixels=True,
-                                 specific_tags=["ImageType", "SourceImageSequence", "HeartRate", "RWaveTimeVector"])
+                                 specific_tags=["ImageType", "SourceImageSequence", "HeartRate", "RWaveTimeVector",
+                                                "SOPClassUID"])
             values = [str(v) for v in (ds.get("ImageType") or [])]
+            sop_class = str(ds.get("SOPClassUID") or "")
         except (MemoryError, OSError):  # the machine or the storage, not the header.
             raise
         except Exception:
             return dict.fromkeys(HEADER_EVIDENCE)
     return {"dicom_image_content": values[3] if len(values) > 3 else "", "dicom_measure_flag": "MEASURE" in values,
             "dicom_source_image": "SourceImageSequence" in ds,
-            "dicom_ecg": "HeartRate" in ds or "RWaveTimeVector" in ds}
+            "dicom_ecg": "HeartRate" in ds or "RWaveTimeVector" in ds, "dicom_sop_class": sop_class}
 
 
 def dicom_bounds(path, size):
@@ -415,24 +478,66 @@ def image_field(f):
     return np.zeros((h, w), bool)
 
 
-def ocr_backend():
-    """The installed OCR engine as (name, read), `read(frame)` giving the text lines of an RGB frame, or None when
-    none is installed (pytesseract with its tesseract binary). None means text evidence is unavailable, not absent.
-    Everything runs on this machine: nothing is sent anywhere."""
-    import importlib.util
+def ocr_version():
+    """'rapidocr-onnxruntime <version>' when RapidOCR is installed in this Python, else None."""
+    from importlib import metadata
 
-    if importlib.util.find_spec("pytesseract") is None or shutil.which("tesseract") is None:
+    try:
+        return f"rapidocr-onnxruntime {metadata.version('rapidocr-onnxruntime')}"
+    except metadata.PackageNotFoundError:
         return None
-    import pytesseract
+
+
+def text_lines(words):
+    """OCR words `(box, text)`, `box` the 4 x 2 corner points, as text lines: words whose heights overlap by at least
+    TEXT_ROW_OVERLAP of the smaller one are one row, read left to right, and a gap of more than TEXT_WORD_GAP row
+    heights between two words of a row starts another line."""
+    rows = []
+    for box, text in sorted(words, key=lambda w: w[0][:, 1].mean()):
+        y0, y1 = float(box[:, 1].min()), float(box[:, 1].max())
+        for row in rows:
+            if min(y1, row["y1"]) - max(y0, row["y0"]) >= TEXT_ROW_OVERLAP * min(y1 - y0, row["y1"] - row["y0"]):
+                row["words"].append((float(box[:, 0].min()), float(box[:, 0].max()), text))
+                row["y0"], row["y1"] = min(y0, row["y0"]), max(y1, row["y1"])
+                break
+        else:
+            rows.append({"y0": y0, "y1": y1, "words": [(float(box[:, 0].min()), float(box[:, 0].max()), text)]})
+    lines = []
+    for row in rows:
+        height, line, right = max(row["y1"] - row["y0"], 1.0), [], None
+        for x0, x1, text in sorted(row["words"]):
+            if line and x0 - right > TEXT_WORD_GAP * height:
+                lines.append(" ".join(line))
+                line, right = [], None
+            line.append(text)
+            right = x1 if right is None else max(right, x1)
+        lines.append(" ".join(line))
+    return lines
+
+
+def ocr_backend(threads=2):
+    """RapidOCR as (name, read), `read(frame)` giving the text lines (`text_lines`) of a BGR frame (OpenCV's order,
+    which RapidOCR takes), upscaled TEXT_UPSCALE times; None when RapidOCR is not installed in this Python (it is in
+    the OCR environment only), which leaves text evidence unavailable, not absent. Its models ship inside the pinned
+    package and run on this machine: nothing is downloaded or sent anywhere."""
+    name = ocr_version()
+    if name is None:
+        return None
+    import cv2
+    from rapidocr_onnxruntime import RapidOCR
+
+    engine = RapidOCR(intra_op_num_threads=threads, inter_op_num_threads=1, print_verbose=False, text_score=TEXT_SCORE)
 
     def read(frame):
-        return pytesseract.image_to_string(frame).splitlines()
+        image = cv2.resize(frame, None, fx=TEXT_UPSCALE, fy=TEXT_UPSCALE, interpolation=cv2.INTER_CUBIC)
+        result, _ = engine(image)
+        return text_lines([(np.asarray(box, float), str(text)) for box, text, _ in (result or [])])
 
-    return f"tesseract {pytesseract.get_tesseract_version()}", read
+    return name, read
 
 
 def measurement_text(frames, backend=None):
-    """Measurement text in the first, middle and last frame, read by `backend` (`ocr_backend()` when None):
+    """Measurement text in the first, middle and last of `frames`, read by `backend` (`ocr_backend()` when None):
     ('checked', JSON list of the measurement expressions found, MEASUREMENT_TEXT, leaving out lines that start with
     a scanner setting, INTERFACE_TEXT), or ('unavailable', None) without an OCR engine: missing evidence, which is
     never taken for the absence of text. Only the matched expressions are kept, not the text read."""
@@ -658,6 +763,9 @@ def clip_features(frames, boxes=None, dicom_status=""):
     chroma = f.max(axis=3) - f.min(axis=3)
     # Per channel: red turning blue keeps the gray level and the chroma, so neither would see the change.
     change = f.std(axis=0).max(axis=2)
+    # Color Doppler: red or blue pixels, not the ECG's green, changing over the clip; a static color bar does not.
+    hued = (chroma >= INK_CHROMA) & ((f[..., 0] - f[..., 1] >= COLOR_HUE) | (f[..., 2] - f[..., 1] >= COLOR_HUE))
+    moving_color = float((hued.any(axis=0) & (change > MOVE_STD)).mean())
 
     kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (OPEN_PX, OPEN_PX))
     moving = {s: cv2.morphologyEx((change > s).astype(np.uint8), cv2.MORPH_OPEN, kernel).astype(bool)
@@ -765,6 +873,7 @@ def clip_features(frames, boxes=None, dicom_status=""):
         # Where motion is read (`region_source`: dicom, image or whole_frame) and its moving share there; the field
         # found from the pixels and its overlap with the DICOM scan area when both exist (agreement, not labels).
         "region_source": region_source, "region_motion_frac": float(moving[MOVE_STD][area].mean()),
+        "moving_color_frac": moving_color,
         "field_frac": float(field.mean()),
         "field_iou_dicom": float((found & scan).sum() / (found | scan).sum()) if scan.any() and found.any() else float(
             "nan"),
@@ -877,10 +986,8 @@ def _features_worker(item):
     boxes, status = dicom_bounds(dicom_path, frames.shape[1:3]) if dicom_path else (None, "")
     header = dicom_header_evidence(dicom_path) if dicom_path else dict.fromkeys(HEADER_EVIDENCE)
     features, cells, _ = clip_features(frames, boxes, status)
-    text_status, text_found = measurement_text(frames)
     return {"video_path": path, "error": None, "video_sha256": digest, "n_frames_total": int(n), **features,
             "dicom_regions": json.dumps(boxes) if dicom_path else None, **header,
-            "text_status": text_status, "text_measurements": text_found,
             "cells_shape": json.dumps(list(cells.shape)), "cells": np.packbits(cells.ravel()).tobytes()}
 
 
@@ -1009,6 +1116,153 @@ def run_features(args):
         print(f"[screen]  WARNING: the listed size differs from the decoded one for {differ} readable clips; the "
               "decoded size (width, height) is used, the listed one kept as listed_width, listed_height.",
               file=sys.stderr)
+
+
+# --------------------------------------------------------------------------- #
+#  Text pass: measurement text, in the OCR environment
+# --------------------------------------------------------------------------- #
+
+_OCR = None  # in a text worker, its OCR engine (`ocr_backend`), made once per process.
+
+
+def decoded_frames(path, wanted):
+    """The frames `wanted` (sorted indices) of a video, decoded in order with OpenCV (BGR), as the OCR environment
+    has no decord; those beyond the last frame OpenCV reads are missing."""
+    import cv2
+
+    cap = cv2.VideoCapture(path, cv2.CAP_FFMPEG)
+    frames, i = [], 0
+    try:
+        while cap.isOpened() and i <= wanted[-1]:
+            ok, frame = cap.read()
+            if not ok:
+                break
+            if i in wanted:
+                frames.append(frame)
+            i += 1
+    finally:
+        cap.release()
+    return frames
+
+
+def _text_worker(item):
+    """The text pass for one clip, `item` = (global key, video path, its SHA-256 at pass 1, the frames pass 1
+    counted): measurement text (`measurement_text`) in the first, middle and last of the frames pass 1 read
+    (`frame_indices`). The file's bytes are checked against pass 1's before and after decoding: a clip replaced since
+    is 'changed', which stops the run. A clip OpenCV decodes no wanted frame of is 'decode_failed', its text
+    unavailable: pass 1's decoder read it, so that says nothing about the clip. `text_frames` counts the frames read."""
+    key, path, digest, n = item
+
+    def unchanged():
+        with open(path, "rb") as f:  # a storage failure stops the run here.
+            return hashlib.sha256(f.read()).hexdigest() == digest
+
+    read = frame_indices(n)
+    wanted = sorted({int(read[0]), int(read[len(read) // 2]), int(read[-1])})
+    if not unchanged():
+        return {"global_key": key, "text_status": "changed", "text_measurements": None, "text_frames": 0}
+    frames = decoded_frames(path, wanted)
+    if not unchanged():
+        return {"global_key": key, "text_status": "changed", "text_measurements": None, "text_frames": 0}
+    if not frames:
+        return {"global_key": key, "text_status": "decode_failed", "text_measurements": None, "text_frames": 0}
+    status, found = measurement_text(frames, _OCR)
+    return {"global_key": key, "text_status": status, "text_measurements": found, "text_frames": len(frames)}
+
+
+def _init_text_worker(log_path, clip_seconds, threads):
+    """`_init_worker`, and the process's OCR engine with `threads` ONNX threads."""
+    global _OCR
+    _init_worker(log_path, clip_seconds)
+    _OCR = ocr_backend(threads)
+
+
+def _timed_text_worker(item):
+    """`_text_worker` with the deadline of `_timed_worker`."""
+    signal.alarm(_CLIP_SECONDS)
+    try:
+        return _text_worker(item)
+    finally:
+        signal.alarm(0)
+
+
+def _map_text(items, workers, log, clip_seconds, threads):
+    """`_text_worker` over `items` in `workers` processes, each with its own OCR engine. As in `run_features`, a
+    worker that dies fails every pending clip (BrokenProcessPool)."""
+    from concurrent.futures import ProcessPoolExecutor
+    from multiprocessing import get_context
+
+    pool = ProcessPoolExecutor(workers, mp_context=get_context("spawn"), initializer=_init_text_worker,
+                               initargs=(log, clip_seconds, threads))
+    try:
+        return list(pool.map(_timed_text_worker, items, chunksize=4))
+    finally:
+        pool.shutdown(cancel_futures=True)
+
+
+def text_reader():
+    """What the text pass's output depends on besides the clips: its code and constants (`_code_record` of
+    `TEXT_PASS`) and the versions of Python and of the libraries that decode and read the frames."""
+    return {**_code_record(*TEXT_PASS),
+            "libraries": _versions("numpy", "opencv", "rapidocr-onnxruntime", "onnxruntime")}
+
+
+def run_text(args):
+    from concurrent.futures.process import BrokenProcessPool
+
+    ensure_outside_repo(args.out, "--out")
+    for name in ("workers", "threads", "clip_timeout"):
+        if getattr(args, name) < 1:
+            raise SystemExit(f"--{name.replace('_', '-')} must be at least 1.")
+    if ocr_version() is None:
+        raise SystemExit("text needs RapidOCR (rapidocr-onnxruntime), which this Python does not have: run it with "
+                         "the OCR environment's Python (pilot_selection.md, Measurement text).")
+    private_dir(os.path.dirname(os.path.abspath(args.out)))
+    clear_outputs(args.out, args.out + ".info.json")
+    inputs, reader = Inputs(__file__), text_reader()
+    source = completed(args.features, "features", inputs)
+    info = inputs.json(source + ".info.json")
+    df = inputs.parquet(source)
+    if not isinstance(info.get("extractor"), dict) or "text" in info["extractor"] or set(TEXT_COLUMNS) & set(df):
+        raise SystemExit(f"{os.path.basename(source)} is not pass 1 output (it records no extractor, or text was read "
+                         "for it already): give the output of `features`.")
+    readable = df[df.error.isna()]
+    items = [(k, p, d, int(n)) for k, p, d, n in zip(readable.global_key, readable.video_path, readable.video_sha256,
+                                                     readable.n_frames_total)]
+    log = args.out + ".log"
+    os.close(os.open(log, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600))
+    try:
+        rows = _map_text(items, args.workers, log, args.clip_timeout, args.threads)
+    except BrokenProcessPool:
+        raise SystemExit("text stopped: a worker process died without an error (killed, for instance for memory; a "
+                         "crash in native code; or a clip still being read after --clip-timeout "
+                         f"{args.clip_timeout} s); which clip it was reading is not known. A native crash leaves its "
+                         f"traceback in {log}.") from None
+    except Exception as exc:  # its message and traceback name the clip's path: the private log only.
+        _append_private(log, "".join(traceback.format_exception(exc)))
+        raise SystemExit(f"text stopped on a {type(exc).__name__}, which says nothing about the clip (storage, "
+                         f"memory, decoder, OCR or code); details, with the clip's path, in {log}.") from None
+    text = pd.DataFrame(rows, columns=["global_key", *TEXT_COLUMNS])
+    changed = int((text.text_status == "changed").sum())
+    if changed:
+        raise SystemExit(f"{changed} clips' videos changed since `features` read them; nothing was written. Rerun "
+                         "features, then text.")
+    out = df.merge(text, on="global_key", how="left", validate="one_to_one")
+    out.to_parquet(args.out, index=False)
+    inputs.check(args.out)
+    if text_reader() != reader:  # the libraries, or code imported from elsewhere.
+        clear_outputs(args.out)
+        raise SystemExit("The text code or its libraries changed while text ran: rerun text.")
+    status = {k: int(n) for k, n in text.text_status.value_counts().items()}
+    evidence = {k: int(n) for k, n in text[text.text_status == "checked"].text_measurements.map(text_evidence)
+                .value_counts().items()}
+    # The pass 1 record carries over (what extracted the features, the clip list), with what read the text added.
+    carried = {k: v for k, v in info.items() if k not in ("created_utc", "code_commit", "code_sha256", "output_sha256")}
+    _write_info(args.out, {**carried, "extractor": {**info["extractor"], "text": reader},
+                           "text": {"features": _source(source, inputs), "engine": ocr_version(), "status": status,
+                                    "evidence": evidence}})
+    print(f"[screen]  text for {len(text)} readable clips with {ocr_version()}: {status}; evidence {evidence} "
+          "(recorded; `flag` decides with it where text_decides says).")
 
 
 # --------------------------------------------------------------------------- #
@@ -1194,19 +1448,32 @@ def text_evidence(found):
 
 def screen_evidence(df, thresholds=THRESHOLDS):
     """The evidence the policy decides from, one column each, None for an unreadable clip: `video_status` (ok,
-    unreadable); `dicom_region_status` (ok or the header's reason, HEADER_REASONS); `still_status` (moving, still, or
+    unreadable); `dicom_region_status` (ok or the header's reason, HEADER_REASONS); `dicom_object` (ultrasound_image,
+    not_ultrasound_image by its SOP class, unavailable without one); `header_convention` (ge for GE_HEADER_VENDORS,
+    else unverified: the header signals below say nothing by their absence); `pixel_mode` (color_flow or bmode, the
+    acquisition mode read from moving red or blue pixels, `moving_color_frac` at PIXEL_COLOR_FRAC: the mode of a clip
+    whose header cannot give it; it decides nothing here); `still_status` (moving, still, or
     still_low_confidence when motion could only be read over the whole frame and the frames do not repeat);
-    `analysis_evidence` (header_and_visual, header_only, visual_only, none); `measurement_header` (measure_flag,
-    none, unavailable); `text_evidence` (`text_evidence`: measurement_text, measurement_unit, none; unavailable: no
-    OCR engine, which is not absence);
-    `geometry_evidence` (`geometry_evidence`); and `evidence_missing`, what could not be checked (header, field of
-    view, text)."""
+    `analysis_evidence` (header_and_visual, header_only, visual_only, none); `header_content` (usual or unusual,
+    the image data a GE header names, GE_IMAGE_CONTENTS; unavailable without a GE header); `measurement_header`
+    (measure_flag, none, unavailable: no header, or one whose convention is unverified, where no MEASURE is no
+    evidence);
+    `text_evidence` (`text_evidence`: measurement_text, measurement_unit, none; unavailable: no text pass, or a clip
+    it could not decode, which is not absence); `geometry_evidence` (`geometry_evidence`); and `evidence_missing`,
+    what could not be checked (header, header_convention, field of view, text)."""
     readable = df.error.isna()
     status = df.dicom_status.fillna("")
     header = df.dicom_image_content.notna()
+    ge = (df.vendor if "vendor" in df else pd.Series(None, index=df.index, dtype=object)).isin(GE_HEADER_VENDORS)
+    sop = (df.dicom_sop_class if "dicom_sop_class" in df else pd.Series(None, index=df.index, dtype=object)).fillna("")
     out = pd.DataFrame(index=df.index)
     out["video_status"] = np.where(readable, "ok", "unreadable")
     out["dicom_region_status"] = status.map(lambda v: "ok" if v == "ok" else HEADER_REASONS.get(v, "header_unreadable"))
+    out["dicom_object"] = np.where(sop == "", "unavailable", np.where(sop.isin(ULTRASOUND_IMAGE_CLASSES),
+                                                                       "ultrasound_image", "not_ultrasound_image"))
+    out["header_convention"] = np.where(ge, "ge", "unverified")
+    color = df.moving_color_frac if "moving_color_frac" in df else pd.Series(np.nan, index=df.index)
+    out["pixel_mode"] = np.where(color.isna(), None, np.where(color >= PIXEL_COLOR_FRAC, "color_flow", "bmode"))
     in_field = df.region_source.isin(["dicom", "image"])
     still = df.region_motion_frac < np.where(in_field, thresholds["still_scan_motion_frac"],
                                              thresholds["still_motion_frac"])
@@ -1217,16 +1484,41 @@ def screen_evidence(df, thresholds=THRESHOLDS):
     by_pixels = df.outside_ink_frac >= ANALYSIS_OUTSIDE_INK
     out["analysis_evidence"] = np.select([by_header & by_pixels, by_header, by_pixels],
                                          ["header_and_visual", "header_only", "visual_only"], default="none")
-    out["measurement_header"] = np.where(~header, "unavailable",
-                                         np.where(df.dicom_measure_flag == True, "measure_flag", "none"))  # noqa: E712
-    out["text_evidence"] = np.where(df.text_status != "checked", "unavailable", df.text_measurements.map(text_evidence))
+    out["header_content"] = np.where(~(header & ge), "unavailable",
+                                     np.where(df.dicom_image_content.isin(GE_IMAGE_CONTENTS), "usual", "unusual"))
+    # A MEASURE flag is evidence in any header; its absence only in a GE one.
+    out["measurement_header"] = np.where(df.dicom_measure_flag == True, "measure_flag",  # noqa: E712
+                                         np.where(header & ge, "none", "unavailable"))
+    text_status, found = (df[c] if c in df else pd.Series(None, index=df.index, dtype=object)
+                          for c in ("text_status", "text_measurements"))
+    out["text_evidence"] = np.where(text_status != "checked", "unavailable", found.map(text_evidence))
     marks = df["inside_marks"] if "inside_marks" in df else pd.Series(None, index=df.index, dtype=object)
     out["geometry_evidence"] = marks.map(lambda e: geometry_evidence(e, thresholds["inside_mark_px"]))
-    missing = pd.DataFrame({"header": ~header, "field_of_view": ~in_field, "text": out.text_evidence == "unavailable"})
+    missing = pd.DataFrame({"header": ~header, "header_convention": header & ~ge, "field_of_view": ~in_field,
+                            "text": out.text_evidence == "unavailable"})
     out["evidence_missing"] = missing.apply(lambda row: ";".join(k for k, v in row.items() if v), axis=1)
     out = out.astype(object)
     out.loc[~readable, [c for c in out if c != "video_status"]] = None
     return out
+
+
+def mode_agreement(df):
+    """The pixel reading of the mode (`pixel_mode`) against the header's, on the readable clips whose header gives the
+    mode (GE_HEADER_VENDORS, B-mode or color flow): {header mode: {pixel mode: clips}}. Agreement with the header, not
+    labels: how the reading holds where it can be checked, before it is used where it cannot."""
+    if not {"vendor", "acq_category", "pixel_mode"} <= set(df):
+        return {}
+    known = df[df.error.isna() & df.vendor.isin(GE_HEADER_VENDORS) & df.acq_category.isin(["bmode", "color_flow"])]
+    return {header: {pixel: int(n) for pixel, n in group.pixel_mode.value_counts().items()}
+            for header, group in known.groupby("acq_category")}
+
+
+def text_deciding(df, thresholds):
+    """Whether each readable clip's measurement text takes part in its decision (`text_decides`, TEXT_SCOPES), from
+    the evidence columns (`screen_evidence`)."""
+    scope = thresholds["text_decides"]
+    covered = (df.measurement_header == "unavailable") if scope == "header_unavailable" else scope == "all"
+    return df.error.isna() & covered
 
 
 def _decisions(df, exclusions, uncertainties):
@@ -1271,20 +1563,26 @@ def flag_columns(df, thresholds=THRESHOLDS):
     if thresholds["policy"] == "header":
         reasons = {r: readable & (df.dicom_region_status == r) for r in HEADER_REASONS.values()}
         return _decisions(df, {"unreadable": unreadable, **reasons, "still": still}, {})
+    # A GE header tells an analysis screen alone, and its graphics are only recorded; another vendor's needs both.
+    ge, analysis = df.header_convention == "ge", df.analysis_evidence
+    text = text_deciding(df, thresholds)
     return _decisions(df, {
         "unreadable": unreadable,
+        "not_ultrasound_image": df.dicom_object == "not_ultrasound_image",
         "still": df.still_status == "still",
-        "analysis_screen": df.analysis_evidence == "header_and_visual",
+        "analysis_screen": (ge & analysis.isin(["header_and_visual", "header_only"]))
+                           | (~ge & (analysis == "header_and_visual")),
         "measurement_header": df.measurement_header == "measure_flag",
-        "measurement_text": df.text_evidence == "measurement_text",
+        "measurement_text": text & (df.text_evidence == "measurement_text"),
         "measurement_calipers": df.geometry_evidence == "caliper_pair",
     }, {
         "still_low_confidence": df.still_status == "still_low_confidence",
-        "analysis_header_only": df.analysis_evidence == "header_only",
-        "analysis_visual_only": df.analysis_evidence == "visual_only",
+        "analysis_header_only": ~ge & (analysis == "header_only"),
+        "unusual_image_content": df.header_content == "unusual",
+        "analysis_visual_only": ~ge & (analysis == "visual_only"),
         "measurement_trace": df.geometry_evidence == "trace",
         "measurement_single_caliper": df.geometry_evidence == "caliper",
-        "measurement_unit_text": df.text_evidence == "measurement_unit",
+        "measurement_unit_text": text & (df.text_evidence == "measurement_unit"),
     })
 
 
@@ -1307,14 +1605,16 @@ def at_mark_size(df, min_px):
 def check_thresholds(thresholds):
     """`thresholds` when it names every threshold of THRESHOLDS and nothing else, each value of its type and range
     (THRESHOLD_RANGES: a share a finite number from 0 to 1, a count or size a whole number of at least 1, the policy
-    one of POLICIES); else SystemExit naming the values refused. A NaN compares false with everything, so it would
-    silently switch a rule off."""
+    one of POLICIES, `text_decides` one of TEXT_SCOPES); else SystemExit naming the values refused. A NaN compares
+    false with everything, so it would silently switch a rule off."""
     if set(thresholds) != set(THRESHOLDS):
         raise SystemExit(f"--thresholds keys must be among {sorted(THRESHOLDS)}.")
     refused = []
     for name, value in thresholds.items():
         if name == "policy":
             valid = value in POLICIES
+        elif name == "text_decides":
+            valid = isinstance(value, str) and value in TEXT_SCOPES
         else:
             kind, low, high = THRESHOLD_RANGES[name]
             typed = isinstance(value, (int, float) if kind is float else int) and not isinstance(value, bool)
@@ -1323,7 +1623,8 @@ def check_thresholds(thresholds):
             refused.append(f"{name}={value!r}")
     if refused:
         raise SystemExit(f"Thresholds out of their type or range: {', '.join(refused)} (shares are numbers from 0 to "
-                         f"1, counts and sizes whole numbers of at least 1, the policy one of {list(POLICIES)}).")
+                         f"1, counts and sizes whole numbers of at least 1, the policy one of {list(POLICIES)}, "
+                         f"text_decides one of {list(TEXT_SCOPES)}).")
     return thresholds
 
 
@@ -1358,8 +1659,9 @@ def screen_flags(features, reference, thresholds):
     return flags, baselines, sources, left_out
 
 
-# What pass 1 and the flag rule run, from these functions down (`_code_record`).
+# What pass 1, the text pass and the flag rule run, from these functions down (`_code_record`).
 PASS1 = (_features_worker, features_table)
+TEXT_PASS = (_text_worker, ocr_backend)
 RULE = (screen_flags,)
 
 
@@ -1389,6 +1691,11 @@ def run_flag(args):
                          "clip a results-box score. Make a list with reference clips of the screened layouts, then "
                          "rerun features on it.")
     df, baselines, sources, left_out = screen_flags(inputs.parquet(args.features), reference, thresholds)
+    deciding = int(text_deciding(df, thresholds).sum())
+    if deciding and "text" not in extracted["features"]:
+        raise SystemExit(f"Measurement text decides for {deciding} readable clips here (text_decides "
+                         f"{thresholds['text_decides']!r}), but --features has no text pass: run `text` on it and "
+                         "flag its output, or pass --thresholds '{\"text_decides\": \"none\"}' for a trial.")
     df.drop(columns=["cells"]).to_parquet(args.out, index=False)
     write_baselines(args.out + ".baselines", baselines, sources, left_out)
     counts = {k: int(n) for k, n in df.decision.value_counts().items()}
@@ -1407,9 +1714,19 @@ def run_flag(args):
                            "clips_without_layout_baseline": no_baseline,
                            "reference_left_out": {k: int(n) for k, n in
                                                   left_out[left_out != ""].value_counts().items()},
-                           "still_basis": {k: int(n) for k, n in df.still_basis.dropna().value_counts().items()}})
+                           "still_basis": {k: int(n) for k, n in df.still_basis.dropna().value_counts().items()},
+                           "pixel_mode_vs_header": mode_agreement(df),
+                           "pixel_mode_without_header_mode": {
+                               k: int(n) for k, n in df[df.error.isna() & ~df.vendor.isin(GE_HEADER_VENDORS)]
+                               .pixel_mode.value_counts().items()} if "vendor" in df else {}})
     print(f"[screen]  {thresholds['policy']} policy: {counts}; reasons {reasons}; evidence missing (clips) "
           f"{missing}; baselines and their reference clips in {args.out}.baselines (0700).")
+    print(f"[screen]  mode read from the pixels against the header's, {{header: {{pixels: clips}}}}: "
+          f"{mode_agreement(df)}.")
+    conventions = {k: int(n) for k, n in df.header_convention.dropna().value_counts().items()}
+    print(f"[screen]  header convention {conventions}; text "
+          f"{'read by the text pass' if 'text' in extracted['features'] else 'not read (no text pass)'}, "
+          f"deciding for {deciding} readable clips (text_decides {thresholds['text_decides']!r}).")
     if CALIBRATION is not None and not calibrated:
         print(f"[screen]  WARNING: these flags are provisional: their {' and '.join(differs)} differ from those "
               "CALIBRATION measured.", file=sys.stderr)
@@ -1746,9 +2063,10 @@ def challenge_set(flags, thresholds, per_signal, seed):
     """An enriched set of readable clips to label, for the measured clips the screen may miss and the clean clips
     it may take for measured: per signal, up to `per_signal` random clips (seeded), each listed with the signals it
     was drawn for. Likely measurements, whatever the decision: a caliper pair, a single caliper, a traced contour, a
-    header naming a measurement, measurement text, partial analysis-screen evidence, a layout without reference
-    clips. Kept clips that look measured to the pixel scores or resemble measurements (hard negatives, or misses):
-    many marks inside the image (bright tissue), a results-box score, a dotted line (a cursor), color Doppler. Not a
+    header naming a measurement, measurement text, partial analysis-screen evidence, a GE header naming unusual image
+    data, a layout without reference clips. Kept clips that look measured to the pixel scores or resemble
+    measurements (hard negatives, or misses): many marks inside the image (bright tissue), a results-box score, a
+    dotted line (a cursor), color Doppler. Not a
     probability sample: its labels describe these clips only, never a population. Returns `(rows, signals)`,
     `signals` {name: {"population": ..., "drawn": ...}}."""
     readable = flags[flags.error.isna()]
@@ -1763,11 +2081,13 @@ def challenge_set(flags, thresholds, per_signal, seed):
         "measurement_text": readable.text_evidence == "measurement_text",
         "measurement_unit_text": readable.text_evidence == "measurement_unit",
         "analysis_partial": readable.analysis_evidence.isin(["header_only", "visual_only"]),
+        "unusual_image_content": readable.header_content == "unusual",
         "unseen_layout": readable.extra_cells.isna(),
         "kept_many_marks": keep & (readable.inside_glyphs >= CHALLENGE_MANY_MARKS),
         "kept_results_box_score": keep & (readable.extra_cells.fillna(-1) >= thresholds["extra_cells"]),
         "kept_dotted_line": keep & kinds.map(lambda k: "line" in k),
         "kept_color": keep & (readable.acq_category == "color_flow"),
+        "kept_unverified_vendor": keep & (readable.header_convention == "unverified"),
     }
     drawn_for, signals = {}, {}
     for name, mask in masks.items():
@@ -2357,10 +2677,30 @@ def run_calibrate(args):
     print(json.dumps(report, indent=2))
 
 
+def _bare_source(source, tree):
+    """`source` (of the parsed `tree`) without its docstrings and comments, one right-stripped line per line of code.
+    Text, not `ast.unparse`, whose output changes between Python releases (an f-string's quotes between 3.12.3 and
+    3.12.14), while the text pass and `flag` run in different environments and must agree on the code."""
+    import ast
+    import tokenize
+
+    lines = source.splitlines()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and ast.get_docstring(node):
+            for i in range(node.body[0].lineno - 1, node.body[0].end_lineno):
+                lines[i] = ""
+    for token in tokenize.generate_tokens(io.StringIO(source).readline):
+        if token.type == tokenize.COMMENT:
+            row, col = token.start
+            lines[row - 1] = lines[row - 1][:col]
+    return "\n".join(line.rstrip() for line in lines if line.strip())
+
+
 def _code_record(*roots):
     """What an output computed by the functions `roots` depends on in the repository: the code of every function
-    they run, from them down, as one SHA-256 (comments and docstrings left out, so editing those changes nothing),
-    and the values of the module constants that code reads."""
+    they run, from them down, as one SHA-256 of their source (comments and docstrings left out, so editing those
+    changes nothing; the same in every Python version, `_bare_source`), and the values of the module constants that
+    code reads."""
     import ast
     import inspect
     import textwrap
@@ -2370,11 +2710,9 @@ def _code_record(*roots):
         fn = todo.pop()
         if fn.__name__ in code:
             continue
-        tree = ast.parse(textwrap.dedent(inspect.getsource(fn)))
-        for node in ast.walk(tree):
-            if isinstance(node, (ast.FunctionDef, ast.ClassDef)) and ast.get_docstring(node) is not None:
-                node.body = node.body[1:] or [ast.Pass()]
-        code[fn.__name__] = ast.unparse(tree)
+        source = textwrap.dedent(inspect.getsource(fn))
+        tree = ast.parse(source)
+        code[fn.__name__] = _bare_source(source, tree)
         for name in sorted({n.id for n in ast.walk(tree) if isinstance(n, ast.Name)} & set(globals())):
             value = globals()[name]
             if inspect.isfunction(value):
@@ -2406,9 +2744,7 @@ def _versions(*names):
 def extractor():
     """What pass 1's output depends on besides the clips: its code and constants (`_code_record` of `PASS1`) and
     the versions of Python and of the libraries that decode and measure the frames."""
-    backend = ocr_backend()
-    return {**_code_record(*PASS1), "libraries": {**_versions("numpy", "opencv", "decord", "pydicom"),
-                                                  "ocr": backend[0] if backend else None}}
+    return {**_code_record(*PASS1), "libraries": _versions("numpy", "opencv", "decord", "pydicom")}
 
 
 def _differences(recorded, current):
@@ -2434,7 +2770,8 @@ def flag_rule():
 def extracted_by(path, pass1, inputs):
     """The extractor recorded by the completed `features` run behind `path` (read into `inputs`), once checked to be
     this script's pass 1 (`pass1`, its `_code_record`): the same code and constants. Features of other code, such as
-    an earlier detector, would be flagged as if by this one."""
+    an earlier detector, would be flagged as if by this one. Output of the `text` pass also records what read the
+    text (`text`), which must be this script's text pass."""
     record = inputs.json(completed(path, "features", inputs) + ".info.json").get("extractor")
     if not isinstance(record, dict) or not {"code", "constants", "libraries"} <= set(record):
         raise SystemExit(f"{os.path.basename(path)} does not record the code that extracted it (an older `features` "
@@ -2443,6 +2780,11 @@ def extracted_by(path, pass1, inputs):
     if changed:
         raise SystemExit(f"{os.path.basename(path)} was extracted by other pass 1 code or constants than this "
                          f"script's (they differ in {', '.join(changed)}): rerun features.")
+    if "text" in record:
+        changed = _differences(record["text"], _code_record(*TEXT_PASS))
+        if changed:
+            raise SystemExit(f"{os.path.basename(path)} holds text read by other text code or constants than this "
+                             f"script's (they differ in {', '.join(changed)}): rerun text.")
     return record
 
 
@@ -2580,8 +2922,15 @@ def main(argv=None):
     f.add_argument("--workers", type=int, default=8)
     f.add_argument("--clip-timeout", type=int, default=600,
                    help="seconds a worker may spend on one clip before the run stops (a hung decoder).")
+    t = sub.add_parser("text", help="run with the OCR environment's Python (RapidOCR).")
+    t.add_argument("--features", required=True, help="`features` output to read the measurement text of.")
+    t.add_argument("--out", required=True, help="that output with the text columns added, for `flag --features`.")
+    t.add_argument("--workers", type=int, default=6)
+    t.add_argument("--threads", type=int, default=2, help="ONNX threads per worker.")
+    t.add_argument("--clip-timeout", type=int, default=600,
+                   help="seconds a worker may spend on one clip before the run stops.")
     g = sub.add_parser("flag")
-    g.add_argument("--features", required=True)
+    g.add_argument("--features", required=True, help="`features` output, or `text` output made from it.")
     g.add_argument("--reference", required=True,
                    help="features of the reference clips, a sample of the same layouts outside the clips flagged, "
                         "that define where each layout normally has ink.")
@@ -2623,8 +2972,8 @@ def main(argv=None):
     args = p.parse_args(argv)
     umask = os.umask(0o077)  # every file written is the owner's only.
     try:
-        {"features": run_features, "flag": run_flag, "sheet": run_sheet, "challenge": run_challenge,
-         "calibrate": run_calibrate}[args.command](
+        {"features": run_features, "text": run_text, "flag": run_flag, "sheet": run_sheet,
+         "challenge": run_challenge, "calibrate": run_calibrate}[args.command](
             args)
     finally:
         os.umask(umask)
