@@ -5,6 +5,7 @@ Reads playable clips (`clips/<global key>.mp4`) and review items (`candidates.js
 
     python -m tools.labelbox.pilot_upload --folder TEST                       # dry run: checks and preview only
     python -m tools.labelbox.pilot_upload --folder TEST --apply               # upload, batch, prelabel
+    python -m tools.labelbox.pilot_upload --folder TEST --apply --replace-form  # an empty project gets the new form
     python -m tools.labelbox.pilot_upload --folder TEST --export-summary OUT  # score the submitted reviews
     python -m tools.labelbox.pilot_upload --folder TEST --delete              # list what this folder uploaded
     python -m tools.labelbox.pilot_upload --folder TEST --delete --apply      # delete it
@@ -84,10 +85,9 @@ class Target:
 FORMS = (COLUMN_REVIEW, VIEW_TYPE_REVIEW)
 WORKSPACES = {
     "test": {
-        # A project keeps the form it was given, so each column review version has its own test project.
-        COLUMN_REVIEW: Target(f"RADAR Workflow Test - column review v{COLUMN_REVIEW_VERSION}",
-                              "RADAR Workflow Test - column review dataset", COLUMN_REVIEW_FORM_NAME,
-                              column_review.build_form),
+        # The project keeps its name across form versions: `--replace-form` gives it a new form once emptied.
+        COLUMN_REVIEW: Target("RADAR Workflow Test - column review", "RADAR Workflow Test - column review dataset",
+                              COLUMN_REVIEW_FORM_NAME, column_review.build_form),
         VIEW_TYPE_REVIEW: Target("RADAR Workflow Test - view and type review v1",
                                  "RADAR Workflow Test - view and type dataset", view_type_review.FORM_NAME,
                                  view_type_review.build_form),
@@ -294,9 +294,10 @@ class LabelboxUploadApi:
             return cls(lb.Client(api_key=api_key), project_type=Project, dataset_type=Dataset,
                        media_type=lb.MediaType.Video, targets=targets)
 
-    def ensure_workspace(self, forms: Sequence[str], *, create: bool) -> Workspace:
+    def ensure_workspace(self, forms: Sequence[str], *, create: bool, replace_form: bool = False) -> Workspace:
         """Find each form's project and dataset, which must exist, and its form; check every match. With `create`,
-        then create a missing form and connect each form to its project."""
+        then create a missing form and connect each form to its project. A project with another form is refused,
+        unless `replace_form` and the project is empty (no batch, no label): it then gets the committed form."""
         datasets, projects, ontologies = {}, {}, {}
         with _step("looking up the projects, datasets and forms"):
             for form in forms:
@@ -327,7 +328,13 @@ class LabelboxUploadApi:
                 if connected is not None and not (
                         (ontology is not None and connected.uid == ontology.uid)
                         or (_empty_form(connected) and project.get_label_count() == 0)):
-                    raise UploadError(f"The project {target.project_name!r} uses another form.")
+                    emptied = project.get_label_count() == 0 and not list(project.batches())
+                    if not replace_form:
+                        raise UploadError(f"The project {target.project_name!r} uses another form. Once it is empty, "
+                                          "rerun with --replace-form to give it the committed form.")
+                    if not emptied:
+                        raise UploadError(f"The project {target.project_name!r} uses another form and still has "
+                                          "batches or labels: empty it first (--delete --apply).")
                 datasets[form], projects[form], ontologies[form] = dataset, project, ontology
         if not create:
             return Workspace(datasets=datasets, projects=projects, ontologies=ontologies)
@@ -497,11 +504,12 @@ class LabelboxUploadApi:
             self.sleep(wait)
 
 
-def ensure_upload(api, plan: Plan) -> UploadResult:
-    """Check the projects and datasets, create and connect the forms, upload missing rows, batch them by study (rows
-    must be batched before their prelabels are imported), then import the column review prelabels."""
+def ensure_upload(api, plan: Plan, *, replace_form: bool = False) -> UploadResult:
+    """Check the projects and datasets, create and connect the forms (replacing an emptied project's form with
+    `replace_form`), upload missing rows, batch them by study (rows must be batched before their prelabels are
+    imported), then import the column review prelabels."""
     forms = plan.forms()
-    workspace = api.ensure_workspace(forms, create=True)
+    workspace = api.ensure_workspace(forms, create=True, replace_form=replace_form)
     existing = api.existing_global_keys(workspace, plan.rows)
     missing = [row for row in plan.rows if row.global_key not in existing]
     if missing:
@@ -620,6 +628,8 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--apply", action="store_true",
                         help="upload missing rows; with --delete, delete what this folder uploaded")
     parser.add_argument("--delete", action="store_true", help="list what this folder uploaded (delete with --apply)")
+    parser.add_argument("--replace-form", action="store_true",
+                        help="with --apply: give an empty project that has another form the committed form")
     parser.add_argument("--export-summary", type=Path, metavar="PATH", help="export and score submitted reviews")
     return parser
 
@@ -630,6 +640,8 @@ def main(argv: Sequence[str] | None = None, *, environ: Mapping[str, str] = os.e
     args = parser.parse_args(argv)
     if args.export_summary is not None and (args.apply or args.delete):
         parser.error("--export-summary runs alone")
+    if args.replace_form and (not args.apply or args.delete):
+        parser.error("--replace-form goes with --apply, for an upload")
     try:
         plan = read_plan(args.folder)
     except UploadError as exc:
@@ -666,7 +678,7 @@ def main(argv: Sequence[str] | None = None, *, environ: Mapping[str, str] = os.e
                 workspace = api.ensure_workspace(plan.forms(), create=False)
                 found = api.cleanup(workspace, plan, apply=args.apply)
             elif args.apply:
-                result = ensure_upload(api, plan)
+                result = ensure_upload(api, plan, replace_form=args.replace_form)
             else:
                 statuses = export_summary(api, plan, args.export_summary)
     except UploadError as exc:

@@ -214,9 +214,10 @@ or `--form view_type_review` to target one form.
 - **Labelbox.** The default `--workspace test` uses separate test projects,
   and datasets; `--workspace pilot` uses pilot resources. Both share the
   committed review forms (`DeepECHO column review v3` with prelabels;
-  `DeepECHO view and type review v1` without). A project keeps the form it
-  was given, so the test column review project carries the form version
-  (`RADAR Workflow Test - column review v3`). Projects and datasets must
+  `DeepECHO view and type review v1` without). A project with another form
+  is refused; once it is empty (`--delete --apply`), `--apply --replace-form`
+  gives it the committed form, so a project keeps its name across form
+  versions (`RADAR Workflow Test - column review`). Projects and datasets must
   be created using `create_pilot_project.py`. Uploads are resumable and
   reject incompatible forms or resources.
 - **Cleanup.** `--delete --apply` removes test labels, batches, imports, and data

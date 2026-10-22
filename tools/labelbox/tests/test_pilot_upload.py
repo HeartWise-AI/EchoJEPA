@@ -221,8 +221,9 @@ class FakeApi:
         self.batches = {}
         self.prelabeled = None
 
-    def ensure_workspace(self, forms, *, create):
+    def ensure_workspace(self, forms, *, create, replace_form=False):
         self.calls.append(("workspace", tuple(forms), create))
+        self.replace_form = replace_form
         return Workspace(datasets={form: f"dataset-{form}" for form in forms},
                          projects={form: f"project-{form}" for form in forms},
                          ontologies={form: f"ontology-{form}" for form in forms})
@@ -431,6 +432,26 @@ class WorkspaceTests(unittest.TestCase):
         client.project(COLUMN_REVIEW)._ontology = other
         with self.assertRaisesRegex(UploadError, "uses another form"):
             sdk_api(client).ensure_workspace(FORMS, create=True)
+
+    def test_replace_form_gives_an_emptied_project_the_committed_form(self):
+        old = SimpleNamespace(name="DeepECHO column review v2", uid="v2",
+                              normalized={"tools": [], "classifications": [{}]})
+        client = FakeClient()
+        project = client.project(COLUMN_REVIEW)
+        project._ontology = old
+        project.batch_list.append(SimpleNamespace(name="round 1"))
+        with self.assertRaisesRegex(UploadError, "still has batches or labels"):
+            sdk_api(client).ensure_workspace([COLUMN_REVIEW], create=True, replace_form=True)
+        project.batch_list.clear()
+        project.labels = 1
+        with self.assertRaisesRegex(UploadError, "still has batches or labels"):
+            sdk_api(client).ensure_workspace([COLUMN_REVIEW], create=True, replace_form=True)
+        self.assertIs(project.ontology(), old)
+        project.labels = 0
+
+        sdk_api(client).ensure_workspace([COLUMN_REVIEW], create=True, replace_form=True)
+
+        self.assertEqual(project.ontology().name, TARGETS[COLUMN_REVIEW].ontology_name)
 
     def test_replaces_an_empty_default_form_without_labels(self):
         empty = SimpleNamespace(name="default", uid="empty", normalized={"tools": [], "classifications": []})
@@ -753,7 +774,7 @@ class MainTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertIn("no Labelbox requests", out)
         self.assertEqual(mode, 0o600)
-        self.assertEqual(sent["forms"][COLUMN_REVIEW]["project"], "RADAR Workflow Test - column review v3")
+        self.assertEqual(sent["forms"][COLUMN_REVIEW]["project"], "RADAR Workflow Test - column review")
         self.assertEqual(len(sent["rows"]), 3)
 
     def test_the_pilot_workspace_is_chosen_explicitly(self):
@@ -771,6 +792,18 @@ class MainTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertIn("2 column_review", out)
         self.assertEqual([row["global_key"] for row in sent["rows"]], [A4C, COLOR])
+
+    def test_replace_form_goes_only_with_an_upload(self):
+        with tempfile.TemporaryDirectory() as folder:
+            make_folder(Path(folder))
+            for action in ([], ["--delete"], ["--delete", "--apply"]):
+                with self.assertRaises(SystemExit):
+                    self.run_main("--folder", folder, "--replace-form", *action, environ={})
+            api = FakeApi()
+            code, _, _ = self.run_main("--folder", folder, "--apply", "--replace-form",
+                                       environ={"LABELBOX_API_KEY": "key"}, api_factory=lambda _key: api)
+        self.assertEqual(code, 0)
+        self.assertTrue(api.replace_form)
 
     def test_apply_and_delete_need_a_key(self):
         with tempfile.TemporaryDirectory() as folder:
