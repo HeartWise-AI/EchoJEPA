@@ -70,9 +70,8 @@ def build_form(spec=None):
                 _choice("uninterpretable_reason", "Why?", spec["uninterpretable_reasons"])])], top_level=True),
         _choice("view", "View (prefilled - correct if needed)", {v: v for v in spec["views"]}, top=True),
         _choice("modality", "Acquisition mode (prefilled - correct if needed)", spec["modalities"], top=True),
-        _checklist("visible_targets", "Confirm targets actually covered and assessable", [_option(k, v) for k, v in spec["targets"].items()], top=True),
-        _choice("psax_level", "PSAX slice / SUBCOSTAL subtype (when relevant)",
-                {"not_applicable": "Not applicable", "unresolved": "Unresolved", "mid": "PSAX mid / papillary level", "basal": "PSAX basal", "apical": "PSAX apical", "mitral": "PSAX mitral leaflet level", "ivc": "IVC focused", "four_chamber": "Subcostal four chamber"}, top=True),
+        _checklist("visible_targets", "Structures visible in this clip, even partly (prefilled: untick any not visible)", [_option(k, v) for k, v in spec["targets"].items()], top=True),
+        _choice("psax_level", "PSAX level / subcostal subtype (required for PSAX and subcostal clips)", spec["levels"], top=True),
         _checklist("review_columns", "Prefilled findings — confirm or correct selected columns", review_columns, top=True),
         _classification("radio", "missing_information", "Important visible finding missing from the candidate?", required=True, options=[
             _option("no", "No"), _option("yes", "Yes", [_checklist("missing_columns", "Select missing columns and values", missing_columns, required=True)])], top_level=True),
@@ -80,7 +79,7 @@ def build_form(spec=None):
             _option("no", "No"), _option("yes", "Yes", [_checklist("unsupported_columns", "Select offending columns / statements", unsupported_columns, required=True)])], top_level=True),
         _classification("text", "candidate_caption", "Original caption (for reference only; edits are ignored)", required=False, top_level=True),
         _classification("text", "comments", "Comments (no patient details)", required=False, top_level=True),
-        _classification("radio", "review_completed", "I reviewed this input, checked the proposed values and targets, and confirmed or corrected the suggestions.", required=True, options=[_option("yes", "Review completed")], top_level=True),
+        _classification("radio", "review_completed", "I reviewed this input, checked the proposed values and structures, and confirmed or corrected the suggestions.", required=True, options=[_option("yes", "Review completed")], top_level=True),
     ]
     return {"tools": [], "classifications": questions}
 
@@ -101,28 +100,52 @@ def _clauses(report, sources):
                 yield source, clause.strip(), normalized
 
 
-def allowed_columns(view, modality, *, targets=None, level="not_applicable", input_kind="video", spec=None):
+def level_choices(view, spec=None):
+    """The levels a clip of this view may have: a PSAX or subcostal view's own levels, or "Cannot tell the level";
+    "Not applicable" for every other view."""
+    spec = spec or load_spec()
+    levels = spec["views"].get(view, {}).get("levels")
+    return [*levels, "unresolved"] if levels else ["not_applicable"]
+
+
+def default_level(view, spec=None):
+    """The level prefilled for a clip of this view: "Not applicable" for a view without levels, the view's default
+    level (subcostal four-chamber), or None when the reviewer has to state it (PSAX)."""
+    spec = spec or load_spec()
+    route = spec["views"][view]
+    return route.get("default_level") if route.get("levels") else "not_applicable"
+
+
+def view_targets(view, level, spec=None):
+    """The structures a clip of this view and level may show, all prefilled: the view's own, then its level's."""
+    spec = spec or load_spec()
+    route = spec["views"][view]
+    extra = route.get("levels", {}).get(level, {}).get("targets", [])
+    return route["targets"] + [t for t in extra if t not in route["targets"]]
+
+
+def allowed_columns(view, modality, *, targets=None, level=None, input_kind="video", spec=None):
+    """The findings a clip may claim: the view's columns about a structure of the view and level (only those in
+    `targets` when given) in a mode that shows them. A column one of the view's levels lists is claimed only at that
+    level."""
     spec = spec or load_spec()
     route = spec["views"].get(view)
     if not route or modality not in {"bmode", "color_flow"}:
         return []
+    structures = set(view_targets(view, level, spec))
+    if targets is not None:
+        structures &= set(targets)
+    levels = route.get("levels", {})
+    level_only = {key for each in levels.values() for key in each["columns"]}
     columns = []
     for key in route["columns"]:
         field = spec["fields"][key]
-        if modality not in field["modalities"] or (targets is not None and field["target"] not in targets):
+        if modality not in field["modalities"] or field["target"] not in structures:
             continue
         if input_kind == "image" and (key.startswith("wall_") or key.endswith("_function") or key.endswith("_motion") or key == "ivc_collapse"):
             continue
-        if view == "PSAX":
-            if key.startswith("wall_") and level != "mid":
-                continue
-            if field["target"] == "mitral" and level != "mitral":
-                continue
-        if view == "SUBCOSTAL":
-            if level not in {"ivc", "four_chamber"}:
-                continue
-            if (field["target"] == "ivc") != (level == "ivc"):
-                continue
+        if key in level_only and key not in levels.get(level, {}).get("columns", []):
+            continue
         columns.append(key)
     return columns
 
@@ -203,17 +226,19 @@ def _text_value(key, text):
     return None
 
 
-def build_candidate(report, view, modality, *, global_key, targets=None, level="not_applicable", input_kind="video", input_provenance_verified=False, spec=None):
+def build_candidate(report, view, modality, *, global_key, targets=None, level=None, input_kind="video", input_provenance_verified=False, spec=None):
+    """A clip's candidate: its prefilled structures (every structure of its view and level unless `targets` names
+    them) and the findings the report states explicitly about them. `level` None takes the view's default; a PSAX
+    clip then has none, so only the structures seen at every level are prefilled."""
     spec = spec or load_spec()
     if view not in spec["views"] or modality not in spec["modalities"]:
         raise ValueError("Unknown view or acquisition mode")
     route = spec["views"][view]
-    # Focused/zoom targets are offered in the form, not assumed in a prelabel.
-    suggested_targets = list(targets) if targets is not None else [t for t in route["targets"] if t not in route["conditional_targets"]]
-    if targets is None and view == "PSAX":
-        suggested_targets = ["lv", "pericardium"] if level in {"mid", "basal", "apical"} else ["mitral"] if level == "mitral" else []
-    if targets is None and view == "SUBCOSTAL":
-        suggested_targets = ["ivc"] if level == "ivc" else [t for t in route["targets"] if t != "ivc"] if level == "four_chamber" else []
+    if level is None:
+        level = default_level(view, spec)
+    elif level not in level_choices(view, spec):
+        raise ValueError("Level not allowed for this view")
+    suggested_targets = list(targets) if targets is not None else view_targets(view, level, spec)
     columns = []
     for key in allowed_columns(view, modality, targets=suggested_targets, level=level, input_kind=input_kind, spec=spec):
         field = spec["fields"][key]
@@ -273,7 +298,8 @@ def finding_sentence(key, value, spec=None):
         return f"The visible {valve} {leaflets} show {value} motion."
     if key.endswith("_regurgitant_jet"):
         valve = key.split("_")[0]
-        return f"A {valve} regurgitant jet is demonstrated in this color acquisition." if value == "demonstrated" else f"No {valve} regurgitant jet is demonstrated in this acquisition."
+        article = "An" if valve[0] in "aeiou" else "A"
+        return f"{article} {valve} regurgitant jet is demonstrated in this color acquisition." if value == "demonstrated" else f"No {valve} regurgitant jet is demonstrated in this acquisition."
     if key == "pericardial_effusion":
         return "Pericardial effusion is demonstrated in the imaged region." if value == "present" else "No pericardial effusion is demonstrated in the imaged region."
     if key.startswith("wall_"):
@@ -288,7 +314,8 @@ def _answer(name, value, children=()):
 
 
 def prelabels(candidate, spec=None):
-    """Global video classifications; review_completed is intentionally absent."""
+    """Global video classifications; review_completed is intentionally absent, and so is the level of a PSAX clip,
+    which the reviewer states."""
     spec = spec or load_spec()
     _validate_candidate(candidate, spec)
     form_revision = hashlib.sha256(
@@ -299,7 +326,7 @@ def prelabels(candidate, spec=None):
     records = [
         _answer("uninterpretable", "no"),
         _answer("view", candidate["view"]), _answer("modality", candidate["modality"]),
-        _answer("psax_level", candidate["level"]),
+        *([_answer("psax_level", candidate["level"])] if candidate["level"] is not None else []),
         {"name": "visible_targets", "answer": [{"name": t} for t in candidate["suggested_targets"]]},
         {"name": "review_columns", "answer": selected}, _answer("missing_information", "no"),
         _answer("unsupported_information", "no"), {"name": "candidate_caption", "answer": candidate["candidate_caption"]},
@@ -321,6 +348,10 @@ def _validate_candidate(candidate, spec):
         raise ValueError("Opaque global_key is required")
     if candidate.get("view") not in spec["views"] or candidate.get("modality") not in spec["modalities"]:
         raise ValueError("Unknown view/modality")
+    level = candidate.get("level")
+    unset = level is None and default_level(candidate["view"], spec) is None  # a PSAX clip: the reviewer states it
+    if level not in level_choices(candidate["view"], spec) and not unset:
+        raise ValueError("Candidate level not allowed for its view")
     seen = set()
     for column in candidate["columns"]:
         key = column["concept"]
@@ -423,11 +454,17 @@ def score_review(candidate, answers, *, submitted=False, spec=None):
                     resolved_count=0, support_rate=None, error_rate=None, view_correct=None,
                     modality_correct=None, routing=False, submitted=completed,
                     caption="", ready_for_validation=False)
-    if set(answers.get("review_columns", [])) != set(original):
-        raise ValueError("Original columns must be reviewed; additions go in missing_columns")
+    ticked = answers.get("review_columns", [])
+    if not set(original) <= set(ticked):
+        raise ValueError("A prefilled finding was unticked: mark it Incorrect and remove it instead")
+    # Labelbox shows every column in the prefilled list, so a reviewer can tick one that was not prefilled: it is an
+    # addition, counted like a confirmed missing finding.
+    added = [key for key in ticked if key not in original]
     supported, rejected, unresolved, corrections, omissions, errors, pending = [], [], [], [], [], [], []
     if answers.get("uninterpretable") != "no":
         pending.append("uninterpretable")
+    if answers.get("psax_level") not in level_choices(answers.get("view"), spec):
+        pending.append("psax_level")
     for key, column in original.items():
         status = answers.get(key+"__status")
         if answers.get(key+"__value") != column["value"]:
@@ -449,9 +486,15 @@ def score_review(candidate, answers, *, submitted=False, spec=None):
                     corrections.append(dict(concept=key, value=value, origin="reviewer_correction"))
         else:
             pending.append(key+"__status")
+    for key in added:
+        value = answers.get(key+"__value")
+        if answers.get(key+"__status") == "yes" and value_allowed(key, value, answers.get("view"), spec):
+            omissions.append(dict(concept=key, value=value, origin="reviewer_addition"))
+        else:
+            pending.append(key+"__status")
     if answers.get("missing_information") == "yes":
         keys = answers.get("missing_columns", [])
-        if not keys or len(keys) != len(set(keys)):
+        if not keys or len(keys) != len(set(keys)) or set(keys) & set(added):
             pending.append("missing_columns")
         for key in keys:
             value = answers.get(key+"__missing_value")
@@ -475,12 +518,18 @@ def score_review(candidate, answers, *, submitted=False, spec=None):
                 pending.append(key+"__unsupported_kind")
             else:
                 errors.append(dict(concept=key, kind=kind))
-                if key in original and answers.get(key+"__status") == "yes":
+                if key in ticked and answers.get(key+"__status") == "yes":
                     pending.append(key+"__status_conflict")
     elif answers.get("unsupported_information") != "no":
         pending.append("unsupported_information")
     actual = supported + corrections + omissions
-    allowed = allowed_columns(answers.get("view"), answers.get("modality"), targets=answers.get("visible_targets", []), level=answers.get("psax_level"), input_kind=candidate.get("input_kind", "video"), spec=spec)
+    view, level = answers.get("view"), answers.get("psax_level")
+    structures = set(answers.get("visible_targets", []))
+    if view in spec["views"]:
+        # The structures of a level that were not prefilled (a PSAX level's, an IVC sweep's) come with the level.
+        own = spec["views"][view]["targets"]
+        structures |= {t for t in view_targets(view, level, spec) if t not in own and t not in candidate["suggested_targets"]}
+    allowed = allowed_columns(view, answers.get("modality"), targets=structures, level=level, input_kind=candidate.get("input_kind", "video"), spec=spec)
     view_correct = answers.get("view") == candidate["view"]
     modality_correct = answers.get("modality") == candidate["modality"]
     routing = (view_correct and modality_correct
@@ -550,7 +599,8 @@ def context_attachment(candidate, spec=None):
             lines.extend(f"{key}: {value}" for key, value in numbers.items())
     lines += ["Original caption: "+candidate["candidate_caption"], "Suggestions require submitted human review."]
     return dict(global_key=candidate["global_key"], attachment_type="RAW_TEXT",
-                attachment_name="DeepECHO review v2 - original proposals", attachment_value="\n".join(lines))
+                attachment_name=f"DeepECHO review v{spec['version']} - original proposals",
+                attachment_value="\n".join(lines))
 
 
 def main(argv=None):
@@ -576,7 +626,7 @@ def main(argv=None):
         print(f"Prepared {len(candidates)} drafts and {len(payloads)} global classifications; no Labelbox requests.")
     elif args.check:
         if not FORM.exists() or json.loads(FORM.read_text()) != form:
-            raise SystemExit("Committed v2 form is out of date")
+            raise SystemExit(f"Committed v{load_spec()['version']} form is out of date")
     else:
         FORM.write_text(json.dumps(form, ensure_ascii=False, indent=2)+"\n")
 

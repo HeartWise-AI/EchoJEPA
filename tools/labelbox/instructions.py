@@ -152,7 +152,7 @@ def _column_example(example: dict, spec: dict, form: dict) -> dict:
     _check_texts(example)
     view, modality = example["view"], example["modality"]
     candidate = cr.build_candidate({}, view, modality, global_key=f"example-{example['id']}",
-                                   level=example.get("level", "not_applicable"), spec=spec)
+                                   level=example.get("level"), spec=spec)
     allowed = cr.allowed_columns(view, modality, targets=candidate["suggested_targets"], level=candidate["level"],
                                  spec=spec)
     for key, value in example["columns"].items():

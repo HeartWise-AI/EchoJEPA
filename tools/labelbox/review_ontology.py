@@ -1,4 +1,4 @@
-"""Building blocks of the Labelbox review forms: the column review v2 (`column_review.py`) and the view and type
+"""Building blocks of the Labelbox review forms: the column review (`column_review.py`) and the view and type
 review (`view_type_review.py`).
 
 Each form is laid out exactly as the Labelbox SDK's `OntologyBuilder.asdict()` writes it, so a round trip through

@@ -13,7 +13,7 @@ from unittest import mock
 
 import imageio.v3 as iio
 
-from tools.labelbox.column_review import build_form, prelabels
+from tools.labelbox.column_review import build_form, load_spec, prelabels
 from tools.labelbox.synthetic_pipeline import (
     CANDIDATE_ATTACHMENT,
     GLOBAL_KEY_PREFIX,
@@ -151,7 +151,7 @@ class SyntheticCasesTests(unittest.TestCase):
             self.assertEqual(candidate["study_key"], case.study_key)
             self.assertEqual(candidate["clip_key"], case.clip_key)
             self.assertEqual(candidate["schema"], "deepecho-column-review")
-            self.assertEqual(candidate["version"], 2)
+            self.assertEqual(candidate["version"], load_spec()["version"])
             self.assertGreater(len(candidate["columns"]), 0)
             self.assertTrue(set(candidate["report_context"]).issubset(case.report))
 
@@ -424,7 +424,7 @@ class SdkPayloadTests(unittest.TestCase):
         self.assertIn("SYNTHETIC DATA ONLY", serialized)
         self.assertNotIn("local-secret-path", serialized)
         self.assertNotIn("/tmp/", serialized)
-        self.assertIn("DeepECHO review v2", serialized)
+        self.assertIn(f"DeepECHO review v{load_spec()['version']}", serialized)
         self.assertIn(case.study_key, serialized)
         self.assertIn(case.clip_key, serialized)
         self.assertNotIn("report_context", serialized)

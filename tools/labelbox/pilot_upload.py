@@ -44,6 +44,7 @@ from tools.labelbox.create_pilot_project import (
     PROJECT_DESCRIPTION,
 )
 from tools.labelbox.import_column_review import ONTOLOGY_NAME as COLUMN_REVIEW_FORM_NAME
+from tools.labelbox.import_column_review import VERSION as COLUMN_REVIEW_VERSION
 from tools.labelbox.synthetic_pipeline import (
     _canonical_form,
     _difference_paths,
@@ -61,7 +62,7 @@ STUDY_KEY = re.compile(re.escape(STUDY_KEY_PREFIX) + r"[0-9a-f]{24}")
 CLIPS, ITEMS, PREVIEW = "clips", "items", "upload_preview.json"
 
 BATCH_PREFIX = "RADAR workflow test study"
-PREDICTIONS_NAME = "DeepECHO column review v2 workflow test prelabels v1"
+PREDICTIONS_NAME = f"DeepECHO column review v{COLUMN_REVIEW_VERSION} workflow test prelabels v1"
 NOTICE = {"type": "RAW_TEXT", "name": "Workflow test",
           "value": "Workflow test of the RADAR review (EchoJEPA issue #22) on a real de-identified clip. "
                    "Reviews made here are not pilot data; the clip is deleted after the test."}
@@ -83,8 +84,10 @@ class Target:
 FORMS = (COLUMN_REVIEW, VIEW_TYPE_REVIEW)
 WORKSPACES = {
     "test": {
-        COLUMN_REVIEW: Target("RADAR Workflow Test - column review v2", "RADAR Workflow Test - column review dataset",
-                              COLUMN_REVIEW_FORM_NAME, column_review.build_form),
+        # A project keeps the form it was given, so each column review version has its own test project.
+        COLUMN_REVIEW: Target(f"RADAR Workflow Test - column review v{COLUMN_REVIEW_VERSION}",
+                              "RADAR Workflow Test - column review dataset", COLUMN_REVIEW_FORM_NAME,
+                              column_review.build_form),
         VIEW_TYPE_REVIEW: Target("RADAR Workflow Test - view and type review v1",
                                  "RADAR Workflow Test - view and type dataset", view_type_review.FORM_NAME,
                                  view_type_review.build_form),

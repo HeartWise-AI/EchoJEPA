@@ -148,7 +148,7 @@ class PlanTests(unittest.TestCase):
         self.assertEqual(other.attachments, (NOTICE,))
         a4c = plan.rows_of(COLUMN_REVIEW)[0]
         self.assertEqual([attachment["name"] for attachment in a4c.attachments],
-                         ["Workflow test", "DeepECHO review v2 - original proposals"])
+                         ["Workflow test", "DeepECHO review v3 - original proposals"])
 
     def test_preview_holds_no_report_text_or_local_path(self):
         plan = read_plan(make_folder(self.folder))
@@ -389,7 +389,7 @@ class WorkspaceTests(unittest.TestCase):
         workspace = sdk_api(client).ensure_workspace(FORMS, create=True)
 
         self.assertEqual(client.created, [("form", TARGETS[form].ontology_name) for form in FORMS])
-        self.assertEqual(TARGETS[COLUMN_REVIEW].ontology_name, "DeepECHO column review v2")
+        self.assertEqual(TARGETS[COLUMN_REVIEW].ontology_name, "DeepECHO column review v3")
         for form in FORMS:
             self.assertEqual(workspace.projects[form].ontology().name, TARGETS[form].ontology_name)
             self.assertIs(workspace.datasets[form], client.dataset(form))
@@ -753,7 +753,7 @@ class MainTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertIn("no Labelbox requests", out)
         self.assertEqual(mode, 0o600)
-        self.assertEqual(sent["forms"][COLUMN_REVIEW]["project"], "RADAR Workflow Test - column review v2")
+        self.assertEqual(sent["forms"][COLUMN_REVIEW]["project"], "RADAR Workflow Test - column review v3")
         self.assertEqual(len(sent["rows"]), 3)
 
     def test_the_pilot_workspace_is_chosen_explicitly(self):
@@ -812,7 +812,7 @@ class MainTests(unittest.TestCase):
             code, out, err = self.run_main("--folder", folder, "--apply", environ={"LABELBOX_API_KEY": "key"},
                                            api_factory=lambda _key: sdk_api(NoForms()))
         self.assertEqual(code, 1)
-        self.assertIn("while creating the form 'DeepECHO column review v2' (AuthorizationError)", err)
+        self.assertIn("while creating the form 'DeepECHO column review v3' (AuthorizationError)", err)
         self.assertIn("not allowed", err)
         self.assertNotIn("secret-server-detail", out + err)
 

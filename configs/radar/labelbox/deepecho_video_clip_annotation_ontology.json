@@ -278,7 +278,7 @@
     },
     {
       "type": "checklist",
-      "instructions": "Confirm targets actually covered and assessable",
+      "instructions": "Structures visible in this clip, even partly (prefilled: untick any not visible)",
       "name": "visible_targets",
       "required": false,
       "options": [
@@ -313,15 +313,106 @@
         {
           "schemaNodeId": null,
           "featureSchemaId": null,
-          "label": "Mitral",
+          "label": "Interventricular septum",
+          "value": "ivs",
+          "options": []
+        },
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "Interatrial septum",
+          "value": "ias",
+          "options": []
+        },
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "Mitral valve",
           "value": "mitral",
           "options": []
         },
         {
           "schemaNodeId": null,
           "featureSchemaId": null,
-          "label": "Tricuspid",
+          "label": "Tricuspid valve",
           "value": "tricuspid",
+          "options": []
+        },
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "Aortic valve",
+          "value": "aortic",
+          "options": []
+        },
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "Pulmonic valve",
+          "value": "pulmonic",
+          "options": []
+        },
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "Papillary muscles",
+          "value": "papillary_muscles",
+          "options": []
+        },
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "Chordae",
+          "value": "chordae",
+          "options": []
+        },
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "LVOT",
+          "value": "lvot",
+          "options": []
+        },
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "RVOT",
+          "value": "rvot",
+          "options": []
+        },
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "Proximal pulmonary artery",
+          "value": "pulmonary_artery",
+          "options": []
+        },
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "Aortic root",
+          "value": "aorta_root",
+          "options": []
+        },
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "Ascending aorta",
+          "value": "aorta_ascending",
+          "options": []
+        },
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "Aortic arch",
+          "value": "aorta_arch",
+          "options": []
+        },
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "Descending aorta",
+          "value": "aorta_descending",
           "options": []
         },
         {
@@ -334,34 +425,6 @@
         {
           "schemaNodeId": null,
           "featureSchemaId": null,
-          "label": "Aortic",
-          "value": "aortic",
-          "options": []
-        },
-        {
-          "schemaNodeId": null,
-          "featureSchemaId": null,
-          "label": "Aorta root",
-          "value": "aorta_root",
-          "options": []
-        },
-        {
-          "schemaNodeId": null,
-          "featureSchemaId": null,
-          "label": "Aorta ascending",
-          "value": "aorta_ascending",
-          "options": []
-        },
-        {
-          "schemaNodeId": null,
-          "featureSchemaId": null,
-          "label": "Pulmonic",
-          "value": "pulmonic",
-          "options": []
-        },
-        {
-          "schemaNodeId": null,
-          "featureSchemaId": null,
           "label": "IVC",
           "value": "ivc",
           "options": []
@@ -369,8 +432,8 @@
         {
           "schemaNodeId": null,
           "featureSchemaId": null,
-          "label": "Aorta arch",
-          "value": "aorta_arch",
+          "label": "Hepatic veins",
+          "value": "hepatic_veins",
           "options": []
         }
       ],
@@ -382,22 +445,29 @@
     },
     {
       "type": "radio",
-      "instructions": "PSAX slice / SUBCOSTAL subtype (when relevant)",
+      "instructions": "PSAX level / subcostal subtype (required for PSAX and subcostal clips)",
       "name": "psax_level",
       "required": true,
       "options": [
         {
           "schemaNodeId": null,
           "featureSchemaId": null,
-          "label": "Not applicable",
+          "label": "Not applicable (not PSAX or subcostal)",
           "value": "not_applicable",
           "options": []
         },
         {
           "schemaNodeId": null,
           "featureSchemaId": null,
-          "label": "Unresolved",
+          "label": "Cannot tell the level",
           "value": "unresolved",
+          "options": []
+        },
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "PSAX basal / mitral level",
+          "value": "basal_mitral",
           "options": []
         },
         {
@@ -410,36 +480,22 @@
         {
           "schemaNodeId": null,
           "featureSchemaId": null,
-          "label": "PSAX basal",
-          "value": "basal",
-          "options": []
-        },
-        {
-          "schemaNodeId": null,
-          "featureSchemaId": null,
-          "label": "PSAX apical",
+          "label": "PSAX apical level",
           "value": "apical",
           "options": []
         },
         {
           "schemaNodeId": null,
           "featureSchemaId": null,
-          "label": "PSAX mitral leaflet level",
-          "value": "mitral",
-          "options": []
-        },
-        {
-          "schemaNodeId": null,
-          "featureSchemaId": null,
-          "label": "IVC focused",
-          "value": "ivc",
-          "options": []
-        },
-        {
-          "schemaNodeId": null,
-          "featureSchemaId": null,
-          "label": "Subcostal four chamber",
+          "label": "Subcostal four-chamber",
           "value": "four_chamber",
+          "options": []
+        },
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "Subcostal IVC / hepatic veins",
+          "value": "ivc",
           "options": []
         }
       ],
@@ -20691,7 +20747,7 @@
     },
     {
       "type": "radio",
-      "instructions": "I reviewed this input, checked the proposed values and targets, and confirmed or corrected the suggestions.",
+      "instructions": "I reviewed this input, checked the proposed values and structures, and confirmed or corrected the suggestions.",
       "name": "review_completed",
       "required": true,
       "options": [
