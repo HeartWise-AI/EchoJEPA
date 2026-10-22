@@ -2262,6 +2262,68 @@ def upper_bound(k, n, confidence=0.95):
     return hi
 
 
+def interval_95(k, n):
+    """The two-sided exact (Clopper-Pearson) 95% interval of a proportion seen `k` times in `n`; None when n is 0."""
+    if n == 0:
+        return None
+    return [0.0 if k == 0 else 1.0 - upper_bound(n - k, n, 0.975), upper_bound(k, n, 0.975)]
+
+
+def screen_signals(df):
+    """Each evidence signal of the screen on its own, whatever the decision and the other signals: {name: (what it
+    is evidence of, whether each clip raises it)}, what it is evidence of being 'measured' (the answer to the
+    measurement question), 'still' (to the still question) or 'ineligible' (a 'yes' to any reason to exclude). The
+    `header_` signals come from the DICOM header, the others from the pixels or the text read; `pixel_marks_score`
+    is the earlier pixel policy's measurement score (`inside_glyphs`, `extra_cells`)."""
+    def column(name):
+        return df[name] if name in df else pd.Series(None, index=df.index, dtype=object)
+
+    analysis, geometry, text = column("analysis_evidence"), column("geometry_evidence"), column("text_evidence")
+    return {
+        "header_measure": ("measured", column("measurement_header") == "measure_flag"),
+        "header_analysis_screen": ("ineligible", analysis.isin(["header_and_visual", "header_only"])),
+        "header_unusual_image_content": ("ineligible", column("header_content") == "unusual"),
+        "header_not_ultrasound_image": ("ineligible", column("dicom_object") == "not_ultrasound_image"),
+        "pixel_still": ("still", column("still_status") == "still"),
+        "pixel_still_low_confidence": ("still", column("still_status") == "still_low_confidence"),
+        "pixel_graphics_beside_field": ("ineligible", analysis.isin(["header_and_visual", "visual_only"])),
+        "pixel_caliper_pair": ("measured", geometry == "caliper_pair"),
+        "pixel_single_caliper": ("measured", geometry == "caliper"),
+        "pixel_trace": ("measured", geometry == "trace"),
+        "pixel_marks_score": ("measured", column("measurement").fillna(False).astype(bool)),
+        "text_measurement": ("measured", text == "measurement_text"),
+        "text_unit": ("measured", text == "measurement_unit"),
+    }
+
+
+def signal_report(lab):
+    """Every signal of `screen_signals` scored on the labelled clips `lab` (`_labelled`), each on its own: of the
+    clips it raises, how many show what it is evidence of (precision), and of the clips that show it, how many it
+    raises (recall), with exact 95% intervals. For the pixel and text signals the same again over the clips no
+    header signal raises (`beyond_header`): whether they find what the header misses. Counts of these clips, never
+    weighed up to a population: the sheets that label them sample differently."""
+    truth = {"measured": lab.answer_measurement == "yes", "still": lab.answer_still == "yes",
+             "ineligible": lab.ineligible.astype(bool)}
+    signals = {name: (of, raised.fillna(False).astype(bool)) for name, (of, raised) in screen_signals(lab).items()}
+    header = pd.concat([raised for name, (_, raised) in signals.items() if name.startswith("header_")],
+                       axis=1).any(axis=1)
+
+    def scored(raised, target):
+        tp, flagged, positives = int((raised & target).sum()), int(raised.sum()), int(target.sum())
+        return {"flagged": flagged, "true": tp, "precision": tp / flagged if flagged else None,
+                "precision_95": interval_95(tp, flagged), "positives": positives,
+                "recall": tp / positives if positives else None, "recall_95": interval_95(tp, positives)}
+
+    out = {"labelled": int(len(lab)), "positives": {k: int(v.sum()) for k, v in truth.items()},
+           "positives_no_header_signal_raises": {k: int((v & ~header).sum()) for k, v in truth.items()},
+           "signals": {}}
+    for name, (of, raised) in signals.items():
+        out["signals"][name] = {"evidence_of": of, **scored(raised, truth[of])}
+        if not name.startswith("header_"):
+            out["signals"][name]["beyond_header"] = scored(raised & ~header, truth[of] & ~header)
+    return out
+
+
 def _labelled(screened, sheet_clips, answers):
     """The sheet's clips (global_key, video_path, stratum, inclusion_prob) with their flags from `screened`, their
     answers (`answer_<question>`), whether they are `ineligible` (a 'yes' to a reason to exclude) and their weight
@@ -2518,6 +2580,10 @@ def calibration_report(features, reference, sheet_clips, answers, thresholds=THR
         },
     }
     report["cursor_clips"] = _cursor_clips(lab)
+    report["signals"] = signal_report(lab)
+    if len(references):  # a diagnostic sheet's reference clips, screened as `flag` screens its reference.
+        report["signals_reference_clips"] = signal_report(
+            _labelled(screen_flags(reference, reference, thresholds)[0], references, answers))
 
     def confusions(part):
         return {"labelled": int(len(part)),

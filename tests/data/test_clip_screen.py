@@ -1890,6 +1890,43 @@ def word_box(x0, y0, x1, y1):
     return np.array([[x0, y0], [x1, y0], [x1, y1], [x0, y1]], float)
 
 
+class TestSignals(unittest.TestCase):
+    def test_each_signal_is_scored_on_its_own_and_beyond_the_header(self):
+        lab = pd.DataFrame({
+            "measurement_header": ["measure_flag", "none", "none", "none", "unavailable"],
+            "analysis_evidence": ["none"] * 5, "header_content": ["usual"] * 4 + ["unavailable"],
+            "dicom_object": ["ultrasound_image"] * 5, "still_status": ["moving"] * 5,
+            "geometry_evidence": ["caliper_pair", "caliper_pair", "caliper", "none", "trace"],
+            "text_evidence": ["none"] * 5, "measurement": [True, False, False, False, None],
+            "answer_measurement": ["yes", "yes", "no", "no", "yes"], "answer_still": ["no"] * 5,
+            "ineligible": [True, True, False, False, True]})
+        report = cs.signal_report(lab)
+        signals = report["signals"]
+        self.assertEqual({k: signals["header_measure"][k] for k in ("flagged", "true", "positives")},
+                         {"flagged": 1, "true": 1, "positives": 3})
+        # A pair on both measured clips that have one, whatever the header says of either.
+        self.assertEqual((signals["pixel_caliper_pair"]["precision"], signals["pixel_caliper_pair"]["recall"]),
+                         (1.0, 2 / 3))
+        # Beyond the header, the clip whose header names its measurement is left out on both sides.
+        beyond = signals["pixel_caliper_pair"]["beyond_header"]
+        self.assertEqual((beyond["flagged"], beyond["true"], beyond["positives"]), (1, 1, 2))
+        self.assertEqual(report["positives_no_header_signal_raises"]["measured"], 2)
+        self.assertNotIn("beyond_header", signals["header_measure"])
+        self.assertEqual((signals["pixel_single_caliper"]["precision"], signals["pixel_trace"]["precision"]),
+                         (0.0, 1.0))
+        self.assertIsNone(signals["text_measurement"]["precision"])  # raised on no clip.
+        self.assertEqual(signals["pixel_marks_score"]["flagged"], 1)  # a missing score raises nothing.
+
+    def test_intervals_are_exact(self):
+        self.assertIsNone(cs.interval_95(0, 0))
+        low, high = cs.interval_95(0, 24)
+        self.assertEqual(low, 0.0)
+        self.assertAlmostEqual(high, 1 - 0.025 ** (1 / 24), places=6)  # 24 false alarms in 24: precision < 14%.
+        low, high = cs.interval_95(5, 5)
+        self.assertAlmostEqual(low, 0.025 ** (1 / 5), places=6)
+        self.assertEqual(high, 1.0)
+
+
 class TestTextPass(unittest.TestCase):
     def test_words_of_a_row_are_joined_and_a_wide_gap_starts_another_line(self):
         # A settings panel left of a results box on one row, the box's name and number boxed apart, and a second row.
@@ -2106,6 +2143,7 @@ class TestCommandLine(unittest.TestCase):
                 cs.main(["calibrate", "--flags", flags, "--sheet-dir", sheet, "--labels", first, later])
             report = json.loads(buf.getvalue())
             self.assertEqual(report["provenance"]["screen"], info["screen"])  # what CALIBRATION would name.
+            self.assertEqual((report["signals"]["labelled"], report["signals"]["positives"]["still"]), (2, 1))
             self.assertEqual(report["still"]["at_thresholds"]["sensitivity"], 1.0)
             self.assertEqual(report["still"]["at_thresholds"]["specificity"], 1.0)
             self.assertEqual(report["labelled"], 2)
