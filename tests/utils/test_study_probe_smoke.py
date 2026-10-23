@@ -8,6 +8,7 @@ with the same seed, it gives the same probe and the same numbers."""
 import contextlib
 import json
 import os
+import pickle
 import tempfile
 import unittest
 from unittest import mock
@@ -30,6 +31,18 @@ STUDIES = [("train", 35, 1, 3), ("train", 50, 0, 2), ("train", 60, 0, 4), ("trai
            ("train", 40, 0, 3), ("train", 55, 1, 2),
            ("val", 35, 1, 2), ("val", 55, 0, 3), ("val", None, 0, 2),
            ("test", 30, 1, 2), ("test", 55, 0, 1), ("test", 60, None, 3)]
+RAN = []  # calls made by unpickling a `RunsOnLoad`.
+
+
+def mark_ran():
+    RAN.append(True)
+
+
+class RunsOnLoad:
+    """Unpickling it calls `mark_ran`: the shape of a checkpoint that runs code when it is read."""
+
+    def __reduce__(self):
+        return mark_ran, ()
 
 
 def stop_after(epochs, train_one_epoch):
@@ -356,6 +369,21 @@ class TestStudyProbeSmoke(QuietLogs):
         result = probe.evaluate(scored, specs, norm, probe.parse_selection("lvef/mae", specs))
         self.assertTrue(np.isfinite(result["heads"]["lvef"]["mae"]))
         self.assertTrue(np.isnan(result["score"]))
+
+    def test_probe_checkpoints_that_run_code_are_refused(self):
+        folder = os.path.join(self.tmp, "untrusted")
+        os.makedirs(folder)
+        path = os.path.join(folder, "latest.pt")
+        torch.save({"epoch": 2, "best_epoch": 2, "best_score": 0.0, "payload": RunsOnLoad()}, path)
+        RAN.clear()
+        # Resume, the finished check (--val_only, --test_only) and the selected probe all read with weights_only.
+        with mock.patch("src.utils.checkpoint_loader.time.sleep"):
+            for load in (lambda: probe.load_probe_checkpoint(path), lambda: probe.check_finished(folder, 2)):
+                with self.assertRaises(pickle.UnpicklingError):
+                    load()
+        self.assertEqual(RAN, [])
+        torch.load(path, weights_only=False)  # the same file, read the old way, runs its code.
+        self.assertEqual(RAN, [True])
 
     def test_view_embedding_and_encoder_fine_tuning(self):
         cfg, result, best = self.train_and_test("finetune", view_embedding=True, trainable_blocks=1)

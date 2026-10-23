@@ -829,9 +829,16 @@ def save_checkpoint(folder, probes, optimizers, epoch, val, scores, best_score, 
         raise RuntimeError("Rank 0 could not save the probe checkpoint; stopping every rank.")
 
 
+def load_probe_checkpoint(path, mmap=False):
+    """A probe checkpoint (`latest.pt`, `best.pt`) as `save_checkpoint` wrote it: tensors and plain
+    containers only, so it is read with `weights_only=True` (the default only from torch 2.6) and a
+    file holding anything else, such as pickled code from an untrusted folder, is refused, not run."""
+    return robust_checkpoint_loader(path, map_location=torch.device("cpu"), weights_only=True, mmap=mmap)
+
+
 def load_checkpoint(path, probes, optimizers, encoder=None):
     """Resume the probes, the optimizers and, when it trains, the encoder from `path`."""
-    checkpoint = robust_checkpoint_loader(path, map_location=torch.device("cpu"))
+    checkpoint = load_probe_checkpoint(path)
     for p, state in zip(probes, checkpoint["probes"]):
         p.load_state_dict(state)
     if len(checkpoint["opt"]) != len(optimizers):
@@ -895,7 +902,7 @@ def check_finished(folder, num_epochs):
     """Refuse to test a probe that has not finished, or whose `best.pt` is not the recorded best."""
     def saved(name):
         path = os.path.join(folder, name)
-        return torch.load(path, map_location="cpu", weights_only=False, mmap=True) if os.path.exists(path) else {}
+        return load_probe_checkpoint(path, mmap=True) if os.path.exists(path) else {}
 
     latest = saved("latest.pt")
     done = latest.get("epoch", 0)
@@ -913,7 +920,7 @@ def load_selected(folder, probes, probe_names, num_epochs, fingerprint, encoder,
     (checkpoint path, checkpoint, probe index, probe module)."""
     check_finished(folder, num_epochs)
     checkpoint_path = os.path.join(folder, "best.pt")
-    checkpoint = robust_checkpoint_loader(checkpoint_path, map_location=torch.device("cpu"))
+    checkpoint = load_probe_checkpoint(checkpoint_path)
     provenance.check_fingerprint(checkpoint.get("fingerprint"), fingerprint, checkpoint_path,
                                  ignore=("settings.world_size",))
     probe = int(checkpoint["best_probe"])
