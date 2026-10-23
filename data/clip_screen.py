@@ -214,11 +214,16 @@ THRESHOLDS = {"still_scan_motion_frac": 0.05, "still_motion_frac": 0.01, "inside
 # Threshold validation (`check_thresholds`): Enforce each parameter's type and allowed range, including valid POLICIES and TEXT_SCOPES.
 THRESHOLD_RANGES = {"still_scan_motion_frac": (float, 0.0, 1.0), "still_motion_frac": (float, 0.0, 1.0),
                     "inside_glyphs": (int, 1, None), "extra_cells": (int, 1, None), "inside_mark_px": (int, 1, None)}
-# Calibration (`CALIBRATION`): None until independent-patient validation and blind challenge sets with positive cases are completed.
-# Once validated, record the date, report SHA-256, evaluated screen hash, and thresholds. Calibration applies only to that exact
-# configuration; changed code or thresholds make flags provisional again. `radar_pilot.py candidates` rejects provisional flags
-# unless --provisional-screen explicitly permits a trial.
-CALIBRATION = None
+# Calibration (`CALIBRATION`): Recorded from the final rule's report on the validation sheets (266 clips of independent
+# patients sampled by screen_validation.py), with the real-loop measurement sheet and synthetic overlays as positive cases
+# (pilot_selection.md, Calibration and validation). It names the date, report SHA-256, evaluated screen hash, and thresholds.
+# Calibration applies only to that exact configuration; changed code or thresholds make flags provisional again.
+# `radar_pilot.py candidates` rejects provisional flags unless --provisional-screen explicitly permits a trial.
+CALIBRATION = {"date": "2026-10-23",
+               "report": "0ef5ecf33f92e2b058c46bcd3c8f20e6d07a0dfca37ff0193d3612366b8469a7",
+               "screen": "2c23ae238bd9cee54ec4e43ef30575f1894adf7f6b8db592e8f2533ed123571b",
+               "thresholds": {"still_scan_motion_frac": 0.05, "still_motion_frac": 0.01, "inside_glyphs": 2,
+                              "extra_cells": 8, "inside_mark_px": 3, "policy": "hybrid", "text_decides": "all"}}
 # Still scores `calibrate` sweeps: (column, a clip is still when the score is 'below' or 'at_least' a value, values).
 STILL_SWEEPS = (*((c, "below", (0.002, 0.005, 0.01, 0.02, 0.05)) for c in MOTION_COLUMNS if not c.startswith("scan")),
                 *((c, "below", (0.01, 0.02, 0.05, 0.1, 0.2)) for c in MOTION_COLUMNS if c.startswith("scan")),

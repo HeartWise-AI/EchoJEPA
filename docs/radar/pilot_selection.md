@@ -71,7 +71,7 @@ Decoder failures (cannot open, no frames, or decoding errors) exclude clips as `
 
 ## Calibration and validation
 
-**Screening thresholds remain provisional** until validated on human-labeled clips.
+**Screening thresholds remain provisional** until validated on human-labeled clips. The current rule and default thresholds are calibrated (`CALIBRATION`) from its report on 266 validation clips of independent patients: 258 of 260 clean clips kept, all 4 still clips excluded, and both measured clips removed (1 excluded, 1 uncertain). Positive cases came from 130 real loops (57 of 58 measured clips excluded, all 64 clean clips kept) and synthetic overlays. The known limitations below still apply.
 
 The calibration workflow is:
 
