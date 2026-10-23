@@ -28,6 +28,32 @@ DeepCORO_CLIP's multi-instance linear probing does (`multi_video`, `num_videos`,
 
 The shipped config is [`configs/eval/vitl/study_multitask_frozen.yaml`](../configs/eval/vitl/study_multitask_frozen.yaml).
 
+## Coronary angiograms: fine-tuning the DeepCORO_CLIP EchoJEPA encoder
+
+The same probe runs on DeepCORO's angiogram studies, with the EchoJEPA ViT-L that
+DeepCORO_CLIP's contrastive stage produced as the encoder:
+
+- [`data/make_coronary_manifest.py`](../data/make_coronary_manifest.py) turns DeepCORO_CLIP's
+  report CSV (one row per cine, `α`-separated) into the probe's long manifest: `video_path`,
+  `study_id`, `patient_id`, `split`, `structure` (VasoVision's left/right coronary, the view
+  column), the 18 per-segment stenoses (%) and per-vessel findings (`rca_ge70`, `lad_ge70`,
+  `lcx_ge70`, `left_main_ge50`, `any_ge70`). A study whose cines disagree on a target loses
+  it. On the 2025-06-01 export: 22,764 / 4,881 / 4,828 train / val / test studies, a median of
+  5 cines per study, `any_ge70` prevalence 0.60.
+- [`deepcoro_clip_echojepa_encoder`](../evals/video_classification_frozen/modelcustom/deepcoro_clip_echojepa_encoder.py)
+  reads the encoder out of the DeepCORO_CLIP checkpoint (`video_encoder` → `model.encoder.*`,
+  the aggregator and projection left out) and loads it strictly into the ViT.
+- [`configs/eval/vitl/study_multitask_deepcoro_finetune.yaml`](../configs/eval/vitl/study_multitask_deepcoro_finetune.yaml):
+  10 cines per study drawn at random per read, a left/right view embedding, the attentive probe,
+  18 segment regressions plus the 5 findings (DeepCORO_CLIP's distal/branch weighting), and the
+  top 20 of 24 encoder blocks fine-tuned at 6.4e-6 under one probe setting (the EJ-FT recipe).
+  Set `trainable_blocks: 0` and several `multihead_kwargs` for the frozen comparison.
+
+```bash
+python data/make_coronary_manifest.py --reports <DeepCORO_CLIP report CSV> --out-dir <manifest_dir>
+python -m evals.main --fname configs/eval/vitl/study_multitask_deepcoro_finetune.yaml --devices cuda:0 cuda:1 cuda:2 cuda:3
+```
+
 ## Outputs
 
 A probe writes to `<folder>/study_multitask_frozen/<tag>/`:
