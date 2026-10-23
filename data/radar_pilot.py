@@ -25,7 +25,8 @@ Example:
         --out <pilot_dir>/screen/features_text.parquet
     python data/clip_screen.py flag --features <pilot_dir>/screen/features_text.parquet \\
         --reference <pilot_dir>/screen/reference.parquet --out <pilot_dir>/screen/flags.parquet
-    python data/radar_pilot.py select --out-dir <pilot_dir> --flags <pilot_dir>/screen/flags.parquet --n-studies 4
+    python data/radar_pilot.py select --out-dir <pilot_dir> --flags <pilot_dir>/screen/flags.parquet \\
+        [--n-studies {2,3,4}] [--vendor-slots [VENDOR ...]]
     python data/radar_pilot.py candidates --out-dir <pilot_dir> --reports <df_report_clean.parquet> \\
         [--provisional-screen]
 
@@ -432,23 +433,30 @@ def resolve_modes(clips):
                         acq_category=clips.acq_category.where(~pixels, clips.pixel_mode))
 
 
-def pilot_categories(short, n_studies):
-    """The pilot's categories in priority order: the first `n_studies` report categories, then every vendor slot the
-    shortlist holds (`vendor:<vendor>`)."""
+def pilot_categories(short, n_studies, vendors=None):
+    """The pilot's categories in priority order: the first `n_studies` report categories, then the vendor slots the
+    shortlist holds (`vendor:<vendor>`): every one, or those of `vendors` (none when empty)."""
     slots = sorted({c for c in short.category if str(c).startswith(VENDOR_SLOT)})
+    if vendors is not None:
+        unknown = sorted(set(vendors) - {s[len(VENDOR_SLOT):] for s in slots})
+        if unknown:
+            raise SystemExit(f"--vendor-slots names {unknown}, which the shortlist has no slot for; its slots: "
+                             f"{[s[len(VENDOR_SLOT):] for s in slots]}.")
+        slots = [s for s in slots if s[len(VENDOR_SLOT):] in vendors]
     return [*CATEGORIES[:n_studies], *slots]
 
 
-def choose_studies(short, clips, min_clips, n_studies):
+def choose_studies(short, clips, min_clips, n_studies, vendors=None):
     """One study for each of the pilot's categories (`pilot_categories`: the first `n_studies`, then the vendor
-    slots), each meeting the criteria on its kept clips (`exclude` false), all of different patients: of every such
-    combination of shortlisted studies, the best-ranked in the categories' priority order (the best rank in the
-    first category, then in the second, ...). The combinations are searched, not each category's best taken in
-    turn: the best study of one category may be the only patient another category could use, while its second best
-    leaves a pilot. Empty when no combination exists (`qualifying_studies` says how many studies each category
-    has)."""
-    categories = pilot_categories(short, n_studies)
-    pools = [pool.to_dict("records") for pool in qualifying_studies(short, clips, min_clips, n_studies).values()]
+    slots of `vendors`), each meeting the criteria on its kept clips (`exclude` false), all of different patients:
+    of every such combination of shortlisted studies, the best-ranked in the categories' priority order (the best
+    rank in the first category, then in the second, ...). The combinations are searched, not each category's best
+    taken in turn: the best study of one category may be the only patient another category could use, while its
+    second best leaves a pilot. Empty when no combination exists (`qualifying_studies` says how many studies each
+    category has)."""
+    categories = pilot_categories(short, n_studies, vendors)
+    pools = [pool.to_dict("records")
+             for pool in qualifying_studies(short, clips, min_clips, n_studies, vendors).values()]
     for combination in itertools.product(*pools):  # in rank order: the first of distinct patients is the best.
         if len({row["patient_id"] for row in combination}) == len(combination):
             return pd.DataFrame([{"category": c, **{k: row[k] for k in ("study_id", "patient_id", "accession")}}
@@ -457,12 +465,12 @@ def choose_studies(short, clips, min_clips, n_studies):
     return pd.DataFrame(columns=["category", "study_id", "patient_id", "accession"])
 
 
-def qualifying_studies(short, clips, min_clips, n_studies):
+def qualifying_studies(short, clips, min_clips, n_studies, vendors=None):
     """Per pilot category (`pilot_categories`), its shortlisted studies that meet the criteria on their kept clips,
     at their resolved mode, in rank order."""
     ok = study_ok(clips[~clips.exclude], min_clips)
     pools = {}
-    for c in pilot_categories(short, n_studies):
+    for c in pilot_categories(short, n_studies, vendors):
         pool = short[short.category == c]
         pool = pool.assign(rank=pool["rank"].astype(int)).sort_values("rank")
         pools[c] = pool[pool.study_id.map(ok).fillna(False).astype(bool)]
@@ -490,10 +498,11 @@ def select(args):
     flags = flags[["video_path", "decision", "decision_reasons", "pixel_mode", *MEDIA_COLUMNS]]
     flag_info = inputs.json(args.flags + ".info.json")
     clips = resolve_modes(screened_clips(clips, flags))
-    categories = pilot_categories(short, args.n_studies)
-    chosen = choose_studies(short, clips, min_clips, args.n_studies)
+    categories = pilot_categories(short, args.n_studies, args.vendor_slots)
+    chosen = choose_studies(short, clips, min_clips, args.n_studies, args.vendor_slots)
     if len(chosen) < len(categories):  # before any output: a pilot short of its studies is no completed selection.
-        counts = {c: len(p) for c, p in qualifying_studies(short, clips, min_clips, args.n_studies).items()}
+        counts = {c: len(p) for c, p in
+                  qualifying_studies(short, clips, min_clips, args.n_studies, args.vendor_slots).items()}
         reason = (f"none for {', '.join(c for c, n in counts.items() if not n)}" if not all(counts.values()) else
                   "but no combination of one study per category has different patients")
         decisions = {k: int(n) for k, n in clips.decision.value_counts().items()}
@@ -770,6 +779,9 @@ def main(argv=None):
     t.add_argument("--flags", required=True, help="clip_screen.py flag output for shortlist_clips.csv.")
     t.add_argument("--n-studies", type=int, default=3, choices=(2, 3, 4),
                    help="report categories, in priority order; 4 adds right heart.")
+    t.add_argument("--vendor-slots", nargs="*", metavar="VENDOR",
+                   help="the shortlist's vendor slots to fill, one study each (default: every slot; given without "
+                        "a vendor: none).")
     c = sub.add_parser("candidates")
     c.add_argument("--out-dir", required=True)
     c.add_argument("--reports", required=True)

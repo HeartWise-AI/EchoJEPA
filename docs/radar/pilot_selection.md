@@ -146,7 +146,7 @@ Clinical categories, in priority order:
 3. **Valve disease:** AV mean gradient $\geq 40$ mmHg, or definite moderate/severe mitral or aortic regurgitation.
 4. **Right heart:** RVSP $\geq 50$ mmHg, EF $> 35\%$, without significant left-sided valve disease.
 
-The default selects the first three categories; `--n-studies 4` includes right heart. Report parsing supports French and English findings, but ambiguous or negated statements do not establish definite valve disease. Unverified MR/AR grade columns are ignored.
+The default selects the first three categories; `--n-studies 4` includes right heart. `select` also takes one study per vendor slot in the shortlist; `--vendor-slots` names which slots to fill, and given with no vendor it fills none. Report parsing supports French and English findings, but ambiguous or negated statements do not establish definite valve disease. Unverified MR/AR grade columns are ignored.
 
 The selection workflow is:
 

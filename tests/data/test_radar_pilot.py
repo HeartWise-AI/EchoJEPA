@@ -427,6 +427,30 @@ class TestPipeline(unittest.TestCase):
         with open(os.path.join(self.out, "candidates_summary.json")) as f:
             self.assertEqual(json.load(f)["candidates_by_mode_source"]["pixels"], len(s7))
 
+    def test_select_fills_the_vendor_slots_it_is_given(self):
+        self.add_philips()
+        self.run_cmd("shortlist", "--videos", os.path.join(self.tmp, "videos.parquet"),
+                     "--ef-labels", os.path.join(self.tmp, "ef.parquet"),
+                     "--rvsp-labels", os.path.join(self.tmp, "rvsp.parquet"),
+                     "--reports", os.path.join(self.tmp, "reports.parquet"), "--out-dir", self.out,
+                     "--min-clips", "12", "--vendor-studies", "Philips Medical Systems=1")
+        clips = pd.read_csv(os.path.join(self.out, "shortlist_clips.csv"), dtype=str)
+        flags_path = os.path.join(self.tmp, "flags.parquet")
+        flags = clips[["video_path"]].assign(exclude=False, exclude_reason="", pixel_mode="bmode")
+        color = (clips.vendor == "Philips Medical Systems") & clips.video_path.str.contains(r"_[02]\.mp4$")
+        flags.loc[color, "pixel_mode"] = "color_flow"
+        write_flags(flags, flags_path, self.out)
+        for given, slots in (((), []), (("Philips Medical Systems",), ["vendor:Philips Medical Systems"])):
+            self.run_cmd("select", "--out-dir", self.out, "--flags", flags_path, "--vendor-slots", *given)
+            with open(os.path.join(self.out, "selection.json")) as f:
+                selection = json.load(f)
+            self.assertEqual((selection["studies"], selection["vendor_slots"]), (3 + len(slots), slots))
+            studies = pd.read_csv(os.path.join(self.out, "pilot_studies.csv"), dtype=str)
+            self.assertEqual(studies.category.tolist(), [*rp.CATEGORIES[:3], *slots])
+        with self.assertRaises(SystemExit) as stop:
+            self.run_cmd("select", "--out-dir", self.out, "--flags", flags_path, "--vendor-slots", "Siemens")
+        self.assertIn("'Siemens'", str(stop.exception))
+
     def test_uncertain_clips_are_left_out_listed_and_never_count_for_a_study(self):
         self.shortlist()
         clips = pd.read_csv(os.path.join(self.out, "shortlist_clips.csv"))
