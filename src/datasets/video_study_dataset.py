@@ -98,17 +98,12 @@ def group_studies(table, path_column, group_column, target_columns, view_column=
     for column in (path_column, group_column, *target_columns):
         if column not in table.columns:
             raise ValueError(f"The manifest has no `{column}` column; its columns are {list(table.columns)}.")
-    rows = table
-    if (views or view_labels_map) and not (view_column and view_column in rows.columns):
+    if (views or view_labels_map) and not (view_column and view_column in table.columns):
         raise ValueError("`views` and `view_labels_map` need `experiment.data.view_column`, a column of the manifest.")
-    if views:
-        rows = rows[rows[view_column].astype(str).isin([str(v) for v in views])]
-    if rows.empty:
-        raise ValueError("The manifest keeps no video after the view filter.")
-    classes = pd.Series(view_ids(rows[view_column].tolist(), view_labels_map) if view_labels_map
-                        else [-1] * len(rows), index=rows.index)
 
-    targets = rows[list(target_columns)].copy()
+    # Study-level targets, checked over every row of the study (the view filter comes after, so a
+    # conflicting value on a filtered-out video is still refused).
+    targets = table[list(target_columns)].copy()
     for column in target_columns:
         mapping = (labels_map or {}).get(column)
         values = targets[column]
@@ -120,13 +115,8 @@ def group_studies(table, path_column, group_column, target_columns, view_column=
                 raise ValueError(f"Target `{column}` has labels {unknown} missing from `labels_map.{column}`.")
             values = values.map(lambda v: np.nan if pd.isna(v) else float(mapping[str(v)]))
         targets[column] = pd.to_numeric(values, errors="raise").astype(float)
-
-    studies, dropped = [], 0
-    for study_id, index in rows.groupby(group_column, sort=True).groups.items():
-        videos = sorted(zip((str(p) for p in rows.loc[index, path_column]), classes.loc[index].tolist()))
-        paths = [p for p, _ in videos]
-        if len(paths) != len(set(paths)):
-            raise ValueError(f"A study lists the same video more than once (study {study_id!r}).")
+    study_targets = {}
+    for study_id, index in table.groupby(group_column, sort=True).groups.items():
         values = []
         for column in target_columns:
             distinct = targets.loc[index, column].dropna().unique()
@@ -134,10 +124,27 @@ def group_studies(table, path_column, group_column, target_columns, view_column=
                 raise ValueError(f"Study {study_id!r} has {len(distinct)} different values of `{column}`; "
                                  "targets are per study.")
             values.append(float(distinct[0]) if len(distinct) else np.nan)
+        study_targets[study_id] = np.asarray(values, dtype=np.float64)
+
+    rows = table
+    if views:
+        rows = rows[rows[view_column].astype(str).isin([str(v) for v in views])]
+    if rows.empty:
+        raise ValueError("The manifest keeps no video after the view filter.")
+    classes = pd.Series(view_ids(rows[view_column].tolist(), view_labels_map) if view_labels_map
+                        else [-1] * len(rows), index=rows.index)
+
+    studies, dropped = [], 0
+    for study_id, index in rows.groupby(group_column, sort=True).groups.items():
+        videos = sorted(zip((str(p) for p in rows.loc[index, path_column]), classes.loc[index].tolist()))
+        paths = [p for p, _ in videos]
+        if len(paths) != len(set(paths)):
+            raise ValueError(f"A study lists the same video more than once (study {study_id!r}).")
+        values = study_targets[study_id]
         if len(paths) < min_videos:
             dropped += 1
             continue
-        studies.append((study_id, paths, np.asarray(values, dtype=np.float64), [int(c) for _, c in videos]))
+        studies.append((study_id, paths, values, [int(c) for _, c in videos]))
     if dropped:
         logger.info(f"Left out {dropped} studies with fewer than {min_videos} videos.")
     if not studies:
@@ -206,9 +213,12 @@ class VideoStudyDataset(torch.utils.data.Dataset):
             return chosen
         return list(range(min(self.num_videos, len(paths))))
 
+    MAX_RETRIES = 20  # studies tried in training before an unreadable split stops the run.
+
     def __getitem__(self, index):
-        # Training: a study that cannot be read is replaced by another, as `VideoDataset` does.
-        while True:
+        # Training: a study that cannot be read is replaced by another, as `VideoDataset` does,
+        # up to `MAX_RETRIES` times, so an unreadable split stops the run instead of hanging it.
+        for attempt in range(self.MAX_RETRIES + 1):
             item = self.get_item_study(index)
             if item is not None:
                 return item
@@ -216,6 +226,7 @@ class VideoStudyDataset(torch.utils.data.Dataset):
                 raise RuntimeError(f"Study {index} could not be read.")
             logger.warning(f"Retrying with another study: none of the selected videos of study {index} loaded.")
             index = np.random.randint(len(self))
+        raise RuntimeError(f"None of {self.MAX_RETRIES + 1} studies drawn could be read: check the video paths.")
 
     def get_item_study(self, index):
         """(clips [slots*clips, C, T, H, W], targets [targets], video_mask [slots], clip_indices

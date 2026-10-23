@@ -136,6 +136,30 @@ class TestLoss(unittest.TestCase):
         loss.backward()
         self.assertIsNotNone(weight.grad)
 
+    def test_global_counts_scale_each_rank_like_ddp_averaging(self):
+        """Under DDP the gradients are averaged over ranks: with the global count and world size,
+        the sum over ranks of the local losses is the mean over every labeled study."""
+        outputs = {"lvef": torch.tensor([[3.0], [1.0]]), "as_present": torch.tensor([[0.0], [0.0]]),
+                   "severity": torch.zeros(2, 3)}
+        targets = torch.tensor([[1.0, 1.0, float("nan")], [1.0, float("nan"), float("nan")]])
+        local, _ = multitask_loss(self.specs, outputs, targets)
+        scaled, _ = multitask_loss(self.specs, outputs, targets, counts={"lvef": 4, "as_present": 2, "severity": 0},
+                                   world_size=2)
+        huber_sum, bce = 1.5 + 0.0, float(torch.nn.functional.binary_cross_entropy_with_logits(
+            torch.tensor(0.0), torch.tensor(1.0)))
+        self.assertAlmostEqual(float(local), 2.0 * huber_sum / 2 + bce / 1, places=5)
+        self.assertAlmostEqual(float(scaled), 2.0 * huber_sum * 2 / 4 + bce * 2 / 2, places=5)
+
+    def test_invalid_categorical_targets_are_refused(self):
+        with self.assertRaisesRegex(ValueError, "0 or 1"):
+            head_loss(self.specs["as_present"], torch.zeros(2, 1), torch.tensor([0.0, 2.0]))
+        with self.assertRaisesRegex(ValueError, "whole numbers"):
+            head_loss(self.specs["severity"], torch.zeros(2, 3), torch.tensor([0.0, 1.5]))
+        with self.assertRaisesRegex(ValueError, "whole numbers"):
+            head_loss(self.specs["severity"], torch.zeros(2, 3), torch.tensor([0.0, 3.0]))
+        value, count = head_loss(self.specs["severity"], torch.zeros(2, 3), torch.tensor([2.0, float("nan")]))
+        self.assertEqual(count, 1)
+
     def test_regression_losses(self):
         output, target = torch.tensor([[3.0], [1.0]]), torch.tensor([1.0, 1.0])
         for loss, expected in (("huber", 1.5), ("mse", 4.0), ("l1", 2.0)):

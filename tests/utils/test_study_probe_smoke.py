@@ -211,6 +211,21 @@ class TestStudyProbeSmoke(QuietLogs):
             if selection == "as_present/auroc":
                 self.assertEqual(best["best_score"], -best["val"][best["best_probe"]]["heads"]["as_present"]["auroc"])
 
+    def test_shared_studies_and_unreported_metrics_are_refused(self):
+        table = pd.read_csv(self.manifest)
+        leaked = table.copy()
+        leaked.loc[leaked.study_id == "s6", "split"] = ["train", "val"]  # s6 has two videos.
+        path = os.path.join(self.tmp, "leaked.csv")
+        leaked.to_csv(path, index=False)
+        cfg = self.config(os.path.join(self.tmp, "leaked"))
+        cfg["experiment"]["data"]["data_filename"] = path
+        with self.on_cpu(), self.assertRaisesRegex(ValueError, "both the train and the val split"):
+            probe.main(cfg)
+        for selection, message in (("lvef/auroc", "regression head"), ("as_present/mae", "binary head"),
+                                   ("lvef", "<head>/<metric>"), ("rvsp/mae", "target_label")):
+            with self.on_cpu(), self.assertRaisesRegex(ValueError, message):
+                probe.main(self.config(os.path.join(self.tmp, "bad-selection"), selection=selection))
+
     def test_view_embedding_and_encoder_fine_tuning(self):
         cfg, result, best = self.train_and_test("finetune", view_embedding=True, trainable_blocks=1)
         self.assertEqual(result["run_info"]["parameters"]["encoder_trainable_blocks"], 1)
