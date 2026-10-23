@@ -205,8 +205,9 @@ completed reviews, `--delete` to preview cleanup, and
 or `--form view_type_review` to target one form.
 
 - **Copies.** Source H.264 4:4:4 videos are converted to browser-compatible
-  H.264 4:2:0 (CRF 18), preserving dimensions, frames, and timestamps. SHA-256
-  checks prevent uploading modified copies.
+  H.264 4:2:0 (CRF 18), preserving frames and timestamps. Dimensions are kept,
+  except that an odd width or height gets one black column or row, because
+  4:2:0 needs even sides. SHA-256 checks prevent uploading modified copies.
 - **Privacy and keys.** Test-specific global keys avoid pilot conflicts;
   study identifiers are HMAC-protected. Only converted clips, test notices,
   and numeric report-field context are uploaded. Report text stays local
