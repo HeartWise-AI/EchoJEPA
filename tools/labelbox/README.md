@@ -169,6 +169,61 @@ This sandbox does not modify the existing `RADAR Caption Pilot` project or its
 dataset. Successful synthetic execution is a pipeline check, not approval to upload
 clinical data.
 
+## Test the workflow with a few real clips
+
+Until the issue #22 clip screen is merged, test the upload workflow
+with a few manually selected clips from one shortlisted study (clear motion,
+no measurements, standard echo images). These reviews are not pilot
+data. `workflow_test.py` prepares clips in the training environment;
+`pilot_upload.py` uploads them from the Labelbox environment.
+
+```bash
+PILOT=/volume/DeepECHO/experiments/radar_pilot            # radar_pilot.py shortlist output
+REPORTS=<the report parquet the shortlist used>
+TEST=/volume/DeepECHO/experiments/radar_pilot/workflow_test_01
+PY=/volume/envs/echojepa/bin/python
+
+# 1. Choose a study: counts per shortlisted study, no identifiers.
+$PY -m tools.labelbox.workflow_test studies --pilot $PILOT --reports $REPORTS
+
+# 2. Playable copies of all its clips, and $TEST/index.html to watch them and
+#    download picked.csv.
+$PY -m tools.labelbox.workflow_test copies --pilot $PILOT --study valve_disease-7 --out $TEST
+
+# 3. Review items of the picked clips, in $TEST/items/.
+$PY -m tools.labelbox.workflow_test items --pilot $PILOT --out $TEST \
+  --picked $TEST/picked.csv --reports $REPORTS
+
+# 4. Dry run: every check, and $TEST/upload_preview.json with each row as it would be sent.
+UV_PROJECT_ENVIRONMENT=$HOME/.venvs/echojepa-labelbox uv run --frozen --only-group labelbox \
+  python -m tools.labelbox.pilot_upload --folder $TEST
+```
+
+Use `--apply` to upload, `--export-summary <path>` to score
+completed reviews, `--delete` to preview cleanup, and
+`--delete --apply` to remove test uploads. Use `--form column_review`
+or `--form view_type_review` to target one form.
+
+- **Copies.** Source H.264 4:4:4 videos are converted to browser-compatible
+  H.264 4:2:0 (CRF 18), preserving frames and timestamps. Dimensions are kept,
+  except that an odd width or height gets one black column or row, because
+  4:2:0 needs even sides. SHA-256 checks prevent uploading modified copies.
+- **Privacy and keys.** Test-specific global keys avoid pilot conflicts;
+  study identifiers are HMAC-protected. Only converted clips, test notices,
+  and numeric report-field context are uploaded. Report text stays local
+  and is excluded from exports.
+- **Labelbox.** The default `--workspace test` uses separate test projects,
+  and datasets; `--workspace pilot` uses pilot resources. Both share the
+  committed review forms (`DeepECHO column review v2` with prelabels;
+  `DeepECHO view and type review v1` without). Projects and datasets must
+  be created using `create_pilot_project.py`. Uploads are resumable and
+  reject incompatible forms or resources.
+- **Cleanup.** `--delete --apply` removes test labels, batches, imports, and data
+  rows, preserving projects, datasets, forms, and pilot data. Export reviews before
+  deletion. Retry later if asynchronous label deletion blocks cleanup.
+- **Pilot separation.** Use a study outside the pilot selection and exclude it
+  from the final pilot.
+
 ## Data and credential safety
 
 - Use synthetic or fully de-identified test clips until the workspace and storage
