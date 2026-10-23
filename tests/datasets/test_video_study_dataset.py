@@ -13,7 +13,7 @@ import numpy as np
 import pandas as pd
 import torch
 
-from src.datasets.video_study_dataset import VideoStudyDataset, group_studies, read_split
+from src.datasets.video_study_dataset import VideoStudyDataset, group_studies, read_split, seeded_bag
 
 FRAMES, SIZE = 4, 32
 
@@ -86,6 +86,42 @@ class TestVideoStudyDataset(unittest.TestCase):
         a, b = ds[0], ds[0]
         torch.testing.assert_close(a[0], b[0])
 
+    def test_seeded_evaluation_bags_are_random_subsets_drawn_once(self):
+        ds = self.dataset(training=False, num_videos=2, eval_videos="seeded", eval_seed=0)
+        self.assertEqual(ds.selection, "seeded")
+        paths = ds.studies[0][1]
+        bag = ds.select(paths, "s0")
+        self.assertEqual((len(bag), len(set(bag))), (2, 2))
+        self.assertTrue(set(bag) <= {0, 1, 2, 3})
+        # The same bag at every read, in another dataset object, whatever the global random state.
+        random.seed(5)
+        np.random.seed(5)
+        again = self.dataset(training=False, num_videos=2, eval_videos="seeded", eval_seed=0)
+        self.assertEqual(again.select(paths, "s0"), bag)
+        torch.testing.assert_close(ds[0][0], again[0][0])
+        # The study id and the evaluation seed change the bag, and every video can be drawn.
+        bags = {tuple(ds.select(paths, f"study{i}")) for i in range(50)}
+        bags |= {tuple(seeded_bag("s0", eval_seed, 4, 2)) for eval_seed in range(20)}
+        self.assertGreater(len(bags), 1)
+        self.assertEqual({p for b in bags for p in b}, {0, 1, 2, 3})
+        self.assertEqual(ds.select(ds.studies[1][1], "s1"), [0])  # a study with one video keeps it.
+        # Training still redraws its bags; an unknown option is refused.
+        self.assertEqual(self.dataset(training=True, eval_videos="seeded").selection, "random")
+        with self.assertRaisesRegex(ValueError, "eval_videos"):
+            self.dataset(training=False, eval_videos="all")
+
+    def test_the_split_keeps_its_patients_when_the_manifest_names_them(self):
+        self.assertIsNone(self.dataset(training=False).patient_ids)  # no patient column
+        table = self.table.assign(patient_id=self.table.study_id.map({"s0": "p0", "s1": "p1", "s2": "p0"}))
+        ds = VideoStudyDataset(table, target_columns=["lvef"], num_videos=1, frames_per_clip=FRAMES, frame_step=1,
+                               view_column="view", views=["A2C"])
+        self.assertEqual(ds.study_ids, ["s0"])
+        self.assertEqual(ds.patient_ids, {"p0", "p1"})  # every row of the split, before the view filter
+        gap = table.copy()
+        gap.loc[gap.study_id == "s1", "patient_id"] = None
+        with self.assertRaisesRegex(ValueError, "1 rows have no `patient_id`"):
+            VideoStudyDataset(gap, target_columns=["lvef"], num_videos=1, frames_per_clip=FRAMES, frame_step=1)
+
     def test_training_draws_another_bag_of_the_study(self):
         ds = self.dataset(training=True, num_videos=2)
         self.assertEqual(ds.selection, "random")
@@ -155,6 +191,13 @@ class TestVideoStudyDataset(unittest.TestCase):
         self.assertEqual(len(read_split({"dataset_train": path}, "train")), len(table))
         with self.assertRaisesRegex(ValueError, "dataset_test"):
             read_split({}, "test")
+        # Identifier columns are read as text: a gap in a numeric patient column does not turn 123 into 123.0.
+        ids = os.path.join(self.tmp, "ids.csv")
+        with open(ids, "w") as f:
+            f.write("video_path,study_id,patient_id,split\na.mp4,1,123,val\nb.mp4,2,,val\n")
+        rows = read_split({"data_filename": ids}, "val")
+        self.assertEqual(rows.patient_id.iloc[0], "123")
+        self.assertEqual(rows.study_id.tolist(), ["1", "2"])
 
     def test_view_classes_follow_the_selected_videos(self):
         view_map = {"A4C": 0, "A2C": 1}
