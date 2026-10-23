@@ -112,7 +112,7 @@ def group_studies(table, path_column, group_column, target_columns, view_column=
     for column in target_columns:
         mapping = (labels_map or {}).get(column)
         values = targets[column]
-        if values.dtype == object:
+        if not pd.api.types.is_numeric_dtype(values):  # object (pandas 2) or str (pandas 3) labels
             if not mapping:
                 raise ValueError(f"Target `{column}` holds strings: map them to integers with `labels_map.{column}`.")
             unknown = sorted(set(values.dropna().astype(str)) - set(map(str, mapping)))
