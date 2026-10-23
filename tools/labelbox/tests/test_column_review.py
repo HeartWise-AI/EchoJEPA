@@ -1,8 +1,10 @@
 import copy
+import hashlib
 import importlib.util
 import json
 import unittest
 from types import SimpleNamespace
+from unittest import mock
 
 from app.radar.ontology import VIEWS
 from tools.labelbox.column_review import (
@@ -10,7 +12,35 @@ from tools.labelbox.column_review import (
     decode_annotations, encode_answers, finding_sentence, load_spec, prelabels, review_problems, score_review,
     validate_annotations,
 )
-from tools.labelbox.import_column_review import apply_bundle, schema_shape
+from tools.labelbox.import_column_review import (
+    ImportStopped, apply_bundle, comparable_shape, import_outcome, schema_shape, with_schema_ids,
+)
+
+
+def as_stored(form, name):
+    """A form as Labelbox returns it: its ontology's name at the top, server ids, no empty option lists."""
+    def strip(v, parent=""):
+        if isinstance(v, list):
+            return [strip(x, parent) for x in v]
+        if isinstance(v, dict):
+            key = v.get("name") or v.get("value")
+            here = f"{parent}/{key}" if key else parent
+            out = {k: strip(x, here) for k, x in v.items() if not (k == "options" and x == [])}
+            if "schemaNodeId" in out:
+                out["schemaNodeId"] = out["featureSchemaId"] = "id:" + here
+            return out
+        return v
+    return {"name": name, **strip(form)}
+
+
+def walk(value):
+    if isinstance(value, dict):
+        yield value
+        for child in value.values():
+            yield from walk(child)
+    elif isinstance(value, list):
+        for child in value:
+            yield from walk(child)
 
 
 class TestColumnPrefills(unittest.TestCase):
@@ -332,7 +362,9 @@ class TestV2Import(unittest.TestCase):
     def setUp(self):
         import labelbox as lb
         self.candidates = [build_candidate({"Tricuspid valve findings": "Normal"}, "A4C", "bmode", global_key="synthetic-import")]
-        self.ontology = SimpleNamespace(name="DeepECHO column review v2", normalized=build_form(), uid="ontology", media_type=lb.MediaType.Video)
+        self.ontology = SimpleNamespace(name="DeepECHO column review v2", uid="ontology",
+                                        media_type=lb.MediaType.Video,
+                                        normalized=as_stored(build_form(), "DeepECHO column review v2"))
         self.row = SimpleNamespace(media_attributes={"frameCount": 24}, _attachments=[])
         self.row.attachments = lambda: self.row._attachments
         self.row.create_attachment = lambda **kw: self.row._attachments.append(SimpleNamespace(**kw))
@@ -345,7 +377,8 @@ class TestV2Import(unittest.TestCase):
         self.client = SimpleNamespace(get_project=lambda _: self.project, get_data_row_by_global_key=lambda _: self.row,
                                       get_ontologies=lambda _: [], create_ontology=lambda *a, **k: self.ontology)
         def create_job(**kw):
-            job = SimpleNamespace(name=kw["name"], uid="job", errors=[], wait_until_done=lambda: None)
+            job = SimpleNamespace(name=kw["name"], uid="job", errors=[], wait_till_done=lambda: None,
+                                  predictions=kw["predictions"])
             self.project._jobs.append(job)
             return job
         self.mal = SimpleNamespace(create_from_objects=create_job)
@@ -357,6 +390,72 @@ class TestV2Import(unittest.TestCase):
         self.assertEqual(len(self.project._jobs), 1)
         self.assertEqual(len(self.project._batches), 1)
         self.assertEqual(len(self.row._attachments), 1)
+
+    def earlier_job(self, name, errors, state="FINISHED"):
+        """An import job of an earlier run; `errors` None when they can no longer be read (after 24 hours)."""
+        def read_errors(job):
+            if errors is None:
+                raise RuntimeError("error file expired")
+            return errors
+
+        job = type("Job", (), {"errors": property(read_errors)})()
+        job.name, job.uid, job.state, job.wait_till_done = name, "earlier", SimpleNamespace(name=state), lambda: None
+        self.project._jobs.append(job)
+        return job
+
+    def batch_name(self):
+        payloads = [p for c in self.candidates for p in prelabels(c)]
+        return "deepecho-v2-" + hashlib.sha256(json.dumps(payloads, sort_keys=True).encode()).hexdigest()[:16]
+
+    def test_a_failed_import_of_named_predictions_is_superseded(self):
+        # The run before schema ids: its batch and context are in, its job (same prelabels, by name) failed.
+        self.project._batches.append(SimpleNamespace(name=self.batch_name()))
+        self.earlier_job(self.batch_name(), errors=[{"message": "unknown feature"}])
+        result = apply_bundle(self.client, "project", self.candidates, mal_import=self.mal)
+        self.assertEqual(result["job_id"], "job")
+        self.assertEqual([j.name for j in self.project._jobs][1:], [self.batch_name() + "-f2"])
+        self.assertEqual(len(self.project._batches), 1)
+        self.assertFalse([node for node in walk(self.project._jobs[1].predictions) if "name" in node])
+
+    def test_a_failed_import_of_these_predictions_is_retried_only_when_asked(self):
+        self.earlier_job(self.batch_name() + "-f2", errors=None, state="FAILED")
+        with self.assertRaises(ImportStopped):
+            apply_bundle(self.client, "project", self.candidates, mal_import=self.mal)
+        self.assertEqual((len(self.project._jobs), self.row._attachments, self.project._ontology), (1, [], None))
+        apply_bundle(self.client, "project", self.candidates, mal_import=self.mal, retry_failed=True)
+        self.assertEqual(self.project._jobs[-1].name, self.batch_name() + "-f2-r2")
+
+    def test_an_import_whose_errors_can_no_longer_be_read_stops(self):
+        # Had it succeeded, its prelabels would be in Labelbox already: a person checks before any new import.
+        self.earlier_job(self.batch_name(), errors=None)
+        with self.assertRaises(ImportStopped):
+            apply_bundle(self.client, "project", self.candidates, mal_import=self.mal)
+        self.assertEqual(len(self.project._jobs), 1)
+
+    def test_a_clean_import_of_an_earlier_form_is_not_repeated(self):
+        self.earlier_job(self.batch_name(), errors=[])
+        self.assertEqual(apply_bundle(self.client, "project", self.candidates, mal_import=self.mal)["job_id"],
+                         "earlier")
+        self.assertEqual(len(self.project._jobs), 1)
+
+    def test_prelabels_are_sent_with_schema_ids(self):
+        apply_bundle(self.client, "project", self.candidates, mal_import=self.mal)
+        (job,) = self.project._jobs
+        self.assertFalse([node for node in walk(job.predictions) if "name" in node])
+        ids = {node["schemaId"] for node in walk(job.predictions) if "schemaId" in node}
+        self.assertIn("id:/uninterpretable", ids)
+        self.assertIn("id:/review_columns/tricuspid_appearance/tricuspid_appearance__status/yes", ids)
+        self.assertNotIn("id:/review_completed", ids)
+        self.assertEqual({p["dataRow"]["globalKey"] for p in job.predictions}, {"synthetic-import"})
+
+    def test_names_the_ontology_lacks_are_refused(self):
+        classifications = as_stored(build_form(), "x")["classifications"]
+        records = prelabels(self.candidates[0])
+        self.assertEqual(with_schema_ids([dict(records[0], name="visible_targets", answer=[])], classifications), [])
+        with self.assertRaises(ValueError):
+            with_schema_ids([dict(records[0], name="not_a_question")], classifications)
+        with self.assertRaises(ValueError):
+            with_schema_ids([dict(records[0], name="view_ok", answer={"name": "maybe"})], classifications)
 
     def test_conflicting_schema_or_nonvideo_row_stops_before_mutation(self):
         self.project._ontology = SimpleNamespace(normalized={"tools": [], "classifications": [{"name": "old"}]})
@@ -373,6 +472,43 @@ class TestV2Import(unittest.TestCase):
         modified = copy.deepcopy(build_form())
         modified["classifications"][0]["schemaNodeId"] = "server-id"
         self.assertEqual(schema_shape(modified), schema_shape(build_form()))
+        stored = as_stored(build_form(), "DeepECHO column review v2")
+        self.assertEqual(comparable_shape(stored), comparable_shape(build_form()))
+        stored["classifications"][0]["options"][0]["label"] = "Changed"
+        self.assertNotEqual(comparable_shape(stored), comparable_shape(build_form()))
+
+
+@unittest.skipUnless(importlib.util.find_spec("labelbox"), "Labelbox SDK optional")
+class TestV2ImportWithTheSdk(unittest.TestCase):
+    """The SDK's own classes, offline: its checks before an import is sent and the outcome of its import jobs."""
+
+    def test_the_sdk_takes_the_predictions(self):
+        import labelbox as lb
+        report = {"Tricuspid valve findings": "Normal", "Mitral valve findings": "Mild regurgitation"}
+        candidate = build_candidate(report, "A4C", "color_flow", global_key="synthetic-import")
+        predictions = with_schema_ids(prelabels(candidate), as_stored(build_form(), "v2")["classifications"])
+        sent = lb.MALPredictionImport._get_ndjson_from_objects(predictions, "annotations")
+        self.assertEqual(len(sent.splitlines()), len(predictions))
+
+    def test_each_outcome_of_an_sdk_import_job(self):
+        import labelbox as lb
+        import requests
+        from labelbox.schema import annotation_import
+
+        failure = json.dumps({"uuid": "u", "dataRow": {"globalKey": "g"}, "status": "FAILURE",
+                              "errors": [{"name": "x", "message": "m"}]})
+        cases = {"clean": ("FINISHED", 200, "", "done"), "errors": ("FINISHED", 200, failure, "failed"),
+                 "failed": ("FAILED", 200, "", "failed"), "expired": ("FINISHED", 403, "", "unreadable")}
+        for uid, (state, status, text, expected) in cases.items():
+            # Each job its own id: the SDK caches a job's error file per job.
+            job = lb.MALPredictionImport(None, {"id": uid, "name": "deepecho-v2-0-f2", "state": state,
+                                                "progress": "100%", "inputFileUrl": None, "statusFileUrl": None,
+                                                "errorFileUrl": f"https://example.invalid/{uid}",
+                                                "project": {"id": "project"}})
+            response = mock.Mock(status_code=status, text=text)
+            response.raise_for_status.side_effect = requests.HTTPError(str(status)) if status >= 400 else None
+            with self.subTest(uid), mock.patch.object(annotation_import.requests, "get", return_value=response):
+                self.assertEqual(import_outcome(job), expected)
 
 
 if __name__ == "__main__":
