@@ -440,6 +440,10 @@ GE = "GE Vingmed Ultrasound"
 # A Philips header as the survey found them: no fourth ImageType value and no SourceImageSequence, with the ECG.
 PHILIPS = {"vendor": "Philips Medical Systems", "dicom_image_content": "", "dicom_source_image": False}
 TEXT_ON = {**cs.THRESHOLDS, "text_decides": "all"}
+HEADER_FIRST = {**cs.THRESHOLDS, "text_decides": "header_unavailable"}
+# The text pass's reading of a clip with no measurement text, and of one it never read.
+READ = {"text_status": "checked", "text_measurements": "[]", "text_frames": 3}
+UNREAD = dict.fromkeys(READ)
 # `flag` of synthetic clips, which have no header and no text pass: their text would decide, so the run says it is
 # without it.
 NO_TEXT = ("--thresholds", '{"text_decides": "none"}')
@@ -606,9 +610,10 @@ class TestFlags(unittest.TestCase):
         self.assertEqual(flag_rows(rows[:1], self.rows(), PIXEL_POLICY).exclude_reason.tolist(), ["measurement"])
 
     def hybrid(self, thresholds=cs.THRESHOLDS, **changes):
-        """The hybrid decision and its reasons for one recording, of a GE scanner unless the changes say otherwise,
-        with these feature changes."""
-        flags = flag_rows([{**feature_row(self.header.copy()), "vendor": GE, **changes}], self.rows(), thresholds)
+        """The hybrid decision and its reasons for one recording, of a GE scanner and read by the text pass, which
+        found no measurement text, unless the changes say otherwise, with these feature changes."""
+        flags = flag_rows([{**feature_row(self.header.copy()), "vendor": GE, **READ, **changes}], self.rows(),
+                          thresholds)
         return flags.decision.iloc[0], flags.decision_reasons.iloc[0], flags.iloc[0]
 
     def test_a_clean_recording_without_image_regions_is_kept(self):
@@ -650,12 +655,12 @@ class TestFlags(unittest.TestCase):
         decision, _, row = self.hybrid(**PHILIPS)
         self.assertEqual((decision, row.header_convention, row.analysis_evidence, row.measurement_header,
                           row.evidence_missing),
-                         ("keep", "unverified", "none", "unavailable", "header_convention;text"))
+                         ("keep", "unverified", "none", "unavailable", "header_convention"))
         self.assertEqual(self.hybrid(**PHILIPS, dicom_measure_flag=True)[:2], ("exclude", "measurement_header"))
         for vendor in cs.GE_HEADER_VENDORS:  # GE's three vendor names write one convention.
             _, _, row = self.hybrid(vendor=vendor)
             self.assertEqual((row.header_convention, row.measurement_header, row.evidence_missing),
-                             ("ge", "none", "text"))
+                             ("ge", "none", ""))
 
     def test_an_object_that_is_no_ultrasound_image_is_excluded(self):
         # A structured report and a secondary capture, which became videos in the archive too.
@@ -668,7 +673,8 @@ class TestFlags(unittest.TestCase):
         self.assertEqual((decision, reasons, row.dicom_object), ("keep", "", "unavailable"))
 
     def test_the_pixel_mode_is_checked_against_the_header_where_it_gives_one(self):
-        rows = [{**feature_row(self.header.copy()), "vendor": vendor, "acq_category": header, "moving_color_frac": frac}
+        rows = [{**feature_row(self.header.copy()), **READ, "vendor": vendor, "acq_category": header,
+                 "moving_color_frac": frac}
                 for vendor, header, frac in ((GE, "bmode", 0.0), (GE, "color_flow", 0.02), (GE, "color_flow", 0.001),
                                              ("Philips Medical Systems", "bmode", 0.03))]
         flags = flag_rows(rows, self.rows())
@@ -677,19 +683,19 @@ class TestFlags(unittest.TestCase):
         # Only the GE clips count: a Philips header calls color loops B-mode.
         self.assertEqual(cs.mode_agreement(flags), {"bmode": {"bmode": 1}, "color_flow": {"color_flow": 1, "bmode": 1}})
 
-    def test_a_measured_recording_with_image_regions_is_not_taken_for_clean(self):
-        # The header names a measurement (GE's ImageType MEASURE), or two calipers of one distance are drawn.
+    def test_a_measured_header_excludes_and_drawn_structures_are_recorded_only(self):
+        # The header names a measurement (GE's ImageType MEASURE): excluded.
         self.assertEqual(self.hybrid(dicom_measure_flag=True)[:2], ("exclude", "measurement_header"))
+        # Two calipers of one distance, two of different colors (one caliper each), a traced contour: recorded, for
+        # any vendor; on the labelled and synthetic clips they caught nothing the header missed.
         pair = {"clip": [[13, "caliper", 60.0, 60.0, [255, 255, 0]], [13, "caliper", 140.0, 120.0, [255, 255, 0]]],
                 "windows": []}
-        decision, reasons, row = self.hybrid(inside_marks=json.dumps(pair), inside_glyphs=2)
-        self.assertEqual((decision, reasons, row.geometry_evidence),
-                         ("exclude", "measurement_calipers", "caliper_pair"))
-        # Two calipers of different colors are not one distance; one alone, or a traced contour, is uncertain.
         mixed = {"clip": [pair["clip"][0], [13, "caliper", 140.0, 120.0, [0, 255, 255]]], "windows": []}
-        self.assertEqual(self.hybrid(inside_marks=json.dumps(mixed))[:2], ("uncertain", "measurement_single_caliper"))
         traced = {"clip": [[140, "trace", 75.0, 85.0, [255, 255, 0]]], "windows": []}
-        self.assertEqual(self.hybrid(inside_marks=json.dumps(traced))[:2], ("uncertain", "measurement_trace"))
+        for marks, evidence in ((pair, "caliper_pair"), (mixed, "caliper"), (traced, "trace")):
+            for vendor in ({}, PHILIPS):
+                decision, reasons, row = self.hybrid(**vendor, inside_marks=json.dumps(marks), inside_glyphs=2)
+                self.assertEqual((decision, reasons, row.geometry_evidence), ("keep", "", evidence))
 
     def test_bright_tissue_marks_alone_exclude_nothing(self):
         # Many small static pieces (bright, slowly moving tissue): the pixel score flags them, the policy keeps it.
@@ -698,28 +704,40 @@ class TestFlags(unittest.TestCase):
         self.assertEqual((decision, bool(row.measurement), row.geometry_evidence), ("keep", True, "none"))
 
     def test_missing_evidence_is_not_negative_evidence(self):
-        decision, _, row = self.hybrid()  # pass 1 output, without the text pass.
-        self.assertEqual((decision, row.text_evidence, row.evidence_missing), ("keep", "unavailable", "text"))
+        decision, _, row = self.hybrid(**UNREAD)  # pass 1 output, without the text pass: not taken for clean.
+        self.assertEqual((decision, row.text_evidence, row.evidence_missing), ("uncertain", "unavailable", "text"))
         _, _, row = self.hybrid(text_status="checked", text_measurements="[]")
         self.assertEqual((row.text_evidence, row.evidence_missing), ("none", ""))
         _, _, row = self.hybrid(text_status="decode_failed", text_measurements=None)  # read by the text pass: no.
         self.assertEqual((row.text_evidence, row.evidence_missing), ("unavailable", "text"))
 
-    def test_text_decides_where_no_header_can_name_a_measurement(self):
+    def test_where_the_text_decides_a_reading_that_failed_or_covered_part_of_the_clip_is_uncertain(self):
+        failed = {"text_status": "decode_failed", "text_measurements": None, "text_frames": 0}
+        part = {"text_status": "incomplete", "text_measurements": "[]", "text_frames": 1}
+        for reading in (failed, part, UNREAD):
+            self.assertEqual(self.hybrid(**PHILIPS, **reading)[:2], ("uncertain", "measurement_text_unavailable"))
+            self.assertEqual(self.hybrid(**reading)[:2], ("uncertain", "measurement_text_unavailable"))
+            self.assertEqual(self.hybrid(HEADER_FIRST, **reading)[:2], ("keep", ""))  # a GE clip's text recorded.
+        # What a part shows counts: a named measurement in the frames decoded excludes.
+        decision, reasons, row = self.hybrid(**PHILIPS, **{**part, "text_measurements": '["EF 55"]'})
+        self.assertEqual((decision, reasons, row.text_evidence), ("exclude", "measurement_text", "measurement_text"))
+
+    def test_text_decides_for_every_clip_or_where_its_scope_says(self):
         read = {"text_status": "checked", "text_measurements": '["EF 55"]'}
         unit = {"text_status": "checked", "text_measurements": '["120 ml"]'}
-        # A GE header names a measurement itself (MEASURE): its clips' text is recorded only, by default.
-        decision, reasons, row = self.hybrid(**read)
-        self.assertEqual((decision, reasons, row.text_evidence), ("keep", "", "measurement_text"))
-        self.assertEqual(self.hybrid(**unit)[:2], ("keep", ""))
-        # Another vendor's header, or none, cannot: there the text decides.
-        self.assertEqual(self.hybrid(**PHILIPS, **read)[:2], ("exclude", "measurement_text"))
-        self.assertEqual(self.hybrid(**PHILIPS, **unit)[:2], ("uncertain", "measurement_unit_text"))
         no_header = dict.fromkeys(["dicom_status", "dicom_image_content", "dicom_measure_flag", "dicom_source_image",
                                    "dicom_ecg", "dicom_sop_class"])
-        self.assertEqual(self.hybrid(**no_header, **read)[:2], ("exclude", "measurement_text"))
-        # The other scopes: every clip's text, or none.
-        self.assertEqual(self.hybrid(TEXT_ON, **read)[:2], ("exclude", "measurement_text"))
+        # By default for every clip: a GE header without MEASURE is no proof that no results box is drawn.
+        for header in ({}, PHILIPS, no_header):
+            self.assertEqual(self.hybrid(**header, **read)[:2], ("exclude", "measurement_text"))
+            self.assertEqual(self.hybrid(**header, **unit)[:2], ("uncertain", "measurement_unit_text"))
+        # 'header_unavailable': only where the header cannot name a measurement; a GE clip's text is recorded.
+        decision, reasons, row = self.hybrid(HEADER_FIRST, **read)
+        self.assertEqual((decision, reasons, row.text_evidence), ("keep", "", "measurement_text"))
+        self.assertEqual(self.hybrid(HEADER_FIRST, **unit)[:2], ("keep", ""))
+        for header in (PHILIPS, no_header):
+            self.assertEqual(self.hybrid(HEADER_FIRST, **header, **read)[:2], ("exclude", "measurement_text"))
+        # 'none': recorded for every clip.
         off = {**cs.THRESHOLDS, "text_decides": "none"}
         self.assertEqual(self.hybrid(off, **PHILIPS, **read)[:2], ("keep", ""))
 
@@ -739,7 +757,7 @@ class TestFlags(unittest.TestCase):
         # No header at all: its evidence is missing, not clean; the pixels still decide what they can.
         _, _, row = self.hybrid(dicom_status=None, dicom_image_content=None, dicom_measure_flag=None,
                                 dicom_source_image=None, dicom_ecg=None)
-        self.assertEqual((row.measurement_header, row.evidence_missing), ("unavailable", "header;text"))
+        self.assertEqual((row.measurement_header, row.evidence_missing), ("unavailable", "header"))
 
     def test_uncertain_is_never_an_exclusion(self):
         # Motion only readable over the whole frame and frames that do not repeat: a still reading is uncertain;
@@ -1723,8 +1741,9 @@ class TestCalibration(unittest.TestCase):
         blank = np.zeros((H // cs.CELL, W // cs.CELL), bool)
 
         def screen(marked, n=100):  # n clips of 5 patients; the first `marked` carry marks the pixel policy excludes.
-            return pd.DataFrame([dict(feature_row(blank.copy(), inside=5 if i < marked else 0), video_path=f"v{i}",
-                                      global_key=f"k{i}", patient_id=f"p{i % 5}") for i in range(n)])
+            return pd.DataFrame([dict(feature_row(blank.copy(), inside=5 if i < marked else 0), **READ,
+                                      video_path=f"v{i}", global_key=f"k{i}", patient_id=f"p{i % 5}")
+                                 for i in range(n)])
 
         def answers(keys):
             return pd.DataFrame({"still": "no", "measurement": "no", "other_exclusion": "no", "cursor": "no"},
@@ -1945,9 +1964,22 @@ class TestTextPass(unittest.TestCase):
         found = cs.measurement_text([np.zeros((4, 4, 3), np.uint8)], ("stand-in", lambda frame: lines))[1]
         self.assertEqual(json.loads(found), ["E/e'12", "EF55"])  # a name followed by a letter is another word.
 
+    def test_names_units_and_settings_are_read_whatever_their_case(self):
+        # Names and units in either case are read ('LVIDS' as OCR may read 'LVIDs'); settings lines in either case are
+        # left out, and a velocity alone, in either case, is a setting still.
+        lines = ["ef55%", "LVIDS 4.5 cm", "lvef 60", "VMAX 2.1 M/S", "120 ML", "GN 50", "gain 50", "FRQ 1.7 MHZ",
+                 "hr 72 bpm", "DEPTH 16 CM", "SCALE 64 CM/S", "nyquist 0.8 M/S", "LAX", "Lax 3"]
+        found = cs.measurement_text([np.zeros((4, 4, 3), np.uint8)], ("stand-in", lambda frame: lines))[1]
+        self.assertEqual(json.loads(found), ["0.8 M/S", "120 ML", "64 CM/S", "LVIDS 4.5", "VMAX 2.1", "ef55",
+                                             "lvef 60"])
+        for read, evidence in ((["ef55"], "measurement_text"), (["LVIDS 4.5"], "measurement_text"),
+                               (["120 ML"], "measurement_unit"), (["64 CM/S", "0.8 M/S"], "none")):
+            self.assertEqual(cs.text_evidence(json.dumps(read)), evidence, read)
+
     def test_text_decides_names_a_scope(self):
-        self.assertEqual(cs.THRESHOLDS["text_decides"], "header_unavailable")
-        self.assertEqual(cs.parse_thresholds('{"text_decides": "all"}', cs.THRESHOLDS)["text_decides"], "all")
+        self.assertEqual(cs.THRESHOLDS["text_decides"], "all")
+        self.assertEqual(cs.parse_thresholds('{"text_decides": "header_unavailable"}', cs.THRESHOLDS)["text_decides"],
+                         "header_unavailable")
         for value in ("true", "1", '"yes"', "null", '["all"]'):
             with self.assertRaises(SystemExit):
                 cs.parse_thresholds(f'{{"text_decides": {value}}}', cs.THRESHOLDS)
@@ -1968,16 +2000,22 @@ class TestTextPass(unittest.TestCase):
                 f.write(b"not a video")
             seen = []
             backend = ("stand-in", lambda frame: seen.append(frame.shape) or ["EDV 120 ml", "HR 72 bpm"])
+            decode = cs.decoded_frames
             with mock.patch.object(cs, "_OCR", backend):
                 row = cs._text_worker(("k", path, cs.sha256(path), T))
                 changed = cs._text_worker(("k", path, "0" * 64, T))
                 failed = cs._text_worker(("j", junk, cs.sha256(junk), T))
+                with mock.patch.object(cs, "decoded_frames", lambda p, wanted: decode(p, wanted)[:1]):
+                    part = cs._text_worker(("k", path, cs.sha256(path), T))
         # The first, middle and last of the frames pass 1 read; only the matched expressions are kept.
         self.assertEqual(row, {"global_key": "k", "text_status": "checked", "text_measurements": '["EDV 120"]',
                                "text_frames": 3})
-        self.assertEqual(seen, [(H, W, 3)] * 3)
+        self.assertEqual(seen[:3], [(H, W, 3)] * 3)
         self.assertEqual(changed["text_status"], "changed")
         self.assertEqual((failed["text_status"], failed["text_measurements"]), ("decode_failed", None))
+        # One of the three decoded: read, but not 'checked'.
+        self.assertEqual(part, {"global_key": "k", "text_status": "incomplete", "text_measurements": '["EDV 120"]',
+                                "text_frames": 1})
 
     def test_text_output_is_the_features_with_text_which_flag_takes_once(self):
         with tempfile.TemporaryDirectory() as tmp:

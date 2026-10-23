@@ -4,45 +4,15 @@
 should see, and build their column review v2 candidates.
 
 Every valid video of a pilot study is reviewed, in one of two Labelbox forms (`form` column):
-
 - `column_review`: a classified view in B-mode or color Doppler gets the column review v2 and its caption;
 - `view_type_review`: a video the view classifier labels `OTHER`, or does not classify, gets the view and type
   review and no caption (its anatomy is unknown, so no caption can be routed to it).
 
 Clips are removed in two places before any upload:
-
-- **metadata rule** (`shortlist`): for a classified view, a header naming an acquisition other than B-mode or color
-  Doppler, or, from a vendor whose headers give the mode (`acq_vendor_validated`: GE's), one not read from the
-  header. Single-frame DICOM objects (still B-mode measurement frames, spectral Doppler stills, report pages) have
-  no video and never appear. No clip is removed for being short.
-- **the screen** (`data/clip_screen.py` on the shortlisted clips): unreadable and still clips, analysis screens and
-  visible measurements, on evidence; clips it is uncertain about are left out too, and listed.
-
-Other vendors' headers (Philips, Siemens) declare one tissue region over a color-flow loop, so the mode of their
-classified clips is read from the pixels by the screen (`mode_source` 'pixels', `clip_screen` `pixel_mode`) and
-`select` takes that reading. Studies are chosen on the classified clips the screen keeps, at their resolved mode, so
-every pilot study still has the standard views and one view in both B-mode and color.
-
-Steps, every output in --out-dir, a folder outside the repository that only its owner can read (identities and
-report text stay there). A step first removes its earlier outputs and those of the steps after it, and refuses
-inputs that changed since the step that made them finished:
-    shortlist   training-split studies with a linked report, per category, from the archive manifest (TTE exams
-                only, from build_manifests.py); their clips after the metadata rules, each with its opaque global
-                key (the sheet's and Labelbox's name for it), written to shortlist_clips.csv for the screen; and
-                reference_clips.csv, a random sample of the same layouts from other studies, from which the screen
-                learns where each layout normally has ink. With --vendor-studies, studies of further vendors too,
-                outside the categories and --years (vendor slots, `vendor:<vendor>`), drawn apart so that the
-                category studies and their reference clips stay those of a shortlist without them.
-    select      after `clip_screen.py features` on shortlist_clips.csv and reference_clips.csv and `flag`: flags
-                screened from other lists (an earlier shortlist) are refused. Only clips the screen keeps go on:
-                excluded ones are removed and uncertain ones listed apart (uncertain_clips.csv), no one is asked;
-                each clip's mode is resolved (the header's, or the screen's pixel reading); then take per category,
-                and per vendor slot, the best-ranked study that meets the criteria on its kept clips, one study per
-                patient, or stop with the counts when too few do.
-    candidates  column review v2 candidates for the pilot's classified clips and the list of its view and type
-                review items, from a selection whose files are unchanged since select and the report file
-                shortlist used. A screen at provisional thresholds (not yet calibrated on labelled clips) is
-                refused unless --provisional-screen marks the run as a trial.
+- **metadata rule** (`shortlist`): excludes classified clips with unsupported or missing GE acquisition modes.
+  Single-frame objects are absent; short clips are allowed.
+- **the screen** (`data/clip_screen.py` on the shortlisted clips): excludes unreadable, still, analysis, and
+  measurement clips. Uncertain clips are listed separately.
 
 Example:
     python data/radar_pilot.py shortlist --videos <manifests>/videos.parquet --ef-labels <study_labels_ef.parquet> \\
@@ -59,9 +29,8 @@ Example:
     python data/radar_pilot.py candidates --out-dir <pilot_dir> --reports <df_report_clean.parquet> \\
         [--provisional-screen]
 
-Console output and summary.md are aggregate only: `select` and `candidates` check that the clips still hold the
-media the screen read, and a failure to read one (its message names the clip's path) goes to media.log in
---out-dir.
+Console output and `summary.md` contain only aggregate information. `select` and `candidates` verify that clips have
+not changed since screening. Media read failures stop processing, with sensitive details logged to `<out-dir>/media.log`.
 """
 
 import argparse

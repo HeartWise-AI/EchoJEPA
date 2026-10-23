@@ -1,42 +1,27 @@
 # data/screen_validation.py
 
-"""Build a validation clip list for the clip screen (`clip_screen.py`): a stratified, patient-aware random sample
-of the archive manifest, whose sampling probabilities let `calibrate` estimate the screen's errors over the whole
-population it was drawn from.
+"""Build a patient-aware, stratified validation sample from the archive to evaluate `clip_screen.py` on independent
+patients. Sampling probabilities support population-level error estimates in `calibrate`.
 
-Each clip of the population falls in exactly one group, the first that applies:
+Clips are assigned to the first applicable group:
+    frozen_suspect    clips with <= `--frozen-max-frames` frames or FPS <= `--frozen-max-fps` (when enabled;
+                      requires manifest FPS). Identified from metadata without decoding.
+    vendor:<name>     a clip of a scanner vendor other than the most common one, one group per vendor.
+    low_ef            a clip of a study whose EF is at most `--low-ef` (reduced function, so less motion).
+    general           every other clip.
 
-    frozen_suspect    a clip of at most --frozen-max-frames frames, or, when --frozen-max-fps is above 0 (the
-                      manifest then needs fps), at most that many frames per second: where frozen frames saved as
-                      videos are expected (metadata only: no clip is decoded here)
-    vendor:<name>     a clip of a scanner vendor other than the most common one, one group per vendor
-    low_ef            a clip of a study whose EF is at most --low-ef (reduced function, so less motion)
-    general           every other clip
+Each nonempty group must be sampled. `--exclude-patients` removes patients used for screening development to ensure
+independent validation.
 
-Every group of the population gets at least one clip (a group drawn none would drop out of the estimates
-unnoticed): a --n-* of 0 for a group that has clips is refused; narrow the population (--splits, --years) instead.
---exclude-patients leaves out the patients of the clip lists the screen was tuned on (its shortlist and reference
-lists, or a tuning validation list), so that the list checks the tuned screen on other patients.
-Each clip records the population's size (`population_clips`), and `sheet --all-clips` checks that the groups add
-up to it.
+Sampling selects random patients, then up to `--clips-per-patient` clips each, recording inclusion probabilities
+and group sizes. Patients may appear in multiple groups.
 
-Within a group, sampling is in two stages, so that a few patients with many clips cannot fill it: a seeded random
-sample of patients, then up to --clips-per-patient random clips of each. A clip's probability of being drawn is
-(patients drawn / patients of the group) x (clips drawn of its patient / its patient's clips in the group), recorded
-with the group and its sizes. A patient can be drawn in several groups.
-
-The list carries the columns `clip_screen.py features` needs (video_path, dicom_path, global_key, vendor, model,
-acq_category) and keeps the metadata (patient, study, view, frames, frame rate, EF). reference_clips.csv adds, for
-the scanner layouts of the list, random clips of patients not drawn, from which `flag` learns where each layout
-normally has ink. A sample that leaves no such clip is refused; validation.json counts the sample's layouts with
-fewer reference clips than a layout baseline needs (clip_screen.MIN_LAYOUT_CLIPS), whose clips get no results-box
-score (and are excluded as incomplete when the screen's measurement rules exclude), and the console warns of them.
-
-Outputs, in --out-dir (a folder only its owner can read; patient and study identifiers):
-    validation_clips.csv   the sample: sample_stratum, sample_prob, patient_prob, clip_prob and the group sizes
-    reference_clips.csv    reference clips for the layouts of the sample
-    validation.json        the groups (clips and patients in the population, drawn), the rules, seed and input
-                           hashes; written last
+Outputs, in `--out-dir` (a folder only its owner can read; patient and study identifiers):
+    validation_clips.csv   the sample: sampling group (`sample_stratum`), inclusion probability (`sample_prob`),
+                           patient and clip probabilities (`patient_prob`, `clip_prob`), and group sizes.
+    reference_clips.csv    reference clips matching the sampled scanner layouts.
+    validation.json        population and sampled clip/patient counts by group, sampling rules, seed, and input
+                           hashes. Written last.
 
 Example:
     python data/screen_validation.py --videos <manifests>/videos.parquet --ef-labels <study_labels_ef.parquet> \\

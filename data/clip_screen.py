@@ -1,81 +1,35 @@
 # data/clip_screen.py
 
-"""Screen echo clips before caption review: keep a clip, exclude it, or leave it uncertain, from its evidence.
+"""Screen echo clips before caption review as keep, exclude, or uncertain. Only moving B-mode or color Doppler clips
+without measurement overlays proceed.
 
-Reviewers only see moving B-mode or color Doppler clips without measurements. Single-frame DICOM objects never
-became videos, but the video archive still holds frozen frames saved as several identical frames, analysis screens
-(strain curves, segment values) and clips with calipers, tracings or measurement text drawn over the image. A clip is
-excluded only on evidence of such a condition, and left uncertain when the evidence is partial or conflicting; a
-header without image regions, a missing baseline or many small static marks are recorded, never a reason on their
-own. The evidence, in three independent parts:
+The archive may contain frozen loops, analysis screens, and measurement overlays. Exclude clips with sufficient
+evidence; mark partial or conflicting evidence as uncertain. Missing image regions or baselines and numerous small
+static marks alone do not justify exclusion.
 
-- **video and motion:** the decoder's verdict (unreadable), and the moving share of the field of view
-  (`region_motion_frac`), read over the DICOM scan area, else over a field of view found from the pixels
-  (`image_field`: appearance, not motion, so a frozen clip has one too), else over the whole frame
-  (`region_source`: dicom, image, whole_frame). A still reading over the whole frame is certain only when the frames
-  also repeat (`duplicate_frac`). The earlier scan-area or frame shares stay recorded for calibration.
-- **object:** a header whose SOP class is no ultrasound image (a structured report, a secondary capture) excludes a
-  clip, whatever its vendor (`dicom_object`).
-- **analysis screen:** the header's account of its image (`dicom_header_evidence`: the image data it names, whether
-  it derives from an acquired image, the ECG) and, from the pixels, static bright or colored graphics beside the
-  field of view (`outside_ink_frac`: plots, tables, segment maps). A GE header (`GE_HEADER_VENDORS`) decides alone:
-  its pattern excludes a clip and the graphics are only recorded. Other vendors write none of these header signals,
-  so for them both together exclude a clip and either alone makes it uncertain (`header_convention`).
-- **measurement overlay:** a header naming a measurement (GE's ImageType MEASURE; its absence counts only in a GE
-  header); measurement text, read by the separate `text` pass with RapidOCR (`measurement_text`; without that pass
-  the evidence is unavailable, not absent), recorded for every clip and deciding where `text_decides` says, by
-  default for the clips whose header cannot name a measurement (another vendor's, or none): a named measurement
-  excludes, a number with a measurement unit alone makes a clip uncertain, a velocity alone is a setting
-  (`text_evidence`); and
-  measurement structures among the static marks over the moving image (`geometry_evidence`): a caliper pair (two
-  calipers static together, joined by their line or alike and apart) excludes, a traced contour or a single caliper
-  makes a clip uncertain. The earlier pixel scores stay as diagnostics: `inside_glyphs`, ink marks inside the moving
-  region (a straight dotted line counting as one, each caliper as one), and `extra_cells`, ink beside the image where
-  reference clips of the same scanner layout have none.
-
-The policy (`policy` in the thresholds) decides from the evidence (`flag_columns`); 'header' and 'pixel', the earlier
-policies, stay to be compared on the same labels.
+The configured policy evaluates `flag_columns`; 'header' and 'pixel', the earlier policies, remain available for
+comparison on the same labels.
 
 Subcommands, every output outside the repository:
-    features   pass 1, per clip: motion and ink statistics, the field of view, the header's evidence, the marks
-               inside the image with their kind, place and color, and a coarse map of where static ink is.
-    text       optional, run with the OCR environment's Python: the measurement text of each readable clip of
-               `features` output, read with RapidOCR on the first, middle and last frame pass 1 read, written as
-               that output with the text columns added (`flag` takes it as its features), recording what read it.
-    flag       pass 2: per scanner layout, where static ink normally is, from reference clips that clearly move,
-               have no marks inside the image and no block of ink beside it that most clips of their layout lack
-               (a rule fixed apart from the thresholds); then the evidence and the decision for every clip (keep,
-               exclude, uncertain, with its reasons), which the pipeline acts on without asking anyone: only kept
-               clips go on, and uncertain ones are listed apart, never taken for invalid.
-               The baselines, with the clips behind each and those left out, go to a 0700 folder next to the flags.
+    features   pass 1, per clip: extract per-clip motion, image regions, DICOM evidence, and static marks.
+    text       optional, run with the OCR environment's Python: run RapidOCR on three sampled frames to detect
+               measurement text. Required when the configured policy uses OCR evidence (including the default).
+    flag       pass 2, per scanner layout: build scanner-layout baselines from clean reference clips and classify
+               each clip with reasons (keep, exclude, uncertain).
 
 Tuning the thresholds, outside the pipeline:
-    sheet      private HTML pages for a person to answer four questions per clip (still, measurements, another
-               reason to exclude, a cursor line), from a playable copy of the whole clip: the audit sample (a fixed
-               random sample of excluded, uncertain and kept clips, each with its inclusion probability, and a record of
-               the screen's population); with --diagnostic, a random sample per role (screened or reference clip),
-               acquisition mode and detector case; with --all-clips, every clip of a validation list from
-               screen_validation.py, with its sampling probability; or, with --keys, chosen clips, the only sheet
-               that shows the detector's view (on the others it would steer the answers). The frames carry
-               burned-in identifiers: the pages and copies stay on the server, in a 0700 folder.
-    challenge  an enriched challenge set to label: per evidence signal, random clips the screen may get wrong
-               (caliper pairs, single calipers, traces, a header naming a measurement, partial analysis evidence,
-               unusual image data, unseen layouts; kept clips with many marks, a results-box score, a dotted line,
-               color Doppler), for `sheet --keys --blind`. Its labels are counted, never weighed up to a population.
-    calibrate  the screen against the answers of an audit, diagnostic, validation or challenge sheet, recomputed
-               from the features behind the flags at any threshold set (--thresholds): each detector, and the
-               policy (removed: excluded or uncertain) with the share of ineligible clips among the kept ones,
-               overall, per stratum and per acquisition mode; the decisions per answer group under each policy
-               (counts), by acquisition mode, header regions and analysis-header pattern; the cursor clips; for each
-               minimum mark size, the screen recomputed from the reference clips' eligibility on, with per layout
-               whether it has a baseline; and a diagnostic sheet's reference clips on their own.
+    sheet      generate private HTML review sheets for human labeling of stillness, measurements, exclusion reasons,
+               and cursor lines. Supports random audits, diagnostic samples (--diagnostic), validation sets (--all-clips),
+               and selected clips (--keys).
+    challenge  sample difficult detector cases for blind review. Results are not population-weighted.
+    calibrate  compare screening decisions against human labels to evaluate errors, thresholds, policies, and performance
+               across groups.
 
-Every clip is named by its `global_key`, an opaque key given in the clip list (the one Labelbox uses), on the sheet
-and in the exported labels, so labels from several sheets name the same clips. A clip keeps its key when its video
-is replaced in place, so the labels also name the video bytes each answer is of (`video_sha256`), and `calibrate`
-uses only answers of the bytes its sheet's copies were made from. A sheet also records the media of every clip of the
-screen it was drawn from (`population`), sampled or not, and `calibrate` refuses flags whose clips hold others (an
-older sheet: checked against the flags it was drawn from, --drawn-flags).
+Clips use stable Labelbox `global_key` identifiers. Video SHA-256 hashes ensure labels correspond to the reviewed media;
+changed clips or incompatible sample populations are rejected.
+
+Thresholds remain provisional until validated against human labels. See the RADAR pilot README for the full workflow and
+calibration requirements.
 
 Example:
     python data/clip_screen.py features --clips <clips.csv> --out <screen_dir>/features.parquet --workers 16
@@ -90,21 +44,6 @@ Example:
         --labels <labels.csv> [<more labels.csv> ...] [--thresholds '{"inside_glyphs": 2}']
     python data/clip_screen.py sheet --flags <screen_dir>/flags.parquet --out-dir <screen_dir>/look_01 \\
         --keys <chosen_clips.csv>
-
-The thresholds below are provisional until `calibrate` has been run on labelled clips; pass changed values with
-`flag --thresholds`. Every output records the SHA-256 of this script besides the commit, which misses uncommitted
-edits. Every step reads each input once (`Inputs`), uses those bytes and records their SHA-256, and completes only
-if every input still holds them at the end. A list column named like a pass 1 column (width, height) is kept as
-listed_<name>. Clips are replaced in place on the archive, so `features` records each clip's video SHA-256 and the
-DICOM regions it used, and `sheet` and `calibrate` refuse clips whose media no longer match (`changed_media`).
-`features` also records its extractor: the code pass 1 runs, the constants it reads and the library versions; `flag`
-refuses features extracted by other code or constants than its own, and features and reference extracted with other
-library versions, and records the extractor behind the flags. Outputs go to folders only their owner can read. A run
-first removes its earlier output and writes its record (`<out>.info.json`, with the output's SHA-256; a sheet's
-`sheet.info.json`) last; a step refuses an input without a matching record, so the output of a run that stopped is
-never used. Console output is aggregate only: the decoder's messages and the details of a failure name clip paths,
-so they go to a private log (`<features out>.log`; a sheet folder's `decoder.log`, which also takes a failure to
-read a clip while checking its media).
 """
 
 import argparse
@@ -139,30 +78,26 @@ STATIC_STD = 2.0      # temporal std below which, in every channel, a pixel is s
 SCAN_TYPES = (1, 2, 3, 4)  # DICOM Region Data Types holding image data: tissue, color flow, PW and CW Doppler.
 SCAN_LEVEL = 12       # the scan area: what reaches this level (any channel) in some frame inside those regions,
 SCAN_OPEN_PX = 7      # after an opening of this size that removes text and tick marks.
-# Measurement text (`measurement_text`), read by the `text` pass: a measurement name followed by a number, or a number
-# with a measurement unit; a line that starts with a scanner setting is interface text. Only a name counts as
-# measurement evidence (`text_evidence`): a unit alone makes a clip uncertain, and a velocity unit not even that. A
-# name ends where a letter does not follow (RapidOCR drops the space of 'EF 55 %' at times, reading 'EF55%').
+# Measurement text (`measurement_text`): OCR detects measurement names with values (e.g., EF 55, EF55%) or numbers
+# with units, case-insensitively. Named measurements trigger exclusion; units alone cause uncertainty, while isolated
+# velocities and scanner settings are ignored.
 MEASUREMENT_NAMES = (r"(?:LV)?EF|EDV|ESV|SV|CO|LVID[ds]?|IVS[ds]?|LVPW[ds]?|LAVI?|LA|Ao|TAPSE|MAPSE|E/A|E/e'?|"
                      r"DT|IVRT|V ?max|V ?mean|VTI|(?:max|mean) ?PG|PG|AVA|MVA|PISA|EROA?|RVol|VC|RVSP|GLS|"
                      r"Dist|Area|Vol")
 MEASUREMENT_TEXT = re.compile(rf"\b(?:{MEASUREMENT_NAMES})(?![A-Za-z_])\s*[:=]?\s*-?\d+(?:[.,]\d+)?"
-                              r"|-?\d+(?:[.,]\d+)?\s*(?:ml|mL|cm2|cm²|m/s|cm/s|mmHg)(?![\w/])")
+                              r"|-?\d+(?:[.,]\d+)?\s*(?:ml|cm2|cm²|m/s|cm/s|mmHg)(?![\w/])",
+                              re.IGNORECASE)
 INTERFACE_TEXT = re.compile(r"^\s*(?:Gn|Gain|Frq|MHz|Hz|FR|fps|dB|DR|MI|TI[SB]?|PRF|kHz|WF|Comp|Rej|HR|bpm|Depth)"
                             r"(?![A-Za-z_])",
                             re.IGNORECASE)
-# The text pass's OCR (`ocr_backend`): RapidOCR, its PP-OCR ONNX models inside the pinned package, the settings the
-# de-identification check uses (frames upscaled TEXT_UPSCALE times, words kept from a score of TEXT_SCORE). The engine
-# boxes words or phrases, so a name and its number ('EF', '55 %') can be boxed apart: words whose heights overlap by
-# TEXT_ROW_OVERLAP of the smaller one are one row, read left to right, and a gap wider than TEXT_WORD_GAP row heights
-# starts another line (a settings panel and a results box side by side).
+# OCR (`ocr_backend`): RapidOCR with pinned PP-OCR ONNX models, using the de-identification settings (TEXT_UPSCALE,
+# TEXT_SCORE). Group overlapping word boxes into rows (TEXT_ROW_OVERLAP), then split at large gaps (TEXT_WORD_GAP) to
+# separate measurement results from scanner settings.
 TEXT_UPSCALE, TEXT_SCORE, TEXT_ROW_OVERLAP, TEXT_WORD_GAP = 2.0, 0.5, 0.5, 2.0
 TEXT_COLUMNS = ("text_status", "text_measurements", "text_frames")
-# The field of view found from the pixels when the header gives no usable region (`image_field`): content opened by
-# FIELD_OPEN_PX; a component whose hull covers FIELD_MIN_SHARE..FIELD_MAX_SHARE of the frame, fills FIELD_MIN_SOLIDITY
-# of that hull, and of which FIELD_MIN_TEXTURE is speckle (5-px neighbourhood standard deviation above
-# FIELD_TEXTURE_STD). On 563 pilot clips with regions it was found in all, matching the DICOM scan area (median IoU
-# 0.99): agreement with the header, not labels.
+# Pixel-detected field of view (`image_field`): Fallback when DICOM regions are unavailable. Uses morphological opening
+# (FIELD_OPEN_PX), component size and solidity (FIELD_MIN_SHARE, FIELD_MAX_SHARE, FIELD_MIN_SOLIDITY), and speckle texture
+# (FIELD_MIN_TEXTURE, FIELD_TEXTURE_STD).
 FIELD_OPEN_PX = 11
 FIELD_MIN_SHARE, FIELD_MAX_SHARE, FIELD_MIN_SOLIDITY, FIELD_MIN_TEXTURE, FIELD_TEXTURE_STD = 0.05, 0.85, 0.6, 0.1, 6.0
 DUP_DIFF = 10.0       # between two read frames a pixel changed when a channel moved by more than this; the frames
@@ -170,50 +105,36 @@ DUP_SHARE = 0.002     # are near-duplicates when, after the ECG opening, less th
 DOT_PX, DOT_FILL = 6, 0.6  # a dot or dash fits in DOT_PX x DOT_PX and fills DOT_FILL of its box (a plus does not).
 CHAIN_GAP = 8         # dots at most this many px apart chain; a chain is one mark only if it is a straight line:
 LINE_MIN_DOTS, LINE_MIN_SPAN, LINE_DEV = 3, 20, 1.5  # >= 3 dots over >= 20 px, each within 1.5 px of the line.
-# A caliper is a + or an x (`caliper_centers`): four arms of at least CALIPER_ARM px from an inked centre, at least
-# three of them ending, at about one length, within CALIPER_MAX_ARM px (the fourth may go on as the line of the
-# distance). A component holding several calipers is several marks.
+# Calipers (`caliper_centers`): Detect + or x shapes with four arms of at least CALIPER_ARM px, at least three
+# ending within CALIPER_MAX_ARM px of similar lengths. Multiple calipers in one component count as separate marks.
 CALIPER_ARM, CALIPER_MAX_ARM = 2, 12
-# A reference clip shapes its layout's baseline only if it clearly moves, by the still flag's measure (at least this
-# share of its scan area moves, or without one of its frame), has at most REFERENCE_MAX_MARKS marks inside the
-# image, and has fewer than REFERENCE_EXTRA_CELLS inked cells beside the image outside its layout's core ink (the
-# cells at least CORE_SHARE of the layout's other such clips ink), which a measurement results box would have.
-# Fixed, whatever the thresholds. Provisional, like the thresholds.
+# Clean reference clips: Must show sufficient motion, have at most REFERENCE_MAX_MARKS internal marks, and fewer than
+# REFERENCE_EXTRA_CELLS unusual ink cells outside the layout's common ink (CORE_SHARE). These criteria are fixed
+# independently of screening thresholds and remain provisional.
 REFERENCE_MIN_SCAN_MOTION, REFERENCE_MIN_MOTION, REFERENCE_MAX_MARKS = 0.20, 0.05, 0
 CORE_SHARE, REFERENCE_EXTRA_CELLS = 0.5, 8
 INK_GRAY = 170        # a static pixel at least this bright, or
 INK_CHROMA = 60       # at least this colored (max - min channel), is drawn ink, not tissue.
 OPEN_PX = 5           # opening applied to the moving mask: removes the ECG trace and blinking cursors.
-# Color Doppler from the pixels (`moving_color_frac`, `pixel_mode`): red or blue pixels (at least INK_CHROMA colored,
-# and COLOR_HUE above green, which the ECG trace is) that change over the clip (MOVE_STD), as a share of the frame; a
-# static color bar does not change. A clip is read as color flow from PIXEL_COLOR_FRAC. On 80 training clips per group,
-# one per patient: GE B-mode clips by header reached 0.0014 at most (GE Healthcare 0.0004); 97.5% of GE Vingmed and
-# 93.8% of GE Healthcare color clips by header reached 0.005, and so did 33.8% of Philips clips, which their headers
-# all call B-mode. With pass 1's own frames, on 25 other clips per group: GE B-mode up to 0.0033 (none read as color),
-# 92% of GE Vingmed and 96% of GEMS color clips read as color, 32% of Philips clips. The mode a clip goes to review
-# with when its header cannot give it; the reviewer confirms it.
+# Pixel-based color Doppler (`moving_color_frac`, `pixel_mode`): Detect moving red/blue pixels using INK_CHROMA, COLOR_HUE,
+# and MOVE_STD. Classify as color flow when the fraction reaches PIXEL_COLOR_FRAC. Static color bars do not count.
+# Used when headers cannot provide acquisition mode; reviewers confirm the result. May miss color clips with little flow.
 COLOR_HUE, PIXEL_COLOR_FRAC = 40, 0.005
 REGION_SHARE = 0.25   # moving components at least this share of the largest one belong to the imaging region.
 HULL_MARGIN = 6       # px eroded from the imaging region: its border is the sector edge, static and bright.
 MIN_INK_PX = 3        # smaller ink components are noise.
-# Marks shown during only part of a clip (calipers drawn halfway through) are not static over the whole clip, so ink
-# inside the image is also looked for in windows of half the read frames, one every quarter of the clip, for clips of
-# at least 2 x WINDOW_MIN_FRAMES read frames: a mark static through three quarters of the clip, or through its first,
-# middle or last half, lies wholly in one. Shorter windows see slowly moving bright tissue (a low-EF wall) as static
-# ink. Each window has its own moving region, and a window in which at least FROZEN_WINDOW_SHARE of it is static is
-# frozen: its static speckle cannot be told from ink, so its marks inside the image do not count (`frozen_windows`).
+# Partial-clip marks: Detect static overlays using half-clip windows every quarter of the clip (when at least 2 * WINDOW_MIN_FRAMES are available).
+# Frozen windows (FROZEN_WINDOW_SHARE) are ignored to avoid confusing stationary speckle with ink. Brief overlays may still be missed.
 WINDOW_MIN_FRAMES, FROZEN_WINDOW_SHARE = 6, 0.5
-# A mark does not count in or next to a frozen patch of the image (`frozen_patches`): a FROZEN_PATCH_PX square at
-# least FROZEN_DENSITY of whose pixels are static and not dark (at least TISSUE_GRAY), widened by FROZEN_MARGIN_PX.
-# A part of the image frozen while the rest moves (in a window, or throughout) has static speckle, which cannot be
-# told from ink; calipers, dots and text over moving tissue or the dark blood pool are too thin to fill the square.
+# Frozen patches (`frozen_patches`): Ignore marks inside or near sufficiently static, non-dark FROZEN_PATCH_PX regions
+# (FROZEN_DENSITY, TISSUE_GRAY), expanded by FROZEN_MARGIN_PX, where speckle resembles static ink.
 FROZEN_PATCH_PX, FROZEN_DENSITY, FROZEN_MARGIN_PX, TISSUE_GRAY = 15, 0.6, 8, 40
 # Other static levels at which the marks are counted too, for calibration: after H.264 encoding, an overlay over
 # moving tissue varies by more than STATIC_STD.
 STATIC_STDS = (4.0,)
 LINE_LEN, LINE_FILL = 40, 0.15  # a component this long and this sparse is a line, or a traced contour:
-# line art (a cursor, a color box outline, a scale) is straight lines of at least STRAIGHT_PX px each, which leave at
-# most 1 - LINE_ART_SHARE of its pixels once taken away (`line_art`); a contour bends too much for that, and is a mark.
+# Line art (`line_art`): Ignore predominantly straight lines (cursors, scales, color-box outlines) using STRAIGHT_PX and
+# LINE_ART_SHARE. Curved contours remain detectable marks.
 STRAIGHT_PX, LINE_ART_SHARE = 30, 0.9
 CELL = 8              # px per side of a cell of the ink map.
 CELL_INK = 3          # ink pixels that ink a cell.
@@ -221,9 +142,7 @@ COMMON_SHARE = 0.10   # a cell inked in at least this share of a layout's clips 
 MIN_LAYOUT_CLIPS = 25  # fewer clips give no layout baseline (extra_cells is then not used).
 LAYOUT_COLUMNS = ("vendor", "model", "width", "height", "acq_category")
 KEY_PATTERN = r"[A-Za-z0-9._-]+"  # a global_key is safe in HTML, CSS selectors and CSV without escaping.
-# The sheet's questions: the first three are reasons to exclude a clip (eligible: no 'yes' to any); the last asks
-# whether a cursor line (Doppler or M-mode) is drawn over the image, which is no reason to exclude, so that the
-# screen's errors on such clips are reported on their own.
+# Review sheet's questions.
 EXCLUSION_FIELDS = ("still", "measurement", "other_exclusion")
 LABEL_FIELDS = (*EXCLUSION_FIELDS, "cursor")
 # Minimum sizes of a mark inside the image (`inside_mark_px`) that `calibrate` tries, each with its own reference
@@ -245,85 +164,60 @@ NUMERIC_FEATURES = ("n_frames_total", "frames_read", "height", "width", *MOTION_
 HEADER_EVIDENCE = ("dicom_image_content", "dicom_measure_flag", "dicom_source_image", "dicom_ecg", "dicom_sop_class")
 FEATURE_COLUMNS = ("error", "video_sha256", *NUMERIC_FEATURES, "dicom_status", "dicom_regions", *HEADER_EVIDENCE,
                    "region_source", "inside_marks", "region_bbox", "cells_shape", "cells")
-# The SOP classes of an ultrasound image (single-frame, multi-frame and their retired forms, and a 3D volume). Any other
-# class in a header is no acquired ultrasound image, whatever the vendor: a structured report (one Philips object of
-# 400 surveyed training clips) or a secondary capture (a screenshot) became a video in the archive too.
+# Ultrasound SOP classes: Accept ultrasound image objects (including retired variants and 3D volumes). Other classes,
+# such as structured reports and secondary captures, are excluded regardless of visible content or vendor.
 ULTRASOUND_IMAGE_CLASSES = ("1.2.840.10008.5.1.4.1.1.3.1", "1.2.840.10008.5.1.4.1.1.6.1", "1.2.840.10008.5.1.4.1.1.3",
                             "1.2.840.10008.5.1.4.1.1.6", "1.2.840.10008.5.1.4.1.1.6.2")
-# The vendors whose headers follow GE's convention, by a survey of 400 training clips of each (headers only):
-# ImageType's fourth value names the image data ('0001' tissue, '0011' tissue and color flow), every clip references
-# the acquired image it derives from (SourceImageSequence) and 97% to 100% carry the ECG. For them the header alone
-# tells an analysis screen (ANALYSIS_CONTENT, no acquired image, no ECG) and a measured image (MEASURE), and the
-# absence of MEASURE counts. Philips headers have no fourth value and no SourceImageSequence on any surveyed clip, and
-# Siemens' were only surveyed on 5 patients: for them these signals are unverified (`header_convention`).
+# GE header conventions (`GE_HEADER_VENDORS`): Validated for GE Vingmed, GE Healthcare, and GEMS. ImageType, SourceImageSequence,
+# ECG, and MEASURE identify image content, analysis screens, and measurements.
+# Philips and Siemens conventions remain unverified (`header_convention`).
 GE_HEADER_VENDORS = ("GE Vingmed Ultrasound", "GE Healthcare Ultrasound", "GEMS Ultrasound")
 
-# still: the scan area's moving share below still_scan_motion_frac, or for a clip without a scan area the frame's
-# below still_motion_frac. measurement: at least inside_glyphs marks inside the image (two calipers of one distance
-# are two marks, their dotted line a third when drawn) or at least extra_cells unusual inked cells beside it. A mark
-# inside the image counts only from inside_mark_px ink pixels (a straight dotted line: its dots together), in the
-# screened clips and in the reference clips alike; MIN_INK_PX counts every mark. It applies to marks inside the
-# image only: the cell map beside it, where results text is, keeps every ink component of MIN_INK_PX.
-# The policy (`policy`), which decides from the evidence whether a clip is kept, excluded or uncertain:
-# - 'hybrid' (the default): a clip is excluded only on evidence of a disallowed condition (unreadable; a header of no
-#   ultrasound image; still, read in a field of view; an analysis screen by a GE header, or by header and pixels for
-#   another vendor; a measurement named by the header, read as text where `text_decides`, or drawn as a caliper
-#   pair); uncertain on partial or conflicting evidence (motion readable only over the whole frame, another vendor's
-#   analysis screen by one source only, a GE header naming unusual image data, a traced contour or a single caliper,
-#   a measurement unit read where `text_decides`);
-#   kept otherwise. A header without image regions, a missing baseline or many small static marks are recorded, never
-#   a reason on their own.
-# - 'header' and 'pixel', the earlier policies, kept to compare on the same labels: exclusion by a header without
-#   usable image regions and still; or by still and the pixel measurement scores (`inside_glyphs`, `extra_cells`),
-#   with a missing baseline excluded as 'incomplete'.
+# Screening thresholds: Stillness uses scan-area or frame motion fractions. Legacy pixel measurement detection uses
+# inside_glyphs, extra_cells, and inside_mark_px. Mark size applies to both screened and reference clips; MIN_INK_PX
+# applies to general ink components.
+
+# Screening policy (`policy`):
+# - hybrid (default): Exclude confirmed unreadable, non-ultrasound, still, analysis-screen, or measured clips. Mark
+#   uncertain when motion, header, analysis, or OCR evidence is incomplete or ambiguous. Otherwise keep.
+# - header (legacy): Exclude clips without usable header image regions or with stillness.
+# - pixel (legacy): Exclude still clips or those meeting pixel measurement thresholds; missing layout baselines are
+#   excluded as incomplete.
+# Legacy policies are retained for comparison against the same labels.
 POLICIES = ("hybrid", "header", "pixel")
 HEADER_REASONS = {"no_regions": "no_image_region", "size_mismatch": "header_size_mismatch",
                   "unreadable_header": "header_unreadable", "": "no_header"}
-# An analysis screen (`analysis_evidence`): a header naming no tissue or flow data (ImageType value '0000'), without the
-# acquired image it derives from and without the ECG, which every pilot recording had; and, from the pixels, static
-# bright or colored graphics beside the field of view on at least ANALYSIS_OUTSIDE_INK of the frame (plots, tables,
-# segment maps: 0.3% to 3% on the 28 labelled analysis screens, below 0.07% on 90% of 387 clean clips and 0.65% at
-# most). The two overlap, and on the pilot's GE clips the pixels never added an exclusion to the header while they
-# made 9 color recordings uncertain, so a GE header decides alone; the pixels count only for other vendors.
+# Analysis screens (`analysis_evidence`): GE headers identify displays with no image data (ImageType '0000'), source image,
+# or ECG. Other vendors require both header evidence and static graphics outside the field of view (outside_ink_frac >= ANALYSIS_OUTSIDE_INK);
+# either alone causes uncertainty. For GE, pixel evidence is recorded but does not change the decision.
 ANALYSIS_CONTENT, ANALYSIS_OUTSIDE_INK = "0000", 0.003
-# The image data a GE header names (`header_content`): tissue ('0001'), tissue and color flow ('0011'), or none (an
-# analysis screen, ANALYSIS_CONTENT). Any other value is unusual: of 46,293 surveyed GE training headers, 22 GE
-# Vingmed clips (0.1%, Vivid E9 and E95) named '0041' or '0051', and GE Healthcare and GEMS none. Labelled blind with
-# as many clips of the usual values (same view and models), all 22 were displays of a 3D probe (several panels, or a
-# rendered volume) and 18 were measured or no 2D recording, against none of the 22 others.
+# Unusual GE image content (`header_content`): '0001' denotes tissue, '0011' tissue with color, and '0000' no image data. Other values cause uncertainty.
 GE_IMAGE_CONTENTS = ("0001", "0011", ANALYSIS_CONTENT)
-# A caliper pair (`geometry_evidence`): two calipers static together (over the whole clip or in one window), of about
-# one size (areas within PAIR_AREA_RATIO) and one color (channels within PAIR_COLOR_DIFF), at least PAIR_MIN_PX apart:
-# the two ends of one distance. Calipers joined by their line in one ink component are a pair already.
+# Caliper pairs (`geometry_evidence`): Two calipers in the same clip/window, with similar size (PAIR_AREA_RATIO), color
+# (PAIR_COLOR_DIFF), and sufficient separation (PAIR_MIN_PX), or connected by a line. Geometry is diagnostic only.
 PAIR_AREA_RATIO, PAIR_COLOR_DIFF, PAIR_MIN_PX = 2.0, 40, 20
 GEOMETRY_ORDER = ("caliper_pair", "trace", "caliper")
-# Motion read over the whole frame only (no field of view found) makes a still clip certain only when its frames also
-# repeat (`duplicate_frac` at least FROZEN_DUP_SHARE); else it is uncertain.
+# Whole-frame stillness: When no field of view is available, low motion confirms stillness only if duplicate_frac >= FROZEN_DUP_SHARE;
+# otherwise the clip is uncertain.
 FROZEN_DUP_SHARE = 0.9
-# An enriched challenge set (`challenge_set`): kept clips with at least CHALLENGE_MANY_MARKS marks inside the image are
-# drawn as clips the measurement structures may have missed, or bright tissue (hard negatives).
+# Challenge set (`challenge_set`): Sample kept clips with at least CHALLENGE_MANY_MARKS internal marks to investigate missed overlays
+# and hard negatives (e.g., bright tissue).
 CHALLENGE_MANY_MARKS = 4
-# `text_decides`: whose measurement text, read by the `text` pass, takes part in the hybrid decision (TEXT_SCOPES):
-# 'header_unavailable' (the default), the clips whose header cannot name a measurement (`measurement_header`
-# unavailable: another vendor's, whose convention is unverified, or no header), for which the text and the marks over
-# the image are the only measurement evidence; 'all'; or 'none'. Of 266 labelled validation clips (160 of vendors
-# other than GE Vingmed, 58 of them without a GE header) the reading found measurement text on none: it excluded no
-# clean clip there, and how much measurement text it catches is not measured yet (no labelled clip of such a header
-# was measured). The evidence is recorded either way; `calibrate --thresholds '{"text_decides": "all"}'` evaluates
-# another scope on labelled clips.
+# OCR decision scope (`text_decides`):
+# - all (default): OCR evidence affects every clip.
+# - header_unavailable: Only clips without usable measurement-header evidence.
+# - none: OCR does not affect decisions.
+# Evidence is always recorded. A GE header without MEASURE does not prove a clip is clean; OCR can detect results boxes absent from header metadata.
 TEXT_SCOPES = ("none", "header_unavailable", "all")
 THRESHOLDS = {"still_scan_motion_frac": 0.05, "still_motion_frac": 0.01, "inside_glyphs": 2, "extra_cells": 8,
-              "inside_mark_px": MIN_INK_PX, "policy": "hybrid", "text_decides": "header_unavailable"}
-# What each threshold may be (`check_thresholds`): (type, minimum, maximum or None); `policy` one of POLICIES and
-# `text_decides` one of TEXT_SCOPES.
+              "inside_mark_px": MIN_INK_PX, "policy": "hybrid", "text_decides": "all"}
+# Threshold validation (`check_thresholds`): Enforce each parameter's type and allowed range, including valid POLICIES and TEXT_SCOPES.
 THRESHOLD_RANGES = {"still_scan_motion_frac": (float, 0.0, 1.0), "still_motion_frac": (float, 0.0, 1.0),
                     "inside_glyphs": (int, 1, None), "extra_cells": (int, 1, None), "inside_mark_px": (int, 1, None)}
-# The labelled calibration the THRESHOLDS above were chosen with, or None while they are provisional: {"date": ...,
-# "report": SHA-256 of `calibrate`'s report, "screen": the `screen` it reports, the SHA-256 of the extractor and flag
-# rule its flags were made with, "thresholds": the thresholds it reports, which it measured}. `flag` records it only
-# with flags of that same screen at those same thresholds (changing THRESHOLDS alone leaves flags provisional), and
-# `radar_pilot.py candidates` refuses provisional flags unless told the run is a trial (--provisional-screen). Set
-# only once an independent-patient validation and blind challenge sets with positives are labelled and reported.
+# Calibration (`CALIBRATION`): None until independent-patient validation and blind challenge sets with positive cases are completed.
+# Once validated, record the date, report SHA-256, evaluated screen hash, and thresholds. Calibration applies only to that exact
+# configuration; changed code or thresholds make flags provisional again. `radar_pilot.py candidates` rejects provisional flags
+# unless --provisional-screen explicitly permits a trial.
 CALIBRATION = None
 # Still scores `calibrate` sweeps: (column, a clip is still when the score is 'below' or 'at_least' a value, values).
 STILL_SWEEPS = (*((c, "below", (0.002, 0.005, 0.01, 0.02, 0.05)) for c in MOTION_COLUMNS if not c.startswith("scan")),
@@ -1150,7 +1044,9 @@ def _text_worker(item):
     counted): measurement text (`measurement_text`) in the first, middle and last of the frames pass 1 read
     (`frame_indices`). The file's bytes are checked against pass 1's before and after decoding: a clip replaced since
     is 'changed', which stops the run. A clip OpenCV decodes no wanted frame of is 'decode_failed', its text
-    unavailable: pass 1's decoder read it, so that says nothing about the clip. `text_frames` counts the frames read."""
+    unavailable: pass 1's decoder read it, so that says nothing about the clip; one it decodes some of them of is
+    'incomplete', the frames decoded read: what they show counts, what they do not is no absence. `text_frames` counts
+    the frames read."""
     key, path, digest, n = item
 
     def unchanged():
@@ -1167,6 +1063,8 @@ def _text_worker(item):
     if not frames:
         return {"global_key": key, "text_status": "decode_failed", "text_measurements": None, "text_frames": 0}
     status, found = measurement_text(frames, _OCR)
+    if status == "checked" and len(frames) < len(wanted):
+        status = "incomplete"
     return {"global_key": key, "text_status": status, "text_measurements": found, "text_frames": len(frames)}
 
 
@@ -1430,7 +1328,7 @@ def geometry_evidence(evidence, min_px):
     return next((kind for kind in GEOMETRY_ORDER if kind in found), "none")
 
 
-VELOCITY_UNIT = re.compile(r"m/s$")  # a velocity scale and Nyquist limit read so on every Doppler display.
+VELOCITY_UNIT = re.compile(r"m/s$", re.IGNORECASE)  # a velocity scale and Nyquist limit, on every Doppler display.
 
 
 def text_evidence(found):
@@ -1459,7 +1357,8 @@ def screen_evidence(df, thresholds=THRESHOLDS):
     (measure_flag, none, unavailable: no header, or one whose convention is unverified, where no MEASURE is no
     evidence);
     `text_evidence` (`text_evidence`: measurement_text, measurement_unit, none; unavailable: no text pass, or a clip
-    it could not decode, which is not absence); `geometry_evidence` (`geometry_evidence`); and `evidence_missing`,
+    it could not decode, which is not absence, or decoded only in part without finding any); `geometry_evidence`
+    (`geometry_evidence`, recorded: no policy decides with it); and `evidence_missing`,
     what could not be checked (header, header_convention, field of view, text)."""
     readable = df.error.isna()
     status = df.dicom_status.fillna("")
@@ -1491,7 +1390,9 @@ def screen_evidence(df, thresholds=THRESHOLDS):
                                          np.where(header & ge, "none", "unavailable"))
     text_status, found = (df[c] if c in df else pd.Series(None, index=df.index, dtype=object)
                           for c in ("text_status", "text_measurements"))
-    out["text_evidence"] = np.where(text_status != "checked", "unavailable", found.map(text_evidence))
+    read = found.map(text_evidence)  # a clip read in part: what it shows counts, its absence does not.
+    out["text_evidence"] = np.where((text_status == "checked") | ((text_status == "incomplete") & (read != "none")),
+                                    read, "unavailable")
     marks = df["inside_marks"] if "inside_marks" in df else pd.Series(None, index=df.index, dtype=object)
     out["geometry_evidence"] = marks.map(lambda e: geometry_evidence(e, thresholds["inside_mark_px"]))
     missing = pd.DataFrame({"header": ~header, "header_convention": header & ~ge, "field_of_view": ~in_field,
@@ -1574,15 +1475,14 @@ def flag_columns(df, thresholds=THRESHOLDS):
                            | (~ge & (analysis == "header_and_visual")),
         "measurement_header": df.measurement_header == "measure_flag",
         "measurement_text": text & (df.text_evidence == "measurement_text"),
-        "measurement_calipers": df.geometry_evidence == "caliper_pair",
     }, {
         "still_low_confidence": df.still_status == "still_low_confidence",
         "analysis_header_only": ~ge & (analysis == "header_only"),
         "unusual_image_content": df.header_content == "unusual",
         "analysis_visual_only": ~ge & (analysis == "visual_only"),
-        "measurement_trace": df.geometry_evidence == "trace",
-        "measurement_single_caliper": df.geometry_evidence == "caliper",
         "measurement_unit_text": text & (df.text_evidence == "measurement_unit"),
+        # Where the text decides, a reading that failed or covered part of the frames is no clean reading.
+        "measurement_text_unavailable": text & (df.text_evidence == "unavailable"),
     })
 
 

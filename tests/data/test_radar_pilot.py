@@ -432,7 +432,7 @@ class TestPipeline(unittest.TestCase):
         clips = pd.read_csv(os.path.join(self.out, "shortlist_clips.csv"))
         flags_path = os.path.join(self.tmp, "flags.parquet")
         # Every clip uncertain: no study qualifies on them, the stop says why, and nothing is written.
-        uncertain = clips[["video_path"]].assign(decision="uncertain", decision_reasons="measurement_trace",
+        uncertain = clips[["video_path"]].assign(decision="uncertain", decision_reasons="unusual_image_content",
                                                  exclude=False, exclude_reason="")
         write_flags(uncertain, flags_path, self.out)
         with self.assertRaises(SystemExit) as stop:
@@ -441,13 +441,13 @@ class TestPipeline(unittest.TestCase):
         self.assertFalse(set(os.listdir(self.out)) & set(rp.SELECTION_OUTPUTS))
         # One clip uncertain: left out of the pilot, listed with its reasons, counted apart from the excluded ones.
         flags = uncertain.assign(decision="keep", decision_reasons="")
-        flags.loc[0, ["decision", "decision_reasons"]] = ["uncertain", "measurement_trace"]
+        flags.loc[0, ["decision", "decision_reasons"]] = ["uncertain", "unusual_image_content"]
         write_flags(flags, flags_path, self.out)
         self.run_cmd("select", "--out-dir", self.out, "--flags", flags_path)
         pilot = pd.read_csv(os.path.join(self.out, "pilot_clips.csv"))
         listed = pd.read_csv(os.path.join(self.out, "uncertain_clips.csv"))
         self.assertEqual(listed.global_key.tolist(), [clips.global_key.iloc[0]])
-        self.assertEqual(listed.decision_reasons.tolist(), ["measurement_trace"])
+        self.assertEqual(listed.decision_reasons.tolist(), ["unusual_image_content"])
         self.assertNotIn(clips.global_key.iloc[0], set(pilot.global_key))
         with open(os.path.join(self.out, "selection.json")) as f:
             selection = json.load(f)
