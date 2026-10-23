@@ -9,15 +9,23 @@ Each item returns a fixed number of video slots (`num_videos`), each holding
 
 - training with `shuffle_videos`: a random subset of the study's videos, in random order, drawn
   again every time the study is read, so an epoch sees another bag of the same study;
-- evaluation (or `shuffle_videos: false`): the first `num_videos` videos in path order, every time.
+- evaluation (or `shuffle_videos: false`): the same videos every time, chosen by `eval_videos`:
+  `first`, the first `num_videos` in path order, or `seeded`, a random subset in random order drawn
+  once from `eval_seed` and the study id (the same bag on every rank, worker and run).
+
+Path order is often acquisition order, so `first` can keep only the views recorded first (in a
+TTE, the parasternal ones); `seeded` gives evaluation the view mix of the training bags.
 
 A study with fewer videos than slots is padded with black clips; `video_mask` says which slots are
 real. A video that fails to load is skipped and its slot padded; a study whose selected videos all
 fail returns `None`. Targets are study-level: every row of a study must agree (missing values are
 allowed and masked in the loss). With a `view_column`, `views` keeps only some views and
-`view_labels_map` gives each slot its view class (for the probe's view embedding).
+`view_labels_map` gives each slot its view class (for the probe's view embedding). With a
+`patient_column` in the manifest, the split's patients are kept (`patient_ids`) so splits can be
+checked for shared patients; every row must then name its patient.
 """
 
+import hashlib
 import logging
 import random
 
@@ -33,15 +41,26 @@ logger = logging.getLogger()
 SELECTION = {
     "random": "a random subset of the study's videos, in random order, redrawn at every read",
     "fixed": "the first `num_videos` videos of the study in path order, every time",
+    "seeded": "a random subset of the study's videos, in random order, drawn once from the seed and the study id",
 }
+# `eval_videos` -> how a study is read when its bag is not redrawn (evaluation, or no `shuffle_videos`).
+EVAL_VIDEOS = {"first": "fixed", "seeded": "seeded"}
+
+
+def id_columns(args_data):
+    """{column: str} for the manifest's identifier columns (video, study, view, patient): read as
+    text, so a patient 123 is never 123.0 in a file where the column has a gap."""
+    names = (args_data.get("datapoint_loc_label", "video_path"), args_data.get("groupby_column", "study_id"),
+             args_data.get("view_column"), args_data.get("patient_column", "patient_id"))
+    return {name: str for name in names if name}
 
 
 def read_split(args_data, split):
     """The rows of `split` from the manifests `args_data` names: `data_filename` (one CSV with a
-    `split_column`) or `dataset_<split>` (one CSV per split)."""
+    `split_column`) or `dataset_<split>` (one CSV per split). Identifier columns are read as text."""
     path = args_data.get("data_filename")
     if path:
-        table = pd.read_csv(path)
+        table = pd.read_csv(path, dtype=id_columns(args_data))
         column = args_data.get("split_column", "split")
         if column not in table.columns:
             raise ValueError(f"`data_filename` has no `{column}` column; set `experiment.data.split_column`.")
@@ -52,7 +71,7 @@ def read_split(args_data, split):
     path = args_data.get(f"dataset_{split}")
     if not path:
         raise ValueError(f"Set `experiment.data.data_filename` (with a split column) or `experiment.data.dataset_{split}`.")
-    return pd.read_csv(path)
+    return pd.read_csv(path, dtype=id_columns(args_data))
 
 
 def make_clip_loader(frames_per_clip, frame_step=None, duration=None, fps=None, num_clips_per_video=1,
@@ -71,6 +90,14 @@ def make_clip_loader(frames_per_clip, frame_step=None, duration=None, fps=None, 
         allow_clip_overlap=True,
         filter_long_videos=filter_long_videos,
     )
+
+
+def seeded_bag(study_id, eval_seed, num_paths, num_videos):
+    """The positions of a study's seeded bag: a permutation of its `num_paths` videos drawn from
+    `eval_seed` and `study_id` (SHA-256, so the same in every process), cut to `num_videos`."""
+    digest = hashlib.sha256(f"{int(eval_seed)}:{study_id}".encode()).digest()
+    rng = np.random.default_rng(int.from_bytes(digest[:8], "little"))
+    return [int(i) for i in rng.permutation(num_paths)[:num_videos]]
 
 
 def view_ids(values, view_labels_map):
@@ -176,9 +203,14 @@ class VideoStudyDataset(torch.utils.data.Dataset):
         min_videos=1,
         filter_long_videos=int(10**9),
         view_labels_map=None,
+        eval_videos="first",
+        eval_seed=0,
+        patient_column="patient_id",
     ):
         if num_videos < 1:
             raise ValueError("`num_videos` must be at least 1.")
+        if eval_videos not in EVAL_VIDEOS:
+            raise ValueError(f"`eval_videos` is one of {sorted(EVAL_VIDEOS)}, not {eval_videos!r}.")
         self.studies = group_studies(table, path_column, group_column, list(target_columns), view_column, views,
                                      labels_map, min_videos, view_labels_map)
         self.target_columns = list(target_columns)
@@ -186,7 +218,17 @@ class VideoStudyDataset(torch.utils.data.Dataset):
         self.num_clips_per_video = int(num_clips_per_video)
         self.frames_per_clip = int(frames_per_clip)
         self.training = bool(training)
-        self.selection = "random" if self.training and shuffle_videos else "fixed"
+        self.selection = "random" if self.training and shuffle_videos else EVAL_VIDEOS[eval_videos]
+        self.eval_seed = int(eval_seed)
+        # The split's patients (all its rows, before any view filter), or None without a patient column.
+        self.patient_ids = None
+        if patient_column and patient_column in table.columns:
+            patients = table[patient_column].astype("string").str.strip()
+            missing = int((patients.isna() | (patients == "")).sum())
+            if missing:
+                raise ValueError(f"{missing} rows have no `{patient_column}`: every row needs its patient so the "
+                                 "splits can be checked for shared patients.")
+            self.patient_ids = set(patients)
         self.transform = transform
         self.loader = make_clip_loader(frames_per_clip, frame_step, duration, fps, num_clips_per_video,
                                        random_clip_sampling=self.training, filter_long_videos=filter_long_videos)
@@ -205,12 +247,16 @@ class VideoStudyDataset(torch.utils.data.Dataset):
         """[studies, targets], NaN where missing."""
         return np.stack([s[2] for s in self.studies])
 
-    def select(self, paths):
+    def select(self, paths, study_id=None):
         """The positions of the videos read for one item, as `SELECTION[self.selection]` says."""
         if self.selection == "random":
             chosen = random.sample(range(len(paths)), min(self.num_videos, len(paths)))
             random.shuffle(chosen)
             return chosen
+        if self.selection == "seeded":
+            if study_id is None:
+                raise ValueError("A seeded bag needs the study id.")
+            return seeded_bag(study_id, self.eval_seed, len(paths), self.num_videos)
         return list(range(min(self.num_videos, len(paths))))
 
     MAX_RETRIES = 20  # studies tried in training before an unreadable split stops the run.
@@ -235,7 +281,7 @@ class VideoStudyDataset(torch.utils.data.Dataset):
         `view_labels_map`."""
         study_id, paths, targets, classes = self.studies[index]
         clips, indices, mask, views = [], [], [], []
-        for position in self.select(paths):
+        for position in self.select(paths, study_id):
             loaded = self.load_video(paths[position])
             if loaded is None:
                 logger.warning(f"Skipping a video of study {index} that failed to load; its slot is padded.")

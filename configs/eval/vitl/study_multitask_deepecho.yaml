@@ -58,6 +58,8 @@ experiment:
       Other: 19
     num_videos: 12                                # a TTE has 30-80 clips; 12 per read, redrawn every epoch.
     shuffle_videos: true
+    eval_videos: seeded                           # path order is acquisition order (parasternal first): score random bags.
+    eval_seed: 0                                  # the same evaluation bags for every training seed.
     min_videos: 1
     num_clips_per_video: 1
     frames_per_clip: 16

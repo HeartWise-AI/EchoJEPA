@@ -16,15 +16,18 @@ from src.utils.logging import get_logger
 logger = get_logger(os.path.basename(__file__))
 
 
-def robust_checkpoint_loader(r_path: str, map_location: MAP_LOCATION = "cpu", max_retries: int = 3) -> Any:
+def robust_checkpoint_loader(
+    r_path: str, map_location: MAP_LOCATION = "cpu", max_retries: int = 3, **load_kwargs: Any
+) -> Any:
     """
     Loads a checkpoint from a path, retrying up to max_retries times if the checkpoint is not found.
+    `load_kwargs` go to `torch.load` (e.g. `weights_only=True`, `mmap=True`).
     """
     retries = 0
 
     while retries < max_retries:
         try:
-            return torch.load(r_path, map_location=map_location)
+            return torch.load(r_path, map_location=map_location, **load_kwargs)
         except Exception as e:
             logger.warning(f"Encountered exception when loading checkpoint {e}")
             retries += 1
