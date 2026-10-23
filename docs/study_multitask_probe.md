@@ -52,6 +52,28 @@ DeepCORO_CLIP's contrastive stage produced as the encoder:
 ```bash
 python data/make_coronary_manifest.py --reports <DeepCORO_CLIP report CSV> --out-dir <manifest_dir>
 python -m evals.main --fname configs/eval/vitl/study_multitask_deepcoro_finetune.yaml --devices cuda:0 cuda:1 cuda:2 cuda:3
+## Targets from the DeepECHO report
+
+[`data/make_study_targets.py`](../data/make_study_targets.py) derives 45 study-level targets from
+the cleaned DeepECHO report export (`df_report_2006_2026_clean.parquet`), links them to studies
+through the PACS index (accession number to StudyInstanceUID, as `link_ef_labels.py` does) and
+joins them onto the issue #6 `videos.csv`, giving `videos_with_targets.csv`, the manifest the
+probe reads, and `targets_info.json`, every target's task, units and distribution per split.
+
+| Group | Targets | Rule |
+|---|---|---|
+| Regression (report units) | `lvef`, `rvsp`, `lvidd`, `lvids`, `ivsd`, `lvpwd`, `lvot_diameter`, `la_dimension`, `lavi` (mL/m², the export's L/m² × 1000), `rv_basal_diameter`, `tapse`, `rv_s_prime`, `av_peak_velocity` and `tr_peak_velocity` (m/s), `av_mean_gradient`, `av_area`, `e_over_e_prime` (mean of lateral and septal), `aortic_root` (sinus of Valsalva), `ivc_diameter` | The report's value; PanEcho's units where they differ. |
+| Binary (0/1) | `reduced_ef_40` (EF < 40), `lvef_le_45`, `lvh_any` (both walls ≥ 1.1 cm), `lvh_modsev` (≥ 1.3), `rv_dysfunction` (`MHI VD fonction systolique` ≥ 1; −1 is missing), `rv_dilated` (RV basal ≥ 4.2), `rap_elevated` (≥ 8 mmHg), `lvot_obstruction` (4v² ≥ 20 mmHg; 10 positives in the whole export, left out of the config), `mv_stenosis` (area ≤ 1.5, mean gradient ≥ 5 or PHT ≥ 0.15 s), `as_present` / `as_severe` (ASE: area, mean gradient, peak velocity), `mr_modsev` / `tr_modsev` / `ar_modsev` / `pr_modsev` (referring grade ≥ 2; `0.5` and `Trace` are trace, dates are missing), `pericardial_effusion` (pericardium text; verify against a chart review), `shd_composite` (EchoNext's composite without its effusion component; an unmeasured component counts as absent) | The MHI - PanEcho mapping's cutoffs. |
+| Classification (PanEcho class order) | `lv_systolic_function` (EF ≥ 54 normal, ≤ 40 moderately/severely decreased, else mild), `lv_size` (LVIDd ≤ 5.2 / 6.4), `rv_size` (RV basal 4.2 / 5.0), `la_size` (LAVI 34 / 41, else LA dimension 4.0 / 4.6), `lv_diastolic_function` (grade 0 normal, grade 1 or indeterminate, grades 2 to 4), `av_stenosis` (none, mild/moderate, severe), `mr_grade` / `tr_grade` / `ar_grade` (none/trace ≤ 0.5, mild < 2, moderate/severe) | Class indices follow PanEcho's `tasks.pkl` order so the probe's classes compare with PanEcho's outputs. |
+
+A value a rule cannot decide stays empty and the probe masks it. The config for this target set
+is [`configs/eval/vitl/study_multitask_deepecho.yaml`](../configs/eval/vitl/study_multitask_deepecho.yaml).
+
+```bash
+python data/make_study_targets.py \
+    --reports /media/data1/ravram/DeepECHO/TTE_reports_concat/df_report_2006_2026_clean.parquet \
+    --pacs /media/data1/datasets/echo/database_tte_2009_2024.csv \
+    --videos <probe_manifests>/videos.csv --out-dir <targets_dir>
 ```
 
 ## Outputs

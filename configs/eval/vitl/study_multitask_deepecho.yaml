@@ -1,0 +1,223 @@
+# configs/eval/vitl/study_multitask_deepecho.yaml
+#
+# Study-level multi-task probe on the DeepECHO report targets: every TTE study is read as a
+# bag of its videos and the probe predicts the 44 targets that `data/make_study_targets.py`
+# derives from the cleaned report export (regression in the report's units, PanEcho-aligned
+# classes, EchoNext's SHD composite). The manifest is `videos_with_targets.csv`, the issue #6
+# `videos.csv` joined with the targets: one row per video with `video_path`, `study_id`,
+# `patient_id`, `view`, `split` and one column per target (empty where the report has none;
+# the probe masks those).
+#
+# Start frozen (`encoder.trainable_blocks: 0`); once the frozen probe is selected, fine-tune
+# the top blocks with one `multihead_kwargs` setting. Protocol: docs/study_multitask_probe.md.
+
+app: vjepa
+eval_name: study_multitask_frozen
+folder: /your_folder/cooldown/vitb16-continued-224px-16f
+tag: study-multitask-deepecho
+nodes: 1
+tasks_per_node: 4
+cpus_per_task: 32
+num_workers: 8
+resume_checkpoint: true
+
+meta:
+  seed: 0
+  wandb_project: echojepa-study-probe
+  wandb_entity: mhi_ai
+
+experiment:
+  data:
+    data_filename: /your_targets/videos_with_targets.csv
+    split_column: split
+    datapoint_loc_label: video_path
+    groupby_column: study_id
+    view_column: view
+    views: null                                   # every view; the view embedding tells them apart.
+    view_labels_map:                              # the 20 classifier labels (`predicted_class`), 0..19.
+      A4C: 0
+      A4C_LV: 1
+      A4C_ZOOM: 2
+      A2C: 3
+      A2C_LV: 4
+      A2C_ZOOM: 5
+      A3C: 6
+      A3C_LV: 7
+      A3C_ZOOM: 8
+      A5C: 9
+      A5C_ZOOM: 10
+      PLAX: 11
+      PLAX_ZOOM: 12
+      PLAX_DEEP: 13
+      PSAX: 14
+      PSAX_AV: 15
+      RVINF: 16
+      SUBCOSTAL: 17
+      SUPRASTERNAL: 18
+      OTHER: 19
+      Other: 19
+    num_videos: 12                                # a TTE has 30-80 clips; 12 per read, redrawn every epoch.
+    shuffle_videos: true
+    min_videos: 1
+    num_clips_per_video: 1
+    frames_per_clip: 16
+    frame_step: 2
+    resolution: 224
+
+  encoder:
+    trainable_blocks: 0                           # frozen first; then e.g. 8 (ViT-B) or 20 (ViT-L).
+    lr: 6.4e-6
+    weight_decay: 1.0e-4
+
+  classifier:
+    pooling_mode: attention                       # gated attention over the videos: cheap at 12 videos.
+    attention_hidden: 256
+    dropout: 0.1
+    use_view_embedding: true
+    num_heads: 16                                 # used by `pooling_mode: attentive` only.
+    num_probe_blocks: 4
+    target_label:
+      # regression (report units)
+      - lvef
+      - rvsp
+      - lvidd
+      - lvids
+      - ivsd
+      - lvpwd
+      - lvot_diameter
+      - la_dimension
+      - lavi
+      - rv_basal_diameter
+      - tapse
+      - rv_s_prime
+      - av_peak_velocity
+      - av_mean_gradient
+      - av_area
+      - tr_peak_velocity
+      - e_over_e_prime
+      - aortic_root
+      - ivc_diameter
+      # binary
+      - reduced_ef_40
+      - lvef_le_45
+      - lvh_any
+      - lvh_modsev
+      - rv_dysfunction
+      - rv_dilated
+      - rap_elevated
+      - mv_stenosis
+      - as_present
+      - as_severe
+      - mr_modsev
+      - tr_modsev
+      - ar_modsev
+      - pr_modsev
+      - pericardial_effusion
+      - shd_composite
+      # classification (PanEcho class order)
+      - lv_systolic_function
+      - lv_size
+      - rv_size
+      - la_size
+      - lv_diastolic_function
+      - av_stenosis
+      - mr_grade
+      - tr_grade
+      - ar_grade
+    head_task:
+      lvef: regression
+      rvsp: regression
+      lvidd: regression
+      lvids: regression
+      ivsd: regression
+      lvpwd: regression
+      lvot_diameter: regression
+      la_dimension: regression
+      lavi: regression
+      rv_basal_diameter: regression
+      tapse: regression
+      rv_s_prime: regression
+      av_peak_velocity: regression
+      av_mean_gradient: regression
+      av_area: regression
+      tr_peak_velocity: regression
+      e_over_e_prime: regression
+      aortic_root: regression
+      ivc_diameter: regression
+      reduced_ef_40: binary
+      lvef_le_45: binary
+      lvh_any: binary
+      lvh_modsev: binary
+      rv_dysfunction: binary
+      rv_dilated: binary
+      rap_elevated: binary
+      mv_stenosis: binary
+      as_present: binary
+      as_severe: binary
+      mr_modsev: binary
+      tr_modsev: binary
+      ar_modsev: binary
+      pr_modsev: binary
+      pericardial_effusion: binary
+      shd_composite: binary
+      lv_systolic_function: classification
+      lv_size: classification
+      rv_size: classification
+      la_size: classification
+      lv_diastolic_function: classification
+      av_stenosis: classification
+      mr_grade: classification
+      tr_grade: classification
+      ar_grade: classification
+    head_structure:                               # classes of the classification heads; 1 elsewhere.
+      lv_systolic_function: 3
+      lv_size: 3
+      rv_size: 3
+      la_size: 3
+      lv_diastolic_function: 3
+      av_stenosis: 3
+      mr_grade: 3
+      tr_grade: 3
+      ar_grade: 3
+    loss_structure: {}                            # defaults: huber / bce / ce.
+    head_weights:                                 # the EF-related heads count double; the rest 1.
+      lvef: 2.0
+      reduced_ef_40: 2.0
+      lv_systolic_function: 2.0
+    head_dropout: {}                              # default 0.0.
+    target_mean: null                             # z-scored from the train split.
+    target_std: null
+
+  evaluation:
+    selection: lvef/mae                           # or weighted_loss for the whole objective.
+
+  optimization:
+    batch_size: 4                                 # studies per GPU (x 12 videos = 48 clips per step).
+    num_epochs: 20
+    use_bfloat16: true
+    multihead_kwargs:
+    - {start_lr: 1.0e-4, lr: 1.0e-4, final_lr: 0.0, warmup: 0.0, weight_decay: 0.01, final_weight_decay: 0.01}
+    - {start_lr: 1.0e-4, lr: 1.0e-4, final_lr: 0.0, warmup: 0.0, weight_decay: 0.1, final_weight_decay: 0.1}
+    - {start_lr: 5.0e-5, lr: 5.0e-5, final_lr: 0.0, warmup: 0.0, weight_decay: 0.01, final_weight_decay: 0.01}
+
+model_kwargs:
+  # Charlotte's continued-pretraining checkpoint (V-JEPA 2.1 ViT-B); for the published ViT-L
+  # EchoJEPA encoder use `vit_encoder_multiclip` and its `pretrain_kwargs` as in
+  # configs/eval/vitl/study_multitask_frozen.yaml.
+  checkpoint: /your_folder/cooldown/vitb16-continued-224px-16f/latest.pth.tar
+  module_name: evals.video_classification_frozen.modelcustom.vjepa_2_1_encoder
+  pretrain_kwargs:
+    encoder:
+      model_name: vit_base
+      checkpoint_key: target_encoder
+      patch_size: 16
+      tubelet_size: 2
+      uniform_power: true
+      use_rope: true
+      use_sdpa: true
+      img_temporal_dim_size: 1
+      interpolate_rope: true
+      modality_embedding: true
+      n_output_distillation: 1
+  wrapper_kwargs:
+    max_frames: 128
