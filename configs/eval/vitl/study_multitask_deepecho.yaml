@@ -58,6 +58,8 @@ experiment:
       Other: 19
     num_videos: 12                                # a TTE has 30-80 clips; 12 per read, redrawn every epoch.
     shuffle_videos: true
+    sampling_mode: random                         # view_balanced covers available view families.
+    eval_seed: 0                                  # independent of meta.seed; fixed across sweep runs.
     min_videos: 1
     num_clips_per_video: 1
     frames_per_clip: 16
@@ -71,6 +73,11 @@ experiment:
 
   classifier:
     pooling_mode: attention                       # gated attention over the videos: cheap at 12 videos.
+    query_mode: shared                            # task/group readouts require attentive or hierarchical pooling.
+    view_dropout: 0.0
+    local_depth: 1                                # hierarchical only; 3D grid inferred from encoder/data settings.
+    local_num_queries: 4
+    local_use_rope: false
     attention_hidden: 256
     dropout: 0.1
     use_view_embedding: true
@@ -190,6 +197,7 @@ experiment:
 
   evaluation:
     selection: lvef/mae                           # or weighted_loss for the whole objective.
+    num_bags: 1
 
   optimization:
     batch_size: 4                                 # studies per GPU (x 12 videos = 48 clips per step).
