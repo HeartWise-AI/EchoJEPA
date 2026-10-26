@@ -202,6 +202,8 @@ class VideoStudyDataset(torch.utils.data.Dataset):
         mode = sampling_mode or ("random" if shuffle_videos else "fixed")
         if mode not in ("random", "view_balanced", "fixed"):
             raise ValueError("sampling_mode must be random, view_balanced or fixed.")
+        if mode != "fixed" and not shuffle_videos:
+            raise ValueError(f"shuffle_videos: false contradicts sampling_mode: {mode}; use sampling_mode: fixed.")
         self.selection = "seeded_random" if mode == "random" and not self.training else mode
         self.eval_seed, self.eval_bag_index = int(eval_seed), int(eval_bag_index)
         if mode == "view_balanced" and (not view_column or view_column not in table):
@@ -236,16 +238,26 @@ class VideoStudyDataset(torch.utils.data.Dataset):
             raise ValueError("acquisition_column is missing from the manifest.")
         acquisition = (view_ids(table[acquisition_column].tolist(), acquisition_labels_map)
                        if acquisition_column else [-1] * len(table))
-        for (_, row), acq in zip(table.iterrows(), acquisition):
-            label = str(row[view_column]) if view_column and view_column in table else "Other"
+        labels = (table[view_column].astype(str).tolist() if view_column and view_column in table
+                  else ["Other"] * len(table))
+        if view_labels_map:
+            # A view the map lacks is the `Other` class (`view_ids`): one family, not one per raw label.
+            known = {str(k) for k in view_labels_map}
+            labels = [label if label in known else "Other" for label in labels]
+        probabilities = None
+        if probability_columns:
+            probabilities = table[probability_columns].to_numpy(dtype=float)
+            if (not np.isfinite(probabilities).all() or (probabilities < 0).any()
+                    or not np.isclose(probabilities.sum(axis=1), 1, atol=1e-4).all()):
+                raise ValueError("View probabilities must be finite, nonnegative and sum to one on every row.")
+            probabilities = probabilities.astype(np.float32)
+        for i, (study, path, label, acq) in enumerate(zip(table[group_column].tolist(),
+                                                          table[path_column].astype(str).tolist(),
+                                                          labels, acquisition)):
             metadata = {"family": (view_family_map or {}).get(label, label), "acquisition_ids": acq}
-            if probability_columns:
-                probabilities = row[probability_columns].to_numpy(dtype=float)
-                if (not np.isfinite(probabilities).all() or (probabilities < 0).any()
-                        or not np.isclose(probabilities.sum(), 1, atol=1e-4)):
-                    raise ValueError("View probabilities must be finite, nonnegative and sum to one on every row.")
-                metadata["view_probs"] = probabilities.astype(np.float32)
-            self.video_metadata[(row[group_column], str(row[path_column]))] = metadata
+            if probabilities is not None:
+                metadata["view_probs"] = probabilities[i]
+            self.video_metadata[(study, path)] = metadata
         self.transform = transform
         self.loader = make_clip_loader(frames_per_clip, frame_step, duration, fps, num_clips_per_video,
                                        random_clip_sampling=self.training, filter_long_videos=filter_long_videos)

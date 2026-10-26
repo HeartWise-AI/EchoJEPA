@@ -159,6 +159,9 @@ def main(args_eval, resume_preempt=False):
     num_eval_bags = int(args_evaluation.get("num_bags", 1))
     if num_eval_bags < 1:
         raise ValueError("evaluation.num_bags must be positive.")
+    eval_mode = args_data.get("sampling_mode") or ("random" if shuffle_videos else "fixed")
+    if num_eval_bags > 1 and eval_mode == "fixed":
+        raise ValueError("evaluation.num_bags > 1 needs random or view_balanced sampling: fixed bags are identical.")
 
     # -- OPTIMIZATION
     args_opt = args_exp["optimization"]
@@ -330,6 +333,13 @@ def main(args_eval, resume_preempt=False):
         test_dataset = make_dataset("test", training=False) if test_only else None
         if test_only:
             check_disjoint({"train": train_dataset, "val": val_dataset, "test": test_dataset})
+            # The fingerprint leaves out a separate test manifest; record the one scored here.
+            test_path = args_data.get("dataset_test")
+            if run_info is not None and test_path and not args_data.get("data_filename"):
+                with open(test_path) as f:
+                    rows = sum(1 for line in f if line.strip())
+                run_info["manifests"]["dataset_test"] = {"file": os.path.basename(test_path),
+                                                         "sha256": provenance.sha256(test_path), "rows": rows}
         run_test(folder=folder, probes=probes, probe_names=probe_names, val_dataset=val_dataset, trainable=bool(trainable),
                  test_dataset=test_dataset, num_epochs=num_epochs, fingerprint=fingerprint,
                  selection_rule=selection_rule, run_info=run_info, wandb_run=wandb_run, step=num_epochs * ipe,
@@ -764,7 +774,7 @@ def head_metrics(spec, target, output, normalization=None):
     training criterion) and `n`."""
     valid = np.isfinite(target)
     y, out = target[valid], output[valid]
-    invalid = int((~np.isfinite(output).all(axis=1)).sum())
+    invalid = int((~np.isfinite(out).all(axis=1)).sum())
     if invalid:
         metrics = {k: float("nan") for k in TASK_METRICS[spec["task"]]}
         metrics.update(n=int(y.size), nonfinite_outputs=invalid)

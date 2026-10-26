@@ -216,8 +216,9 @@ class StudyProbe(nn.Module):
             local = self.clip_pooler(local.reshape(B * N * C, per_video // C, D))
             tokens = local.reshape(B, N * C * local.shape[1], D)
             per_video = tokens.shape[1] // N
-        tokens = tokens + slot_embedding.repeat_interleave(per_video, dim=1)
-        tokens = tokens.masked_fill(~video_mask.repeat_interleave(per_video, dim=1).unsqueeze(-1), 0)
+        # Broadcast the per-slot embedding instead of materializing a [B, L, D] copy of it.
+        tokens = (tokens.reshape(B, N, per_video, D) + slot_embedding[:, :, None]).masked_fill(
+            ~video_mask[:, :, None, None], 0).reshape(B, N * per_video, D)
         if self.pooling_mode in ("attentive", "hierarchical"):
             key_padding_mask = (~video_mask).repeat_interleave(per_video, dim=1)  # True = ignore
             pooled = self.pooler(tokens, key_padding_mask=key_padding_mask)

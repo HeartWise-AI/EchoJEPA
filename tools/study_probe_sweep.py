@@ -157,7 +157,11 @@ def launch(manifest_path, devices, index=None, dry_run=False):
         # Prevent two agents/jobs from mutating the same run. The OS releases the lock on exit.
         import fcntl
         with (result_dir / "sweep.lock").open("a") as lock:
-            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                print(json.dumps({"index": entry["index"], "skipped": "locked by another job"}), flush=True)
+                continue
             subprocess.run(command, check=True)
 
 
