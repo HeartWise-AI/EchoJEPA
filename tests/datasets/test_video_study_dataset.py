@@ -79,7 +79,7 @@ class TestVideoStudyDataset(unittest.TestCase):
         self.assertEqual(views.tolist(), [-1, -1, -1])
 
     def test_evaluation_reads_the_first_videos_in_path_order_every_time(self):
-        ds = self.dataset(training=False, num_videos=2)
+        ds = self.dataset(training=False, num_videos=2, sampling_mode="fixed")
         self.assertEqual(ds.selection, "fixed")
         for _ in range(3):
             self.assertEqual(ds.select(ds.studies[0][1]), [0, 1])
@@ -161,7 +161,8 @@ class TestVideoStudyDataset(unittest.TestCase):
         ds = self.dataset(training=False, view_column="view", view_labels_map=view_map)
         self.assertEqual(ds.studies[0][3], [0, 0, 1, 1])  # s0's videos in path order: 0, 1 (A4C), 2, 3 (A2C)
         _, _, mask, _, views = ds[0]
-        self.assertEqual((mask.tolist(), views.tolist()), ([True, True, True], [0, 0, 1]))
+        chosen = ds.select(ds.studies[0][1], study_id="s0")
+        self.assertEqual((mask.tolist(), views.tolist()), ([True, True, True], [ds.studies[0][3][i] for i in chosen]))
         _, _, mask, _, views = ds[1]
         self.assertEqual((mask.tolist(), views.tolist()), ([True, False, False], [0, -1, -1]))
         ds = self.dataset(training=True, view_column="view", view_labels_map=view_map, num_videos=2)
@@ -178,3 +179,56 @@ class TestVideoStudyDataset(unittest.TestCase):
             self.dataset(training=False, view_column="view", view_labels_map={"A4C": 0, "A2C": 2})
         with self.assertRaisesRegex(ValueError, "view_column"):
             self.dataset(training=False, view_labels_map=view_map)
+
+    def test_seeded_evaluation_does_not_depend_on_global_rng_and_varies_by_bag(self):
+        ds = self.dataset(training=False, num_videos=2, eval_seed=77)
+        paths = ds.studies[0][1]
+        self.assertEqual(ds.selection, "seeded_random")
+        a = ds.select(paths, study_id="s0")
+        random.seed(1234)
+        for _ in range(50):
+            random.random()
+        self.assertEqual(ds.select(paths, study_id="s0"), a)
+        bags = set()
+        for index in range(20):
+            ds.eval_bag_index = index
+            bags.add(tuple(ds.select(paths, study_id="s0")))
+        self.assertGreater(len(bags), 1)
+        ds.eval_bag_index = 0
+        self.assertEqual(ds.select(paths, study_id="s0"), a)
+
+    def test_balanced_sampling_covers_rare_families_without_replacement(self):
+        ds = self.dataset(training=False, num_videos=3, view_column="view", sampling_mode="view_balanced")
+        paths = [f"{i}.mp4" for i in range(22)]
+        families = ["A4C"] * 20 + ["PLAX", "PSAX"]
+        for bag in range(20):
+            ds.eval_bag_index = bag
+            chosen = ds.select(paths, families, "study")
+            self.assertEqual({families[i] for i in chosen}, {"A4C", "PLAX", "PSAX"})
+            self.assertEqual(len(set(chosen)), 3)
+            self.assertEqual(chosen, ds.select(paths, families, "study"))
+        ds.num_videos = 30
+        self.assertEqual(set(ds.select(paths, families, "study")), set(range(22)))
+        # Missing families are never invented or duplicated.
+        ds.num_videos = 4
+        self.assertEqual(len(set(ds.select(paths, ["A4C"] * 22, "study"))), 4)
+
+    def test_probability_and_type_metadata_follow_sampling_and_padding(self):
+        table = self.table.copy()
+        table["p4"] = np.where(table.view == "A4C", 0.8, 0.1)
+        table["p2"] = 1 - table.p4
+        table["kind"] = np.where(table.view == "A4C", "bmode", "color")
+        ds = VideoStudyDataset(table, target_columns=["lvef"], frames_per_clip=FRAMES, num_videos=3,
+                               view_column="view", view_labels_map={"A4C": 0, "A2C": 1},
+                               view_probability_columns={"A2C": "p2", "A4C": "p4"},
+                               acquisition_column="kind", acquisition_labels_map={"bmode": 0, "color": 1})
+        item = ds[0]
+        for view, probs, kind in zip(item[4], item[5]["view_probs"], item[5]["acquisition_ids"]):
+            self.assertAlmostEqual(float(probs[0]), 0.8 if view == 0 else 0.1, places=6)
+            self.assertEqual(int(kind), int(view))
+        padded = ds[1]
+        self.assertTrue((padded[5]["view_probs"][1:] == 0).all())
+        self.assertEqual(padded[5]["acquisition_ids"].tolist(), [0, -1, -1])
+        with self.assertRaisesRegex(ValueError, "cover every"):
+            VideoStudyDataset(table, target_columns=["lvef"], view_column="view",
+                              view_labels_map={"A4C": 0, "A2C": 1}, view_probability_columns={"A4C": "p4"})
