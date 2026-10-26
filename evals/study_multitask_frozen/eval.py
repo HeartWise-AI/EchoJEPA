@@ -235,6 +235,7 @@ def main(args_eval, resume_preempt=False):
     encoder = init_module(module_name=args_pretrain["module_name"], frames_per_clip=frames_per_clip,
                           resolution=resolution, checkpoint=checkpoint, model_kwargs=args_pretrain["pretrain_kwargs"],
                           wrapper_kwargs=args_pretrain.get("wrapper_kwargs"), device=device)
+    check_token_grid(encoder, probe_options["token_grid"], args_pretrain)
     probes = [
         StudyProbe(embed_dim=encoder.embed_dim, heads=specs, pooling_mode=pooling_mode, num_heads=num_heads,
                    depth=num_probe_blocks, attention_hidden=attention_hidden, dropout=probe_dropout,
@@ -456,6 +457,22 @@ def study_probe_options(classifier, data, pretrained):
                 num_clips_per_video=int(data.get("num_clips_per_video", 1)))
 
 
+def check_token_grid(encoder, grid, pretrained):
+    """Refuse a hierarchical token grid that does not match the loaded encoder's patch/tubelet size."""
+    if grid is None:
+        return
+    vit = next((m for m in encoder.modules() if hasattr(m, "patch_size") and hasattr(m, "tubelet_size")), None)
+    if vit is None:
+        raise ValueError("Hierarchical pooling cannot verify its token grid: the encoder exposes no "
+                         "patch_size/tubelet_size.")
+    cfg = pretrained.get("pretrain_kwargs", {}).get("encoder", {})
+    expected = (int(cfg.get("patch_size", 16)), int(cfg.get("tubelet_size", 2)))
+    actual = (int(vit.patch_size), int(vit.tubelet_size))
+    if actual != expected:
+        raise ValueError(f"Hierarchical token grid assumes patch/tubelet {expected}, but the loaded encoder uses "
+                         f"{actual}: set patch_size and tubelet_size in pretrain_kwargs.encoder.")
+
+
 def parse_selection(selection, specs):
     """The selection rule: `weighted_loss` (the training objective on validation, lower is better)
     or `<head>/<metric>`, a metric `head_metrics` reports for that head's task (e.g. `lvef/mae`,
@@ -475,7 +492,7 @@ def parse_selection(selection, specs):
 
 
 def check_disjoint(datasets):
-    """Refuse shared studies, and shared patients when the manifest supplies patient ids."""
+    """Refuse shared studies and shared patients; every split must carry patient ids."""
     names = list(datasets)
     for i, a in enumerate(names):
         for b in names[i + 1:]:
@@ -484,7 +501,9 @@ def check_disjoint(datasets):
                 raise ValueError(f"{len(shared)} studies are in both the {a} and the {b} split (e.g. "
                                  f"{sorted(map(str, shared))[:3]}): every study belongs to one split.")
             pa, pb = getattr(datasets[a], "patient_ids", None), getattr(datasets[b], "patient_ids", None)
-            if pa is not None and pb is not None and pa & pb:
+            if pa is None or pb is None:
+                raise ValueError(f"The {a} and {b} splits must both carry patient ids to check patient overlap.")
+            if pa & pb:
                 raise ValueError(f"{len(pa & pb)} patients are in both the {a} and the {b} split.")
 
 

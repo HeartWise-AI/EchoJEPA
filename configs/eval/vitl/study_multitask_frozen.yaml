@@ -30,7 +30,8 @@ meta:
 
 experiment:
   data:
-    # One long CSV with a header: one row per video, a study column, the target columns, and a
+    # One long CSV with a header: one row per video, a study column, a `patient_id` column (required:
+    # every split is checked to be patient-disjoint; `patient_column` renames it), the target columns, and a
     # split column (train / val / test). `dataset_train` / `dataset_val` / `dataset_test` (one CSV
     # per split, same columns) can replace `data_filename` + `split_column`.
     data_filename: /your_manifests/videos_with_targets.csv

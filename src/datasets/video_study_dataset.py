@@ -208,12 +208,14 @@ class VideoStudyDataset(torch.utils.data.Dataset):
         self.eval_seed, self.eval_bag_index = int(eval_seed), int(eval_bag_index)
         if mode == "view_balanced" and (not view_column or view_column not in table):
             raise ValueError("view_balanced sampling requires view_column in the manifest.")
-        self.patient_ids = None
-        if patient_column and patient_column in table:
-            patients = table.groupby(group_column)[patient_column]
-            if table[patient_column].isna().any() or (patients.nunique() != 1).any():
-                raise ValueError("Each study must have exactly one nonmissing patient id.")
-            self.patient_ids = set(patients.first().loc[self.study_ids].astype(str))
+        # Patient ids are mandatory: patient-disjoint splits are checked on every run.
+        if not patient_column or patient_column not in table:
+            raise ValueError(f"The manifest needs a patient id column ({patient_column!r}): patient-disjoint "
+                             "splits are checked on every run.")
+        patients = table.groupby(group_column)[patient_column]
+        if table[patient_column].isna().any() or (patients.nunique() != 1).any():
+            raise ValueError("Each study must have exactly one nonmissing patient id.")
+        self.patient_ids = set(patients.first().loc[self.study_ids].astype(str))
         # Metadata follows the sorted video paths, independently of sampled slot order.
         self.video_metadata = {}
         self.view_probability_columns = view_probability_columns

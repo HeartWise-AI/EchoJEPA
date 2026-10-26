@@ -8,9 +8,10 @@ import unittest
 from unittest import mock
 
 import numpy as np
+import torch
 import yaml
 
-from evals.study_multitask_frozen.eval import aggregate_bags, check_disjoint, evaluate, manifest_paths
+from evals.study_multitask_frozen.eval import aggregate_bags, check_disjoint, check_token_grid, evaluate, manifest_paths
 from src.models.study_probe import head_specs
 from tests.models.test_study_probe import CLASSIFIER
 from tools.study_probe_sweep import expand, generate, launch, summarize
@@ -120,11 +121,24 @@ class TestStudyEvaluation(unittest.TestCase):
                                   {"head": "lvef", "metric": "mae", "lower_is_better": True})
                 self.assertTrue(np.isnan(result["score"]))
 
+    def test_token_grid_must_match_the_loaded_encoder(self):
+        vit = torch.nn.Module()
+        vit.patch_size, vit.tubelet_size = 16, 2
+        encoder = torch.nn.Sequential(vit)
+        check_token_grid(encoder, None, {})
+        check_token_grid(encoder, (8, 14, 14), {"pretrain_kwargs": {"encoder": {}}})
+        with self.assertRaisesRegex(ValueError, "loaded encoder uses"):
+            check_token_grid(encoder, (8, 16, 16), {"pretrain_kwargs": {"encoder": {"patch_size": 14}}})
+        with self.assertRaisesRegex(ValueError, "cannot verify"):
+            check_token_grid(torch.nn.Linear(1, 1), (8, 14, 14), {})
+
     def test_patient_overlap_and_no_test_manifest_in_training_fingerprint(self):
         a = mock.Mock(study_ids=["s1"], patient_ids={"p1"})
         b = mock.Mock(study_ids=["s2"], patient_ids={"p1"})
         with self.assertRaisesRegex(ValueError, "patients"):
             check_disjoint({"train": a, "val": b})
+        with self.assertRaisesRegex(ValueError, "carry patient ids"):
+            check_disjoint({"train": a, "val": mock.Mock(study_ids=["s2"], patient_ids=None)})
         self.assertEqual(manifest_paths({"dataset_train": "train.csv", "dataset_val": "val.csv",
                                          "dataset_test": "never-read.csv"}),
                          {"train": "train.csv", "val": "val.csv"})
