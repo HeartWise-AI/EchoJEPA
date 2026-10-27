@@ -3180,6 +3180,7 @@ dev = [
 ]
 labelbox = [
     { name = "labelbox" },
+    { name = "pyyaml" },
 ]
 
 [package.metadata]
@@ -3223,7 +3224,10 @@ dev = [
     { name = "isort", specifier = "==5.13.2" },
     { name = "pyarrow" },
 ]
-labelbox = [{ name = "labelbox", specifier = ">=7.12,<8" }]
+labelbox = [
+    { name = "labelbox", specifier = ">=7.12,<8" },
+    { name = "pyyaml", specifier = ">=6.0" },
+]
 
 [[package]]
 name = "wandb"

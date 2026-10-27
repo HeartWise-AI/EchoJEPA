@@ -22,6 +22,8 @@ dev = [
 ]
 labelbox = [
     "labelbox>=7.12,<8",
+    # The upload tools read the RADAR ontology (app/radar/ontology.py) with it.
+    "pyyaml>=6.0",
 ]
 
 [tool.uv]
