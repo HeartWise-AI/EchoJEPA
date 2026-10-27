@@ -49,7 +49,7 @@ class TestVideoStudyDataset(unittest.TestCase):
                     os.makedirs(os.path.dirname(path), exist_ok=True)
                     with open(path, "wb") as f:
                         f.write(b"not a video")
-                rows.append({"video_path": path, "study_id": study, "view": view, "split": "train",
+                rows.append({"video_path": path, "study_id": study, "patient_id": f"p-{study}", "view": view, "split": "train",
                              "lvef": targets[study][0], "lv_dysfunction": targets[study][1]})
         cls.table = pd.DataFrame(rows)
 
@@ -136,6 +136,16 @@ class TestVideoStudyDataset(unittest.TestCase):
         table.loc[a2c, "lvef"] = 61.0
         with self.assertRaisesRegex(ValueError, "different values"):
             group_studies(table, "video_path", "study_id", ["lvef"], view_column="view", views=["A4C"])
+
+    def test_patient_ids_are_mandatory(self):
+        with self.assertRaisesRegex(ValueError, "patient id column"):
+            self.dataset(False, patient_column=None)
+        with self.assertRaisesRegex(ValueError, "patient id column"):
+            VideoStudyDataset(self.table.drop(columns="patient_id"), target_columns=["lvef"], frames_per_clip=FRAMES)
+        table = self.table.copy()
+        table.loc[0, "patient_id"] = np.nan
+        with self.assertRaisesRegex(ValueError, "nonmissing patient id"):
+            VideoStudyDataset(table, target_columns=["lvef"], frames_per_clip=FRAMES)
 
     def test_training_stops_after_bounded_retries(self):
         broken = self.table[self.table.video_path.str.endswith("s2/1.mp4")]

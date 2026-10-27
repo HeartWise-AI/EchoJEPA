@@ -71,7 +71,7 @@ class TestStudyProbeSmoke(QuietLogs):
                         f.write(b"broken")
                 else:
                     write_video(path, brightness=2 * (ef or 50) + 20 * v)
-                rows.append({"video_path": path, "study_id": f"s{s}", "view": "A4C" if v % 2 == 0 else "A2C",
+                rows.append({"video_path": path, "study_id": f"s{s}", "patient_id": f"p{s}", "view": "A4C" if v % 2 == 0 else "A2C",
                              "split": split, "lvef": ef, "as_present": None if as_present is None else
                              ("yes" if as_present else "no")})
         cls.manifest = os.path.join(cls.tmp, "videos.csv")

@@ -8,10 +8,13 @@ import unittest
 from unittest import mock
 
 import numpy as np
+import torch
 import yaml
 
-from evals.study_multitask_frozen.eval import aggregate_bags, check_disjoint, evaluate, manifest_paths
+from evals.study_multitask_frozen.eval import aggregate_bags, check_disjoint, check_token_grid, evaluate, manifest_paths
+from evals.video_classification_frozen.modelcustom.vit_encoder_multiclip import ClipAggregation
 from src.models.study_probe import head_specs
+from src.models.vision_transformer import VisionTransformer
 from tests.models.test_study_probe import CLASSIFIER
 from tools.study_probe_sweep import expand, generate, launch, summarize
 
@@ -120,11 +123,36 @@ class TestStudyEvaluation(unittest.TestCase):
                                   {"head": "lvef", "metric": "mae", "lower_is_better": True})
                 self.assertTrue(np.isnan(result["score"]))
 
+    def test_token_grid_must_match_the_loaded_encoder(self):
+        def encoder(patch, tubelet):
+            vit = VisionTransformer(img_size=32, num_frames=4, patch_size=patch, tubelet_size=tubelet, embed_dim=8,
+                                    depth=1, num_heads=2)
+            return ClipAggregation(vit, tubelet_size=tubelet).eval()
+
+        check_token_grid(encoder(16, 2), None, 4, 32, torch.device("cpu"))
+        check_token_grid(encoder(16, 2), (2, 2, 2), 4, 32, torch.device("cpu"))
+        with self.assertRaisesRegex(ValueError, "gives 32"):
+            check_token_grid(encoder(8, 2), (2, 2, 2), 4, 32, torch.device("cpu"))
+        with self.assertRaisesRegex(ValueError, "gives 4"):
+            check_token_grid(encoder(16, 4), (2, 2, 2), 4, 32, torch.device("cpu"))
+
+    def test_a_checkpoint_patch_embedding_of_another_shape_is_refused(self):
+        from evals.video_classification_frozen.modelcustom import vit_encoder_multiclip
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "ckpt.pt"
+            vit = VisionTransformer(img_size=32, num_frames=4, patch_size=8, embed_dim=192, depth=12, num_heads=3)
+            torch.save({"encoder": vit.state_dict()}, path)
+            kwargs = {"encoder": {"model_name": "vit_tiny", "checkpoint_key": "encoder", "patch_size": 16}}
+            with self.assertRaisesRegex(ValueError, "patch_embed"):
+                vit_encoder_multiclip.init_module(32, 4, str(path), kwargs, {})
+
     def test_patient_overlap_and_no_test_manifest_in_training_fingerprint(self):
         a = mock.Mock(study_ids=["s1"], patient_ids={"p1"})
         b = mock.Mock(study_ids=["s2"], patient_ids={"p1"})
         with self.assertRaisesRegex(ValueError, "patients"):
             check_disjoint({"train": a, "val": b})
+        with self.assertRaisesRegex(ValueError, "carry patient ids"):
+            check_disjoint({"train": a, "val": mock.Mock(study_ids=["s2"], patient_ids=None)})
         self.assertEqual(manifest_paths({"dataset_train": "train.csv", "dataset_val": "val.csv",
                                          "dataset_test": "never-read.csv"}),
                          {"train": "train.csv", "val": "val.csv"})
