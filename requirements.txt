@@ -20,6 +20,8 @@ transformers
 peft
 decord
 pandas
+pydicom>=3
+imageio-ffmpeg
 einops
 beartype
 psutil
