@@ -24,7 +24,7 @@ def build_action_block_causal_attention_mask(T, H, W, add_tokens=1):
     return mask
 
 
-def rotate_queries_or_keys(x, pos):
+def rotate_queries_or_keys(x, pos, interleaved=False):
     B, num_heads, N, D = x.size()
     assert D % 2 == 0, "Embedding dimension must be a multiple of 2 for block matrix rotation"
 
@@ -38,8 +38,14 @@ def rotate_queries_or_keys(x, pos):
     emb_sin = freq.sin()  # (..., N, D/2)
     emb_cos = freq.cos()  # (..., N, D/2)
 
-    emb_sin = emb_sin.squeeze(-1).repeat(1, 1, 1, 2)
-    emb_cos = emb_cos.squeeze(-1).repeat(1, 1, 1, 2)
+    if interleaved:
+        # Adjacent coordinates form each rotation pair. Used by new probe blocks;
+        # the legacy default preserves the convention of existing encoder checkpoints.
+        emb_sin = emb_sin.repeat_interleave(2, dim=-1)
+        emb_cos = emb_cos.repeat_interleave(2, dim=-1)
+    else:
+        emb_sin = emb_sin.squeeze(-1).repeat(1, 1, 1, 2)
+        emb_cos = emb_cos.squeeze(-1).repeat(1, 1, 1, 2)
 
     # --
     y = x.unflatten(-1, (-1, 2))
@@ -271,6 +277,7 @@ class RoPEAttention(nn.Module):
         use_sdpa=True,
         grid_size=14,
         is_causal=False,
+        rope_interleaved=False,
     ):
         super().__init__()
         self.num_heads = num_heads
@@ -288,6 +295,7 @@ class RoPEAttention(nn.Module):
         self.w_dim = int(2 * ((head_dim // 3) // 2))
         self.grid_size = grid_size
         self.is_causal = is_causal
+        self.rope_interleaved = rope_interleaved
 
     def _get_frame_pos(self, ids, H_patches=None, W_patches=None):
         if H_patches is None or W_patches is None:
@@ -343,16 +351,16 @@ class RoPEAttention(nn.Module):
 
         s = 0
         # Rotate depth
-        qd = rotate_queries_or_keys(q[..., s : s + self.d_dim], pos=d_mask)
-        kd = rotate_queries_or_keys(k[..., s : s + self.d_dim], pos=d_mask)
+        qd = rotate_queries_or_keys(q[..., s : s + self.d_dim], pos=d_mask, interleaved=self.rope_interleaved)
+        kd = rotate_queries_or_keys(k[..., s : s + self.d_dim], pos=d_mask, interleaved=self.rope_interleaved)
         s += self.d_dim
         # Rotate height dim
-        qh = rotate_queries_or_keys(q[..., s : s + self.h_dim], pos=h_mask)
-        kh = rotate_queries_or_keys(k[..., s : s + self.h_dim], pos=h_mask)
+        qh = rotate_queries_or_keys(q[..., s : s + self.h_dim], pos=h_mask, interleaved=self.rope_interleaved)
+        kh = rotate_queries_or_keys(k[..., s : s + self.h_dim], pos=h_mask, interleaved=self.rope_interleaved)
         s += self.h_dim
         # Rotate width dim
-        qw = rotate_queries_or_keys(q[..., s : s + self.w_dim], pos=w_mask)
-        kw = rotate_queries_or_keys(k[..., s : s + self.w_dim], pos=w_mask)
+        qw = rotate_queries_or_keys(q[..., s : s + self.w_dim], pos=w_mask, interleaved=self.rope_interleaved)
+        kw = rotate_queries_or_keys(k[..., s : s + self.w_dim], pos=w_mask, interleaved=self.rope_interleaved)
         s += self.w_dim
 
         # Combine rotated dimension
@@ -516,6 +524,7 @@ class Block(nn.Module):
         is_causal=False,
         grid_size=16,
         use_rope=False,
+        rope_interleaved=False,
         **kwargs,
     ):
         super().__init__()
@@ -531,6 +540,7 @@ class Block(nn.Module):
                 is_causal=is_causal,
                 grid_size=grid_size,
                 proj_drop=drop,
+                rope_interleaved=rope_interleaved,
             )
         else:
             self.attn = Attention(

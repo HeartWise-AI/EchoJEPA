@@ -63,6 +63,10 @@ def init_module(
         if k not in pretrained_dict:
             logger.info(f'key "{k}" could not be found in loaded state dict')
         elif pretrained_dict[k].shape != v.shape:
+            if k.startswith("patch_embed."):
+                # A random patch embedding would silently change the encoder (e.g. patch 14 vs 16).
+                raise ValueError(f'"{k}" is {tuple(pretrained_dict[k].shape)} in the checkpoint but '
+                                 f"{tuple(v.shape)} in the model: check patch_size/tubelet_size.")
             logger.info(f'key "{k}" is of different shape in model and loaded state dict')
             pretrained_dict[k] = v
     msg = model.load_state_dict(pretrained_dict, strict=False)

@@ -13,7 +13,7 @@ import numpy as np
 import pandas as pd
 import torch
 
-from src.datasets.video_study_dataset import VideoStudyDataset, group_studies, read_split, seeded_bag
+from src.datasets.video_study_dataset import VideoStudyDataset, group_studies, read_split
 
 FRAMES, SIZE = 4, 32
 
@@ -49,7 +49,7 @@ class TestVideoStudyDataset(unittest.TestCase):
                     os.makedirs(os.path.dirname(path), exist_ok=True)
                     with open(path, "wb") as f:
                         f.write(b"not a video")
-                rows.append({"video_path": path, "study_id": study, "view": view, "split": "train",
+                rows.append({"video_path": path, "study_id": study, "patient_id": f"p-{study}", "view": view, "split": "train",
                              "lvef": targets[study][0], "lv_dysfunction": targets[study][1]})
         cls.table = pd.DataFrame(rows)
 
@@ -79,48 +79,12 @@ class TestVideoStudyDataset(unittest.TestCase):
         self.assertEqual(views.tolist(), [-1, -1, -1])
 
     def test_evaluation_reads_the_first_videos_in_path_order_every_time(self):
-        ds = self.dataset(training=False, num_videos=2)
+        ds = self.dataset(training=False, num_videos=2, sampling_mode="fixed")
         self.assertEqual(ds.selection, "fixed")
         for _ in range(3):
             self.assertEqual(ds.select(ds.studies[0][1]), [0, 1])
         a, b = ds[0], ds[0]
         torch.testing.assert_close(a[0], b[0])
-
-    def test_seeded_evaluation_bags_are_random_subsets_drawn_once(self):
-        ds = self.dataset(training=False, num_videos=2, eval_videos="seeded", eval_seed=0)
-        self.assertEqual(ds.selection, "seeded")
-        paths = ds.studies[0][1]
-        bag = ds.select(paths, "s0")
-        self.assertEqual((len(bag), len(set(bag))), (2, 2))
-        self.assertTrue(set(bag) <= {0, 1, 2, 3})
-        # The same bag at every read, in another dataset object, whatever the global random state.
-        random.seed(5)
-        np.random.seed(5)
-        again = self.dataset(training=False, num_videos=2, eval_videos="seeded", eval_seed=0)
-        self.assertEqual(again.select(paths, "s0"), bag)
-        torch.testing.assert_close(ds[0][0], again[0][0])
-        # The study id and the evaluation seed change the bag, and every video can be drawn.
-        bags = {tuple(ds.select(paths, f"study{i}")) for i in range(50)}
-        bags |= {tuple(seeded_bag("s0", eval_seed, 4, 2)) for eval_seed in range(20)}
-        self.assertGreater(len(bags), 1)
-        self.assertEqual({p for b in bags for p in b}, {0, 1, 2, 3})
-        self.assertEqual(ds.select(ds.studies[1][1], "s1"), [0])  # a study with one video keeps it.
-        # Training still redraws its bags; an unknown option is refused.
-        self.assertEqual(self.dataset(training=True, eval_videos="seeded").selection, "random")
-        with self.assertRaisesRegex(ValueError, "eval_videos"):
-            self.dataset(training=False, eval_videos="all")
-
-    def test_the_split_keeps_its_patients_when_the_manifest_names_them(self):
-        self.assertIsNone(self.dataset(training=False).patient_ids)  # no patient column
-        table = self.table.assign(patient_id=self.table.study_id.map({"s0": "p0", "s1": "p1", "s2": "p0"}))
-        ds = VideoStudyDataset(table, target_columns=["lvef"], num_videos=1, frames_per_clip=FRAMES, frame_step=1,
-                               view_column="view", views=["A2C"])
-        self.assertEqual(ds.study_ids, ["s0"])
-        self.assertEqual(ds.patient_ids, {"p0", "p1"})  # every row of the split, before the view filter
-        gap = table.copy()
-        gap.loc[gap.study_id == "s1", "patient_id"] = None
-        with self.assertRaisesRegex(ValueError, "1 rows have no `patient_id`"):
-            VideoStudyDataset(gap, target_columns=["lvef"], num_videos=1, frames_per_clip=FRAMES, frame_step=1)
 
     def test_training_draws_another_bag_of_the_study(self):
         ds = self.dataset(training=True, num_videos=2)
@@ -173,6 +137,16 @@ class TestVideoStudyDataset(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "different values"):
             group_studies(table, "video_path", "study_id", ["lvef"], view_column="view", views=["A4C"])
 
+    def test_patient_ids_are_mandatory(self):
+        with self.assertRaisesRegex(ValueError, "patient id column"):
+            self.dataset(False, patient_column=None)
+        with self.assertRaisesRegex(ValueError, "patient id column"):
+            VideoStudyDataset(self.table.drop(columns="patient_id"), target_columns=["lvef"], frames_per_clip=FRAMES)
+        table = self.table.copy()
+        table.loc[0, "patient_id"] = np.nan
+        with self.assertRaisesRegex(ValueError, "nonmissing patient id"):
+            VideoStudyDataset(table, target_columns=["lvef"], frames_per_clip=FRAMES)
+
     def test_training_stops_after_bounded_retries(self):
         broken = self.table[self.table.video_path.str.endswith("s2/1.mp4")]
         ds = VideoStudyDataset(broken, target_columns=["lvef"], num_videos=1, frames_per_clip=FRAMES, frame_step=1,
@@ -191,12 +165,12 @@ class TestVideoStudyDataset(unittest.TestCase):
         self.assertEqual(len(read_split({"dataset_train": path}, "train")), len(table))
         with self.assertRaisesRegex(ValueError, "dataset_test"):
             read_split({}, "test")
-        # Identifier columns are read as text: a gap in a numeric patient column does not turn 123 into 123.0.
+        # Identifier columns are read as text: patient 0123 stays 0123, not 123 (or 123.0 next to a gap).
         ids = os.path.join(self.tmp, "ids.csv")
         with open(ids, "w") as f:
-            f.write("video_path,study_id,patient_id,split\na.mp4,1,123,val\nb.mp4,2,,val\n")
+            f.write("video_path,study_id,patient_id,split\na.mp4,1,0123,val\nb.mp4,2,,val\n")
         rows = read_split({"data_filename": ids}, "val")
-        self.assertEqual(rows.patient_id.iloc[0], "123")
+        self.assertEqual(rows.patient_id.iloc[0], "0123")
         self.assertEqual(rows.study_id.tolist(), ["1", "2"])
 
     def test_view_classes_follow_the_selected_videos(self):
@@ -204,7 +178,8 @@ class TestVideoStudyDataset(unittest.TestCase):
         ds = self.dataset(training=False, view_column="view", view_labels_map=view_map)
         self.assertEqual(ds.studies[0][3], [0, 0, 1, 1])  # s0's videos in path order: 0, 1 (A4C), 2, 3 (A2C)
         _, _, mask, _, views = ds[0]
-        self.assertEqual((mask.tolist(), views.tolist()), ([True, True, True], [0, 0, 1]))
+        chosen = ds.select(ds.studies[0][1], study_id="s0")
+        self.assertEqual((mask.tolist(), views.tolist()), ([True, True, True], [ds.studies[0][3][i] for i in chosen]))
         _, _, mask, _, views = ds[1]
         self.assertEqual((mask.tolist(), views.tolist()), ([True, False, False], [0, -1, -1]))
         ds = self.dataset(training=True, view_column="view", view_labels_map=view_map, num_videos=2)
@@ -221,3 +196,56 @@ class TestVideoStudyDataset(unittest.TestCase):
             self.dataset(training=False, view_column="view", view_labels_map={"A4C": 0, "A2C": 2})
         with self.assertRaisesRegex(ValueError, "view_column"):
             self.dataset(training=False, view_labels_map=view_map)
+
+    def test_seeded_evaluation_does_not_depend_on_global_rng_and_varies_by_bag(self):
+        ds = self.dataset(training=False, num_videos=2, eval_seed=77)
+        paths = ds.studies[0][1]
+        self.assertEqual(ds.selection, "seeded_random")
+        a = ds.select(paths, study_id="s0")
+        random.seed(1234)
+        for _ in range(50):
+            random.random()
+        self.assertEqual(ds.select(paths, study_id="s0"), a)
+        bags = set()
+        for index in range(20):
+            ds.eval_bag_index = index
+            bags.add(tuple(ds.select(paths, study_id="s0")))
+        self.assertGreater(len(bags), 1)
+        ds.eval_bag_index = 0
+        self.assertEqual(ds.select(paths, study_id="s0"), a)
+
+    def test_balanced_sampling_covers_rare_families_without_replacement(self):
+        ds = self.dataset(training=False, num_videos=3, view_column="view", sampling_mode="view_balanced")
+        paths = [f"{i}.mp4" for i in range(22)]
+        families = ["A4C"] * 20 + ["PLAX", "PSAX"]
+        for bag in range(20):
+            ds.eval_bag_index = bag
+            chosen = ds.select(paths, families, "study")
+            self.assertEqual({families[i] for i in chosen}, {"A4C", "PLAX", "PSAX"})
+            self.assertEqual(len(set(chosen)), 3)
+            self.assertEqual(chosen, ds.select(paths, families, "study"))
+        ds.num_videos = 30
+        self.assertEqual(set(ds.select(paths, families, "study")), set(range(22)))
+        # Missing families are never invented or duplicated.
+        ds.num_videos = 4
+        self.assertEqual(len(set(ds.select(paths, ["A4C"] * 22, "study"))), 4)
+
+    def test_probability_and_type_metadata_follow_sampling_and_padding(self):
+        table = self.table.copy()
+        table["p4"] = np.where(table.view == "A4C", 0.8, 0.1)
+        table["p2"] = 1 - table.p4
+        table["kind"] = np.where(table.view == "A4C", "bmode", "color")
+        ds = VideoStudyDataset(table, target_columns=["lvef"], frames_per_clip=FRAMES, num_videos=3,
+                               view_column="view", view_labels_map={"A4C": 0, "A2C": 1},
+                               view_probability_columns={"A2C": "p2", "A4C": "p4"},
+                               acquisition_column="kind", acquisition_labels_map={"bmode": 0, "color": 1})
+        item = ds[0]
+        for view, probs, kind in zip(item[4], item[5]["view_probs"], item[5]["acquisition_ids"]):
+            self.assertAlmostEqual(float(probs[0]), 0.8 if view == 0 else 0.1, places=6)
+            self.assertEqual(int(kind), int(view))
+        padded = ds[1]
+        self.assertTrue((padded[5]["view_probs"][1:] == 0).all())
+        self.assertEqual(padded[5]["acquisition_ids"].tolist(), [0, -1, -1])
+        with self.assertRaisesRegex(ValueError, "cover every"):
+            VideoStudyDataset(table, target_columns=["lvef"], view_column="view",
+                              view_labels_map={"A4C": 0, "A2C": 1}, view_probability_columns={"A4C": "p4"})

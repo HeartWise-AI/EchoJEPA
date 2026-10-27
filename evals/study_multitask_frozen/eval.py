@@ -3,21 +3,20 @@
 """Frozen study-level multi-task probe, DeepCORO_CLIP style.
 
 A study is read as a bag of its videos (`experiment.data.num_videos` slots, a random subset in
-random order at every training read when `shuffle_videos`, the same bag at every evaluation read:
-the first videos in path order, or a seeded random subset with `eval_videos: seeded`); the frozen
-encoder embeds every clip of every video; one probe pools the study's
+random order at every training read, reproducible seeded bags in evaluation, optionally
+balanced across view families); the frozen encoder embeds every clip of every video; one probe pools the study's
 tokens and reads them with one head per target (`experiment.classifier.target_label`,
 `head_task`, `head_structure`, `loss_structure`, `head_weights`, `head_dropout`). Several
 probes train side by side on the same features, one per `optimization.multihead_kwargs`
 setting. Validation scores every study once with every probe after each epoch; `best.pt` keeps
-the epoch and probe with the best selection score. `--val_only` scores the validation split again
-with that probe and writes its predictions, without the test split; `--test_only` scores the test
-split once with that probe. Protocol and outputs: `docs/study_multitask_probe.md`.
+the epoch and probe with the best selection score. `--test_only` scores the test split once with
+that probe. `--val_only` rescores only validation. Protocol and outputs: `docs/study_multitask_probe.md`.
 """
 
 import copy
 import json
 import logging
+import math
 import os
 import pprint
 import random
@@ -44,7 +43,7 @@ from evals.video_classification_frozen.eval import (
 )
 from evals.video_classification_frozen.models import init_module
 from evals.video_classification_frozen.utils import make_transforms
-from src.datasets.video_study_dataset import EVAL_VIDEOS, SELECTION, VideoStudyDataset, read_split
+from src.datasets.video_study_dataset import SELECTION, VideoStudyDataset, read_split
 from src.models.study_probe import POOLING_MODES, StudyProbe, head_loss, head_specs, multitask_loss
 from src.utils.checkpoint_loader import robust_checkpoint_loader
 from src.utils.distributed import AllReduceSum, any_rank_failed, init_distributed
@@ -61,12 +60,12 @@ EVAL_NAME = "study_multitask_frozen"
 # How the studies of each split are read (`SELECTION`) and batched. The fingerprint holds it, so a
 # probe is continued and tested only under the protocol it was trained with. Raise the version
 # whenever the code changes how the probe is trained or evaluated in a way these fields do not describe.
-# Version 2: identifier columns are read as text, so numeric study ids sort as text ("1", "10", "2"), which changes
-# the training order of such manifests; version-1 probes are not resumed or tested under it.
+# Version 3 joins two version-2 changes made in parallel: seeded evaluation bags (`sampling_mode`, `eval_seed`)
+# and identifier columns read as text. Probes of either version 2 are not resumed or tested under it.
 PROTOCOL = {
-    "version": 2,
+    "version": 3,
     "train": {"videos": "random when `shuffle_videos`, else fixed", "clip_positions": "random", "drop_last": True},
-    "evaluation": {"videos": "fixed (`eval_videos`: first or seeded)", "clip_positions": "fixed", "drop_last": False},
+    "evaluation": {"videos": "seeded bags using sampling_mode", "clip_positions": "fixed", "drop_last": False},
     "identifiers": "video, study, view and patient columns read as text; studies in text order",
 }
 # Metrics a selection rule `<head>/<metric>` may name, per head task (as `head_metrics` reports
@@ -83,7 +82,8 @@ def main(args_eval, resume_preempt=False):
     test_only = bool(args_eval.get("test_only", False))
     val_only = bool(args_eval.get("val_only", False))
     if test_only and val_only:
-        raise ValueError("Use `--val_only` or `--test_only`, not both.")
+        raise ValueError("Choose either val_only or test_only.")
+    scoring_only = test_only or val_only
     pretrain_folder = args_eval.get("folder")
     tag = args_eval.get("tag")
     num_workers = int(args_eval.get("num_workers", 8))
@@ -118,12 +118,6 @@ def main(args_eval, resume_preempt=False):
     normalization = args_data.get("normalization")
     min_videos = int(args_data.get("min_videos", 1))
     view_labels_map = args_data.get("view_labels_map")
-    eval_videos = args_data.get("eval_videos", "first")
-    if eval_videos not in EVAL_VIDEOS:
-        raise ValueError(f"`experiment.data.eval_videos` is one of {sorted(EVAL_VIDEOS)}, not {eval_videos!r}.")
-    # Seeded evaluation bags have their own seed, so probes trained with other `meta.seed`s are scored on the same bags.
-    eval_seed = int(args_data.get("eval_seed", seed))
-    patient_column = args_data.get("patient_column", "patient_id")
 
     # -- PROBE (DeepCORO_CLIP's head keys)
     args_classifier = args_exp["classifier"]
@@ -140,6 +134,13 @@ def main(args_eval, resume_preempt=False):
     if use_view_embedding and not (view_labels_map and view_column):
         raise ValueError("`use_view_embedding` needs `experiment.data.view_column` and `view_labels_map`.")
     num_view_classes = len(set(int(v) for v in view_labels_map.values())) if use_view_embedding else 0
+    if args_data.get("view_probability_columns") and not use_view_embedding:
+        raise ValueError("view_probability_columns requires use_view_embedding.")
+    probe_options = study_probe_options(args_classifier, args_data, args_pretrain)
+    data_options = {k: args_data[k] for k in (
+        "sampling_mode", "eval_seed", "view_family_map", "view_probability_columns",
+        "acquisition_column", "acquisition_labels_map", "patient_column") if k in args_data}
+    data_options.setdefault("eval_seed", 0)  # identical evaluation bags across training seeds
 
     # -- ENCODER FINE-TUNING: the top `trainable_blocks` transformer blocks (and the final norm)
     # train with their own learning rate; 0 keeps the encoder frozen.
@@ -159,6 +160,12 @@ def main(args_eval, resume_preempt=False):
     args_evaluation = args_exp.get("evaluation") or {}
     selection = args_evaluation.get("selection", "weighted_loss")
     selection_rule = parse_selection(selection, specs)
+    num_eval_bags = int(args_evaluation.get("num_bags", 1))
+    if num_eval_bags < 1:
+        raise ValueError("evaluation.num_bags must be positive.")
+    eval_mode = args_data.get("sampling_mode") or ("random" if shuffle_videos else "fixed")
+    if num_eval_bags > 1 and eval_mode == "fixed":
+        raise ValueError("evaluation.num_bags > 1 needs random or view_balanced sampling: fixed bags are identical.")
 
     # -- OPTIMIZATION
     args_opt = args_exp["optimization"]
@@ -210,14 +217,12 @@ def main(args_eval, resume_preempt=False):
             num_videos=num_videos, shuffle_videos=shuffle_videos, training=training,
             frames_per_clip=frames_per_clip, frame_step=frame_step, duration=duration, fps=fps,
             num_clips_per_video=num_clips_per_video, transform=make_transforms(training=training, **transform_kwargs),
-            min_videos=min_videos, view_labels_map=view_labels_map, eval_videos=eval_videos, eval_seed=eval_seed,
-            patient_column=patient_column,
+            min_videos=min_videos, view_labels_map=view_labels_map, **data_options,
         )
 
     train_dataset = make_dataset("train", training=True)
     val_dataset = make_dataset("val", training=False)
-    require_patients = "patient_column" in args_data
-    check_disjoint({"train": train_dataset, "val": val_dataset}, require_patients, patient_column)
+    check_disjoint({"train": train_dataset, "val": val_dataset})
     normalization_targets = target_normalization(specs, train_dataset.targets, args_classifier)
     train_sampler = torch.utils.data.distributed.DistributedSampler(
         train_dataset, num_replicas=world_size, rank=rank, shuffle=True, drop_last=PROTOCOL["train"]["drop_last"])
@@ -226,7 +231,7 @@ def main(args_eval, resume_preempt=False):
         num_workers=num_workers, pin_memory=True, persistent_workers=False)
     ipe = len(train_loader)
     logger.info(f"Dataloader created... iterations per epoch: {ipe}")
-    if ipe == 0 and not (test_only or val_only):
+    if ipe == 0 and not scoring_only:
         raise ValueError(f"The training split gives no full batch of {batch_size} studies on each of {world_size} "
                          "GPUs: nothing to train on.")
 
@@ -234,10 +239,11 @@ def main(args_eval, resume_preempt=False):
     encoder = init_module(module_name=args_pretrain["module_name"], frames_per_clip=frames_per_clip,
                           resolution=resolution, checkpoint=checkpoint, model_kwargs=args_pretrain["pretrain_kwargs"],
                           wrapper_kwargs=args_pretrain.get("wrapper_kwargs"), device=device)
+    check_token_grid(encoder, probe_options["token_grid"], frames_per_clip, resolution, device)
     probes = [
         StudyProbe(embed_dim=encoder.embed_dim, heads=specs, pooling_mode=pooling_mode, num_heads=num_heads,
                    depth=num_probe_blocks, attention_hidden=attention_hidden, dropout=probe_dropout,
-                   num_view_classes=num_view_classes).to(device)
+                   num_view_classes=num_view_classes, **probe_options).to(device)
         for _ in opt_kwargs
     ]
     logger.info(f"Initialized {len(probes)} study probes ({pooling_mode}) with heads {list(specs)}"
@@ -274,7 +280,7 @@ def main(args_eval, resume_preempt=False):
         "encoder": encoder_settings,
         "classifier": {"pooling_mode": pooling_mode, "num_heads": num_heads, "num_probe_blocks": num_probe_blocks,
                        "attention_hidden": attention_hidden, "dropout": probe_dropout, "heads": specs,
-                       "labels_map": labels_map, "use_view_embedding": use_view_embedding},
+                       "labels_map": labels_map, "use_view_embedding": use_view_embedding, **probe_options},
         "encoder_training": {"trainable_blocks": trainable_blocks, "optimization": encoder_opt_kwargs},
         "data": {"split_column": split_column, "path_column": path_column, "group_column": group_column,
                  "view_column": view_column, "views": list(views) if views else None,
@@ -282,8 +288,8 @@ def main(args_eval, resume_preempt=False):
                  "num_videos": num_videos, "shuffle_videos": shuffle_videos,
                  "num_clips_per_video": num_clips_per_video, "frames_per_clip": frames_per_clip,
                  "frame_step": frame_step, "clip_duration": duration, "fps": fps, "resolution": resolution,
-                 "normalization": normalization, "min_videos": min_videos, "eval_videos": eval_videos,
-                 "eval_seed": eval_seed},
+                 "normalization": normalization, "min_videos": min_videos, **data_options},
+        "evaluation": {"num_bags": num_eval_bags},
         "optimization": {"batch_size": batch_size, "num_epochs": num_epochs, "use_bfloat16": use_bfloat16,
                          "multihead_kwargs": args_opt["multihead_kwargs"]},
         "selection": selection,
@@ -297,7 +303,7 @@ def main(args_eval, resume_preempt=False):
 
     # -- RESUME
     start_epoch, history = 0, {}
-    if resume_checkpoint and os.path.exists(latest_path) and not (test_only or val_only):
+    if resume_checkpoint and os.path.exists(latest_path) and not scoring_only:
         start_epoch, history = load_checkpoint(latest_path, probes, optimizers, encoder_module if trainable else None)
         provenance.check_fingerprint(history.get("fingerprint"), fingerprint, f"The probe in {folder}")
         for _ in range(start_epoch * ipe):
@@ -309,15 +315,14 @@ def main(args_eval, resume_preempt=False):
         run_info = describe_run(args_eval, checkpoint, manifests, fingerprint, seed, parameter_counts, opt_kwargs,
                                 batch_size, world_size, num_epochs, specs, normalization_targets, selection,
                                 {"train": train_dataset, "val": val_dataset})
-        if not (test_only or val_only):
+        if not scoring_only:
             save_run_record(folder, args_eval, run_info, fresh=start_epoch == 0)
 
     wandb_run, wandb_error = None, None
     try:
-        if not val_only:  # validation-only scoring logs nothing to wandb.
-            wandb_run, _ = init_wandb(args_eval.get("meta") or {}, {**public_config(args_eval), "run_info": run_info},
-                                      rank, folder, resuming_training=start_epoch > 0 or test_only,
-                                      settings=PRIVATE_WANDB_SETTINGS)
+        wandb_run, _ = init_wandb(args_eval.get("meta") or {}, {**public_config(args_eval), "run_info": run_info},
+                                  rank, folder, resuming_training=start_epoch > 0 or scoring_only,
+                                  settings=PRIVATE_WANDB_SETTINGS)
     except Exception as e:
         wandb_error = e
     if any_rank_failed(wandb_error is not None, device=device):
@@ -327,22 +332,24 @@ def main(args_eval, resume_preempt=False):
 
     score_kwargs = dict(device=device, encoder=encoder_module, batch_size=batch_size, num_workers=num_workers,
                         use_bfloat16=use_bfloat16, specs=specs, normalization=normalization_targets, rank=rank,
-                        world_size=world_size)
+                        world_size=world_size, num_bags=num_eval_bags)
 
-    if test_only:
-        test_dataset = make_dataset("test", training=False)
-        check_disjoint({"train": train_dataset, "val": val_dataset, "test": test_dataset}, require_patients,
-                       patient_column)
+    if scoring_only:
+        test_dataset = make_dataset("test", training=False) if test_only else None
+        if test_only:
+            check_disjoint({"train": train_dataset, "val": val_dataset, "test": test_dataset})
+            # The fingerprint leaves out a separate test manifest; record the one scored here.
+            test_path = args_data.get("dataset_test")
+            if run_info is not None and test_path and not args_data.get("data_filename"):
+                with open(test_path) as f:
+                    rows = sum(1 for line in f if line.strip())
+                run_info["manifests"]["dataset_test"] = {"file": os.path.basename(test_path),
+                                                         "sha256": provenance.sha256(test_path), "rows": rows}
         run_test(folder=folder, probes=probes, probe_names=probe_names, val_dataset=val_dataset, trainable=bool(trainable),
                  test_dataset=test_dataset, num_epochs=num_epochs, fingerprint=fingerprint,
                  selection_rule=selection_rule, run_info=run_info, wandb_run=wandb_run, step=num_epochs * ipe,
-                 **score_kwargs)
+                 val_only=val_only, **score_kwargs)
         finish_wandb(wandb_run)
-        return
-    if val_only:
-        run_val(folder=folder, probes=probes, probe_names=probe_names, val_dataset=val_dataset, trainable=bool(trainable),
-                num_epochs=num_epochs, fingerprint=fingerprint, selection_rule=selection_rule, run_info=run_info,
-                **score_kwargs)
         return
 
     csv_logger = None
@@ -369,7 +376,7 @@ def main(args_eval, resume_preempt=False):
             raise RuntimeError(f"No probe has a finite validation {selection} at epoch {epoch + 1}: the selection "
                                "metric is undefined on this validation split (e.g. one class only, or no target), "
                                "or every probe has a non-finite output.")
-        probe = int(np.nanargmin(scores))
+        probe = int(np.argmin(np.where(np.isfinite(scores), scores, np.inf)))
         score = float(scores[probe])
         is_best = score < best_score
         if is_best:
@@ -393,6 +400,11 @@ def main(args_eval, resume_preempt=False):
         save_checkpoint(folder, probes, optimizers, epoch + 1, val, scores, best_score, best_epoch, best_probe,
                         normalization_targets, specs, fingerprint, opt_kwargs, selection, world_size, is_best, rank,
                         device, encoder=encoder_module if trainable else None)
+    # Record the selected epoch explicitly; W&B's last-epoch summaries are not the selected result.
+    run_test(folder=folder, probes=probes, probe_names=probe_names, val_dataset=val_dataset,
+             test_dataset=None, num_epochs=num_epochs, fingerprint=fingerprint, selection_rule=selection_rule,
+             run_info=run_info, wandb_run=wandb_run, step=num_epochs * ipe, trainable=bool(trainable),
+             val_only=True, **score_kwargs)
     finish_wandb(wandb_run)
 
 
@@ -430,7 +442,42 @@ def manifest_paths(args_data):
     """{name: path} of the manifests the config names (unused ones `None`), for the fingerprint."""
     if args_data.get("data_filename"):
         return {"data_filename": args_data["data_filename"]}
-    return {split: args_data.get(f"dataset_{split}") for split in ("train", "val", "test")}
+    # Training and validation-only runs must not open a separate test manifest, even to hash it.
+    return {split: args_data.get(f"dataset_{split}") for split in ("train", "val")}
+
+
+def study_probe_options(classifier, data, pretrained):
+    """Resolve architecture options once for construction and checkpoint fingerprinting."""
+    encoder = pretrained.get("pretrain_kwargs", {}).get("encoder", {})
+    grid = None
+    if classifier.get("pooling_mode") == "hierarchical":
+        patch = int(encoder.get("patch_size", 16))
+        tubelet = int(encoder.get("tubelet_size", 2))
+        frames, resolution = int(data.get("frames_per_clip", 16)), int(data.get("resolution", 224))
+        if frames % tubelet or resolution % patch:
+            raise ValueError("Hierarchical pooling requires frames/resolution divisible by tubelet/patch size.")
+        grid = (frames // tubelet, resolution // patch, resolution // patch)
+    return dict(query_mode=classifier.get("query_mode", "shared"), task_groups=classifier.get("task_groups"),
+                view_dropout=float(classifier.get("view_dropout", 0.0)),
+                num_acquisition_classes=len(set((data.get("acquisition_labels_map") or {}).values())),
+                local_depth=int(classifier.get("local_depth", 1)),
+                local_num_queries=int(classifier.get("local_num_queries", 4)),
+                local_use_rope=bool(classifier.get("local_use_rope", False)), token_grid=grid,
+                num_clips_per_video=int(data.get("num_clips_per_video", 1)))
+
+
+def check_token_grid(encoder, grid, frames_per_clip, resolution, device):
+    """Refuse a hierarchical token grid that does not match the loaded encoder: one blank clip
+    must come out as exactly `T x H x W` tokens of the grid."""
+    if grid is None:
+        return
+    clip = torch.zeros(1, 3, frames_per_clip, resolution, resolution, device=device)
+    with torch.no_grad():
+        tokens = encoder([[clip]], [torch.arange(frames_per_clip, device=device)[None]])[0].shape[1]
+    if tokens != math.prod(grid):
+        raise ValueError(f"Hierarchical pooling assumes a {'x'.join(map(str, grid))} token grid per clip "
+                         f"({math.prod(grid)} tokens), but the loaded encoder gives {tokens}: set patch_size and "
+                         "tubelet_size in pretrain_kwargs.encoder to the encoder's.")
 
 
 def parse_selection(selection, specs):
@@ -451,19 +498,8 @@ def parse_selection(selection, specs):
     return {"head": head, "metric": metric, "lower_is_better": metric in LOWER_IS_BETTER}
 
 
-def check_disjoint(datasets, require_patients=False, patient_column="patient_id"):
-    """Refuse splits that share a study, or a patient: a study, or another study of the same
-    patient, trained on would be validated or tested on. Patients are checked when any split has
-    the patient column (or `require_patients`); every split must then have it, since a split
-    without it could hide a shared patient."""
-    with_patients = [name for name, dataset in datasets.items() if dataset.patient_ids is not None]
-    if require_patients or with_patients:
-        missing = [name for name in datasets if name not in with_patients]
-        if missing:
-            raise ValueError(f"The {', '.join(missing)} split(s) have no `{patient_column}` column, so their patients "
-                             "cannot be checked against the other splits.")
-    else:
-        logger.info(f"No split has a `{patient_column}` column: splits are checked for shared studies only.")
+def check_disjoint(datasets):
+    """Refuse shared studies and shared patients; every split must carry patient ids."""
     names = list(datasets)
     for i, a in enumerate(names):
         for b in names[i + 1:]:
@@ -471,11 +507,11 @@ def check_disjoint(datasets, require_patients=False, patient_column="patient_id"
             if shared:
                 raise ValueError(f"{len(shared)} studies are in both the {a} and the {b} split (e.g. "
                                  f"{sorted(map(str, shared))[:3]}): every study belongs to one split.")
-            pa, pb = datasets[a].patient_ids, datasets[b].patient_ids
-            if pa is not None and pb is not None and pa & pb:
-                # Counted only: patient ids stay out of logs.
-                raise ValueError(f"{len(pa & pb)} patients have studies in both the {a} and the {b} split: every "
-                                 "patient belongs to one split.")
+            pa, pb = getattr(datasets[a], "patient_ids", None), getattr(datasets[b], "patient_ids", None)
+            if pa is None or pb is None:
+                raise ValueError(f"The {a} and {b} splits must both carry patient ids to check patient overlap.")
+            if pa & pb:
+                raise ValueError(f"{len(pa & pb)} patients are in both the {a} and the {b} split.")
 
 
 def target_normalization(specs, train_targets, args_classifier):
@@ -573,7 +609,9 @@ def train_one_epoch(device, encoder, probes, optimizers, schedulers, wd_schedule
     encoder.train(mode=encoder_trainable)
     loss_meters = [AverageMeter() for _ in probes]
     head_meters = [{h: AverageMeter() for h in specs} for _ in probes]
-    for itr, (clips, targets, video_mask, clip_indices, view_ids) in enumerate(loader):
+    for itr, batch in enumerate(loader):
+        clips, targets, video_mask, clip_indices, view_ids, *extra = batch
+        metadata = {k: v.to(device, non_blocking=True) for k, v in (extra[0] if extra else {}).items()}
         features = encode(encoder, clips, clip_indices, device, use_bfloat16, grad=encoder_trainable)
         video_mask = video_mask.to(device, non_blocking=True)
         view_ids = view_ids.to(device, non_blocking=True)
@@ -586,7 +624,7 @@ def train_one_epoch(device, encoder, probes, optimizers, schedulers, wd_schedule
         batch_losses, batch_parts = [], []
         for probe in probes:
             with autocast(device.type, dtype=torch.bfloat16, enabled=use_bfloat16):
-                outputs = probe(features, video_mask, view_ids)
+                outputs = probe(features, video_mask, view_ids, **metadata)
             loss, parts = multitask_loss(specs, outputs, targets, counts=counts, world_size=world_size)
             batch_losses.append(loss)
             batch_parts.append(parts)
@@ -653,7 +691,50 @@ def _collate_loaded(batch):
 
 
 def score_studies(device, encoder, probes, dataset, batch_size, num_workers, use_bfloat16, specs, normalization,
-                  rank, world_size):
+                  rank, world_size, num_bags=1):
+    """Average deterministic bags in prediction space; keep variability for failure analysis."""
+    results = []
+    for bag in range(num_bags):
+        bag_dataset = copy.copy(dataset)
+        bag_dataset.eval_bag_index = bag
+        results.append(_score_studies_once(device, encoder, probes, bag_dataset, batch_size, num_workers,
+                                           use_bfloat16, specs, normalization, rank, world_size))
+    if num_bags == 1:
+        return results[0]
+    return [aggregate_bags([r[p] for r in results], specs, normalization) for p in range(len(probes))]
+
+
+def aggregate_bags(bags, specs, normalization):
+    # Require all requested bags for a study: otherwise an ensemble would silently use
+    # different bag counts across patients. Report any failed bag as a failed study.
+    common = sorted(set.intersection(*(set(b["indices"]) for b in bags)))
+    if not common:
+        raise RuntimeError("No study loaded successfully in every evaluation bag.")
+    positions = [{int(i): j for j, i in enumerate(b["indices"])} for b in bags]
+    outputs, variability = {}, {}
+    for name, spec in specs.items():
+        raw = np.stack([b["outputs"][name][[pos[i] for i in common]] for b, pos in zip(bags, positions)])
+        if spec["task"] == "binary":
+            values = 1 / (1 + np.exp(-np.clip(raw, -700, 700)))
+            mean = np.clip(values.mean(0), 1e-12, 1 - 1e-12)
+            outputs[name] = np.log(mean) - np.log1p(-mean)
+        elif spec["task"] == "classification":
+            values = np.exp(raw - raw.max(-1, keepdims=True))
+            values /= values.sum(-1, keepdims=True)
+            outputs[name] = np.log(np.maximum(values.mean(0), 1e-12))
+        else:
+            values = raw * normalization[name]["std"] + normalization[name]["mean"]
+            outputs[name] = raw.mean(0)
+        outputs[name][~np.isfinite(raw).all(axis=(0, 2))] = np.nan
+        variability[name] = values.std(0)
+    return {"indices": np.asarray(common),
+            "targets": bags[0]["targets"][[positions[0][i] for i in common]], "outputs": outputs,
+            "failed": sorted(set.union(*(set(b["failed"]) for b in bags))),
+            "prediction_std": variability, "num_bags": len(bags)}
+
+
+def _score_studies_once(device, encoder, probes, dataset, batch_size, num_workers, use_bfloat16, specs, normalization,
+                        rank, world_size):
     """Score every study of `dataset` exactly once with each probe (each rank every `world_size`-th
     study; results gathered on every rank). Returns, per probe, a dict with the studies' indices
     (dataset order), their raw `targets` [n, heads], `outputs` {head: [n, outputs]} (raw head
@@ -671,13 +752,14 @@ def score_studies(device, encoder, probes, dataset, batch_size, num_workers, use
         failed += batch_failed
         if data is None:
             continue
-        clips, batch_targets, video_mask, clip_indices, view_ids = data
+        clips, batch_targets, video_mask, clip_indices, view_ids, *extra = data
+        metadata = {k: v.to(device, non_blocking=True) for k, v in (extra[0] if extra else {}).items()}
         features = encode(encoder, clips, clip_indices, device, use_bfloat16)
         video_mask = video_mask.to(device, non_blocking=True)
         view_ids = view_ids.to(device, non_blocking=True)
         with torch.no_grad(), autocast(device.type, dtype=torch.bfloat16, enabled=use_bfloat16):
             for m, out in zip(modules, outputs):
-                for h, value in m(features, video_mask, view_ids).items():
+                for h, value in m(features, video_mask, view_ids, **metadata).items():
                     out[h] += value.float().cpu().tolist()
         indices += batch_indices
         targets += batch_targets.tolist()
@@ -718,16 +800,10 @@ def head_metrics(spec, target, output, normalization=None):
     training criterion) and `n`."""
     valid = np.isfinite(target)
     y, out = target[valid], output[valid]
-    nonfinite = int((~np.isfinite(output)).any(axis=1).sum())
-    if nonfinite:
-        # A NaN or infinite output would still be ranked (AUROC) or averaged: every metric is undefined, so
-        # the selection cannot choose this probe and a test reports it.
-        names = {"regression": ("mae", "rmse", "r2", "pearson_r", "bias"), "binary": ("auroc", "auprc", "acc"),
-                 "classification": ("acc", "auroc")}[spec["task"]]
-        metrics = {"n": int(y.size), **dict.fromkeys(names, float("nan")), "loss": float("nan"),
-                   "nonfinite_outputs": nonfinite}
-        if spec["task"] == "binary":
-            metrics["prevalence"] = float((y > 0.5).mean()) if y.size else float("nan")
+    invalid = int((~np.isfinite(out).all(axis=1)).sum())
+    if invalid:
+        metrics = {k: float("nan") for k in TASK_METRICS[spec["task"]]}
+        metrics.update(n=int(y.size), nonfinite_outputs=invalid)
         return metrics
     if spec["task"] == "regression":
         z = (y - normalization["mean"]) / normalization["std"]
@@ -752,7 +828,6 @@ def head_metrics(spec, target, output, normalization=None):
                    "auroc": float(np.mean(aurocs)) if aurocs else float("nan")}
     loss, count = head_loss(spec, torch.as_tensor(out, dtype=torch.float32), torch.as_tensor(z, dtype=torch.float32))
     metrics["loss"] = float(loss) / count if count else float("nan")
-    metrics["nonfinite_outputs"] = 0
     return metrics
 
 
@@ -766,9 +841,13 @@ def evaluate(scored, specs, normalization, selection_rule):
     else:
         value = heads[selection_rule["head"]][selection_rule["metric"]]
         score = float(value) if selection_rule["lower_is_better"] else -float(value)
-    if any(h["nonfinite_outputs"] for h in heads.values()):
-        score = float("nan")  # a probe with a broken head is never selected, whatever head the rule reads.
-    return {"score": score, "heads": heads, "studies": int(len(scored["indices"])), "failed": len(scored["failed"])}
+    if any(m.get("nonfinite_outputs", 0) for m in heads.values()):
+        score = float("nan")
+    result = {"score": score, "heads": heads, "studies": int(len(scored["indices"])), "failed": len(scored["failed"])}
+    if "prediction_std" in scored:
+        result["num_bags"] = scored["num_bags"]
+        result["mean_bag_prediction_std"] = {h: float(v.mean()) for h, v in scored["prediction_std"].items()}
+    return result
 
 
 def prediction_table(scored, dataset, specs, normalization):
@@ -788,6 +867,11 @@ def prediction_table(scored, dataset, specs, normalization):
             table[f"{name}_prediction"] = out.argmax(axis=1)
             for c in range(out.shape[1]):
                 table[f"{name}_prob_{c}"] = prob[:, c]
+        if "prediction_std" in scored:
+            std = scored["prediction_std"][name]
+            for c in range(std.shape[1]):
+                suffix = f"_{c}" if spec["task"] == "classification" else ""
+                table[f"{name}_bag_std{suffix}"] = std[:, c]
     return pd.DataFrame(table)
 
 
@@ -874,7 +958,10 @@ def describe_run(args_eval, checkpoint, manifests, fingerprint, seed, parameter_
         "encoder_checkpoint": {"file": os.path.basename(checkpoint), "sha256": fingerprint["encoder_sha256"]},
         "manifests": files,
         "splits": {split: {"studies": len(ds), "videos": sum(len(s[1]) for s in ds.studies),
-                           "selection": SELECTION[ds.selection]} for split, ds in datasets.items()},
+                           "selection": SELECTION[ds.selection], "eval_seed": ds.eval_seed}
+                   for split, ds in datasets.items()},
+        "study_probe": fingerprint["settings"]["classifier"],
+        "evaluation": fingerprint["settings"]["evaluation"],
         "heads": specs, "normalization": normalization, "parameters": parameter_counts,
         "optimization": {"optimizer": "AdamW", "lr_schedule": "linear warmup from start_lr, then cosine to final_lr",
                          "weight_decay_schedule": "cosine from weight_decay to final_weight_decay",
@@ -914,11 +1001,17 @@ def check_finished(folder, num_epochs):
                            f"{latest.get('best_epoch')}: the folder does not hold the selected probe.")
 
 
-def load_selected(folder, probes, probe_names, num_epochs, fingerprint, encoder, trainable):
-    """The probe and epoch chosen on validation (`best.pt`, with its fine-tuned encoder when the
-    encoder trained), loaded into `probes` / `encoder` after the fingerprint check. Returns
-    (checkpoint path, checkpoint, probe index, probe module)."""
+def run_test(folder, probes, probe_names, val_dataset, test_dataset, num_epochs, fingerprint, selection_rule, run_info,
+             wandb_run, step, device, encoder, batch_size, num_workers, use_bfloat16, specs, normalization, rank,
+             world_size, trainable=False, val_only=False, num_bags=1):
+    """Score validation and optionally the test with the probe and epoch chosen on validation (`best.pt`, with
+    its fine-tuned encoder when the encoder trained), and write `test_metrics.json`,
+    `test_predictions.csv` and `val_predictions.csv`. The prediction files list study ids, which
+    can identify patients: keep them where the data is."""
     check_finished(folder, num_epochs)
+    if not val_only and os.path.exists(os.path.join(folder, "test_metrics.json")):
+        raise RuntimeError("This probe has already been tested (`test_metrics.json` exists); repeat testing only if "
+                           "the previous evaluation was invalid.")
     checkpoint_path = os.path.join(folder, "best.pt")
     checkpoint = load_probe_checkpoint(checkpoint_path)
     provenance.check_fingerprint(checkpoint.get("fingerprint"), fingerprint, checkpoint_path,
@@ -932,86 +1025,50 @@ def load_selected(folder, probes, probe_names, num_epochs, fingerprint, encoder,
             raise ValueError(f"{checkpoint_path} holds no fine-tuned encoder, but this config trains the encoder.")
         encoder.load_state_dict({k.removeprefix("module."): v for k, v in checkpoint["encoder"].items()})
         logger.info("Loaded the fine-tuned encoder of the selected epoch.")
-    logger.info(f"Scoring {probe_names[probe]} from epoch {checkpoint['epoch']} of {checkpoint_path}")
-    return checkpoint_path, checkpoint, probe, module
-
-
-def run_val(folder, probes, probe_names, val_dataset, num_epochs, fingerprint, selection_rule, run_info, device,
-            encoder, batch_size, num_workers, use_bfloat16, specs, normalization, rank, world_size, trainable=False):
-    """Score the validation split again with the probe and epoch chosen on it, and write
-    `val_metrics.json` and `val_predictions.csv` (study ids: keep them where the data is). The test
-    split is not read, so encoders can be compared on validation before any test."""
-    checkpoint_path, checkpoint, probe, module = load_selected(folder, probes, probe_names, num_epochs, fingerprint,
-                                                               encoder, trainable)
-    scored = score_studies(device, encoder, [module], val_dataset, batch_size, num_workers, use_bfloat16, specs,
-                           normalization, rank, world_size)[0]
-    if rank != 0:
-        return None
-    val = evaluate(scored, specs, normalization, selection_rule)
-    prediction_table(scored, val_dataset, specs, normalization).to_csv(
-        os.path.join(folder, "val_predictions.csv"), index=False)
-    result = {
-        "selected_on": "validation", "selection": checkpoint.get("selection"),
-        "checkpoint": checkpoint_path, "checkpoint_sha256": provenance.sha256(checkpoint_path),
-        "epoch": int(checkpoint["epoch"]), "probe": probe, "probe_name": probe_names[probe],
-        "val_score": float(checkpoint["best_score"]), "val": val, "normalization": normalization,
-        "run_info": run_info, "failed_rows": scored["failed"],
-        # How the probe was trained (from `best.pt`, with its GPU count), and how this scoring ran.
-        "training_fingerprint": checkpoint.get("fingerprint"), "scoring_fingerprint": fingerprint,
-    }
-    tmp = os.path.join(folder, "val_metrics.json.tmp")
-    with open(tmp, "w") as f:
-        json.dump(result, f, indent=2)
-    os.replace(tmp, os.path.join(folder, "val_metrics.json"))
-    logger.info(f"Validation of {probe_names[probe]} (epoch {result['epoch']}): {json.dumps(val)}")
-    return result
-
-
-def run_test(folder, probes, probe_names, val_dataset, test_dataset, num_epochs, fingerprint, selection_rule, run_info,
-             wandb_run, step, device, encoder, batch_size, num_workers, use_bfloat16, specs, normalization, rank,
-             world_size, trainable=False):
-    """Score the test split once with the probe and epoch chosen on validation (`best.pt`, with
-    its fine-tuned encoder when the encoder trained), and write `test_metrics.json`,
-    `test_predictions.csv` and `val_predictions.csv`. The prediction files list study ids, which
-    can identify patients: keep them where the data is."""
-    check_finished(folder, num_epochs)
-    if os.path.exists(os.path.join(folder, "test_metrics.json")):
-        raise RuntimeError("This probe has already been tested (`test_metrics.json` exists); repeat testing only if "
-                           "the previous evaluation was invalid.")
-    checkpoint_path, checkpoint, probe, module = load_selected(folder, probes, probe_names, num_epochs, fingerprint,
-                                                               encoder, trainable)
+    logger.info(f"Testing {probe_names[probe]} from epoch {checkpoint['epoch']} of {checkpoint_path}")
 
     def score(dataset):
         return score_studies(device, encoder, [module], dataset, batch_size, num_workers, use_bfloat16, specs,
-                             normalization, rank, world_size)[0]
+                             normalization, rank, world_size, num_bags=num_bags)[0]
 
-    val_scored, test_scored = score(val_dataset), score(test_dataset)
+    val_scored = score(val_dataset)
+    test_scored = None if val_only else score(test_dataset)
     if rank != 0:
         return None
     val = evaluate(val_scored, specs, normalization, selection_rule)
-    test = evaluate(test_scored, specs, normalization, selection_rule)
+    test = None if val_only else evaluate(test_scored, specs, normalization, selection_rule)
     prediction_table(val_scored, val_dataset, specs, normalization).to_csv(
         os.path.join(folder, "val_predictions.csv"), index=False)
-    prediction_table(test_scored, test_dataset, specs, normalization).to_csv(
-        os.path.join(folder, "test_predictions.csv"), index=False)
+    if not val_only:
+        prediction_table(test_scored, test_dataset, specs, normalization).to_csv(
+            os.path.join(folder, "test_predictions.csv"), index=False)
     result = {
         "selected_on": "validation", "selection": checkpoint.get("selection"),
         "checkpoint": checkpoint_path, "checkpoint_sha256": provenance.sha256(checkpoint_path),
         "epoch": int(checkpoint["epoch"]), "probe": probe, "probe_name": probe_names[probe],
         "val_score": float(checkpoint["best_score"]),
-        "val": val, "test": test, "normalization": normalization,
-        "run_info": run_info, "failed_rows": test_scored["failed"],
+        "val": val, "normalization": normalization,
+        "run_info": run_info, "failed_rows": (val_scored if val_only else test_scored)["failed"],
+        # How the probe was trained (from `best.pt`, with its GPU count), and how this scoring ran.
         "training_fingerprint": checkpoint.get("fingerprint"), "scoring_fingerprint": fingerprint,
     }
-    tmp = os.path.join(folder, "test_metrics.json.tmp")
+    if not val_only:
+        result["test"] = test
+    prefix = "selected_val" if val_only else "test"
+    filename = "val_metrics.json" if val_only else "test_metrics.json"
+    tmp = os.path.join(folder, filename + ".tmp")
     with open(tmp, "w") as f:
         json.dump(result, f, indent=2)
-    os.replace(tmp, os.path.join(folder, "test_metrics.json"))
+    os.replace(tmp, os.path.join(folder, filename))
 
-    scalars = {"probe/test_epoch": result["epoch"], "probe/test_probe": probe, "probe/test_val_score": result["val_score"],
-               "probe/test/score": test["score"], "probe/test/failed_studies": test["failed"]}
-    for head, metrics in test["heads"].items():
-        scalars.update({f"probe/test/{head}/{k}": float(v) for k, v in metrics.items()})
+    metrics_result = val if val_only else test
+    scalars = {f"probe/{prefix}_epoch": result["epoch"], f"probe/{prefix}_probe": probe,
+               f"probe/{prefix}/score": metrics_result["score"],
+               f"probe/{prefix}/failed_studies": metrics_result["failed"]}
+    for head, metrics in metrics_result["heads"].items():
+        scalars.update({f"probe/{prefix}/{head}/{k}": float(v) for k, v in metrics.items()})
+    for head, value in metrics_result.get("mean_bag_prediction_std", {}).items():
+        scalars[f"probe/{prefix}/{head}/bag_std"] = value
     log_scalars(wandb_run, scalars, step=step)
-    logger.info(f"Test of {probe_names[probe]} (epoch {result['epoch']}): {json.dumps(test)}")
+    logger.info(f"{prefix} of {probe_names[probe]} (epoch {result['epoch']}): {json.dumps(metrics_result)}")
     return result

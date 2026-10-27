@@ -110,6 +110,125 @@ class TestStudyProbe(unittest.TestCase):
             StudyProbe(D, self.specs, pooling_mode="sum")
 
 
+class TestStudyAblations(unittest.TestCase):
+
+    def setUp(self):
+        torch.manual_seed(11)
+        self.specs = head_specs(CLASSIFIER)
+        self.tokens = torch.randn(2, 3 * 2 * 8, 24)  # 3 videos, 2 clips/video, grid 2x2x2
+        self.mask = torch.tensor([[True, True, False], [True, False, False]])
+        self.views = torch.tensor([[0, 1, -1], [1, -1, -1]])
+
+    def model(self, **kwargs):
+        options = dict(pooling_mode="hierarchical", num_heads=4, depth=2, query_mode="task",
+                       num_view_classes=2, local_depth=1, local_num_queries=3, local_use_rope=True,
+                       token_grid=(2, 2, 2), num_clips_per_video=2)
+        options.update(kwargs)
+        return StudyProbe(24, self.specs, **options)
+
+    def test_video_order_and_clip_order_do_not_change_hierarchical_predictions(self):
+        model = self.model().eval()
+        expected = model(self.tokens, self.mask, self.views)
+        videos = self.tokens.reshape(2, 3, 2, 8, 24)
+        order = [2, 0, 1]
+        reordered = videos[:, order].flip(2).reshape_as(self.tokens)
+        actual = model(reordered, self.mask[:, order], self.views[:, order])
+        for head in expected:
+            torch.testing.assert_close(expected[head], actual[head], atol=1e-6, rtol=1e-5)
+        # Padded content may be arbitrary, even nonfinite, without contaminating the study.
+        other = videos.clone()
+        other[~self.mask] = float("nan")
+        actual = model(other.reshape_as(self.tokens), self.mask, self.views)
+        for head in expected:
+            torch.testing.assert_close(expected[head], actual[head])
+
+    def test_task_queries_route_gradients_to_the_corresponding_readout(self):
+        for pooling in ("attentive", "hierarchical"):
+            model = self.model(pooling_mode=pooling, local_use_rope=pooling == "hierarchical")
+            output = model(self.tokens, self.mask, self.views)
+            output["as_present"].sum().backward()
+            grad = model.pooler.query_tokens.grad[0]
+            self.assertGreater(grad[1].abs().sum().item(), 0)
+            self.assertEqual(grad[[0, 2]].abs().sum().item(), 0)
+            if pooling == "hierarchical":
+                self.assertGreater(model.clip_pooler.blocks[0].attn.qkv.weight.grad.abs().sum().item(), 0)
+
+    def test_group_queries_share_only_the_requested_groups(self):
+        model = self.model(query_mode="group", task_groups={"lvef": "lv", "as_present": "av", "severity": "av"})
+        self.assertEqual(model.head_query, {"lvef": 0, "as_present": 1, "severity": 1})
+        self.assertEqual(model.pooler.query_tokens.shape[1], 2)
+        self.assertEqual(model(self.tokens, self.mask, self.views)["severity"].shape, (2, 3))
+        with self.assertRaisesRegex(ValueError, "every target"):
+            self.model(query_mode="group", task_groups={"lvef": "lv"})
+
+    def test_soft_view_probabilities_match_hard_labels_and_mixtures(self):
+        model = self.model(pooling_mode="mean", query_mode="shared", local_use_rope=False).eval()
+        onehot = torch.nn.functional.one_hot(self.views.clamp(min=0), 2).float()
+        hard = model.pool(self.tokens, self.mask, self.views)
+        torch.testing.assert_close(hard, model.pool(self.tokens, self.mask, view_probs=onehot))
+        mixed = torch.full_like(onehot, 0.5)
+        expected = (self.tokens.reshape(2, 3, -1, 24).mean(2) * self.mask.unsqueeze(-1)).sum(1)
+        expected /= self.mask.sum(1, keepdim=True)
+        expected += model.view_embed.weight[:2].mean(0)
+        torch.testing.assert_close(expected, model.pool(self.tokens, self.mask, view_probs=mixed))
+        with self.assertRaisesRegex(ValueError, "summing to one"):
+            model(self.tokens, self.mask, view_probs=mixed * 2)
+
+    def test_view_dropout_is_per_video_training_only_and_types_are_independent(self):
+        model = self.model(view_dropout=1, num_acquisition_classes=2)
+        types = torch.tensor([[0, 1, -1], [0, -1, -1]])
+        swapped = self.views.clone()
+        swapped[self.mask] = 1 - swapped[self.mask]
+        a = model.pool(self.tokens, self.mask, self.views, acquisition_ids=types)
+        b = model.pool(self.tokens, self.mask, swapped, acquisition_ids=types)
+        torch.testing.assert_close(a, b)
+        model.eval()
+        a = model.pool(self.tokens, self.mask, self.views, acquisition_ids=types)
+        b = model.pool(self.tokens, self.mask, swapped, acquisition_ids=types)
+        self.assertFalse(torch.allclose(a, b))
+        other_types = types.clone()
+        other_types[self.mask] = 1 - other_types[self.mask]
+        c = model.pool(self.tokens, self.mask, self.views, acquisition_ids=other_types)
+        self.assertFalse(torch.allclose(a, c))
+
+    def test_rope_is_local_and_changes_spatial_attention(self):
+        from src.models.utils.modules import RoPEAttention
+        model = self.model().eval()
+        self.assertIsInstance(model.clip_pooler.blocks[0].attn, RoPEAttention)
+        self.assertNotIsInstance(model.pooler.blocks[0].attn, RoPEAttention)
+        plain = self.model(local_use_rope=False).eval()
+        plain.load_state_dict(model.state_dict())
+        a = model.clip_pooler(self.tokens[:, :8])
+        b = plain.clip_pooler(self.tokens[:, :8])
+        self.assertGreater((a - b).abs().max().item(), 1e-8)
+        with self.assertRaisesRegex(ValueError, "patch tokens"):
+            model(self.tokens[:, :24], self.mask, self.views)
+        with self.assertRaisesRegex(ValueError, "hierarchical"):
+            self.model(pooling_mode="attentive")
+        with self.assertRaisesRegex(ValueError, "self-attention"):
+            self.model(local_depth=0)
+
+    def test_local_rotations_preserve_norm_and_relative_positions(self):
+        from src.models.utils.modules import rotate_queries_or_keys
+        for dim in (2, 4, 8):
+            q, k = torch.randn(2, 4, 8, dim), torch.randn(2, 4, 8, dim)
+            m, n = torch.arange(8), torch.arange(8).flip(0)
+            rotate = lambda x, p: rotate_queries_or_keys(x, p, interleaved=True)
+            qm, kn = rotate(q, m), rotate(k, n)
+            torch.testing.assert_close(qm.square().sum(-1), q.square().sum(-1))
+            torch.testing.assert_close((qm * kn).sum(-1), (rotate(q, m + 3) * rotate(k, n + 3)).sum(-1),
+                                       atol=2e-6, rtol=1e-5)
+
+    def test_hierarchy_trains_with_bfloat16_and_activation_checkpointing(self):
+        model = self.model()
+        with torch.autocast("cpu", dtype=torch.bfloat16):
+            outputs = model(self.tokens, self.mask, self.views)
+            loss = sum(value.float().square().mean() for value in outputs.values())
+        loss.backward()
+        self.assertTrue(torch.isfinite(loss))
+        self.assertTrue(all(p.grad is not None and torch.isfinite(p.grad).all() for p in model.parameters()))
+
+
 class TestLoss(unittest.TestCase):
 
     def setUp(self):

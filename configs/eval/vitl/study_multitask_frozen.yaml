@@ -2,7 +2,7 @@
 #
 # Frozen study-level multi-task probe, DeepCORO_CLIP style: every study is read as a bag of
 # `num_videos` videos (a random subset, in random order, at every training read; the first
-# videos in path order in evaluation), the frozen EchoJEPA encoder embeds every clip, one probe
+# seeded random videos in evaluation), the frozen EchoJEPA encoder embeds every clip, one probe
 # pools the study and reads it with one head per target. Heads, losses and weights follow the
 # DeepCORO_CLIP linear-probing keys (`target_label`, `head_task`, `head_structure`,
 # `loss_structure`, `head_weights`, `head_dropout`, `labels_map`). Options: a view filter and a
@@ -30,7 +30,8 @@ meta:
 
 experiment:
   data:
-    # One long CSV with a header: one row per video, a study column, the target columns, and a
+    # One long CSV with a header: one row per video, a study column, a `patient_id` column (required:
+    # every split is checked to be patient-disjoint; `patient_column` renames it), the target columns, and a
     # split column (train / val / test). `dataset_train` / `dataset_val` / `dataset_test` (one CSV
     # per split, same columns) can replace `data_filename` + `split_column`.
     data_filename: /your_manifests/videos_with_targets.csv
@@ -48,6 +49,8 @@ experiment:
       Other: 5
     num_videos: 8                                 # video slots per study; shorter studies are padded and masked.
     shuffle_videos: true                          # training: a random subset in random order at every read.
+    sampling_mode: random                         # random | view_balanced | fixed (legacy path order).
+    eval_seed: 0                                  # held constant across initialization seeds.
     min_videos: 1                                 # studies with fewer videos are left out.
     num_clips_per_video: 1                        # clips per video (each of `frames_per_clip` frames).
     frames_per_clip: 16
@@ -65,7 +68,12 @@ experiment:
     warmup: 0.0
 
   classifier:
-    pooling_mode: attentive                       # attentive | mean | max | attention (gated MIL over videos).
+    pooling_mode: attentive                       # attentive | hierarchical | mean | max | attention.
+    query_mode: shared                            # shared | task | group (requires a head -> group task_groups map).
+    view_dropout: 0.0                             # training-only probability of dropping a video's view signal.
+    local_depth: 1                                # hierarchical: self-attention blocks per clip.
+    local_num_queries: 4                          # hierarchical: summaries retained from each clip.
+    local_use_rope: false                         # hierarchical: 3D RoPE within clips, reset for each clip.
     num_heads: 16                                 # attentive pooler (cross-attention over every token of the study).
     num_probe_blocks: 4
     attention_hidden: 256                         # gated attention (`pooling_mode: attention`).
@@ -104,6 +112,7 @@ experiment:
     # `weighted_loss`: the training objective on validation (sum of head_weights x head loss),
     # or `<head>/<metric>` such as `lvef/mae` or `lv_dysfunction/auroc`.
     selection: weighted_loss
+    num_bags: 1                                   # deterministic bags averaged in prediction space.
 
   optimization:
     batch_size: 2                                 # studies per GPU (x num_videos x num_clips_per_video clips).
