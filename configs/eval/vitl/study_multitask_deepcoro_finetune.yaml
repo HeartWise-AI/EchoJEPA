@@ -1,0 +1,160 @@
+# configs/eval/vitl/study_multitask_deepcoro_finetune.yaml
+#
+# Multi-video fine-tuning of the EchoJEPA ViT-L that DeepCORO_CLIP's contrastive stage
+# produced (the `echojepa` backbone of its CLIP checkpoint), on DeepCORO's per-segment
+# stenosis report. Every angiogram study is read as a bag of `num_videos` cines drawn at
+# random (and shuffled) at each training read; the top `trainable_blocks` encoder blocks
+# train with their own learning rate (EJ-FT recipe: 20 of 24 blocks at 6.4e-6) under one
+# probe setting; the probe pools the study's tokens with the attentive probe (a learned
+# embedding tells left from right coronary injections) and reads 18 segment regressions plus
+# per-vessel >= 70 % findings.
+#
+# Manifest: `data/make_coronary_manifest.py --reports <DeepCORO report CSV> --out-dir <dir>`
+# gives `coronary_videos_with_targets.csv`. Encoder: the `video_encoder` entry of the
+# DeepCORO_CLIP checkpoint (`model.encoder.*`), read by `deepcoro_clip_echojepa_encoder`.
+# Protocol: docs/study_multitask_probe.md. For a frozen comparison set `trainable_blocks: 0`
+# and give `multihead_kwargs` several settings.
+
+app: vjepa
+eval_name: study_multitask_frozen
+folder: /your_folder/deepcoro_clip_echojepa                 # where the run's outputs go.
+tag: study-multitask-deepcoro-finetune
+nodes: 1
+tasks_per_node: 4
+cpus_per_task: 32
+num_workers: 8
+resume_checkpoint: true
+
+meta:
+  seed: 0
+  wandb_project: echojepa-study-probe
+  wandb_entity: mhi_ai
+
+experiment:
+  data:
+    data_filename: /your_manifests/coronary_videos_with_targets.csv
+    split_column: split
+    datapoint_loc_label: video_path
+    groupby_column: study_id
+    view_column: structure                        # VasoVision's main structure of each cine.
+    views: null
+    view_labels_map:
+      Left Coronary: 0
+      Right Coronary: 1
+      Other: 2
+    num_videos: 10                                # as DeepCORO_CLIP's stenosis probes (median study: 5 cines).
+    shuffle_videos: true
+    min_videos: 1
+    num_clips_per_video: 1
+    frames_per_clip: 16
+    frame_step: 2
+    resolution: 224
+
+  encoder:
+    trainable_blocks: 20                          # top 20 of ViT-L's 24 blocks (+ final norm), as the EJ-FT stenosis probe.
+    lr: 6.4e-6
+    weight_decay: 1.0e-4
+    final_lr: 0.0
+    warmup: 0.05
+
+  classifier:
+    pooling_mode: attentive                       # cross-attention over every token of the 10 cines.
+    num_heads: 16
+    num_probe_blocks: 4
+    use_view_embedding: true
+    target_label:
+      - prox_rca_stenosis
+      - mid_rca_stenosis
+      - dist_rca_stenosis
+      - pda_stenosis
+      - posterolateral_stenosis
+      - left_main_stenosis
+      - prox_lad_stenosis
+      - mid_lad_stenosis
+      - dist_lad_stenosis
+      - D1_stenosis
+      - D2_stenosis
+      - prox_lcx_stenosis
+      - mid_lcx_stenosis
+      - dist_lcx_stenosis
+      - om1_stenosis
+      - om2_stenosis
+      - bx_stenosis
+      - lvp_stenosis
+      - rca_ge70
+      - lad_ge70
+      - lcx_ge70
+      - left_main_ge50
+      - any_ge70
+    head_task:
+      prox_rca_stenosis: regression
+      mid_rca_stenosis: regression
+      dist_rca_stenosis: regression
+      pda_stenosis: regression
+      posterolateral_stenosis: regression
+      left_main_stenosis: regression
+      prox_lad_stenosis: regression
+      mid_lad_stenosis: regression
+      dist_lad_stenosis: regression
+      D1_stenosis: regression
+      D2_stenosis: regression
+      prox_lcx_stenosis: regression
+      mid_lcx_stenosis: regression
+      dist_lcx_stenosis: regression
+      om1_stenosis: regression
+      om2_stenosis: regression
+      bx_stenosis: regression
+      lvp_stenosis: regression
+      rca_ge70: binary
+      lad_ge70: binary
+      lcx_ge70: binary
+      left_main_ge50: binary
+      any_ge70: binary
+    head_structure: {}                            # one output each.
+    loss_structure: {}                            # huber for the segments, bce for the findings.
+    head_weights:                                 # DeepCORO_CLIP's weighting: distal/branch segments x1.5, LVP x3.
+      dist_rca_stenosis: 1.5
+      pda_stenosis: 1.5
+      posterolateral_stenosis: 1.5
+      dist_lad_stenosis: 1.5
+      D1_stenosis: 1.5
+      D2_stenosis: 1.5
+      mid_lcx_stenosis: 1.5
+      dist_lcx_stenosis: 1.5
+      om1_stenosis: 1.5
+      om2_stenosis: 1.5
+      bx_stenosis: 1.5
+      lvp_stenosis: 3.0
+      any_ge70: 2.0
+    head_dropout: {}
+    target_mean: null                             # z-scored from the train split.
+    target_std: null
+
+  evaluation:
+    selection: weighted_loss
+
+  optimization:
+    batch_size: 1                                 # 10 ViT-L cines per GPU with gradients through 20 blocks.
+    num_epochs: 20
+    use_bfloat16: true
+    multihead_kwargs:                             # one setting: the probes would share the encoder's gradients.
+    - {start_lr: 1.0e-4, lr: 1.0e-4, final_lr: 0.0, warmup: 0.05, weight_decay: 0.05, final_weight_decay: 0.05}
+
+model_kwargs:
+  # DeepCORO_CLIP's CLIP-stage checkpoint (EchoJEPA ViT-L backbone + aggregator + projection);
+  # only the encoder (`video_encoder` -> `model.encoder.*`) is loaded.
+  checkpoint: /volume/DeepCORO_CLIP/outputs/DeepCORO_clip/DeepCORO_Clip_EchoJEPA_benchmark/26x4vqml_20260929-005617/checkpoints/best_model_epoch_0.pt
+  module_name: evals.video_classification_frozen.modelcustom.deepcoro_clip_echojepa_encoder
+  pretrain_kwargs:
+    encoder:
+      model_name: vit_large
+      state_dict_key: video_encoder
+      encoder_prefix: model.encoder.
+      img_temporal_dim_size: null
+      patch_size: 16
+      tubelet_size: 2
+      uniform_power: true
+      use_rope: true
+  wrapper_kwargs:
+    max_frames: 128
+    use_pos_embed: false

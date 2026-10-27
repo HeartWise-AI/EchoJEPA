@@ -148,7 +148,7 @@ class TestStudyProbeSmoke(QuietLogs):
         self.assertEqual(first["run_info"]["parameters"]["probes"], len(GRID))
         self.assertEqual(first["run_info"]["splits"]["train"]["studies"], 6)
         self.assertEqual(first["run_info"]["splits"]["train"]["selection"], probe.SELECTION["random"])
-        self.assertEqual(first["run_info"]["splits"]["val"]["selection"], probe.SELECTION["fixed"])
+        self.assertEqual(first["run_info"]["splits"]["val"]["selection"], probe.SELECTION["seeded_random"])
         # The train split's statistics normalize the EF head.
         train_ef = [ef for split, ef, _, _ in STUDIES if split == "train"]
         self.assertAlmostEqual(first["normalization"]["lvef"]["mean"], float(np.mean(train_ef)))
@@ -211,6 +211,21 @@ class TestStudyProbeSmoke(QuietLogs):
             if selection == "as_present/auroc":
                 self.assertEqual(best["best_score"], -best["val"][best["best_probe"]]["heads"]["as_present"]["auroc"])
 
+    def test_shared_studies_and_unreported_metrics_are_refused(self):
+        table = pd.read_csv(self.manifest)
+        leaked = table.copy()
+        leaked.loc[leaked.study_id == "s6", "split"] = ["train", "val"]  # s6 has two videos.
+        path = os.path.join(self.tmp, "leaked.csv")
+        leaked.to_csv(path, index=False)
+        cfg = self.config(os.path.join(self.tmp, "leaked"))
+        cfg["experiment"]["data"]["data_filename"] = path
+        with self.on_cpu(), self.assertRaisesRegex(ValueError, "both the train and the val split"):
+            probe.main(cfg)
+        for selection, message in (("lvef/auroc", "regression head"), ("as_present/mae", "binary head"),
+                                   ("lvef", "<head>/<metric>"), ("rvsp/mae", "target_label")):
+            with self.on_cpu(), self.assertRaisesRegex(ValueError, message):
+                probe.main(self.config(os.path.join(self.tmp, "bad-selection"), selection=selection))
+
     def test_view_embedding_and_encoder_fine_tuning(self):
         cfg, result, best = self.train_and_test("finetune", view_embedding=True, trainable_blocks=1)
         self.assertEqual(result["run_info"]["parameters"]["encoder_trainable_blocks"], 1)
@@ -232,3 +247,55 @@ class TestStudyProbeSmoke(QuietLogs):
         other["experiment"]["optimization"]["multihead_kwargs"] = GRID
         with self.on_cpu(), self.assertRaisesRegex(ValueError, "one setting"):
             probe.main(other)
+
+    def test_all_four_options_train_resume_and_score_selected_validation_without_test(self):
+        cfg = self.config(os.path.join(self.tmp, "all-four"), view_embedding=True)
+        cfg["experiment"]["classifier"].update(
+            pooling_mode="hierarchical", query_mode="task", local_depth=1,
+            local_num_queries=2, local_use_rope=True, view_dropout=0.2)
+        cfg["experiment"]["data"].update(sampling_mode="view_balanced", eval_seed=13, num_clips_per_video=2,
+                                            view_probability_columns={"A4C": "p4", "A2C": "p2"},
+                                            acquisition_column="type", acquisition_labels_map={"bmode": 0, "color": 1})
+        cfg["experiment"]["evaluation"]["num_bags"] = 2
+        table = pd.read_csv(self.manifest)
+        table["p4"] = np.where(table.view == "A4C", 0.9, 0.1)
+        table["p2"] = 1 - table.p4
+        table["type"] = np.where(table.view == "A4C", "bmode", "color")
+        table["patient_id"] = "patient-" + table.study_id
+        path = os.path.join(self.tmp, "soft-views.csv")
+        table.to_csv(path, index=False)
+        cfg["experiment"]["data"]["data_filename"] = path
+        original_read = probe.read_split
+
+        def no_test(data, split):
+            self.assertNotEqual(split, "test")
+            return original_read(data, split)
+
+        with self.on_cpu(), mock.patch.object(probe, "read_split", side_effect=no_test):
+            with mock.patch.object(probe, "train_one_epoch", side_effect=stop_after(1, probe.train_one_epoch)), \
+                    self.assertRaises(Interrupted):
+                probe.main(cfg)
+            probe.main(cfg)
+            probe.main(dict(cfg, val_only=True))
+        folder = self.folder(cfg)
+        self.assertFalse(os.path.exists(os.path.join(folder, "test_metrics.json")))
+        with open(os.path.join(folder, "val_metrics.json")) as f:
+            result = json.load(f)
+        best = torch.load(os.path.join(folder, "best.pt"), weights_only=False)
+        self.assertEqual(result["epoch"], best["best_epoch"])
+        self.assertEqual(result["val"]["num_bags"], 2)
+        self.assertTrue(np.isfinite(result["val"]["score"]))
+        self.assertEqual(result["run_info"]["study_probe"]["query_mode"], "task")
+        self.assertEqual(result["run_info"]["study_probe"]["token_grid"], [2, 2, 2])
+        predictions = pd.read_csv(os.path.join(folder, "val_predictions.csv"))
+        self.assertIn("lvef_bag_std", predictions)
+        self.assertIn("as_present_bag_std", predictions)
+        # Resume must reject changes in view conditioning, sampling, queries or local geometry.
+        import copy
+        for section, key, value in (("classifier", "view_dropout", 0.3), ("data", "eval_seed", 14),
+                                    ("classifier", "query_mode", "shared"),
+                                    ("classifier", "local_use_rope", False)):
+            changed = copy.deepcopy(cfg)
+            changed["experiment"][section][key] = value
+            with self.on_cpu(), self.assertRaises((ValueError, RuntimeError)):
+                probe.main(dict(changed, val_only=True))
