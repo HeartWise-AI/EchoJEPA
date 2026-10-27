@@ -8,6 +8,7 @@ with the same seed, it gives the same probe and the same numbers."""
 import contextlib
 import json
 import os
+import pickle
 import tempfile
 import unittest
 from unittest import mock
@@ -28,6 +29,18 @@ STUDIES = [("train", 35, 1, 3), ("train", 50, 0, 2), ("train", 60, 0, 4), ("trai
            ("train", 40, 0, 3), ("train", 55, 1, 2),
            ("val", 35, 1, 2), ("val", 55, 0, 3), ("val", None, 0, 2),
            ("test", 30, 1, 2), ("test", 55, 0, 1), ("test", 60, None, 3)]
+RAN = []  # calls made by unpickling a `RunsOnLoad`.
+
+
+def mark_ran():
+    RAN.append(True)
+
+
+class RunsOnLoad:
+    """Unpickling it calls `mark_ran`: the shape of a checkpoint that runs code when it is read."""
+
+    def __reduce__(self):
+        return mark_ran, ()
 
 
 def stop_after(epochs, train_one_epoch):
@@ -179,6 +192,31 @@ class TestStudyProbeSmoke(QuietLogs):
         with self.on_cpu(), self.assertRaisesRegex(ValueError, "num_videos"):
             probe.main(dict(other, test_only=True))
 
+    def test_selected_scores_keep_both_fingerprints_and_earlier_protocols_are_refused(self):
+        cfg = self.config(os.path.join(self.tmp, "fingerprints"))
+        folder = self.folder(cfg)
+        with self.on_cpu():
+            probe.main(dict(cfg))
+            probe.main(dict(cfg, val_only=True))
+            probe.main(dict(cfg, test_only=True))
+        best = torch.load(os.path.join(folder, "best.pt"), map_location="cpu", weights_only=False)
+        for name in ("val_metrics.json", "test_metrics.json"):
+            with open(os.path.join(folder, name)) as f:
+                result = json.load(f)
+            # The training provenance is the checkpoint's own (its GPU count included), kept apart from the scoring run's.
+            self.assertEqual(json.dumps(result["training_fingerprint"], sort_keys=True),
+                             json.dumps(best["fingerprint"], sort_keys=True), name)
+            self.assertEqual(result["scoring_fingerprint"]["settings"]["protocol"], probe.PROTOCOL, name)
+            # The validation split is read with the bags of training's validation: the selected score comes back.
+            self.assertAlmostEqual(result["val"]["score"], best["best_score"], places=5, msg=name)
+        # A probe trained under either protocol 2 (seeded bags with identifiers read with inferred types, or
+        # identifiers read as text with `eval_videos` bags) is not resumed or tested.
+        latest = torch.load(os.path.join(folder, "latest.pt"), map_location="cpu", weights_only=False)
+        latest["fingerprint"]["settings"]["protocol"]["version"] = 2
+        torch.save(latest, os.path.join(folder, "latest.pt"))
+        with self.on_cpu(), self.assertRaisesRegex(ValueError, "earlier protocol"):
+            probe.main(dict(cfg))
+
     def test_a_resumed_probe_continues_as_an_uninterrupted_one(self):
         def train(name, interrupt):
             cfg = self.config(os.path.join(self.tmp, name))
@@ -226,6 +264,21 @@ class TestStudyProbeSmoke(QuietLogs):
             with self.on_cpu(), self.assertRaisesRegex(ValueError, message):
                 probe.main(self.config(os.path.join(self.tmp, "bad-selection"), selection=selection))
 
+    def test_probe_checkpoints_that_run_code_are_refused(self):
+        folder = os.path.join(self.tmp, "untrusted")
+        os.makedirs(folder)
+        path = os.path.join(folder, "latest.pt")
+        torch.save({"epoch": 2, "best_epoch": 2, "best_score": 0.0, "payload": RunsOnLoad()}, path)
+        RAN.clear()
+        # Resume, the finished check (--val_only, --test_only) and the selected probe all read with weights_only.
+        with mock.patch("src.utils.checkpoint_loader.time.sleep"):
+            for load in (lambda: probe.load_probe_checkpoint(path), lambda: probe.check_finished(folder, 2)):
+                with self.assertRaises(pickle.UnpicklingError):
+                    load()
+        self.assertEqual(RAN, [])
+        torch.load(path, weights_only=False)  # the same file, read the old way, runs its code.
+        self.assertEqual(RAN, [True])
+
     def test_view_embedding_and_encoder_fine_tuning(self):
         cfg, result, best = self.train_and_test("finetune", view_embedding=True, trainable_blocks=1)
         self.assertEqual(result["run_info"]["parameters"]["encoder_trainable_blocks"], 1)
@@ -242,6 +295,12 @@ class TestStudyProbeSmoke(QuietLogs):
                  for k, v in best["encoder"].items() if k.startswith("model.blocks.")}
         self.assertTrue(any(m for k, m in moved.items() if ".blocks.11." in k or k.startswith("model.blocks.1.")))
         self.assertFalse(any(m for k, m in moved.items() if k.startswith("model.blocks.0.")))
+        # V-JEPA 2.1 has no `norm`: its output norm, norms_block[-1], trains with the top blocks; the others do not.
+        norms = sorted({int(k.split(".")[2]) for k in best["encoder"] if k.startswith("model.norms_block.")})
+        self.assertGreater(len(norms), 1)
+        for i in norms:
+            changed = not torch.equal(best["encoder"][f"model.norms_block.{i}.weight"], initial[f"norms_block.{i}.weight"])
+            self.assertEqual(changed, i == norms[-1], f"norms_block.{i}")
         # Several probes cannot share a training encoder.
         other = self.config(os.path.join(self.tmp, "finetune-grid"), trainable_blocks=1)
         other["experiment"]["optimization"]["multihead_kwargs"] = GRID

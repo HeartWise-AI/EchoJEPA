@@ -41,12 +41,20 @@ SELECTION = {
 }
 
 
+def id_columns(args_data):
+    """{column: str} for the manifest's identifier columns (video, study, view, patient): read as
+    text, so a patient 0123 is never 123 and a study id has one type in every split's file."""
+    names = (args_data.get("datapoint_loc_label", "video_path"), args_data.get("groupby_column", "study_id"),
+             args_data.get("view_column"), args_data.get("patient_column", "patient_id"))
+    return {name: str for name in names if name}
+
+
 def read_split(args_data, split):
     """The rows of `split` from the manifests `args_data` names: `data_filename` (one CSV with a
-    `split_column`) or `dataset_<split>` (one CSV per split)."""
+    `split_column`) or `dataset_<split>` (one CSV per split). Identifier columns are read as text."""
     path = args_data.get("data_filename")
     if path:
-        table = pd.read_csv(path)
+        table = pd.read_csv(path, dtype=id_columns(args_data))
         column = args_data.get("split_column", "split")
         if column not in table.columns:
             raise ValueError(f"`data_filename` has no `{column}` column; set `experiment.data.split_column`.")
@@ -57,7 +65,7 @@ def read_split(args_data, split):
     path = args_data.get(f"dataset_{split}")
     if not path:
         raise ValueError(f"Set `experiment.data.data_filename` (with a split column) or `experiment.data.dataset_{split}`.")
-    return pd.read_csv(path)
+    return pd.read_csv(path, dtype=id_columns(args_data))
 
 
 def make_clip_loader(frames_per_clip, frame_step=None, duration=None, fps=None, num_clips_per_video=1,

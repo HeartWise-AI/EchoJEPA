@@ -60,10 +60,13 @@ EVAL_NAME = "study_multitask_frozen"
 # How the studies of each split are read (`SELECTION`) and batched. The fingerprint holds it, so a
 # probe is continued and tested only under the protocol it was trained with. Raise the version
 # whenever the code changes how the probe is trained or evaluated in a way these fields do not describe.
+# Version 3 joins two version-2 changes made in parallel: seeded evaluation bags (`sampling_mode`, `eval_seed`)
+# and identifier columns read as text. Probes of either version 2 are not resumed or tested under it.
 PROTOCOL = {
-    "version": 2,
+    "version": 3,
     "train": {"videos": "random when `shuffle_videos`, else fixed", "clip_positions": "random", "drop_last": True},
     "evaluation": {"videos": "seeded bags using sampling_mode", "clip_positions": "fixed", "drop_last": False},
+    "identifiers": "video, study, view and patient columns read as text; studies in text order",
 }
 # Metrics a selection rule `<head>/<metric>` may name, per head task (as `head_metrics` reports
 # them), and the direction that is better.
@@ -371,7 +374,8 @@ def main(args_eval, resume_preempt=False):
         scores = np.asarray([v["score"] for v in val], dtype=float)
         if not np.isfinite(scores).any():
             raise RuntimeError(f"No probe has a finite validation {selection} at epoch {epoch + 1}: the selection "
-                               "metric is undefined on this validation split (e.g. one class only, or no target).")
+                               "metric is undefined on this validation split (e.g. one class only, or no target), "
+                               "or every probe has a non-finite output.")
         probe = int(np.argmin(np.where(np.isfinite(scores), scores, np.inf)))
         score = float(scores[probe])
         is_best = score < best_score
@@ -405,7 +409,8 @@ def main(args_eval, resume_preempt=False):
 
 
 def unfreeze_top_blocks(encoder, trainable_blocks):
-    """Let the encoder's top `trainable_blocks` transformer blocks and its final norm train;
+    """Let the encoder's top `trainable_blocks` transformer blocks and its output norm train
+    (`norm`, or V-JEPA 2.1's `norms_block[-1]`, the one its forward applies to the last layer);
     everything else stays frozen. Returns the trainable parameters (none when 0)."""
     for p in encoder.parameters():
         p.requires_grad = False
@@ -418,8 +423,11 @@ def unfreeze_top_blocks(encoder, trainable_blocks):
     if trainable_blocks > len(blocks):
         raise ValueError(f"`trainable_blocks` is {trainable_blocks}, but the encoder has {len(blocks)} blocks.")
     modules = list(blocks[len(blocks) - trainable_blocks:])
-    if getattr(vit, "norm", None) is not None:
-        modules.append(vit.norm)
+    norm = getattr(vit, "norm", None)
+    if norm is None and getattr(vit, "norms_block", None) is not None:
+        norm = vit.norms_block[-1]
+    if norm is not None:
+        modules.append(norm)
     trainable = [p for m in modules for p in m.parameters()]
     for p in trainable:
         p.requires_grad = True
@@ -905,9 +913,16 @@ def save_checkpoint(folder, probes, optimizers, epoch, val, scores, best_score, 
         raise RuntimeError("Rank 0 could not save the probe checkpoint; stopping every rank.")
 
 
+def load_probe_checkpoint(path, mmap=False):
+    """A probe checkpoint (`latest.pt`, `best.pt`) as `save_checkpoint` wrote it: tensors and plain
+    containers only, so it is read with `weights_only=True` (the default only from torch 2.6) and a
+    file holding anything else, such as pickled code from an untrusted folder, is refused, not run."""
+    return robust_checkpoint_loader(path, map_location=torch.device("cpu"), weights_only=True, mmap=mmap)
+
+
 def load_checkpoint(path, probes, optimizers, encoder=None):
     """Resume the probes, the optimizers and, when it trains, the encoder from `path`."""
-    checkpoint = robust_checkpoint_loader(path, map_location=torch.device("cpu"))
+    checkpoint = load_probe_checkpoint(path)
     for p, state in zip(probes, checkpoint["probes"]):
         p.load_state_dict(state)
     if len(checkpoint["opt"]) != len(optimizers):
@@ -974,7 +989,7 @@ def check_finished(folder, num_epochs):
     """Refuse to test a probe that has not finished, or whose `best.pt` is not the recorded best."""
     def saved(name):
         path = os.path.join(folder, name)
-        return torch.load(path, map_location="cpu", weights_only=False, mmap=True) if os.path.exists(path) else {}
+        return load_probe_checkpoint(path, mmap=True) if os.path.exists(path) else {}
 
     latest = saved("latest.pt")
     done = latest.get("epoch", 0)
@@ -998,7 +1013,7 @@ def run_test(folder, probes, probe_names, val_dataset, test_dataset, num_epochs,
         raise RuntimeError("This probe has already been tested (`test_metrics.json` exists); repeat testing only if "
                            "the previous evaluation was invalid.")
     checkpoint_path = os.path.join(folder, "best.pt")
-    checkpoint = robust_checkpoint_loader(checkpoint_path, map_location=torch.device("cpu"))
+    checkpoint = load_probe_checkpoint(checkpoint_path)
     provenance.check_fingerprint(checkpoint.get("fingerprint"), fingerprint, checkpoint_path,
                                  ignore=("settings.world_size",))
     probe = int(checkpoint["best_probe"])
@@ -1034,6 +1049,8 @@ def run_test(folder, probes, probe_names, val_dataset, test_dataset, num_epochs,
         "val_score": float(checkpoint["best_score"]),
         "val": val, "normalization": normalization,
         "run_info": run_info, "failed_rows": (val_scored if val_only else test_scored)["failed"],
+        # How the probe was trained (from `best.pt`, with its GPU count), and how this scoring ran.
+        "training_fingerprint": checkpoint.get("fingerprint"), "scoring_fingerprint": fingerprint,
     }
     if not val_only:
         result["test"] = test
