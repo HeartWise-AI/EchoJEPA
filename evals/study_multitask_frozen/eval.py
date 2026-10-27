@@ -16,6 +16,7 @@ that probe. `--val_only` rescores only validation. Protocol and outputs: `docs/s
 import copy
 import json
 import logging
+import math
 import os
 import pprint
 import random
@@ -235,7 +236,7 @@ def main(args_eval, resume_preempt=False):
     encoder = init_module(module_name=args_pretrain["module_name"], frames_per_clip=frames_per_clip,
                           resolution=resolution, checkpoint=checkpoint, model_kwargs=args_pretrain["pretrain_kwargs"],
                           wrapper_kwargs=args_pretrain.get("wrapper_kwargs"), device=device)
-    check_token_grid(encoder, probe_options["token_grid"], args_pretrain)
+    check_token_grid(encoder, probe_options["token_grid"], frames_per_clip, resolution, device)
     probes = [
         StudyProbe(embed_dim=encoder.embed_dim, heads=specs, pooling_mode=pooling_mode, num_heads=num_heads,
                    depth=num_probe_blocks, attention_hidden=attention_hidden, dropout=probe_dropout,
@@ -457,20 +458,18 @@ def study_probe_options(classifier, data, pretrained):
                 num_clips_per_video=int(data.get("num_clips_per_video", 1)))
 
 
-def check_token_grid(encoder, grid, pretrained):
-    """Refuse a hierarchical token grid that does not match the loaded encoder's patch/tubelet size."""
+def check_token_grid(encoder, grid, frames_per_clip, resolution, device):
+    """Refuse a hierarchical token grid that does not match the loaded encoder: one blank clip
+    must come out as exactly `T x H x W` tokens of the grid."""
     if grid is None:
         return
-    vit = next((m for m in encoder.modules() if hasattr(m, "patch_size") and hasattr(m, "tubelet_size")), None)
-    if vit is None:
-        raise ValueError("Hierarchical pooling cannot verify its token grid: the encoder exposes no "
-                         "patch_size/tubelet_size.")
-    cfg = pretrained.get("pretrain_kwargs", {}).get("encoder", {})
-    expected = (int(cfg.get("patch_size", 16)), int(cfg.get("tubelet_size", 2)))
-    actual = (int(vit.patch_size), int(vit.tubelet_size))
-    if actual != expected:
-        raise ValueError(f"Hierarchical token grid assumes patch/tubelet {expected}, but the loaded encoder uses "
-                         f"{actual}: set patch_size and tubelet_size in pretrain_kwargs.encoder.")
+    clip = torch.zeros(1, 3, frames_per_clip, resolution, resolution, device=device)
+    with torch.no_grad():
+        tokens = encoder([[clip]], [torch.arange(frames_per_clip, device=device)[None]])[0].shape[1]
+    if tokens != math.prod(grid):
+        raise ValueError(f"Hierarchical pooling assumes a {'x'.join(map(str, grid))} token grid per clip "
+                         f"({math.prod(grid)} tokens), but the loaded encoder gives {tokens}: set patch_size and "
+                         "tubelet_size in pretrain_kwargs.encoder to the encoder's.")
 
 
 def parse_selection(selection, specs):
