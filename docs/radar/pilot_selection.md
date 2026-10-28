@@ -1,11 +1,10 @@
 # RADAR Caption Pilot: Study Selection and Clip Screening (Issue #22)
 
 Select 2–3 report-linked studies from training-split patients, one per report
-category, with optional studies from other vendors. Review every eligible clip in Labelbox:
-
-- [Column Review](labeling_instructions_v1.md#column-review): classified B-mode or color Doppler clips, with candidate captions.
-- [View and Type Review](labeling_instructions_v1.md#view-and-type-review-other-clips): `OTHER` or unclassified clips, without captions.
-  These may use any acquisition mode.
+category, with optional studies from other vendors. The pilot captions V1: classified B-mode clips, each reviewed in the
+[Column Review](labeling_instructions_v1.md#column-review) with candidate captions. Color Doppler is left to V2.
+`OTHER` and unclassified clips serve pretraining only: they are not captioned and do not reach the pilot, so the
+[View and Type Review](labeling_instructions_v1.md#view-and-type-review-other-clips) serves only the view-classifier relabelling.
 
 The workflow is `shortlist -> features -> text -> flag -> select -> candidates -> Labelbox upload`.
 
@@ -14,15 +13,21 @@ The workflow is `shortlist -> features -> text -> flag -> select -> candidates -
 | Removed | Rule | Where |
 |---|---|---|
 | Single-frame DICOM objects: still B-mode measurement frames, spectral Doppler stills, report and measurement pages | Not present in the video archive; never considered. | Before shortlist |
-| Classified views in unsupported acquisition modes | Classified views must be B-mode or color Doppler, determined from GE headers or other vendors' pixels. `OTHER` accepts any mode. | `radar_pilot.py shortlist` |
+| `OTHER` and unclassified views | Pretraining only (`other_view`). | `radar_pilot.py shortlist` |
+| Unsupported acquisition modes | The header must declare B-mode or color Doppler (`acquisition`). | `radar_pilot.py shortlist` |
+| Color Doppler | From GE headers (`color_flow`), or from other vendors' pixels after the screen. | `radar_pilot.py shortlist`, `select` |
+| Clips of 3 frames or fewer | Counted as stills (`few_frames`). | `radar_pilot.py shortlist` |
 | Unreadable clips | Video decoding fails (`unreadable`). | `clip_screen.py` |
 | Non-ultrasound objects | DICOM SOP class identifies a non-ultrasound object, regardless of visible content (`not_ultrasound_image`). | `clip_screen.py` |
 | Still clips | Insufficient motion in the field of view, including frozen multi-frame videos (`still`). | `clip_screen.py` |
 | Analysis screens | GE: matching header pattern. Other vendors: header evidence and static graphics outside the image (`analysis_screen`). | `clip_screen.py` |
 | Measurement overlays | Measurement indicated by the header or named measurement text detected by OCR. Calipers and contours are recorded but do not independently trigger exclusion. | `clip_screen.py` |
+| 3D or multi-panel displays | GE Vingmed image code `0041` or `0051` (`3d_or_multipanel`, see Unusual image data). | `radar_pilot.py select` |
 | Uncertain clips | Partial or conflicting evidence; omitted from the pilot and listed separately, not classified as invalid. | `clip_screen.py`, `radar_pilot.py select` |
 
-Exclusions are automatic. Only retained clips reach Labelbox for human review. No clip is excluded solely for being short. Reviewers report missed exclusions in the form's Comments; affected clips are removed and the screening rule corrected.
+Every clip of a shortlisted study that is left out is listed with its reasons: `removed_clips.csv` (`shortlist`: `other_view`, `acquisition`, `color_flow`, `few_frames`, and `vendor` or `year` for a category study's clip of another vendor or year) and `not_kept_clips.csv` (`select`: those plus the excluded and uncertain clips after the screen, `color_flow` and `3d_or_multipanel` included, with `step`, `decision`, `reasons` and `in_pilot`). A clip lists every reason that applies. Like every output they hold patient IDs and paths and stay in the private `--out-dir`.
+
+Exclusions are automatic. Only retained clips reach Labelbox for human review. Short clips are kept unless they have 3 frames or fewer. Reviewers report missed exclusions in the form's Comments; affected clips are removed and the screening rule corrected.
 
 ## Clip screening (`data/clip_screen.py`)
 
@@ -65,7 +70,7 @@ Decoder failures (cannot open, no frames, or decoding errors) exclude clips as `
 
 ### Screening edge cases
 
-**Unusual image data.** GE's fourth `ImageType` value identifies tissue (`0001`), tissue with color flow (`0011`), or no image data (`0000`, analysis screen). In 46,293 GE headers, 22 GE Vingmed clips (0.1%) instead had `0041` or `0051`. All were `OTHER`-view 3D displays: 11 contained measurements, 7 showed rendered volumes, and 4 were clean multipanel images. All 22 matched conventional-image controls were clean. OCR missed the drawn measurements because only scale labels appeared. Such unusual GE headers therefore make clips `uncertain` (`unusual_image_content`). Other vendors' headers provide no equivalent evidence (`unavailable`).
+**Unusual image data.** GE's fourth `ImageType` value identifies tissue (`0001`), tissue with color flow (`0011`), or no image data (`0000`, analysis screen). In 46,293 GE headers, 22 GE Vingmed clips (0.1%) instead had `0041` or `0051`, all `OTHER` views. Labelled blind, 7 were 3D renders and 15 displays of two or more panels (11 with measurements, 4 clean); none was a single 2D view, and not every one is 3D. All 22 matched conventional-image controls were clean. OCR missed the drawn measurements because only scale labels appeared. The screen makes unusual GE headers `uncertain` (`unusual_image_content`); `select` excludes the two labelled codes as `3d_or_multipanel`, while other unusual codes, never labelled, stay uncertain. Other vendors' headers provide no equivalent evidence (`unavailable`). 3D displays with an ordinary code (`0001`) are not caught by the code (see Known limitations).
 
 **Brief measurement overlays.** Static-mark detection uses half-clip windows spaced one quarter-clip apart. Marks appearing briefly may be missed; for example, calipers visible only in frames 18–29 of a 48-frame clip were not detected. Shorter windows could detect them but increase false positives from tissue. This remains a known limitation pending labeled validation.
 
@@ -123,7 +128,7 @@ A `keep` decision does **not** guarantee that a clip has no measurement overlays
 
 - **Drawn measurements:** Calipers and contours are poorly detected without a measurement header. Structure detection found at most 5 of 53 synthetic copies per overlay type. Other vendors may lack the necessary header signals entirely.
 - **Measurement text:** OCR found all 53 synthetic results boxes, but real measurement text was observed mainly on analysis screens already identified by headers. `extra_cells` is too nonspecific to replace OCR.
-- **3D displays:** A measured 3D display with an ordinary GE header was missed in the real-loop validation. As an `OTHER` clip, it reaches view/type review, where reviewers can identify analysis screens.
+- **3D displays:** A measured 3D display with an ordinary GE header (code `0001`, no MEASURE) was missed in the real-loop validation. It was an `OTHER` clip, which the pilot now removes; a classified 3D display with such a header would reach the pilot.
 - **Short color clips:** One clean 8-frame color clip with 3.9% motion was incorrectly excluded by the 5% stillness threshold.
 - **Brief overlays:** Measurements appearing for only a short portion of the video may escape static-mark detection.
 - **Other vendors:** Header conventions are supported by GE surveys but clinically labeled mainly on GE Vingmed. The 73 labeled clips without GE headers contained only 1 still and no measured clips, leaving measurement-screening sensitivity unverified.
@@ -134,8 +139,7 @@ Eligible studies must have:
 
 - A training-split patient with a TTE examination.
 - Exactly one matching cleaned DeepECHO report.
-- At least 20 retained classified-view clips covering A4C, A2C, PLAX, and PSAX.
-- At least one view family represented in both B-mode and color Doppler.
+- At least 20 retained classified-view B-mode clips covering A4C, A2C, PLAX, and PSAX (`--min-clips`). For other vendors, B-mode is counted after the screen reads the mode.
 
 The archive manifest must contain DICOM acquisition fields from `build_manifests.py` at commit `57204d1`.
 
@@ -150,10 +154,12 @@ The default selects the first three categories; `--n-studies 4` includes right h
 
 The selection workflow is:
 
-1. **`shortlist`:** Seededly sample up to 8 studies per category, plus optional vendor slots (`--vendor-studies`). Assign opaque `global_key` identifiers and select reference clips from other studies.
+1. **`shortlist`:** Seededly sample up to 8 studies per category, plus optional vendor slots (`--vendor-studies`). Assign opaque `global_key` identifiers, select reference clips from other studies, and list the shortlisted studies' clips the screen will not see (`removed_clips.csv`).
 2. **`features` $\rightarrow$ `text` $\rightarrow$ `flag`:** Screen the shortlisted and reference clips using the evidence rules above.
-3. **`select`:** Choose one eligible study per category/vendor slot from distinct patients, using only kept clips. Resolve acquisition modes, verify media integrity, and save uncertain clips separately (`uncertain_clips.csv`).
-4. **`candidates`:** Generate column-review prefills and view/type review items, verifying selection, reports, and screening provenance.
+3. **`select`:** Choose one eligible study per category/vendor slot from distinct patients, using only kept clips. Resolve acquisition modes, verify media integrity, save uncertain clips separately (`uncertain_clips.csv`), and list every clip left out with its reasons (`not_kept_clips.csv`).
+4. **`candidates`:** Generate column-review prefills, verifying selection, reports, and screening provenance (`view_type_items.csv` stays empty).
+
+`select` refuses a shortlist drawn before the V1 rule, and `candidates` a selection made before it.
 
 `--exclude-patients` prevents validation patients from entering pilot or reference selection.
 
@@ -163,6 +169,6 @@ The selection workflow is:
 
 Every step records input, output, media, and code SHA-256 hashes alongside the Git commit. Changed videos, DICOM headers, incompatible extractors, incomplete outputs, and mismatched provenance are rejected. Records are written last so failed runs cannot be reused.
 
-Outputs and review media remain in owner-only directories (`0700`, files `0600`), with sensitive errors in private logs. Patient identifiers, report text, and global-key mappings remain private.
+Outputs and review media remain in owner-only directories (`0700`, files `0600`) outside the repository (`--out-dir` inside it is refused), with sensitive errors in private logs. Patient identifiers, report text, and global-key mappings remain private.
 
 Labelbox upload is handled separately by `tools/labelbox/pilot_upload.py` on branch `issue_22/labelbox_workflow_test`. Context attachments must contain numeric values and report-field references, **not raw report text**.

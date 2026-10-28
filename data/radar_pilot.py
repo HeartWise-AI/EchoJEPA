@@ -1,18 +1,21 @@
 # data/radar_pilot.py
 
 """Choose the 2-3 report-linked training studies of the RADAR caption pilot, keep only the clips reviewers
-should see, and build their column review v2 candidates.
+should see, and build their column review candidates.
 
-Every valid video of a pilot study is reviewed, in one of two Labelbox forms (`form` column):
-- `column_review`: a classified view in B-mode or color Doppler gets the column review v2 and its caption;
-- `view_type_review`: a video the view classifier labels `OTHER`, or does not classify, gets the view and type
-  review and no caption (its anatomy is unknown, so no caption can be routed to it).
+The pilot captions V1: B-mode videos of classified views, each reviewed in the column review (`form`
+`column_review`). Color flow is left to V2, and a view the classifier labels `OTHER`, or does not classify, to
+pretraining: neither reaches the pilot, so no clip goes to the view and type review (`view_type_review`).
 
 Clips are removed in two places before any upload:
-- **metadata rule** (`shortlist`): excludes classified clips with unsupported or missing GE acquisition modes.
-  Single-frame objects are absent; short clips are allowed.
+- **metadata rule** (`shortlist`): removes `OTHER` and unclassified views, clips without a B-mode or color-flow
+  header mode, GE color flow, and clips of 3 frames or fewer (stills). Single-frame objects are absent.
 - **the screen** (`data/clip_screen.py` on the shortlisted clips): excludes unreadable, still, analysis, and
-  measurement clips. Uncertain clips are listed separately.
+  measurement clips; `select` then leaves out color flow read from another vendor's pixels and 3D or multi-panel
+  displays named by their GE image code. Uncertain clips are listed separately.
+Every clip of a shortlisted study left out is listed with its reasons: `removed_clips.csv` (shortlist) and
+`not_kept_clips.csv` (select, both steps). Like every output they hold patient IDs and paths, so they stay in the
+private --out-dir, which must be outside the repository.
 
 Example:
     python data/radar_pilot.py shortlist --videos <manifests>/videos.parquet --ef-labels <study_labels_ef.parquet> \\
@@ -58,7 +61,15 @@ from build_manifests import REPO_ROOT, ensure_outside_repo, git_commit, normaliz
 # Category order is the priority order: `--n-studies 2` takes the first two, `--n-studies 4` right heart too.
 CATEGORIES = ("normal", "lv_dysfunction", "valve_disease", "right_heart")
 REQUIRED_VIEW_FAMILIES = ("A4C", "A2C", "PLAX", "PSAX")
-REVIEWED_ACQUISITIONS = ("bmode", "color_flow")
+# The mode captioned (V1), and the header modes a clip may have before the screen reads another vendor's mode from
+# its pixels.
+CAPTIONED_MODE, IMAGING_MODES = "bmode", ("bmode", "color_flow")
+STILL_MAX_FRAMES = 3  # a clip of this many frames or fewer counts as a still (`few_frames`).
+# The GE image codes (fourth ImageType value, which the screen calls unusual) of 3D and multi-panel displays. All 22
+# GE Vingmed clips with them, labelled blind (codes_01), were 3D renders (7) or displays of two or more
+# panels (15, 11 of them measured); none was a single 2D view. Not every one is 3D, hence `3d_or_multipanel`. Another
+# vendor's codes and other unusual ones were never labelled: such clips stay uncertain (`unusual_image_content`).
+MULTIPANEL_3D_VENDOR, MULTIPANEL_3D_CODES = "GE Vingmed Ultrasound", ("0041", "0051")
 VALVE_FIELDS = ("Mitral valve findings", "Aortic valve findings", "Tricuspid valve findings")
 LEFT_VALVE_FIELDS = VALVE_FIELDS[:2]  # mitral and aortic.
 REPORT_NUMBERS = ("AV Mean Gradient",)
@@ -91,8 +102,10 @@ CAPTION_FORM, VIEW_TYPE_FORM = "column_review", "view_type_review"
 SECRET_NAME = ".global_key_secret"
 # What each step writes in --out-dir. A step first removes its own outputs and those of the steps after it, so a
 # run that stops leaves nothing a later step could take for its result.
-SHORTLIST_OUTPUTS = ("shortlist.csv", "shortlist_clips.csv", "reference_clips.csv", "shortlist.json")
-SELECTION_OUTPUTS = ("pilot_studies.csv", "pilot_clips.csv", "uncertain_clips.csv", "selection.json", "summary.md")
+SHORTLIST_OUTPUTS = ("shortlist.csv", "shortlist_clips.csv", "reference_clips.csv", "removed_clips.csv",
+                     "shortlist.json")
+SELECTION_OUTPUTS = ("pilot_studies.csv", "pilot_clips.csv", "uncertain_clips.csv", "not_kept_clips.csv",
+                     "selection.json", "summary.md")
 CANDIDATE_OUTPUTS = ("candidates.json", "view_type_items.csv", "global_keys.csv", "candidates_summary.json")
 
 
@@ -200,8 +213,8 @@ def categorize(s):
 
 
 def review_form(clips):
-    """The Labelbox form each clip goes to: the caption review for a classified view, the view and type review for
-    `OTHER` or no view prediction."""
+    """The Labelbox form a clip would go to: the caption review for a classified view, the view and type review for
+    `OTHER` or no view prediction (which the metadata rule removes from the pilot, `other_view`)."""
     unclassified = clips.view.fillna("").isin(["", "OTHER"])
     return pd.Series(np.where(unclassified, VIEW_TYPE_FORM, CAPTION_FORM), index=clips.index)
 
@@ -215,32 +228,52 @@ def mode_source(clips):
     return pd.Series(np.where(validated, "header", "pixels"), index=clips.index)
 
 
+def joined_reasons(index, *parts):
+    """Per row of `index`, the reasons of `parts` (each an array of one reason or '' per row), ';'-joined as the
+    screen's."""
+    return pd.Series([";".join(r for r in row if r) for row in zip(*parts)], index=index, dtype=object)
+
+
 def clip_rule(clips):
-    """Why each clip fails the metadata rule ('' when it passes). The acquisition rule is for the caption review
-    only: the view and type review asks the reviewer for the acquisition mode. A classified clip's header must declare
-    B-mode or color-flow imaging; a validated vendor's must also have been read as such (`acq_confidence` header),
-    while another vendor's mode is then read from the pixels (`mode_source`)."""
+    """Why each clip fails the metadata rule, ';'-joined ('' when it passes): `other_view`, a view the classifier
+    labels `OTHER` or does not classify (pretraining only, never captioned); `acquisition`, a header declaring neither
+    B-mode nor color-flow imaging, or a validated vendor's not read as such (`acq_confidence` other than header);
+    `color_flow`, a validated vendor's color flow (another vendor's mode is read from the pixels, and `select` leaves
+    out its color: `pilot_rule`); `few_frames`, STILL_MAX_FRAMES frames or fewer, a still (a clip without a frame
+    count is left to the screen, which reads its frames)."""
     validated = clips.acq_vendor_validated.fillna(False).astype(bool)
-    from_header = validated & (clips.acq_confidence == "header")
-    captioned = review_form(clips) == CAPTION_FORM
-    failed = captioned & (~clips.acq_category.isin(REVIEWED_ACQUISITIONS) | (validated & ~from_header))
-    return pd.Series(np.where(failed, "acquisition", ""), index=clips.index)
+    known = clips.acq_category.isin(IMAGING_MODES) & (~validated | (clips.acq_confidence == "header"))
+    return joined_reasons(clips.index,
+                          np.where(review_form(clips) == VIEW_TYPE_FORM, "other_view", ""),
+                          np.where(~known, "acquisition", ""),
+                          np.where(known & validated & (clips.acq_category == "color_flow"), "color_flow", ""),
+                          np.where((clips.n_frames <= STILL_MAX_FRAMES).fillna(False), "few_frames", ""))
 
 
-def study_ok(clips, min_clips, paired=True):
-    """Per study, on its kept clips of classified views: enough of them, every required view family, and, with
-    `paired`, one family in both B-mode and color (a study whose mode is still to be read from its pixels is checked
-    without it at shortlist, and with it at select)."""
-    clips = clips[review_form(clips) == CAPTION_FORM]
-    family = view_family(clips.view)
-    per = clips.assign(family=family, bmode=clips.acq_category == "bmode", color=clips.acq_category == "color_flow")
+def removed_clips(every, short, clips, vendor, years):
+    """The clips of the shortlisted studies that are not screened (not in `clips`), each with its `reasons`
+    (';'-joined, as the screen's): the metadata rule's (`clip_rule`) and, for a category study's clip, `vendor`
+    (not --vendor) and `year` (study date outside --years)."""
+    removed = every[every.study_id.isin(set(short.study_id)) & ~every.video_path.isin(set(clips.video_path))]
+    removed = removed.drop_duplicates("video_path")
+    category = removed.study_id.isin(set(short.study_id[~short.category.str.startswith(VENDOR_SLOT)]))
+    return removed.assign(reasons=joined_reasons(
+        removed.index, removed.clip_rule, np.where(category & bool(vendor) & (removed.vendor != vendor), "vendor", ""),
+        np.where(category & ~removed.year.isin(years), "year", "")))
+
+
+def study_ok(clips, min_clips, before_screen=False):
+    """Per study, on its kept B-mode clips of classified views: enough of them, and every required view family.
+    `before_screen` (shortlist), a clip whose mode the screen is still to read from its pixels (`mode_source`) counts
+    whatever its header's; select counts it at the mode read."""
+    bmode = clips.acq_category == CAPTIONED_MODE
+    if before_screen:
+        bmode |= clips.mode_source == "pixels"
+    per = clips[(review_form(clips) == CAPTION_FORM) & bmode]
+    per = per.assign(family=view_family(per.view))
     n = per.groupby("study_id").size()
     families = per.groupby("study_id").family.agg(frozenset)
-    modes = per.groupby(["study_id", "family"])[["bmode", "color"]].any()
-    both = (modes.bmode & modes.color).groupby("study_id").any()
     ok = (n >= min_clips) & families.map(lambda f: all(x in f for x in REQUIRED_VIEW_FAMILIES))
-    if paired:
-        ok &= both.reindex(n.index).fillna(False)
     return ok.reindex(n.index).fillna(False)
 
 
@@ -305,7 +338,7 @@ def shortlist(args):
     linked = (ef.merge(rvsp, on="study_id", how="left")
               .merge(reports, left_on="accession", right_on="AccessionNumber", how="inner"))
     linked["av_mean_gradient"] = pd.to_numeric(linked["AV Mean Gradient"], errors="coerce")
-    ok = study_ok(kept, args.min_clips)
+    ok = study_ok(kept, args.min_clips, before_screen=True)
     s = linked[linked.study_id.isin(ok[ok].index)].sort_values("study_id").reset_index(drop=True)
     patients = kept.groupby("study_id").patient_id.first()
     s["patient_id"] = s.study_id.map(patients)
@@ -325,14 +358,14 @@ def shortlist(args):
 
     # Vendor slots: per further vendor, report-linked studies of that vendor alone with the required views, of any
     # year and outside the categories, drawn from a stream of their own so that the category draws are those of a
-    # shortlist without them. The B-mode/color pairing waits for select, once the screen has read the mode.
+    # shortlist without them. Their B-mode count waits for select, once the screen has read the mode.
     slot_rows, slot_pools, slot_clips, slot_kept = [], {}, [], []
     vendors_per_study = every.groupby("study_id").vendor.nunique()
     for vendor, n in slots.items():
         w = every[(every.vendor == vendor) & (every.clip_rule == "")]
         slot_kept.append(w)
         w = w[w.study_id.map(vendors_per_study) == 1]
-        ok_w = study_ok(w, args.min_clips, paired=False)
+        ok_w = study_ok(w, args.min_clips, before_screen=True)
         pool = linked[linked.study_id.isin(ok_w[ok_w].index)].drop_duplicates("study_id").sort_values("study_id")
         pool = pool.assign(patient_id=pool.study_id.map(w.groupby("study_id").patient_id.first()))
         taken = set(short.patient_id) | {r["patient_id"] for r in slot_rows}
@@ -349,7 +382,7 @@ def shortlist(args):
         slot_clips.append(w[w.study_id.isin(set(drawn.study_id))])
     short = pd.concat([short, pd.DataFrame(slot_rows, columns=short.columns)], ignore_index=True)
 
-    outputs = [os.path.join(args.out_dir, n) for n in SHORTLIST_OUTPUTS[:3]]
+    outputs = [os.path.join(args.out_dir, n) for n in SHORTLIST_OUTPUTS[:4]]
     short.to_csv(outputs[0], index=False)
     clips = pd.concat([kept[kept.study_id.isin(category_studies)], *slot_clips]).drop_duplicates("video_path")
     secret = load_secret(args.out_dir)
@@ -369,17 +402,19 @@ def shortlist(args):
             category_studies)])]).drop_duplicates("video_path")
     reference = reference.assign(global_key=[global_key(secret, p) for p in reference.video_path])
     reference[list(CLIP_COLUMNS)].to_csv(outputs[2], index=False)
-
-    removed = pd.concat([v[v.study_id.isin(category_studies)],
-                         every[every.study_id.isin(set(short.study_id) - category_studies)]])
-    removed = removed.drop_duplicates("video_path")
-    removed = removed[removed.clip_rule != ""]
+    # Every clip of a shortlisted study that the screen will not see, with its reasons and its global key.
+    removed = removed_clips(every, short, clips, args.vendor, args.years)
+    removed = removed.assign(global_key=[global_key(secret, p) for p in removed.video_path])
+    removed[[*CLIP_COLUMNS, "reasons"]].to_csv(outputs[3], index=False)
     info = {
         "created_utc": _now(), "code_commit": git_commit(), "code_sha256": clip_screen.code_sha256(__file__),
         "seed": args.seed,
         "criteria": {"split": "train", "years": args.years, "vendor": args.vendor,
                      "min_clips": args.min_clips,
                      "required_view_families": REQUIRED_VIEW_FAMILIES,
+                     "captioned": "B-mode videos of classified views (V1): OTHER and unclassified views, color flow "
+                                  "and stills are left out, min_clips counts B-mode clips",
+                     "still_max_frames": STILL_MAX_FRAMES,
                      "categories": {"normal": "EF >= 55, AV mean gradient < 20, RVSP < 35 (all present), no "
                                               "moderate or worse statement in a valve field of the report",
                                     "lv_dysfunction": "EF <= 35",
@@ -391,8 +426,8 @@ def shortlist(args):
                      "vendor_studies": slots,
                      "vendor_slots": "per vendor, training studies of that vendor alone with a linked report and "
                                      "min_clips classified clips of the required view families, any year, of patients "
-                                     "drawn nowhere else; the B-mode/color pairing is checked at select, on the mode "
-                                     "the screen reads",
+                                     "drawn nowhere else; their B-mode clips are counted at select, on the mode the "
+                                     "screen reads",
                      "exclude_patients": {os.path.abspath(p): inputs.digest(p) for p in args.exclude_patients},
                      "excluded_patients": len(excluded)},
         "inputs": {k: inputs.digest(p) for k, p in (("videos", args.videos), ("ef_labels", args.ef_labels),
@@ -402,7 +437,9 @@ def shortlist(args):
         "clips_by_mode_source": {k: int(n) for k, n in clips.mode_source.value_counts().items()},
         "shortlisted_studies": int(short.study_id.nunique()), "clips_to_screen": int(len(clips)),
         "reference_clips": int(len(reference)), "reference_per_layout": args.reference_per_layout,
-        "clips_removed_by_metadata_rule": {k: int(n) for k, n in removed.clip_rule.value_counts().items()},
+        "clips_removed": int(len(removed)),
+        "clips_removed_by_metadata_rule": {k: int(n) for k, n in
+                                           removed.reasons.str.split(";").explode().value_counts().items()},
         "outputs": file_hashes(*outputs),
     }
     inputs.check(*outputs)
@@ -431,6 +468,29 @@ def resolve_modes(clips):
     pixels = clips.mode_source == "pixels"
     return clips.assign(header_acq_category=clips.acq_category,
                         acq_category=clips.acq_category.where(~pixels, clips.pixel_mode))
+
+
+def pilot_rule(clips):
+    """Why `select` leaves out a screened clip at its resolved mode (`resolve_modes`), ';'-joined ('' for none):
+    `color_flow`, color flow read from the pixels (`acquisition` for no mode read); `3d_or_multipanel`, a header of
+    MULTIPANEL_3D_VENDOR naming an image code of MULTIPANEL_3D_CODES."""
+    display = (clips.vendor == MULTIPANEL_3D_VENDOR) & clips.dicom_image_content.isin(MULTIPANEL_3D_CODES)
+    mode = np.where(clips.acq_category == "color_flow", "color_flow",
+                    np.where(clips.acq_category != CAPTIONED_MODE, "acquisition", ""))
+    return joined_reasons(clips.index, mode, np.where(display, "3d_or_multipanel", ""))
+
+
+def with_pilot_rule(clips):
+    """The screened clips at their resolved mode, each that `pilot_rule` leaves out excluded with the screen's reasons
+    and the rule's. The screen calls the image codes of 3D and multi-panel displays unusual (`unusual_image_content`,
+    uncertain): `3d_or_multipanel` names that evidence and takes its place."""
+    rule = pilot_rule(clips)
+    reasons = [";".join(r for r in (*screen.split(";"), *own.split(";"))
+                        if r and not (r == "unusual_image_content" and "3d_or_multipanel" in own))
+               for screen, own in zip(clips.decision_reasons.fillna(""), rule)]
+    clips = clips.assign(decision=clips.decision.where(rule == "", "exclude"),
+                         decision_reasons=pd.Series(reasons, index=clips.index, dtype=object))
+    return clips.assign(exclude=clips.decision != "keep")
 
 
 def pilot_categories(short, n_studies, vendors=None):
@@ -484,20 +544,27 @@ def select(args):
     # The chain checked and the files then used are the same reads (Inputs), checked again before the record.
     inputs = clip_screen.Inputs(__file__)
     chain = screen_chain(args.out_dir, args.flags, inputs)
-    listed = [os.path.join(args.out_dir, n) for n in ("shortlist.csv", "shortlist_clips.csv", "shortlist.json")]
+    listed = [os.path.join(args.out_dir, n)
+              for n in ("shortlist.csv", "shortlist_clips.csv", "shortlist.json", "removed_clips.csv")]
     short = inputs.csv(listed[0], dtype=str)
     clips = inputs.csv(listed[1], dtype={"patient_id": str, "study_id": str})
     if "global_key" not in clips or "mode_source" not in clips:
         raise SystemExit("shortlist_clips.csv has no global_key or no mode_source (an older shortlist): rerun "
                          "shortlist.")
-    min_clips = inputs.json(listed[2])["criteria"]["min_clips"]
+    record = inputs.json(listed[2])
+    if os.path.abspath(listed[3]) not in record["outputs"] or "captioned" not in record["criteria"]:
+        raise SystemExit("The shortlist lists no removed_clips.csv or was drawn before V1's rule (B-mode clips of "
+                         "classified views only): an older shortlist, whose clips would reach the pilot in other "
+                         "modes and views. Rerun shortlist, then the screen on its lists.")
+    removed = inputs.csv(listed[3], dtype={"patient_id": str, "study_id": str, "reasons": str})
+    min_clips = record["criteria"]["min_clips"]
     flags = inputs.parquet(args.flags)
     if not {"video_sha256", "decision", "pixel_mode"} <= set(flags):
         raise SystemExit("The flags do not record the video bytes they screened, the screen's decisions or its "
                          "reading of the mode (an older features or flag run): rerun clip_screen.py features and flag.")
     flags = flags[["video_path", "decision", "decision_reasons", "pixel_mode", *MEDIA_COLUMNS]]
     flag_info = inputs.json(args.flags + ".info.json")
-    clips = resolve_modes(screened_clips(clips, flags))
+    clips = with_pilot_rule(resolve_modes(screened_clips(clips, flags)))
     categories = pilot_categories(short, args.n_studies, args.vendor_slots)
     chosen = choose_studies(short, clips, min_clips, args.n_studies, args.vendor_slots)
     if len(chosen) < len(categories):  # before any output: a pilot short of its studies is no completed selection.
@@ -519,27 +586,43 @@ def select(args):
         raise SystemExit(f"{len(changed)} clips of the chosen studies no longer hold the video or DICOM regions the "
                          "screen read (replaced in place since features): no selection was written. Rerun "
                          "clip_screen.py features and flag on this shortlist.")
-    outputs = [os.path.join(args.out_dir, n) for n in ("pilot_studies.csv", "pilot_clips.csv", "uncertain_clips.csv")]
+    outputs = [os.path.join(args.out_dir, n) for n in SELECTION_OUTPUTS[:4]]
     chosen.to_csv(outputs[0], index=False)
     pilot = screened[~screened.exclude]
     pilot[[*CLIP_COLUMNS, "header_acq_category", "video_sha256"]].to_csv(outputs[1], index=False)
     # Uncertain clips of every shortlisted study, for a separate look: left out of the pilot, not judged invalid.
     uncertain = clips[clips.decision == "uncertain"]
     uncertain[[*CLIP_COLUMNS, "decision_reasons"]].to_csv(outputs[2], index=False)
+    # Every clip of every shortlisted study that the pilot leaves out, with its reasons: removed before the screen
+    # (shortlist) or excluded or uncertain after it (screen: by the screen, or by `pilot_rule` on its readings).
+    not_kept = pd.concat([
+        removed.assign(step="shortlist", decision="removed", header_acq_category=removed.acq_category),
+        clips[clips.exclude].assign(step="screen", reasons=clips.decision_reasons)], ignore_index=True)
+    not_kept = not_kept.assign(in_pilot=not_kept.study_id.isin(set(chosen.study_id)))
+    not_kept[["step", "decision", "reasons", "in_pilot", *CLIP_COLUMNS, "header_acq_category"]].to_csv(
+        outputs[3], index=False)
+    removed_pilot = removed[removed.study_id.isin(set(chosen.study_id))]
 
     summary = {
         "created_utc": _now(), "code_commit": git_commit(),
         "code_sha256": clip_screen.code_sha256(__file__, clip_screen.__file__),
         "flags": os.path.abspath(args.flags), "inputs": chain, "outputs": file_hashes(*outputs),
         "screen_thresholds": flag_info["thresholds"], "screen_calibration": flag_info.get("calibration"),
+        # Left out after the screen, on its readings (decision exclude, step screen in not_kept_clips.csv).
+        "pilot_rule": {"captioned_mode": CAPTIONED_MODE,
+                       "3d_or_multipanel": {"vendor": MULTIPANEL_3D_VENDOR, "image_codes": MULTIPANEL_3D_CODES}},
         "n_studies": args.n_studies, "studies": int(len(chosen)), "categories": chosen.category.tolist(),
         "vendor_slots": [c for c in categories if c.startswith(VENDOR_SLOT)],
         # The modes read from the pixels against the header's where it gives them (agreement, not labels), and the
         # pilot clips by where their mode comes from; the reviewers confirm or correct each mode.
         "pixel_mode_vs_header": flag_info.get("pixel_mode_vs_header"),
         "clips_by_mode_source": {k: int(n) for k, n in pilot.mode_source.value_counts().items()},
-        "clips_kept": int(len(pilot)), "clips_excluded": int((screened.decision == "exclude").sum()),
+        "clips_kept": int(len(pilot)), "clips_removed_before_screen": int(len(removed_pilot)),
+        "clips_excluded": int((screened.decision == "exclude").sum()),
         "clips_uncertain": int((screened.decision == "uncertain").sum()),
+        "removed_reasons_in_pilot_studies": {k: int(n) for k, n in removed_pilot.reasons.str.split(";").explode()
+                                             .value_counts().items()},
+        "not_kept_clips_shortlisted": {k: int(n) for k, n in not_kept.decision.value_counts().items()},
         "screen_decisions_in_pilot_studies": {k: int(n) for k, n in screened.decision.value_counts().items()},
         "screen_reasons_in_pilot_studies": {k: int(n) for k, n in screened.decision_reasons.str.split(";").explode()
                                             .replace("", np.nan).dropna().value_counts().items()},
@@ -552,8 +635,12 @@ def select(args):
     _write_json(os.path.join(args.out_dir, "selection.json"), summary)
     lines = ["# RADAR pilot selection", "", "Aggregate only.", "",
              f"- Studies: {summary['studies']} ({', '.join(summary['categories'])})",
-             f"- Clips kept: {summary['clips_kept']}; excluded: {summary['clips_excluded']}; uncertain (left out, "
-             f"listed in uncertain_clips.csv): {summary['clips_uncertain']}",
+             f"- Clips kept: {summary['clips_kept']}; removed before the screen: "
+             f"{summary['clips_removed_before_screen']}; excluded by the screen: {summary['clips_excluded']}; "
+             f"uncertain (left out, listed in uncertain_clips.csv): {summary['clips_uncertain']}",
+             f"- Every clip the shortlisted studies leave out, with its reasons: not_kept_clips.csv "
+             f"({summary['not_kept_clips_shortlisted']})",
+             f"- Reasons removed before the screen in the pilot studies: {summary['removed_reasons_in_pilot_studies']}",
              f"- Screen reasons in the pilot studies: {summary['screen_reasons_in_pilot_studies']}",
              f"- Screen thresholds: {summary['screen_thresholds']}, "
              + (f"calibrated ({summary['screen_calibration']})" if summary["screen_calibration"]
@@ -564,7 +651,8 @@ def select(args):
     with open(os.path.join(args.out_dir, "summary.md"), "w") as f:
         f.write("\n".join(lines) + "\n")
     print(f"[pilot]  {summary['studies']} studies ({', '.join(summary['categories'])}), {summary['clips_kept']} "
-          f"clips kept, {summary['clips_excluded']} excluded, {summary['clips_uncertain']} uncertain; "
+          f"clips kept, {summary['clips_removed_before_screen']} removed before the screen, "
+          f"{summary['clips_excluded']} excluded, {summary['clips_uncertain']} uncertain; "
           f"{summary['screen_reasons_in_pilot_studies']}.")
     if not summary["screen_calibration"]:
         print("[pilot]  WARNING: the screen's thresholds are provisional (no labelled calibration yet), so its "
@@ -658,6 +746,9 @@ def verify_selection(out_dir, inputs=None):
     if not selection.get("studies") or selection["studies"] < selection.get("n_studies", math.inf):
         raise SystemExit("The selection holds fewer studies than it was asked for, or records no number asked for "
                          "(an older select run): rerun select.")
+    if "pilot_rule" not in selection:
+        raise SystemExit("The selection was made before V1's rule (B-mode clips of classified views only): rerun "
+                         "shortlist, the screen and select.")
     if "flags" not in selection or screen_chain(out_dir, selection["flags"], inputs) != selection["inputs"]:
         raise SystemExit("The selection does not record the screening chain it was made from, or that chain "
                          "changed since: rerun select.")
@@ -769,7 +860,7 @@ def main(argv=None):
     s.add_argument("--exclude-patients", nargs="*", default=[],
                    help="CSV files with patient_id (a validation list) whose patients are drawn nowhere: no study, "
                         "clip or reference clip of theirs.")
-    s.add_argument("--min-clips", type=int, default=20, help="kept clips a study needs.")
+    s.add_argument("--min-clips", type=int, default=20, help="kept B-mode clips of classified views a study needs.")
     s.add_argument("--per-category", type=int, default=8, help="studies shortlisted per category.")
     s.add_argument("--reference-per-layout", type=int, default=200,
                    help="reference clips per (vendor, model, acquisition) for the screen's layout baselines, from "
