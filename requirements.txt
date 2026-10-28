@@ -2,7 +2,7 @@
 # the project Docker image. Pilot runs have their own exact pins in
 # requirements-pilot.txt.
 torch>=2.14.1,<2.15
-torchvision>=0.20,<0.21
+torchvision>=0.29,<0.30
 tensorboard
 wandb
 moviepy
