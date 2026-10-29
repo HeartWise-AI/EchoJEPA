@@ -15,11 +15,15 @@ Clips are removed in two places before any upload:
   displays named by their GE image code. Uncertain clips are listed separately.
 Every clip of a shortlisted study left out is listed with its reasons: `removed_clips.csv` (shortlist) and
 `not_kept_clips.csv` (select, both steps). Like every output they hold patient IDs and paths, so they stay in the
-private --out-dir, which must be outside the repository.
+private --out-dir, which must be outside the repository. `funnel.csv` (select, also in `summary.md`) counts, from
+the archive manifest to the pilot, the videos, studies and patients each step leaves and what it leaves out by
+reason (each clip or study under its first: `non_train`, `other_view`, ..., `no_single_report`, ...): aggregate
+only.
 
 Example:
     python data/radar_pilot.py shortlist --videos <manifests>/videos.parquet --ef-labels <study_labels_ef.parquet> \\
-        --rvsp-labels <study_labels_rvsp.parquet> --reports <df_report_clean.parquet> --out-dir <pilot_dir>
+        --rvsp-labels <study_labels_rvsp.parquet> --reports <df_report_clean.parquet> --pacs <pacs_index.csv> \\
+        --out-dir <pilot_dir>
     python data/clip_screen.py features --clips <pilot_dir>/shortlist_clips.csv \\
         --out <pilot_dir>/screen/features.parquet
     python data/clip_screen.py features --clips <pilot_dir>/reference_clips.csv \\
@@ -29,7 +33,7 @@ Example:
     python data/clip_screen.py flag --features <pilot_dir>/screen/features_text.parquet \\
         --reference <pilot_dir>/screen/reference.parquet --out <pilot_dir>/screen/flags.parquet
     python data/radar_pilot.py select --out-dir <pilot_dir> --flags <pilot_dir>/screen/flags.parquet \\
-        [--n-studies {2,3,4}] [--vendor-slots [VENDOR ...]]
+        [--n-studies {2,3}] [--vendor-slots VENDOR ...]
     python data/radar_pilot.py candidates --out-dir <pilot_dir> --reports <df_report_clean.parquet> \\
         [--provisional-screen]
 
@@ -57,10 +61,15 @@ import pandas as pd
 
 import clip_screen
 from build_manifests import REPO_ROOT, ensure_outside_repo, git_commit, normalize_id, sha256
+from link_ef_labels import matches, same_patient, unique_or_drop
 
-# Category order is the priority order: `--n-studies 2` takes the first two, `--n-studies 4` right heart too.
-CATEGORIES = ("normal", "lv_dysfunction", "valve_disease", "right_heart")
-REQUIRED_VIEW_FAMILIES = ("A4C", "A2C", "PLAX", "PSAX")
+# Category order is the priority order: `--n-studies 2` takes the first two.
+CATEGORIES = ("normal", "lv_dysfunction", "valve_disease")
+# The vendors each --vendor value names: GE, the vendor names whose headers give the mode (`acq_vendor_validated`);
+# GE Vingmed alone, the vendor the screen was mostly labelled on. Without --vendor, the categories and the vendor
+# slots take any vendor.
+VENDOR_GROUPS = {"GE": clip_screen.GE_HEADER_VENDORS, "GE Vingmed Ultrasound": ("GE Vingmed Ultrasound",)}
+REQUIRED_VIEW_FAMILIES = ("A4C", "A2C", "PLAX", "PSAX")  # a study's view families by default (`--view-families`).
 # The mode captioned (V1), and the header modes a clip may have before the screen reads another vendor's mode from
 # its pixels.
 CAPTIONED_MODE, IMAGING_MODES = "bmode", ("bmode", "color_flow")
@@ -71,8 +80,12 @@ STILL_MAX_FRAMES = 3  # a clip of this many frames or fewer counts as a still (`
 # vendor's codes and other unusual ones were never labelled: such clips stay uncertain (`unusual_image_content`).
 MULTIPANEL_3D_VENDOR, MULTIPANEL_3D_CODES = "GE Vingmed Ultrasound", ("0041", "0051")
 VALVE_FIELDS = ("Mitral valve findings", "Aortic valve findings", "Tricuspid valve findings")
-LEFT_VALVE_FIELDS = VALVE_FIELDS[:2]  # mitral and aortic.
 REPORT_NUMBERS = ("AV Mean Gradient",)
+# The report's patient, and the PACS index columns that link a report's accession to its study (`link_reports`).
+REPORT_PATIENT = "Dossier"
+PACS_COLUMNS = {"AccessionNumber": "accession", "StudyInstanceUID": "study_id", "PatientID": "pacs_patient",
+                "StudyDate": "pacs_date"}
+LINK_REASONS = ("no_pacs_accession", "report_rows_differ", "no_report", "patient_or_date_disagree", "several_reports")
 CLIP_COLUMNS = ("patient_id", "study_id", "view", "video_path", "dicom_path", "vendor", "model", "acq_category",
                 "mode_source", "n_frames", "form", "global_key")
 # A vendor slot's category in shortlist.csv and pilot_studies.csv: `vendor:<vendor>`.
@@ -105,7 +118,7 @@ SECRET_NAME = ".global_key_secret"
 SHORTLIST_OUTPUTS = ("shortlist.csv", "shortlist_clips.csv", "reference_clips.csv", "removed_clips.csv",
                      "shortlist.json")
 SELECTION_OUTPUTS = ("pilot_studies.csv", "pilot_clips.csv", "uncertain_clips.csv", "not_kept_clips.csv",
-                     "selection.json", "summary.md")
+                     "funnel.csv", "selection.json", "summary.md")
 CANDIDATE_OUTPUTS = ("candidates.json", "view_type_items.csv", "global_keys.csv", "candidates_summary.json")
 
 
@@ -198,17 +211,14 @@ def categorize(s):
     not used: their codebook is not verified, so regurgitation comes from explicit report text, each valve field's
     own regurgitation words included for the mitral and aortic fields. A study whose text only possibly reports
     significant regurgitation, or states another moderate or worse finding in a valve field, is neither normal nor
-    valve disease. Right heart is a raised RVSP that neither LV dysfunction nor left-sided valve disease (AV stenosis,
-    significant MR or AR) accounts for; tricuspid regurgitation, which a raised RVSP often comes with, is allowed."""
+    valve disease."""
     grades = pd.DataFrame({f: s[f].map(lambda t, own=f != "Tricuspid valve findings": regurgitation_grade(t, own))
                            for f in VALVE_FIELDS}, index=s.index)
     significant, possible = (grades == "significant").any(axis=1), (grades != "none").any(axis=1)
-    left_valve = (s.av_mean_gradient >= 40) | (grades[list(LEFT_VALVE_FIELDS)] == "significant").any(axis=1)
     return pd.DataFrame({
         "normal": (s.ef >= 55) & (s.av_mean_gradient < 20) & (s.rvsp < 35) & ~possible,
         "lv_dysfunction": s.ef <= 35,
         "valve_disease": (s.av_mean_gradient >= 40) | significant,
-        "right_heart": (s.rvsp >= 50) & (s.ef > 35) & ~left_valve,
     }, index=s.index).fillna(False)
 
 
@@ -234,6 +244,42 @@ def joined_reasons(index, *parts):
     return pd.Series([";".join(r for r in row if r) for row in zip(*parts)], index=index, dtype=object)
 
 
+def _count(name, n):
+    """'name=n' for a funnel step's `left_out`, '' for none."""
+    return f"{name}={int(n)}" if n else ""
+
+
+def _counts_text(counts):
+    counts = counts.sort_index().sort_values(ascending=False, kind="stable")
+    return "; ".join(f"{k}={int(n)}" for k, n in counts.items())
+
+
+def reason_counts(reasons):
+    """'reason=count; ...' of `reasons` (one entry per clip or study, its reasons ';'-joined in the rule's order, ''
+    for one not left out), each entry under its first reason (as the screen's `exclude_reason`), most frequent
+    first: the counts add up to what the step left out."""
+    return _counts_text(reasons[reasons.fillna("") != ""].str.split(";").str[0].value_counts())
+
+
+def each_reason_counts(reasons):
+    """As `reason_counts`, each entry under every reason it has: '' when none has several, else the counts overlap."""
+    every = reasons[reasons.fillna("") != ""].str.split(";").explode()
+    if every.index.is_unique:
+        return ""
+    return "every reason counted: " + _counts_text(every.value_counts())
+
+
+FUNNEL_COLUMNS = ("stage", "step", "videos", "studies", "patients", "left_out_unit", "left_out", "note")
+
+
+def funnel_row(stage, step, clips, left_out="", unit="", note=""):
+    """One step of the funnel (`funnel.csv`): the videos, studies and patients of `clips`, what is left after the
+    step, and what the step left out by reason (`left_out`, counts of `unit`: clips or studies). Aggregate only."""
+    return {"stage": stage, "step": step, "videos": int(len(clips)), "studies": int(clips.study_id.nunique()),
+            "patients": int(clips.patient_id.nunique()), "left_out_unit": unit if left_out else "",
+            "left_out": left_out, "note": note}
+
+
 def clip_rule(clips):
     """Why each clip fails the metadata rule, ';'-joined ('' when it passes): `other_view`, a view the classifier
     labels `OTHER` or does not classify (pretraining only, never captioned); `acquisition`, a header declaring neither
@@ -250,43 +296,48 @@ def clip_rule(clips):
                           np.where((clips.n_frames <= STILL_MAX_FRAMES).fillna(False), "few_frames", ""))
 
 
-def removed_clips(every, short, clips, vendor, years):
+def removed_clips(every, short, clips, vendors, years):
     """The clips of the shortlisted studies that are not screened (not in `clips`), each with its `reasons`
     (';'-joined, as the screen's): the metadata rule's (`clip_rule`) and, for a category study's clip, `vendor`
-    (not --vendor) and `year` (study date outside --years)."""
+    (not of --vendor's `vendors`, when given) and `year` (study date outside --years)."""
     removed = every[every.study_id.isin(set(short.study_id)) & ~every.video_path.isin(set(clips.video_path))]
     removed = removed.drop_duplicates("video_path")
     category = removed.study_id.isin(set(short.study_id[~short.category.str.startswith(VENDOR_SLOT)]))
     return removed.assign(reasons=joined_reasons(
-        removed.index, removed.clip_rule, np.where(category & bool(vendor) & (removed.vendor != vendor), "vendor", ""),
+        removed.index, removed.clip_rule,
+        np.where(category & bool(vendors) & ~removed.vendor.isin(vendors or ()), "vendor", ""),
         np.where(category & ~removed.year.isin(years), "year", "")))
 
 
-def study_ok(clips, min_clips, before_screen=False):
-    """Per study, on its kept B-mode clips of classified views: enough of them, and every required view family.
-    `before_screen` (shortlist), a clip whose mode the screen is still to read from its pixels (`mode_source`) counts
-    whatever its header's; select counts it at the mode read."""
-    bmode = clips.acq_category == CAPTIONED_MODE
-    if before_screen:
-        bmode |= clips.mode_source == "pixels"
-    per = clips[(review_form(clips) == CAPTION_FORM) & bmode]
-    per = per.assign(family=view_family(per.view))
+def study_shortfall(clips, min_clips, families):
+    """Per study, why it fails the criteria (';'-joined, '' when it meets them): `min_clips`, fewer than `min_clips`
+    of `clips`; `view_families`, a family of `families` missing among them. The clips are those the pilot would
+    caption, B-mode clips of classified views already: those passing the clip rule (shortlist, where another
+    vendor's clip counts whatever its mode until the screen reads it from the pixels) or kept after the screen and
+    the pilot rule (select)."""
+    per = clips.assign(family=view_family(clips.view))
     n = per.groupby("study_id").size()
-    families = per.groupby("study_id").family.agg(frozenset)
-    ok = (n >= min_clips) & families.map(lambda f: all(x in f for x in REQUIRED_VIEW_FAMILIES))
-    return ok.reindex(n.index).fillna(False)
+    present = per.groupby("study_id").family.agg(frozenset)
+    return joined_reasons(n.index, np.where(n < min_clips, "min_clips", ""),
+                          np.where(present.map(lambda f: all(x in f for x in families)), "", "view_families"))
 
 
-def vendor_slots(specs, main_vendor):
-    """{vendor: studies to shortlist} from --vendor-studies items 'VENDOR=N'."""
+def study_ok(clips, min_clips, families):
+    """Per study, whether it meets the criteria (`study_shortfall`)."""
+    return study_shortfall(clips, min_clips, families) == ""
+
+
+def vendor_slots(specs, vendors):
+    """{vendor: studies to shortlist} from --vendor-studies items 'VENDOR=N', each of --vendor's `vendors` (any vendor
+    when None)."""
     slots = {}
     for spec in specs:
         vendor, _, n = spec.rpartition("=")
         if not vendor or not n.isdigit() or int(n) < 1 or vendor in slots:
             raise SystemExit(f"--vendor-studies takes VENDOR=N items, N at least 1, each vendor once; got {spec!r}.")
-        if vendor == main_vendor:
-            raise SystemExit(f"--vendor-studies names {vendor!r}, the categories' --vendor: its studies are drawn "
-                             "per category.")
+        if vendors and vendor not in vendors:
+            raise SystemExit(f"--vendor-studies names {vendor!r}, outside --vendor's vendors {list(vendors)}: drop "
+                             "it, or leave --vendor out for any vendor.")
         slots[vendor] = int(n)
     return slots
 
@@ -303,11 +354,46 @@ def excluded_patients(paths, inputs):
     return excluded
 
 
+def link_reports(reports, pacs, studies):
+    """One report per study of `studies` (study_id, patient_id, study_date), found through the PACS index (`pacs`:
+    accession, study_id, pacs_patient, pacs_date) by its accession and checked as `link_ef_labels.py` checks its
+    labels: an accession naming several PACS studies, patients or dates is dropped, and the report's patient
+    (REPORT_PATIENT), the PACS patient and the manifest's must agree, as must the PACS and manifest dates. No EF
+    label is needed. Report rows repeated exactly are one report; an accession whose rows differ, or a study with
+    several reports, is left out rather than one of them chosen (`candidates` refuses them too). Returns the linked
+    reports, one row per study with its study_id and accession, and per study of `studies` why it has none
+    (LINK_REASONS, '' when linked)."""
+    reports = reports.dropna(subset=["AccessionNumber"]).drop_duplicates()
+    differ = reports.AccessionNumber.duplicated(keep=False)
+    differing, reports = set(reports.AccessionNumber[differ]), reports[~differ]
+    pacs = unique_or_drop(pacs.dropna(subset=["accession", "study_id"]), "accession",
+                          ["study_id", "pacs_patient", "pacs_date"], "accessions")
+    ids = set(studies.study_id)
+    pacs = pacs[pacs.study_id.isin(ids)]
+    linked = (pacs.merge(reports, left_on="accession", right_on="AccessionNumber")
+              .merge(studies[["study_id", "patient_id", "study_date"]], on="study_id"))
+    agree = (same_patient(normalize_id(linked[REPORT_PATIENT]), linked.pacs_patient)
+             & same_patient(linked.pacs_patient, linked.patient_id)
+             & matches(linked.pacs_date.str[:8] == linked.study_date.str[:8]))
+    agreeing = linked[agree]
+    several = agreeing.study_id.duplicated(keep=False)
+    in_pacs, with_report = set(pacs.study_id), set(linked.study_id)
+    rows_differ = set(pacs.study_id[pacs.accession.isin(differing)]) - with_report
+    reason = pd.Series("", index=pd.Index(sorted(ids), name="study_id"), dtype=object)
+    for name, left in zip(LINK_REASONS, (ids - in_pacs, rows_differ, in_pacs - with_report - rows_differ,
+                                         with_report - set(agreeing.study_id), set(agreeing.study_id[several]))):
+        reason.loc[sorted(left)] = name
+    one = agreeing[~several].drop(columns=["AccessionNumber", REPORT_PATIENT, "pacs_patient", "pacs_date",
+                                           "patient_id", "study_date"])
+    return one.reset_index(drop=True), reason
+
+
 def shortlist(args):
     ensure_outside_repo(args.out_dir, "--out-dir")
     clip_screen.private_dir(args.out_dir)
     clear_outputs(args.out_dir, SHORTLIST_OUTPUTS + SELECTION_OUTPUTS + CANDIDATE_OUTPUTS)
-    slots = vendor_slots(args.vendor_studies, args.vendor)
+    vendors = VENDOR_GROUPS.get(args.vendor)  # None: any vendor.
+    slots = vendor_slots(args.vendor_studies, vendors)
     rng = np.random.default_rng(args.seed)
     # Every input as read (Inputs): the record names those, and is written only if none changed meanwhile.
     inputs = clip_screen.Inputs(__file__)
@@ -316,30 +402,67 @@ def shortlist(args):
                                                                      "acq_vendor_validated"]
     built_at = manifest_build(args.videos, cols, inputs)
     every = inputs.parquet(args.videos, columns=cols)
+    # The funnel (`funnel_row`): what each step leaves and leaves out, from the manifest on (the steps before it are
+    # in the manifest's summary.md).
+    funnel = [funnel_row("shortlist", "archive manifest: TTE videos of every split", every)]
+    split = every.split.astype("string").fillna("<none>")
     every = every[every.split == "train"].copy()  # the manifest holds TTE exams only.
+    funnel.append(funnel_row("shortlist", "training split", every, _count("non_train", (split != "train").sum()),
+                             "clips", "splits: " + reason_counts(split[split != "train"])))
     every["patient_id"], every["study_id"] = normalize_id(every.patient_id), normalize_id(every.study_id)
     every["year"] = pd.to_numeric(every.study_date.astype("string").str[:4], errors="coerce")
     every["form"], every["clip_rule"], every["mode_source"] = review_form(every), clip_rule(every), mode_source(every)
+    families = list(dict.fromkeys(args.view_families))
+    unknown = set(families) - set(view_family(pd.Series(every.view[every.form == CAPTION_FORM].unique())))
+    if unknown:
+        raise SystemExit(f"--view-families {sorted(unknown)} name no classified view of the training clips (a "
+                         "family is a view's name before its first '_': A4C_ZOOM is A4C).")
     # The patients of other lists (a validation list): none of their studies or clips is drawn, reference ones neither.
     excluded = excluded_patients(args.exclude_patients, inputs)
-    every = every[~every.patient_id.isin(excluded)]
+    listed = every.patient_id.isin(excluded)
+    every = every[~listed]
+    funnel.append(funnel_row("shortlist", f"--exclude-patients ({len(excluded)} patients listed)", every,
+                             _count("listed_patient", listed.sum()), "clips"))
     v = every[every.year.isin(args.years)]
-    if args.vendor:
-        v = v[v.vendor == args.vendor]
+    funnel.append(funnel_row("shortlist", f"--years {' '.join(map(str, args.years))}", v,
+                             _count("other_year", len(every) - len(v)), "clips"))
+    in_scope = v.vendor.isin(vendors) if vendors else pd.Series(True, index=v.index)
+    step = (f"--vendor {args.vendor}" + (f" ({', '.join(vendors)})" if vendors != (args.vendor,) else "")
+            if vendors else "vendor: any (no --vendor)")
+    funnel.append(funnel_row("shortlist", step, v[in_scope], _count("other_vendor", (~in_scope).sum()), "clips"))
+    v = v[in_scope]
     kept = v[v.clip_rule == ""]
+    funnel.append(funnel_row("shortlist", f"clip rule: B-mode clips of classified views, more than {STILL_MAX_FRAMES} "
+                             "frames", kept, reason_counts(v.clip_rule), "clips", each_reason_counts(v.clip_rule)))
 
     ef = inputs.parquet(args.ef_labels, columns=["study_id", "accession", "ef"])
-    ef["study_id"], ef["accession"] = normalize_id(ef.study_id), normalize_id(ef.accession)
-    rvsp = inputs.parquet(args.rvsp_labels, columns=["study_id", "rvsp"])
-    rvsp["study_id"] = normalize_id(rvsp.study_id)
-    reports = inputs.parquet(args.reports, columns=["AccessionNumber", *VALVE_FIELDS, *REPORT_NUMBERS])
+    rvsp = inputs.parquet(args.rvsp_labels, columns=["study_id", "accession", "rvsp"])
+    for table in (ef, rvsp):
+        table["study_id"], table["accession"] = normalize_id(table.study_id), normalize_id(table.accession)
+    reports = inputs.parquet(args.reports)
     reports["AccessionNumber"] = normalize_id(reports.AccessionNumber)
-    reports = reports.drop_duplicates("AccessionNumber", keep=False)
-    linked = (ef.merge(rvsp, on="study_id", how="left")
-              .merge(reports, left_on="accession", right_on="AccessionNumber", how="inner"))
+    pacs = inputs.csv(args.pacs, dtype=str, usecols=list(PACS_COLUMNS)).rename(columns=PACS_COLUMNS)
+    for c in ("accession", "study_id", "pacs_patient"):
+        pacs[c] = normalize_id(pacs[c])
+    # Each study's report through the PACS index, with no EF needed to link it; EF and RVSP where the label files
+    # hold them for that report. A category asking for one leaves a study without it out (`categorize`).
+    studies = every.groupby("study_id", as_index=False)[["patient_id", "study_date"]].first()
+    linked, link_reason = link_reports(reports, pacs, studies)
+    linked = (linked[["study_id", "accession", *VALVE_FIELDS, *REPORT_NUMBERS]]
+              .merge(ef, on=["study_id", "accession"], how="left")
+              .merge(rvsp, on=["study_id", "accession"], how="left"))
     linked["av_mean_gradient"] = pd.to_numeric(linked["AV Mean Gradient"], errors="coerce")
-    ok = study_ok(kept, args.min_clips, before_screen=True)
+    linked_ids = set(linked.study_id)
+    unlinked = link_reason.reindex(kept.study_id.unique())
+    funnel.append(funnel_row("shortlist", "one report through the PACS index", kept[kept.study_id.isin(linked_ids)],
+                             _count("no_single_report", (unlinked != "").sum()), "studies", reason_counts(unlinked)))
+    shortfall = study_shortfall(kept, args.min_clips, families)
+    ok = shortfall == ""
     s = linked[linked.study_id.isin(ok[ok].index)].sort_values("study_id").reset_index(drop=True)
+    short_linked = shortfall[shortfall.index.isin(linked_ids)]
+    funnel.append(funnel_row("shortlist", f"--min-clips {args.min_clips}, --view-families "
+                             f"{' '.join(families) or '(none)'}", kept[kept.study_id.isin(set(s.study_id))],
+                             reason_counts(short_linked), "studies", each_reason_counts(short_linked)))
     patients = kept.groupby("study_id").patient_id.first()
     s["patient_id"] = s.study_id.map(patients)
     cat = categorize(s)
@@ -355,9 +478,16 @@ def shortlist(args):
     if short.empty:
         raise SystemExit("No study meets the pilot criteria; relax --years, --vendor or --min-clips.")
     category_studies = set(short.study_id)
+    in_category = set(s.study_id[cat.any(axis=1)])
+    funnel.append(funnel_row("shortlist", "report categories", kept[kept.study_id.isin(in_category)],
+                             _count("no_category", len(s) - len(in_category)), "studies",
+                             "pools (a study can be in several): " + ", ".join(f"{c}={n}" for c, n in pools.items())))
+    funnel.append(funnel_row("shortlist", f"seeded draw (--per-category {args.per_category}, --seed {args.seed})",
+                             kept[kept.study_id.isin(category_studies)],
+                             _count("not_drawn", len(in_category - category_studies)), "studies"))
 
-    # Vendor slots: per further vendor, report-linked studies of that vendor alone with the required views, of any
-    # year and outside the categories, drawn from a stream of their own so that the category draws are those of a
+    # Vendor slots: per vendor named (of --vendor's, when given), report-linked studies of that vendor alone with the
+    # required views, of any year and outside the categories, drawn from a stream of their own so that the category draws are those of a
     # shortlist without them. Their B-mode count waits for select, once the screen has read the mode.
     slot_rows, slot_pools, slot_clips, slot_kept = [], {}, [], []
     vendors_per_study = every.groupby("study_id").vendor.nunique()
@@ -365,7 +495,7 @@ def shortlist(args):
         w = every[(every.vendor == vendor) & (every.clip_rule == "")]
         slot_kept.append(w)
         w = w[w.study_id.map(vendors_per_study) == 1]
-        ok_w = study_ok(w, args.min_clips, before_screen=True)
+        ok_w = study_ok(w, args.min_clips, families)
         pool = linked[linked.study_id.isin(ok_w[ok_w].index)].drop_duplicates("study_id").sort_values("study_id")
         pool = pool.assign(patient_id=pool.study_id.map(w.groupby("study_id").patient_id.first()))
         taken = set(short.patient_id) | {r["patient_id"] for r in slot_rows}
@@ -380,6 +510,8 @@ def shortlist(args):
                        "patient_id": row.patient_id, "accession": row.accession}
                       for rank, row in enumerate(drawn.itertuples())]
         slot_clips.append(w[w.study_id.isin(set(drawn.study_id))])
+        funnel.append(funnel_row("shortlist", f"vendor slot: {vendor}={n}", slot_clips[-1],
+                                 note=f"pool={slot_pools[vendor]}"))
     short = pd.concat([short, pd.DataFrame(slot_rows, columns=short.columns)], ignore_index=True)
 
     outputs = [os.path.join(args.out_dir, n) for n in SHORTLIST_OUTPUTS[:4]]
@@ -402,37 +534,47 @@ def shortlist(args):
             category_studies)])]).drop_duplicates("video_path")
     reference = reference.assign(global_key=[global_key(secret, p) for p in reference.video_path])
     reference[list(CLIP_COLUMNS)].to_csv(outputs[2], index=False)
+    funnel.append(funnel_row("shortlist", "shortlist: clips to screen", clips,
+                             note=f"reference clips of other studies, for the screen's layout baselines="
+                                  f"{len(reference)}"))
     # Every clip of a shortlisted study that the screen will not see, with its reasons and its global key.
-    removed = removed_clips(every, short, clips, args.vendor, args.years)
+    removed = removed_clips(every, short, clips, vendors, args.years)
     removed = removed.assign(global_key=[global_key(secret, p) for p in removed.video_path])
     removed[[*CLIP_COLUMNS, "reasons"]].to_csv(outputs[3], index=False)
     info = {
         "created_utc": _now(), "code_commit": git_commit(), "code_sha256": clip_screen.code_sha256(__file__),
         "seed": args.seed,
-        "criteria": {"split": "train", "years": args.years, "vendor": args.vendor,
+        "criteria": {"split": "train", "years": args.years, "vendor": args.vendor or "any",
+                     "vendors": list(vendors) if vendors else "any",
                      "min_clips": args.min_clips,
-                     "required_view_families": REQUIRED_VIEW_FAMILIES,
+                     "required_view_families": families,
                      "captioned": "B-mode videos of classified views (V1): OTHER and unclassified views, color flow "
                                   "and stills are left out, min_clips counts B-mode clips",
                      "still_max_frames": STILL_MAX_FRAMES,
+                     "report_link": "one report per study through the PACS index by accession, report, PACS and "
+                                    "manifest agreeing on the patient and PACS and manifest on the date; rows "
+                                    "repeated exactly are one report, an accession whose rows differ or a study with "
+                                    "several reports is left out; EF and RVSP where the label files hold them for "
+                                    "that report",
                      "categories": {"normal": "EF >= 55, AV mean gradient < 20, RVSP < 35 (all present), no "
                                               "moderate or worse statement in a valve field of the report",
                                     "lv_dysfunction": "EF <= 35",
                                     "valve_disease": "AV mean gradient >= 40, or moderate/severe MR or AR in the "
-                                                     "report text, the grade in the same part as the MR or AR",
-                                    "right_heart": "RVSP >= 50 and EF > 35 (both present), no AV mean gradient "
-                                                   ">= 40 and no moderate/severe MR or AR in the report text "
-                                                   "(TR allowed)"},
+                                                     "report text, the grade in the same part as the MR or AR"},
                      "vendor_studies": slots,
-                     "vendor_slots": "per vendor, training studies of that vendor alone with a linked report and "
-                                     "min_clips classified clips of the required view families, any year, of patients "
-                                     "drawn nowhere else; their B-mode clips are counted at select, on the mode the "
-                                     "screen reads",
+                     "vendor_slots": "per vendor (of --vendor's vendors, when given), training studies of that "
+                                     "vendor alone with a linked report and min_clips classified clips of the required "
+                                     "view families, any year, of patients drawn nowhere else; their B-mode clips are "
+                                     "counted at select, on the mode the screen reads; select fills only the slots "
+                                     "--vendor-slots names",
                      "exclude_patients": {os.path.abspath(p): inputs.digest(p) for p in args.exclude_patients},
                      "excluded_patients": len(excluded)},
         "inputs": {k: inputs.digest(p) for k, p in (("videos", args.videos), ("ef_labels", args.ef_labels),
-                                                    ("rvsp_labels", args.rvsp_labels), ("reports", args.reports))},
+                                                    ("rvsp_labels", args.rvsp_labels), ("reports", args.reports),
+                                                    ("pacs", args.pacs))},
         "manifest_build_commit": built_at,
+        "report_link": {"linked": int((link_reason == "").sum()),
+                        **{r: int((link_reason == r).sum()) for r in LINK_REASONS}},
         "eligible_studies": int(len(s)), "pool_per_category": pools, "pool_per_vendor_slot": slot_pools,
         "clips_by_mode_source": {k: int(n) for k, n in clips.mode_source.value_counts().items()},
         "shortlisted_studies": int(short.study_id.nunique()), "clips_to_screen": int(len(clips)),
@@ -440,6 +582,7 @@ def shortlist(args):
         "clips_removed": int(len(removed)),
         "clips_removed_by_metadata_rule": {k: int(n) for k, n in
                                            removed.reasons.str.split(";").explode().value_counts().items()},
+        "funnel": funnel,  # select completes it in funnel.csv.
         "outputs": file_hashes(*outputs),
     }
     inputs.check(*outputs)
@@ -447,6 +590,13 @@ def shortlist(args):
     print(f"[pilot]  {len(s)} eligible training studies; pools {pools}; vendor slot pools {slot_pools}; "
           f"{info['shortlisted_studies']} shortlisted; {len(clips)} clips to screen (mode from "
           f"{info['clips_by_mode_source']}); removed by metadata {info['clips_removed_by_metadata_rule']}.")
+    print_funnel(funnel)
+
+
+def print_funnel(funnel):
+    for row in funnel:
+        print(f"[funnel] {row['step']}: {row['videos']} videos, {row['studies']} studies, {row['patients']} patients"
+              + (f"; left out ({row['left_out_unit']}) {row['left_out']}" if row["left_out"] else ""))
 
 
 def screened_clips(clips, flags):
@@ -493,20 +643,19 @@ def with_pilot_rule(clips):
     return clips.assign(exclude=clips.decision != "keep")
 
 
-def pilot_categories(short, n_studies, vendors=None):
+def pilot_categories(short, n_studies, vendors=()):
     """The pilot's categories in priority order: the first `n_studies` report categories, then the vendor slots the
-    shortlist holds (`vendor:<vendor>`): every one, or those of `vendors` (none when empty)."""
+    shortlist holds (`vendor:<vendor>`) of `vendors` (none when empty: the other slots' studies are screened, not
+    taken)."""
     slots = sorted({c for c in short.category if str(c).startswith(VENDOR_SLOT)})
-    if vendors is not None:
-        unknown = sorted(set(vendors) - {s[len(VENDOR_SLOT):] for s in slots})
-        if unknown:
-            raise SystemExit(f"--vendor-slots names {unknown}, which the shortlist has no slot for; its slots: "
-                             f"{[s[len(VENDOR_SLOT):] for s in slots]}.")
-        slots = [s for s in slots if s[len(VENDOR_SLOT):] in vendors]
-    return [*CATEGORIES[:n_studies], *slots]
+    unknown = sorted(set(vendors) - {s[len(VENDOR_SLOT):] for s in slots})
+    if unknown:
+        raise SystemExit(f"--vendor-slots names {unknown}, which the shortlist has no slot for; its slots: "
+                         f"{[s[len(VENDOR_SLOT):] for s in slots]}.")
+    return [*CATEGORIES[:n_studies], *(s for s in slots if s[len(VENDOR_SLOT):] in vendors)]
 
 
-def choose_studies(short, clips, min_clips, n_studies, vendors=None):
+def choose_studies(short, clips, min_clips, families, n_studies, vendors=()):
     """One study for each of the pilot's categories (`pilot_categories`: the first `n_studies`, then the vendor
     slots of `vendors`), each meeting the criteria on its kept clips (`exclude` false), all of different patients:
     of every such combination of shortlisted studies, the best-ranked in the categories' priority order (the best
@@ -516,7 +665,7 @@ def choose_studies(short, clips, min_clips, n_studies, vendors=None):
     category has)."""
     categories = pilot_categories(short, n_studies, vendors)
     pools = [pool.to_dict("records")
-             for pool in qualifying_studies(short, clips, min_clips, n_studies, vendors).values()]
+             for pool in qualifying_studies(short, clips, min_clips, families, n_studies, vendors).values()]
     for combination in itertools.product(*pools):  # in rank order: the first of distinct patients is the best.
         if len({row["patient_id"] for row in combination}) == len(combination):
             return pd.DataFrame([{"category": c, **{k: row[k] for k in ("study_id", "patient_id", "accession")}}
@@ -525,10 +674,10 @@ def choose_studies(short, clips, min_clips, n_studies, vendors=None):
     return pd.DataFrame(columns=["category", "study_id", "patient_id", "accession"])
 
 
-def qualifying_studies(short, clips, min_clips, n_studies, vendors=None):
+def qualifying_studies(short, clips, min_clips, families, n_studies, vendors=()):
     """Per pilot category (`pilot_categories`), its shortlisted studies that meet the criteria on their kept clips,
     at their resolved mode, in rank order."""
-    ok = study_ok(clips[~clips.exclude], min_clips)
+    ok = study_ok(clips[~clips.exclude], min_clips, families)
     pools = {}
     for c in pilot_categories(short, n_studies, vendors):
         pool = short[short.category == c]
@@ -557,19 +706,20 @@ def select(args):
                          "classified views only): an older shortlist, whose clips would reach the pilot in other "
                          "modes and views. Rerun shortlist, then the screen on its lists.")
     removed = inputs.csv(listed[3], dtype={"patient_id": str, "study_id": str, "reasons": str})
-    min_clips = record["criteria"]["min_clips"]
+    min_clips, families = record["criteria"]["min_clips"], record["criteria"]["required_view_families"]
     flags = inputs.parquet(args.flags)
     if not {"video_sha256", "decision", "pixel_mode"} <= set(flags):
         raise SystemExit("The flags do not record the video bytes they screened, the screen's decisions or its "
                          "reading of the mode (an older features or flag run): rerun clip_screen.py features and flag.")
     flags = flags[["video_path", "decision", "decision_reasons", "pixel_mode", *MEDIA_COLUMNS]]
     flag_info = inputs.json(args.flags + ".info.json")
-    clips = with_pilot_rule(resolve_modes(screened_clips(clips, flags)))
+    read = resolve_modes(screened_clips(clips, flags))
+    clips = with_pilot_rule(read)
     categories = pilot_categories(short, args.n_studies, args.vendor_slots)
-    chosen = choose_studies(short, clips, min_clips, args.n_studies, args.vendor_slots)
+    chosen = choose_studies(short, clips, min_clips, families, args.n_studies, args.vendor_slots)
     if len(chosen) < len(categories):  # before any output: a pilot short of its studies is no completed selection.
         counts = {c: len(p) for c, p in
-                  qualifying_studies(short, clips, min_clips, args.n_studies, args.vendor_slots).items()}
+                  qualifying_studies(short, clips, min_clips, families, args.n_studies, args.vendor_slots).items()}
         reason = (f"none for {', '.join(c for c, n in counts.items() if not n)}" if not all(counts.values()) else
                   "but no combination of one study per category has different patients")
         decisions = {k: int(n) for k, n in clips.decision.value_counts().items()}
@@ -586,7 +736,7 @@ def select(args):
         raise SystemExit(f"{len(changed)} clips of the chosen studies no longer hold the video or DICOM regions the "
                          "screen read (replaced in place since features): no selection was written. Rerun "
                          "clip_screen.py features and flag on this shortlist.")
-    outputs = [os.path.join(args.out_dir, n) for n in SELECTION_OUTPUTS[:4]]
+    outputs = [os.path.join(args.out_dir, n) for n in SELECTION_OUTPUTS[:5]]
     chosen.to_csv(outputs[0], index=False)
     pilot = screened[~screened.exclude]
     pilot[[*CLIP_COLUMNS, "header_acq_category", "video_sha256"]].to_csv(outputs[1], index=False)
@@ -601,6 +751,24 @@ def select(args):
     not_kept = not_kept.assign(in_pilot=not_kept.study_id.isin(set(chosen.study_id)))
     not_kept[["step", "decision", "reasons", "in_pilot", *CLIP_COLUMNS, "header_acq_category"]].to_csv(
         outputs[3], index=False)
+    # The shortlist's funnel (an older shortlist recorded none), then the screen, the pilot rule and the choice.
+    by_screen = read.decision == "keep"
+    by_screen_reasons, by_rule_reasons = read.decision_reasons.fillna("")[~by_screen], pilot_rule(read)[by_screen]
+    slots_filled = [c[len(VENDOR_SLOT):] for c in categories if c.startswith(VENDOR_SLOT)]
+    funnel = record.get("funnel", []) + [
+        funnel_row("select", f"screen: {flag_info['thresholds']['policy']} policy, "
+                   + ("calibrated thresholds" if flag_info.get("calibration") else "provisional thresholds"),
+                   read[by_screen],
+                   # The first reason decides (exclusions come first): 'exclude: still'.
+                   reason_counts(read.decision[~by_screen] + ": " + by_screen_reasons), "clips",
+                   each_reason_counts(by_screen_reasons)),
+        funnel_row("select", "pilot rule: B-mode as read, no GE 3D or multi-panel image code", clips[~clips.exclude],
+                   reason_counts(by_rule_reasons), "clips", each_reason_counts(by_rule_reasons)),
+        funnel_row("select", f"study choice (--n-studies {args.n_studies}, vendor slots "
+                   f"{', '.join(slots_filled) or 'none'})", screened[~screened.exclude],
+                   _count("not_chosen", clips[~clips.exclude].study_id.nunique() - len(chosen)), "studies",
+                   ", ".join(chosen.category))]
+    pd.DataFrame(funnel, columns=list(FUNNEL_COLUMNS)).to_csv(outputs[4], index=False)
     removed_pilot = removed[removed.study_id.isin(set(chosen.study_id))]
 
     summary = {
@@ -647,13 +815,22 @@ def select(args):
                 else "provisional (no labelled calibration yet)"),
              f"- Clips by form: {summary['clips_by_form']}",
              f"- Clips by acquisition: {summary['clips_by_acquisition']} (mode from {summary['clips_by_mode_source']})",
-             f"- Clips by view: {summary['clips_by_view']}"]
+             f"- Clips by view: {summary['clips_by_view']}",
+             "", "## Funnel (funnel.csv)", "",
+             "What each step leaves, and what it leaves out by reason (counted in clips or studies), each clip or "
+             "study under its first reason in the rule's order; the note counts every reason where one has several.",
+             "",
+             "| Step | Videos | Studies | Patients | Left out | Note |", "|---|---|---|---|---|---|"]
+    lines += [f"| {r['step']} | {r['videos']:,} | {r['studies']:,} | {r['patients']:,} | "
+              + (f"{r['left_out']} ({r['left_out_unit']})" if r["left_out"] else "") + f" | {r['note']} |"
+              for r in funnel]
     with open(os.path.join(args.out_dir, "summary.md"), "w") as f:
         f.write("\n".join(lines) + "\n")
     print(f"[pilot]  {summary['studies']} studies ({', '.join(summary['categories'])}), {summary['clips_kept']} "
           f"clips kept, {summary['clips_removed_before_screen']} removed before the screen, "
           f"{summary['clips_excluded']} excluded, {summary['clips_uncertain']} uncertain; "
           f"{summary['screen_reasons_in_pilot_studies']}.")
+    print_funnel([r for r in funnel if r["stage"] == "select"])
     if not summary["screen_calibration"]:
         print("[pilot]  WARNING: the screen's thresholds are provisional (no labelled calibration yet), so its "
               "exclusions are not validated; candidates refuses this selection unless --provisional-screen.",
@@ -788,9 +965,10 @@ def candidates(args):
     studies = inputs.csv(os.path.join(args.out_dir, "pilot_studies.csv"), dtype=str)
     reports = inputs.parquet(args.reports)
     reports["AccessionNumber"] = normalize_id(reports.AccessionNumber)
-    reports = reports[reports.AccessionNumber.isin(set(studies.accession))].set_index("AccessionNumber")
+    reports = reports[reports.AccessionNumber.isin(set(studies.accession))].drop_duplicates()
+    reports = reports.set_index("AccessionNumber")
     if reports.index.duplicated().any() or set(studies.accession) - set(reports.index):
-        raise SystemExit("Every pilot study needs exactly one report row.")
+        raise SystemExit("Every pilot study needs exactly one report (rows repeated exactly count once).")
     accession = studies.set_index("study_id").accession
 
     out, other, keys = [], [], []
@@ -846,33 +1024,43 @@ def main(argv=None):
     s.add_argument("--videos", required=True, help="videos.parquet of the archive manifests (build_manifests.py: "
                                                    "TTE exams only; split, view, acquisition and frame count per "
                                                    "clip).")
-    s.add_argument("--ef-labels", required=True, help="study_labels_ef.parquet (study_id, accession, ef).")
-    s.add_argument("--rvsp-labels", required=True, help="study_labels_rvsp.parquet (study_id, rvsp).")
+    s.add_argument("--ef-labels", required=True, help="study_labels_ef.parquet (study_id, accession, ef): EF for the "
+                                                     "categories, where it belongs to the study's linked report.")
+    s.add_argument("--rvsp-labels", required=True, help="study_labels_rvsp.parquet (study_id, accession, rvsp): RVSP, "
+                                                       "as EF.")
     s.add_argument("--reports", required=True, help="cleaned DeepECHO report parquet.")
+    s.add_argument("--pacs", required=True, help="PACS index CSV (AccessionNumber, StudyInstanceUID, PatientID, "
+                                                "StudyDate) linking each report to its study.")
     s.add_argument("--out-dir", required=True)
     s.add_argument("--seed", type=int, default=20261014)
     s.add_argument("--years", type=int, nargs="+", default=[2022, 2023, 2024])
-    s.add_argument("--vendor", default="GE Vingmed Ultrasound",
-                   help="the categories' vendor; empty string for any vendor.")
+    s.add_argument("--vendor", choices=sorted(VENDOR_GROUPS),
+                   help="the vendors drawn from (categories and vendor slots): GE, GE's three vendor names alone; "
+                        "'GE Vingmed Ultrasound', that vendor alone; left out, any vendor, each clip's mode read from "
+                        "its header or its pixels as its vendor allows.")
     s.add_argument("--vendor-studies", nargs="*", default=[], metavar="VENDOR=N",
-                   help="vendor slots: N studies of each further vendor, outside the categories and --years (for "
-                        "example 'Philips Medical Systems=1'); select takes one of each.")
+                   help="vendor slots: N studies of each vendor named, of --vendor's when given, outside the "
+                        "categories and --years (for example 'Philips Medical Systems=1'); screened, and taken by "
+                        "select only when --vendor-slots names them.")
     s.add_argument("--exclude-patients", nargs="*", default=[],
                    help="CSV files with patient_id (a validation list) whose patients are drawn nowhere: no study, "
                         "clip or reference clip of theirs.")
     s.add_argument("--min-clips", type=int, default=20, help="kept B-mode clips of classified views a study needs.")
-    s.add_argument("--per-category", type=int, default=8, help="studies shortlisted per category.")
+    s.add_argument("--view-families", nargs="*", default=list(REQUIRED_VIEW_FAMILIES), metavar="FAMILY",
+                   help="view families a study needs among those clips (a view's name before its first '_': A4C_ZOOM "
+                        "is A4C); given without a family: none.")
+    s.add_argument("--per-category", type=int, default=5, help="studies shortlisted per category.")
     s.add_argument("--reference-per-layout", type=int, default=200,
                    help="reference clips per (vendor, model, acquisition) for the screen's layout baselines, from "
                         "eligible clips of studies not shortlisted.")
     t = sub.add_parser("select")
     t.add_argument("--out-dir", required=True)
     t.add_argument("--flags", required=True, help="clip_screen.py flag output for shortlist_clips.csv.")
-    t.add_argument("--n-studies", type=int, default=3, choices=(2, 3, 4),
-                   help="report categories, in priority order; 4 adds right heart.")
-    t.add_argument("--vendor-slots", nargs="*", metavar="VENDOR",
-                   help="the shortlist's vendor slots to fill, one study each (default: every slot; given without "
-                        "a vendor: none).")
+    t.add_argument("--n-studies", type=int, default=3, choices=(2, 3),
+                   help="report categories, in priority order.")
+    t.add_argument("--vendor-slots", nargs="*", default=[], metavar="VENDOR",
+                   help="the shortlist's vendor slots to fill, one study each (default: none; the slots' studies "
+                        "are screened, not taken).")
     c = sub.add_parser("candidates")
     c.add_argument("--out-dir", required=True)
     c.add_argument("--reports", required=True)

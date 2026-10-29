@@ -1,7 +1,7 @@
 # RADAR Caption Pilot: Study Selection and Clip Screening (Issue #22)
 
 Select 2–3 report-linked studies from training-split patients, one per report
-category, with optional studies from other vendors. The pilot captions V1: classified B-mode clips, each reviewed in the
+category, with optional studies of named vendors (vendor slots) screened as backups. The pilot captions V1: classified B-mode clips, each reviewed in the
 [Column Review](labeling_instructions_v1.md#column-review) with candidate captions. Color Doppler is left to V2.
 `OTHER` and unclassified clips serve pretraining only: they are not captioned and do not reach the pilot, so the
 [View and Type Review](labeling_instructions_v1.md#view-and-type-review-other-clips) serves only the view-classifier relabelling.
@@ -25,7 +25,7 @@ The workflow is `shortlist -> features -> text -> flag -> select -> candidates -
 | 3D or multi-panel displays | GE Vingmed image code `0041` or `0051` (`3d_or_multipanel`, see Unusual image data). | `radar_pilot.py select` |
 | Uncertain clips | Partial or conflicting evidence; omitted from the pilot and listed separately, not classified as invalid. | `clip_screen.py`, `radar_pilot.py select` |
 
-Every clip of a shortlisted study that is left out is listed with its reasons: `removed_clips.csv` (`shortlist`: `other_view`, `acquisition`, `color_flow`, `few_frames`, and `vendor` or `year` for a category study's clip of another vendor or year) and `not_kept_clips.csv` (`select`: those plus the excluded and uncertain clips after the screen, `color_flow` and `3d_or_multipanel` included, with `step`, `decision`, `reasons` and `in_pilot`). A clip lists every reason that applies. Like every output they hold patient IDs and paths and stay in the private `--out-dir`.
+Every clip of a shortlisted study that is left out is listed with its reasons: `removed_clips.csv` (`shortlist`: `other_view`, `acquisition`, `color_flow`, `few_frames`, and `vendor` or `year` for a category study's clip outside `--vendor` or `--years`) and `not_kept_clips.csv` (`select`: those plus the excluded and uncertain clips after the screen, `color_flow` and `3d_or_multipanel` included, with `step`, `decision`, `reasons` and `in_pilot`). A clip lists every reason that applies. Like every output they hold patient IDs and paths and stay in the private `--out-dir`.
 
 Exclusions are automatic. Only retained clips reach Labelbox for human review. Short clips are kept unless they have 3 frames or fewer. Reviewers report missed exclusions in the form's Comments; affected clips are removed and the screening rule corrected.
 
@@ -138,8 +138,9 @@ A `keep` decision does **not** guarantee that a clip has no measurement overlays
 Eligible studies must have:
 
 - A training-split patient with a TTE examination.
-- Exactly one matching cleaned DeepECHO report.
-- At least 20 retained classified-view B-mode clips covering A4C, A2C, PLAX, and PSAX (`--min-clips`). For other vendors, B-mode is counted after the screen reads the mode.
+- Clips of any vendor (no `--vendor`); with `--vendor GE`, of GE's three vendor names alone (GE Vingmed Ultrasound, GE Healthcare Ultrasound, GEMS Ultrasound), whose headers give the acquisition mode; with `--vendor "GE Vingmed Ultrasound"`, of GE Vingmed alone, the vendor the screen was mostly labelled on. Another vendor's mode is read from the pixels by the screen; each clip's source is `mode_source`.
+- One cleaned DeepECHO report, found through the PACS index by accession (`--pacs`), with the report, PACS and manifest agreeing on the patient and PACS and manifest on the date. Rows repeated exactly count once; an accession whose rows differ, or a study with several reports, is left out. No EF label is needed: EF and RVSP are joined where they exist for that report, so a study without EF can still be valve disease.
+- At least 20 retained classified-view B-mode clips (`--min-clips`) covering A4C, A2C, PLAX, and PSAX (`--view-families`; a family is a view's name before its first `_`). The clip rule has already left only such clips; for other vendors, B-mode is counted after the screen reads the mode.
 
 The archive manifest must contain DICOM acquisition fields from `build_manifests.py` at commit `57204d1`.
 
@@ -148,15 +149,14 @@ Clinical categories, in priority order:
 1. **Normal:** EF $\geq 55\%$, AV mean gradient $<20$ mmHg, RVSP $<35$ mmHg, and no moderate-or-worse valve statement.
 2. **LV dysfunction:** EF $\leq 35\%$.
 3. **Valve disease:** AV mean gradient $\geq 40$ mmHg, or definite moderate/severe mitral or aortic regurgitation.
-4. **Right heart:** RVSP $\geq 50$ mmHg, EF $> 35\%$, without significant left-sided valve disease.
 
-The default selects the first three categories; `--n-studies 4` includes right heart. `select` also takes one study per vendor slot in the shortlist; `--vendor-slots` names which slots to fill, and given with no vendor it fills none. Report parsing supports French and English findings, but ambiguous or negated statements do not establish definite valve disease. Unverified MR/AR grade columns are ignored.
+The default selects one study of each category; `--n-studies 2` takes the first two. Vendor slots (`shortlist --vendor-studies`, for example one study each of GE Vingmed Ultrasound, GE Healthcare Ultrasound, GEMS Ultrasound and Philips Medical Systems, so that every vendor has a screened study) add studies of a named vendor, within `--vendor` when given, drawn outside the categories and `--years`. They are screened with the rest of the shortlist but reach the pilot only when `select --vendor-slots` names them. Report parsing supports French and English findings, but ambiguous or negated statements do not establish definite valve disease. Unverified MR/AR grade columns are ignored.
 
 The selection workflow is:
 
-1. **`shortlist`:** Seededly sample up to 8 studies per category, plus optional vendor slots (`--vendor-studies`). Assign opaque `global_key` identifiers, select reference clips from other studies, and list the shortlisted studies' clips the screen will not see (`removed_clips.csv`).
+1. **`shortlist`:** Seededly sample up to 5 studies per category (`--per-category`), plus optional vendor slots (`--vendor-studies`). Assign opaque `global_key` identifiers, select reference clips from other studies, and list the shortlisted studies' clips the screen will not see (`removed_clips.csv`).
 2. **`features` $\rightarrow$ `text` $\rightarrow$ `flag`:** Screen the shortlisted and reference clips using the evidence rules above.
-3. **`select`:** Choose one eligible study per category/vendor slot from distinct patients, using only kept clips. Resolve acquisition modes, verify media integrity, save uncertain clips separately (`uncertain_clips.csv`), and list every clip left out with its reasons (`not_kept_clips.csv`).
+3. **`select`:** Choose one eligible study per category, and per vendor slot named in `--vendor-slots`, from distinct patients, using only kept clips; the other shortlisted studies stay screened backups. Resolve acquisition modes, verify media integrity, save uncertain clips separately (`uncertain_clips.csv`), and list every clip left out with its reasons (`not_kept_clips.csv`). Write the funnel (`funnel.csv`, also in `summary.md`; the shortlist's part is in `shortlist.json`): from the archive manifest to the pilot, the videos, studies and patients each step leaves, and what it leaves out by reason, counted in clips or studies. Each clip or study counts once, under its first reason in the rule's order, so the counts add up to what the step leaves out: `non_train` (the splits in the note); the clip rule's `other_view`, `acquisition`, `color_flow`, `few_frames`; `no_single_report` (the link's own reasons in the note); `min_clips`, `view_families`; the screen's and the pilot rule's reasons. Where a clip or study has several, the note also counts every reason. Aggregate only, for the CONSORT chart.
 4. **`candidates`:** Generate column-review prefills, verifying selection, reports, and screening provenance (`view_type_items.csv` stays empty).
 
 `select` refuses a shortlist drawn before the V1 rule, and `candidates` a selection made before it.
