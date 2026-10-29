@@ -566,6 +566,17 @@ class TestPipeline(unittest.TestCase):
             record = json.load(f)
         self.assertEqual((record["criteria"]["vendor_studies"], record["pool_per_vendor_slot"]),
                          ({"Philips Medical Systems": 1}, {"Philips Medical Systems": 1}))
+        # The slot's funnel row counts the shortlist so far, its own clips in the note: the clips to screen.
+        draw, slot_row, screened = (next(r for r in record["funnel"] if r["step"].startswith(step))
+                                    for step in ("seeded draw", "vendor slot:", "shortlist: clips to screen"))
+        added = int((clips.study_id == "s7").sum())
+
+        def counts(row):
+            return [row[k] for k in ("videos", "studies", "patients")]
+
+        self.assertEqual(counts(slot_row), [draw["videos"] + added, draw["studies"] + 1, draw["patients"] + 1])
+        self.assertEqual(slot_row["note"], f"adds videos={added}, studies=1, patients=1; pool=1")
+        self.assertEqual(counts(screened), [len(clips), *counts(slot_row)[1:]])
         # The patients of a validation list are drawn nowhere: without s7's patient no Philips study is left.
         listed = os.path.join(self.tmp, "validation_clips.csv")
         pd.DataFrame({"patient_id": ["p7"]}).to_csv(listed, index=False)

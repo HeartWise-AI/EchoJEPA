@@ -487,9 +487,13 @@ def shortlist(args):
                              _count("not_drawn", len(in_category - category_studies)), "studies"))
 
     # Vendor slots: per vendor named (of --vendor's, when given), report-linked studies of that vendor alone with the
-    # required views, of any year and outside the categories, drawn from a stream of their own so that the category draws are those of a
-    # shortlist without them. Their B-mode count waits for select, once the screen has read the mode.
+    # required views, of any year and whatever their report category (a slot is for the vendor, not a category: select
+    # never takes a slot's study for one), of patients not drawn in the categories or an earlier slot. Drawn from a
+    # stream of their own so that the category draws are those of a shortlist without them. Their B-mode count waits
+    # for select, once the screen has read the mode. Each slot's funnel row counts the shortlist so far, the slot's
+    # own clips in its note.
     slot_rows, slot_pools, slot_clips, slot_kept = [], {}, [], []
+    shortlisted = kept[kept.study_id.isin(category_studies)]
     vendors_per_study = every.groupby("study_id").vendor.nunique()
     for vendor, n in slots.items():
         w = every[(every.vendor == vendor) & (every.clip_rule == "")]
@@ -510,13 +514,16 @@ def shortlist(args):
                        "patient_id": row.patient_id, "accession": row.accession}
                       for rank, row in enumerate(drawn.itertuples())]
         slot_clips.append(w[w.study_id.isin(set(drawn.study_id))])
-        funnel.append(funnel_row("shortlist", f"vendor slot: {vendor}={n}", slot_clips[-1],
-                                 note=f"pool={slot_pools[vendor]}"))
+        shortlisted = pd.concat([shortlisted, slot_clips[-1]]).drop_duplicates("video_path")
+        added = funnel_row("", "", slot_clips[-1])
+        funnel.append(funnel_row("shortlist", f"vendor slot: {vendor}={n}", shortlisted,
+                                 note=f"adds videos={added['videos']}, studies={added['studies']}, "
+                                      f"patients={added['patients']}; pool={slot_pools[vendor]}"))
     short = pd.concat([short, pd.DataFrame(slot_rows, columns=short.columns)], ignore_index=True)
 
     outputs = [os.path.join(args.out_dir, n) for n in SHORTLIST_OUTPUTS[:4]]
     short.to_csv(outputs[0], index=False)
-    clips = pd.concat([kept[kept.study_id.isin(category_studies)], *slot_clips]).drop_duplicates("video_path")
+    clips = shortlisted
     secret = load_secret(args.out_dir)
     clips = clips.assign(global_key=[global_key(secret, p) for p in clips.video_path])
     clips[list(CLIP_COLUMNS)].to_csv(outputs[1], index=False)
