@@ -8,6 +8,7 @@ with the same seed, it gives the same probe and the same numbers."""
 import contextlib
 import json
 import os
+import pickle
 import tempfile
 import unittest
 from unittest import mock
@@ -28,6 +29,18 @@ STUDIES = [("train", 35, 1, 3), ("train", 50, 0, 2), ("train", 60, 0, 4), ("trai
            ("train", 40, 0, 3), ("train", 55, 1, 2),
            ("val", 35, 1, 2), ("val", 55, 0, 3), ("val", None, 0, 2),
            ("test", 30, 1, 2), ("test", 55, 0, 1), ("test", 60, None, 3)]
+RAN = []  # calls made by unpickling a `RunsOnLoad`.
+
+
+def mark_ran():
+    RAN.append(True)
+
+
+class RunsOnLoad:
+    """Unpickling it calls `mark_ran`: the shape of a checkpoint that runs code when it is read."""
+
+    def __reduce__(self):
+        return mark_ran, ()
 
 
 def stop_after(epochs, train_one_epoch):
@@ -71,7 +84,7 @@ class TestStudyProbeSmoke(QuietLogs):
                         f.write(b"broken")
                 else:
                     write_video(path, brightness=2 * (ef or 50) + 20 * v)
-                rows.append({"video_path": path, "study_id": f"s{s}", "view": "A4C" if v % 2 == 0 else "A2C",
+                rows.append({"video_path": path, "study_id": f"s{s}", "patient_id": f"p{s}", "view": "A4C" if v % 2 == 0 else "A2C",
                              "split": split, "lvef": ef, "as_present": None if as_present is None else
                              ("yes" if as_present else "no")})
         cls.manifest = os.path.join(cls.tmp, "videos.csv")
@@ -148,7 +161,7 @@ class TestStudyProbeSmoke(QuietLogs):
         self.assertEqual(first["run_info"]["parameters"]["probes"], len(GRID))
         self.assertEqual(first["run_info"]["splits"]["train"]["studies"], 6)
         self.assertEqual(first["run_info"]["splits"]["train"]["selection"], probe.SELECTION["random"])
-        self.assertEqual(first["run_info"]["splits"]["val"]["selection"], probe.SELECTION["fixed"])
+        self.assertEqual(first["run_info"]["splits"]["val"]["selection"], probe.SELECTION["seeded_random"])
         # The train split's statistics normalize the EF head.
         train_ef = [ef for split, ef, _, _ in STUDIES if split == "train"]
         self.assertAlmostEqual(first["normalization"]["lvef"]["mean"], float(np.mean(train_ef)))
@@ -178,6 +191,31 @@ class TestStudyProbeSmoke(QuietLogs):
         other["experiment"] = {**cfg["experiment"], "data": {**cfg["experiment"]["data"], "num_videos": 2}}
         with self.on_cpu(), self.assertRaisesRegex(ValueError, "num_videos"):
             probe.main(dict(other, test_only=True))
+
+    def test_selected_scores_keep_both_fingerprints_and_earlier_protocols_are_refused(self):
+        cfg = self.config(os.path.join(self.tmp, "fingerprints"))
+        folder = self.folder(cfg)
+        with self.on_cpu():
+            probe.main(dict(cfg))
+            probe.main(dict(cfg, val_only=True))
+            probe.main(dict(cfg, test_only=True))
+        best = torch.load(os.path.join(folder, "best.pt"), map_location="cpu", weights_only=False)
+        for name in ("val_metrics.json", "test_metrics.json"):
+            with open(os.path.join(folder, name)) as f:
+                result = json.load(f)
+            # The training provenance is the checkpoint's own (its GPU count included), kept apart from the scoring run's.
+            self.assertEqual(json.dumps(result["training_fingerprint"], sort_keys=True),
+                             json.dumps(best["fingerprint"], sort_keys=True), name)
+            self.assertEqual(result["scoring_fingerprint"]["settings"]["protocol"], probe.PROTOCOL, name)
+            # The validation split is read with the bags of training's validation: the selected score comes back.
+            self.assertAlmostEqual(result["val"]["score"], best["best_score"], places=5, msg=name)
+        # A probe trained under either protocol 2 (seeded bags with identifiers read with inferred types, or
+        # identifiers read as text with `eval_videos` bags) is not resumed or tested.
+        latest = torch.load(os.path.join(folder, "latest.pt"), map_location="cpu", weights_only=False)
+        latest["fingerprint"]["settings"]["protocol"]["version"] = 2
+        torch.save(latest, os.path.join(folder, "latest.pt"))
+        with self.on_cpu(), self.assertRaisesRegex(ValueError, "earlier protocol"):
+            probe.main(dict(cfg))
 
     def test_a_resumed_probe_continues_as_an_uninterrupted_one(self):
         def train(name, interrupt):
@@ -211,6 +249,36 @@ class TestStudyProbeSmoke(QuietLogs):
             if selection == "as_present/auroc":
                 self.assertEqual(best["best_score"], -best["val"][best["best_probe"]]["heads"]["as_present"]["auroc"])
 
+    def test_shared_studies_and_unreported_metrics_are_refused(self):
+        table = pd.read_csv(self.manifest)
+        leaked = table.copy()
+        leaked.loc[leaked.study_id == "s6", "split"] = ["train", "val"]  # s6 has two videos.
+        path = os.path.join(self.tmp, "leaked.csv")
+        leaked.to_csv(path, index=False)
+        cfg = self.config(os.path.join(self.tmp, "leaked"))
+        cfg["experiment"]["data"]["data_filename"] = path
+        with self.on_cpu(), self.assertRaisesRegex(ValueError, "both the train and the val split"):
+            probe.main(cfg)
+        for selection, message in (("lvef/auroc", "regression head"), ("as_present/mae", "binary head"),
+                                   ("lvef", "<head>/<metric>"), ("rvsp/mae", "target_label")):
+            with self.on_cpu(), self.assertRaisesRegex(ValueError, message):
+                probe.main(self.config(os.path.join(self.tmp, "bad-selection"), selection=selection))
+
+    def test_probe_checkpoints_that_run_code_are_refused(self):
+        folder = os.path.join(self.tmp, "untrusted")
+        os.makedirs(folder)
+        path = os.path.join(folder, "latest.pt")
+        torch.save({"epoch": 2, "best_epoch": 2, "best_score": 0.0, "payload": RunsOnLoad()}, path)
+        RAN.clear()
+        # Resume, the finished check (--val_only, --test_only) and the selected probe all read with weights_only.
+        with mock.patch("src.utils.checkpoint_loader.time.sleep"):
+            for load in (lambda: probe.load_probe_checkpoint(path), lambda: probe.check_finished(folder, 2)):
+                with self.assertRaises(pickle.UnpicklingError):
+                    load()
+        self.assertEqual(RAN, [])
+        torch.load(path, weights_only=False)  # the same file, read the old way, runs its code.
+        self.assertEqual(RAN, [True])
+
     def test_view_embedding_and_encoder_fine_tuning(self):
         cfg, result, best = self.train_and_test("finetune", view_embedding=True, trainable_blocks=1)
         self.assertEqual(result["run_info"]["parameters"]["encoder_trainable_blocks"], 1)
@@ -227,8 +295,66 @@ class TestStudyProbeSmoke(QuietLogs):
                  for k, v in best["encoder"].items() if k.startswith("model.blocks.")}
         self.assertTrue(any(m for k, m in moved.items() if ".blocks.11." in k or k.startswith("model.blocks.1.")))
         self.assertFalse(any(m for k, m in moved.items() if k.startswith("model.blocks.0.")))
+        # V-JEPA 2.1 has no `norm`: its output norm, norms_block[-1], trains with the top blocks; the others do not.
+        norms = sorted({int(k.split(".")[2]) for k in best["encoder"] if k.startswith("model.norms_block.")})
+        self.assertGreater(len(norms), 1)
+        for i in norms:
+            changed = not torch.equal(best["encoder"][f"model.norms_block.{i}.weight"], initial[f"norms_block.{i}.weight"])
+            self.assertEqual(changed, i == norms[-1], f"norms_block.{i}")
         # Several probes cannot share a training encoder.
         other = self.config(os.path.join(self.tmp, "finetune-grid"), trainable_blocks=1)
         other["experiment"]["optimization"]["multihead_kwargs"] = GRID
         with self.on_cpu(), self.assertRaisesRegex(ValueError, "one setting"):
             probe.main(other)
+
+    def test_all_four_options_train_resume_and_score_selected_validation_without_test(self):
+        cfg = self.config(os.path.join(self.tmp, "all-four"), view_embedding=True)
+        cfg["experiment"]["classifier"].update(
+            pooling_mode="hierarchical", query_mode="task", local_depth=1,
+            local_num_queries=2, local_use_rope=True, view_dropout=0.2)
+        cfg["experiment"]["data"].update(sampling_mode="view_balanced", eval_seed=13, num_clips_per_video=2,
+                                            view_probability_columns={"A4C": "p4", "A2C": "p2"},
+                                            acquisition_column="type", acquisition_labels_map={"bmode": 0, "color": 1})
+        cfg["experiment"]["evaluation"]["num_bags"] = 2
+        table = pd.read_csv(self.manifest)
+        table["p4"] = np.where(table.view == "A4C", 0.9, 0.1)
+        table["p2"] = 1 - table.p4
+        table["type"] = np.where(table.view == "A4C", "bmode", "color")
+        table["patient_id"] = "patient-" + table.study_id
+        path = os.path.join(self.tmp, "soft-views.csv")
+        table.to_csv(path, index=False)
+        cfg["experiment"]["data"]["data_filename"] = path
+        original_read = probe.read_split
+
+        def no_test(data, split):
+            self.assertNotEqual(split, "test")
+            return original_read(data, split)
+
+        with self.on_cpu(), mock.patch.object(probe, "read_split", side_effect=no_test):
+            with mock.patch.object(probe, "train_one_epoch", side_effect=stop_after(1, probe.train_one_epoch)), \
+                    self.assertRaises(Interrupted):
+                probe.main(cfg)
+            probe.main(cfg)
+            probe.main(dict(cfg, val_only=True))
+        folder = self.folder(cfg)
+        self.assertFalse(os.path.exists(os.path.join(folder, "test_metrics.json")))
+        with open(os.path.join(folder, "val_metrics.json")) as f:
+            result = json.load(f)
+        best = torch.load(os.path.join(folder, "best.pt"), weights_only=False)
+        self.assertEqual(result["epoch"], best["best_epoch"])
+        self.assertEqual(result["val"]["num_bags"], 2)
+        self.assertTrue(np.isfinite(result["val"]["score"]))
+        self.assertEqual(result["run_info"]["study_probe"]["query_mode"], "task")
+        self.assertEqual(result["run_info"]["study_probe"]["token_grid"], [2, 2, 2])
+        predictions = pd.read_csv(os.path.join(folder, "val_predictions.csv"))
+        self.assertIn("lvef_bag_std", predictions)
+        self.assertIn("as_present_bag_std", predictions)
+        # Resume must reject changes in view conditioning, sampling, queries or local geometry.
+        import copy
+        for section, key, value in (("classifier", "view_dropout", 0.3), ("data", "eval_seed", 14),
+                                    ("classifier", "query_mode", "shared"),
+                                    ("classifier", "local_use_rope", False)):
+            changed = copy.deepcopy(cfg)
+            changed["experiment"][section][key] = value
+            with self.on_cpu(), self.assertRaises((ValueError, RuntimeError)):
+                probe.main(dict(changed, val_only=True))

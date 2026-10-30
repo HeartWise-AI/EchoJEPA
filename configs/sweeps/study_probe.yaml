@@ -1,0 +1,60 @@
+# Generate only: python -m tools.study_probe_sweep generate --output /your_folder/sweep-configs
+# Override --base, --checkpoint, --data and --folder for the actual cohort/encoder.
+name: study-probe-v2
+base_config: ../eval/vitl/study_multitask_deepecho.yaml
+seeds: [0, 1, 2]
+
+defaults:
+  experiment.classifier.pooling_mode: attentive
+  experiment.classifier.query_mode: shared
+  experiment.classifier.task_groups: null
+  experiment.classifier.use_view_embedding: true
+  experiment.classifier.view_dropout: 0.0
+  experiment.classifier.local_use_rope: false
+  experiment.classifier.local_depth: 1
+  experiment.classifier.local_num_queries: 4
+  experiment.data.sampling_mode: random
+  experiment.data.eval_seed: 1729
+  experiment.data.view_family_map:
+    A4C_LV: A4C
+    A4C_RV: A4C
+    A4C_ZOOM: A4C
+    A2C_LV: A2C
+    A2C_ZOOM: A2C
+    A3C_LV: A3C
+    A3C_ZOOM: A3C
+    A5C_ZOOM: A5C
+    PLAX_ZOOM: PLAX
+    PLAX_DEEP: PLAX
+    PSAX_AV: PSAX
+    PSAX_MV: PSAX
+    PSAX_PM: PSAX
+    PSAX_APICAL: PSAX
+    Other: OTHER
+  experiment.evaluation.selection: weighted_loss
+  experiment.evaluation.num_bags: 3
+
+# Each factor is independently switched off/on. "ablation" runs baseline, each
+# factor, all four and controls; "factorial" runs every combination plus controls.
+factors:
+  task_queries:
+    experiment.classifier.query_mode: task
+  view_balanced:
+    experiment.data.sampling_mode: view_balanced
+  view_conditioning:
+    experiment.classifier.view_dropout: 0.2
+    # Add view_probability_columns / a refined view_column + view_labels_map here
+    # when those annotations exist. Never synthesize classifier probabilities.
+    # Optional acquisition_column + acquisition_labels_map also belong here.
+  hierarchical_rope:
+    experiment.classifier.pooling_mode: hierarchical
+    experiment.classifier.local_use_rope: true
+
+controls:
+  no_view:
+    experiment.classifier.use_view_embedding: false
+    experiment.classifier.view_dropout: 0.0
+    experiment.data.view_probability_columns: null
+  hierarchy_no_rope:
+    experiment.classifier.pooling_mode: hierarchical
+    experiment.classifier.local_use_rope: false

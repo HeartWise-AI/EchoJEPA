@@ -29,8 +29,15 @@ class AttentivePooler(nn.Module):
         qkv_bias=True,
         complete_block=True,
         use_activation_checkpointing=False,
+        use_rope=False,
+        token_grid=None,
     ):
         super().__init__()
+        if use_rope and (depth < 2 or token_grid is None or embed_dim // num_heads < 6):
+            raise ValueError("RoPE needs a self-attention block, token_grid (T, H, W), and head dimension >= 6.")
+        self.token_grid = tuple(token_grid) if token_grid is not None else None
+        if self.token_grid is not None and (len(self.token_grid) != 3 or min(self.token_grid) < 1):
+            raise ValueError("token_grid must contain three positive dimensions (T, H, W).")
         self.use_activation_checkpointing = use_activation_checkpointing
         self.query_tokens = nn.Parameter(torch.zeros(1, num_queries, embed_dim))
 
@@ -53,6 +60,8 @@ class AttentivePooler(nn.Module):
                         qkv_bias=qkv_bias,
                         qk_scale=False,
                         norm_layer=norm_layer,
+                        use_rope=use_rope,
+                        rope_interleaved=True,
                     )
                     for i in range(depth - 1)
                 ]
@@ -94,6 +103,9 @@ class AttentivePooler(nn.Module):
         x: [B, N, D]
         key_padding_mask: [B, N] (True = ignore / pad)
         """
+        grid = self.token_grid or (None, None, None)
+        if self.token_grid is not None and x.shape[1] != math.prod(self.token_grid):
+            raise ValueError(f"Expected {math.prod(self.token_grid)} patch tokens per clip, got {x.shape[1]}.")
         # For self-attn blocks (N->N), SDPA needs something broadcastable to [B, h, N, N]
         self_attn_mask = None
         if key_padding_mask is not None:
@@ -106,10 +118,10 @@ class AttentivePooler(nn.Module):
                 if self.use_activation_checkpointing:
                     # pass (x, mask=None, attn_mask=self_attn_mask) positionally
                     x = torch.utils.checkpoint.checkpoint(
-                        blk, x, None, self_attn_mask, use_reentrant=False
+                        blk, x, None, self_attn_mask, *grid, use_reentrant=False
                     )
                 else:
-                    x = blk(x, mask=None, attn_mask=self_attn_mask)
+                    x = blk(x, mask=None, attn_mask=self_attn_mask, T=grid[0], H_patches=grid[1], W_patches=grid[2])
 
         q = self.query_tokens.repeat(x.shape[0], 1, 1)
 
