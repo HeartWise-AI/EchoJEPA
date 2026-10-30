@@ -165,6 +165,13 @@ class TestVideoStudyDataset(unittest.TestCase):
         self.assertEqual(len(read_split({"dataset_train": path}, "train")), len(table))
         with self.assertRaisesRegex(ValueError, "dataset_test"):
             read_split({}, "test")
+        # Identifier columns are read as text: patient 0123 stays 0123, not 123 (or 123.0 next to a gap).
+        ids = os.path.join(self.tmp, "ids.csv")
+        with open(ids, "w") as f:
+            f.write("video_path,study_id,patient_id,split\na.mp4,1,0123,val\nb.mp4,2,,val\n")
+        rows = read_split({"data_filename": ids}, "val")
+        self.assertEqual(rows.patient_id.iloc[0], "0123")
+        self.assertEqual(rows.study_id.tolist(), ["1", "2"])
 
     def test_view_classes_follow_the_selected_videos(self):
         view_map = {"A4C": 0, "A2C": 1}
