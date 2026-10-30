@@ -78,22 +78,24 @@ STATIC_STD = 2.0      # temporal std below which, in every channel, a pixel is s
 SCAN_TYPES = (1, 2, 3, 4)  # DICOM Region Data Types holding image data: tissue, color flow, PW and CW Doppler.
 SCAN_LEVEL = 12       # the scan area: what reaches this level (any channel) in some frame inside those regions,
 SCAN_OPEN_PX = 7      # after an opening of this size that removes text and tick marks.
-# Measurement text (`measurement_text`): OCR detects measurement names with values (e.g., EF 55, EF55%) or numbers
-# with units, case-insensitively. Named measurements trigger exclusion; units alone cause uncertainty, while isolated
-# velocities and scanner settings are ignored.
+# Measurement text (`measurement_text`): OCR detects measurement names with values (e.g., EF 55, EF55%, HR 63) or
+# numbers with units, case-insensitively. Named measurements and a heart rate (HR 63, 63 bpm) trigger exclusion; other
+# units alone cause uncertainty, while isolated velocities and scanner settings are ignored.
 MEASUREMENT_NAMES = (r"(?:LV)?EF|EDV|ESV|SV|CO|LVID[ds]?|IVS[ds]?|LVPW[ds]?|LAVI?|LA|Ao|TAPSE|MAPSE|E/A|E/e'?|"
                      r"DT|IVRT|V ?max|V ?mean|VTI|(?:max|mean) ?PG|PG|AVA|MVA|PISA|EROA?|RVol|VC|RVSP|GLS|"
-                     r"Dist|Area|Vol")
+                     r"Dist|Area|Vol|HR")
 MEASUREMENT_TEXT = re.compile(rf"\b(?:{MEASUREMENT_NAMES})(?![A-Za-z_])\s*[:=]?\s*-?\d+(?:[.,]\d+)?"
-                              r"|-?\d+(?:[.,]\d+)?\s*(?:ml|cm2|cm²|m/s|cm/s|mmHg)(?![\w/])",
+                              r"|-?\d+(?:[.,]\d+)?\s*(?:ml|cm2|cm²|m/s|cm/s|mmHg|bpm)(?![\w/])",
                               re.IGNORECASE)
-INTERFACE_TEXT = re.compile(r"^\s*(?:Gn|Gain|Frq|MHz|Hz|FR|fps|dB|DR|MI|TI[SB]?|PRF|kHz|WF|Comp|Rej|HR|bpm|Depth)"
+INTERFACE_TEXT = re.compile(r"^\s*(?:Gn|Gain|Frq|MHz|Hz|FR|fps|dB|DR|MI|TI[SB]?|PRF|kHz|WF|Comp|Rej|Depth)"
                             r"(?![A-Za-z_])",
                             re.IGNORECASE)
 # OCR (`ocr_backend`): RapidOCR with pinned PP-OCR ONNX models, using the de-identification settings (TEXT_UPSCALE,
-# TEXT_SCORE). Group overlapping word boxes into rows (TEXT_ROW_OVERLAP), then split at large gaps (TEXT_WORD_GAP) to
-# separate measurement results from scanner settings.
-TEXT_UPSCALE, TEXT_SCORE, TEXT_ROW_OVERLAP, TEXT_WORD_GAP = 2.0, 0.5, 0.5, 2.0
+# TEXT_SCORE). Leave out words taller than TEXT_MAX_HEIGHT of the frame (`text_sized`): OCR can read a structure of the
+# image as a word, and no overlay text is that tall (the tallest word of a measurement read in the calibration sets
+# was under 0.05 of the frame). Group overlapping word boxes into rows (TEXT_ROW_OVERLAP), then split at large gaps
+# (TEXT_WORD_GAP) to separate measurement results from scanner settings.
+TEXT_UPSCALE, TEXT_SCORE, TEXT_ROW_OVERLAP, TEXT_WORD_GAP, TEXT_MAX_HEIGHT = 2.0, 0.5, 0.5, 2.0, 0.1
 TEXT_COLUMNS = ("text_status", "text_measurements", "text_frames")
 # Pixel-detected field of view (`image_field`): Fallback when DICOM regions are unavailable. Uses morphological opening
 # (FIELD_OPEN_PX), component size and solidity (FIELD_MIN_SHARE, FIELD_MAX_SHARE, FIELD_MIN_SOLIDITY), and speckle texture
@@ -414,11 +416,18 @@ def text_lines(words):
     return lines
 
 
+def text_sized(words, height):
+    """OCR words `(box, text)` of a frame `height` pixels high, without those taller than TEXT_MAX_HEIGHT of it: a
+    structure of the image read as a word, which would join the text beside it into one line."""
+    return [(box, text) for box, text in words if np.ptp(box[:, 1]) <= TEXT_MAX_HEIGHT * height]
+
+
 def ocr_backend(threads=2):
-    """RapidOCR as (name, read), `read(frame)` giving the text lines (`text_lines`) of a BGR frame (OpenCV's order,
-    which RapidOCR takes), upscaled TEXT_UPSCALE times; None when RapidOCR is not installed in this Python (it is in
-    the OCR environment only), which leaves text evidence unavailable, not absent. Its models ship inside the pinned
-    package and run on this machine: nothing is downloaded or sent anywhere."""
+    """RapidOCR as (name, read), `read(frame)` giving the text lines (`text_lines`) of the words of text size
+    (`text_sized`) in a BGR frame (OpenCV's order, which RapidOCR takes), upscaled TEXT_UPSCALE times; None when
+    RapidOCR is not installed in this Python (it is in the OCR environment only), which leaves text evidence
+    unavailable, not absent. Its models ship inside the pinned package and run on this machine: nothing is downloaded
+    or sent anywhere."""
     name = ocr_version()
     if name is None:
         return None
@@ -430,7 +439,8 @@ def ocr_backend(threads=2):
     def read(frame):
         image = cv2.resize(frame, None, fx=TEXT_UPSCALE, fy=TEXT_UPSCALE, interpolation=cv2.INTER_CUBIC)
         result, _ = engine(image)
-        return text_lines([(np.asarray(box, float), str(text)) for box, text, _ in (result or [])])
+        return text_lines(text_sized([(np.asarray(box, float), str(text)) for box, text, _ in (result or [])],
+                                     image.shape[0]))
 
     return name, read
 
@@ -1334,15 +1344,18 @@ def geometry_evidence(evidence, min_px):
 
 
 VELOCITY_UNIT = re.compile(r"m/s$", re.IGNORECASE)  # a velocity scale and Nyquist limit, on every Doppler display.
+HEART_RATE_UNIT = re.compile(r"bpm$", re.IGNORECASE)  # a heart rate: a measurement, named or not.
 
 
 def text_evidence(found):
     """The evidence of one clip's measurement expressions read by OCR (`measurement_text`'s JSON list):
-    `measurement_text` when one names a measurement (a name, then a number); else `measurement_unit` when a number
-    has a measurement unit other than a velocity one (no name read: uncertain, never an exclusion on its own); else
-    `none`. A velocity alone (`Scale 64 cm/s`, `Nyquist 64 cm/s`, a color bar's limit) is a setting, not evidence."""
+    `measurement_text` when one names a measurement (a name, then a number) or is a heart rate (`63 bpm`); else
+    `measurement_unit` when a number has a measurement unit other than a velocity one (no name read: uncertain, never
+    an exclusion on its own); else `none`. A velocity alone (`Scale 64 cm/s`, `Nyquist 64 cm/s`, a color bar's limit)
+    is a setting, not evidence."""
     expressions = json.loads(found) if isinstance(found, str) else []
-    if any(e[:1].isalpha() for e in expressions):  # MEASUREMENT_TEXT's named form: every name starts with a letter.
+    # MEASUREMENT_TEXT's named form: every name starts with a letter.
+    if any(e[:1].isalpha() or HEART_RATE_UNIT.search(e) for e in expressions):
         return "measurement_text"
     if any(not VELOCITY_UNIT.search(e) for e in expressions):
         return "measurement_unit"

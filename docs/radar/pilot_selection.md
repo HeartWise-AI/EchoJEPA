@@ -35,7 +35,7 @@ The screen uses DICOM metadata, video motion, pixel evidence, and OCR to classif
 
 **Features.** Samples up to 48 frames per clip and extracts motion, DICOM evidence, image regions, and static marks.
 
-**Text.** Uses RapidOCR on three sampled frames to detect measurement text. Named measurements trigger exclusion; units alone or incomplete readings cause uncertainty. Scanner settings and isolated velocity scales are ignored.
+**Text.** Uses RapidOCR on three sampled frames to detect measurement text. Named measurements and a heart rate (`HR 63`, `63 bpm`) trigger exclusion; other units alone or incomplete readings cause uncertainty. Scanner settings and isolated velocity scales are ignored, and so are OCR words taller than a tenth of the frame: OCR can read a structure of the image as a word (a PSAX aortic valve read as `LA`, joined with a depth label into `LA 0`), while no overlay text is that tall.
 
 **Flag.** Combines motion, DICOM header, pixel, and OCR evidence to classify each clip as `keep`, `exclude`, or `uncertain`, with reasons. Uses the default `hybrid` policy; older `header` and `pixel` policies remain for comparison.
 
