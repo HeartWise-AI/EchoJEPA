@@ -4,7 +4,7 @@ Still clips, clips with visible measurements and single-frame objects are remove
 item is a video. A reviewer says what kind of item it is and whether identifying text is visible; only an echo cine
 loop is also asked its view and acquisition mode, which `with_not_applicable` records as not applicable for any other
 item. An item the screen should have removed is reported in the comments. The answers measure what `OTHER` holds,
-and `route` sends a relabelled cine loop back into the column review v2
+and `route` sends a relabelled cine loop back into the column review
 (`tools.labelbox.column_review.build_candidate`).
 
     python -m tools.labelbox.view_type_review            # write the form JSON.
@@ -12,7 +12,7 @@ and `route` sends a relabelled cine loop back into the column review v2
 
 The view and the acquisition mode are nested under the cine loop answer, the way Labelbox shows a question only after
 a given answer; the other questions are global classifications. The view labels come from the RADAR ontology and the
-acquisition modes from the column review v2 specification, so both review forms share their ids.
+acquisition modes from the column review specification, so both review forms share their ids.
 """
 
 from __future__ import annotations
@@ -38,7 +38,7 @@ INPUT_TYPES = {
 }
 CANNOT_TELL = "cannot_tell"
 NOT_APPLICABLE = "not_applicable"  # the view and acquisition mode of an item that is not a cine loop.
-# Cine loops the column review v2 can take: its prefills need B-mode or color Doppler.
+# Cine loops the column review can take: its prefills need B-mode or color Doppler.
 ROUTED_MODALITIES = ("bmode", "color_flow")
 
 

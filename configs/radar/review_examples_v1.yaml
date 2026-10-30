@@ -95,6 +95,25 @@ column_review:
       A segment whose endocardium is not seen cannot be graded. "Cannot assess" with its limitation keeps the claim
       out of the caption without counting it as an error; the other finding stays.
 
+  - id: psax_level
+    title: PSAX level and a missing segment
+    clip: >-
+      Parasternal short-axis B-mode loop at the papillary muscles: the LV contracts normally, except the mid anterior
+      wall, which moves clearly less.
+    view: PSAX
+    modality: bmode
+    columns: {lv_function: normal}
+    changes:
+      psax_level: mid
+      missing_information: "yes"
+      missing_columns: [wall_mid_anterior]
+      wall_mid_anterior__missing_value: hypokinetic
+      wall_mid_anterior__missing_visible: "yes"
+    why: >-
+      A PSAX clip has no prefilled level: the papillary muscles show the mid level, so choose it. Its mid wall
+      segments can be claimed only at that level, so the hypokinetic segment is added as missing once the level is
+      set.
+
   - id: wrong_view
     title: Wrong view
     clip: >-
