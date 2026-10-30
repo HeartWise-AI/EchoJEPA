@@ -93,35 +93,34 @@ class TestReportCategories(unittest.TestCase):
         self.assertEqual(cat.normal.tolist(), [True, False, False, False, False, False, False])
         self.assertEqual(cat.lv_dysfunction.tolist(), [False, True, False, False, False, False, False])
         self.assertEqual(cat.valve_disease.tolist(), [False, False, True, True, False, True, False])
-        self.assertFalse(cat.right_heart.any())  # every RVSP is 30.
-
-    def test_right_heart_is_a_raised_rvsp_that_the_left_heart_does_not_account_for(self):
-        s = pd.DataFrame({"ef": [60, 30, 60, 60, 60, np.nan, 60],
-                          "av_mean_gradient": [10, 10, 45, 10, 10, 10, np.nan],
-                          "rvsp": [55, 55, 55, 55, 55, 55, 45],
-                          "Mitral valve findings": ["", "", "", "Insuffisance mitrale sévère", "", "", ""],
-                          "Aortic valve findings": [""] * 7,
-                          "Tricuspid valve findings": [""] * 4 + ["Insuffisance tricuspide sévère", "", ""]})
-        cat = rp.categorize(s)
-        # LV dysfunction, AV stenosis and severe MR account for the raised RVSP; severe TR goes with it (and is no
-        # valve disease, only a possible one); an EF must be present, and 45 is not raised enough.
-        self.assertEqual(cat.right_heart.tolist(), [True, False, False, False, True, False, False])
-        self.assertEqual(cat.valve_disease.tolist(), [False, False, True, True, False, False, False])
+        self.assertEqual(list(cat), list(rp.CATEGORIES))
 
 
 class TestClipRules(unittest.TestCase):
+    def test_a_funnel_step_counts_each_clip_under_its_first_reason_and_every_reason_in_a_note(self):
+        reasons = pd.Series(["other_view;color_flow", "color_flow", "", "other_view", "acquisition", None])
+        self.assertEqual(rp.reason_counts(reasons), "other_view=2; acquisition=1; color_flow=1")
+        self.assertEqual(rp.each_reason_counts(reasons),
+                         "every reason counted: color_flow=2; other_view=2; acquisition=1")
+        self.assertEqual(rp.each_reason_counts(pd.Series(["min_clips", "", "view_families"])), "")
+
     def test_rules(self):
-        clips = pd.DataFrame({"view": ["A4C", "OTHER", None, "A4C", "A4C", "A4C", "OTHER", "OTHER"],
+        clips = pd.DataFrame({"view": ["A4C", "OTHER", None, "A4C", "A4C", "A4C", "OTHER", "A4C", "A4C"],
                               "acq_category": ["bmode", "bmode", "bmode", "unknown", "color_flow", "bmode", "unknown",
-                                               "bmode"],
-                              "acq_confidence": ["header"] * 5 + ["unknown"] * 2 + ["header"],
-                              "acq_vendor_validated": [True] * 8, "n_frames": [30, 30, 30, 30, 4, 30, 30, 4]})
+                                               "bmode", "bmode"],
+                              "acq_confidence": ["header"] * 5 + ["unknown"] * 2 + ["header"] * 2,
+                              "acq_vendor_validated": [True] * 9,
+                              "n_frames": pd.array([30, 30, 30, 30, 30, 30, 30, 3, 4], dtype="Int64")})
         self.assertEqual(rp.review_form(clips).tolist(), ["column_review", "view_type_review", "view_type_review",
                                                           "column_review", "column_review", "column_review",
-                                                          "view_type_review", "view_type_review"])
-        # An OTHER clip needs no known acquisition mode: its reviewer gives it. Short clips (4 frames) stay in
-        # both forms.
-        self.assertEqual(rp.clip_rule(clips).tolist(), ["", "", "", "acquisition", "", "acquisition", "", ""])
+                                                          "view_type_review", "column_review", "column_review"])
+        # V1 captions B-mode clips of classified views: OTHER and unclassified views, a mode not read, GE color flow
+        # and a still of 3 frames are removed, every reason named; 4 frames pass.
+        self.assertEqual(rp.clip_rule(clips).tolist(), ["", "other_view", "other_view", "acquisition", "color_flow",
+                                                        "acquisition", "other_view;acquisition", "few_frames", ""])
+        # The manifest's frame counts are nullable: a clip without one is left to the screen.
+        clips.loc[0, "n_frames"] = pd.NA
+        self.assertEqual(rp.clip_rule(clips.iloc[[0]]).tolist(), [""])
 
     def test_another_vendors_mode_is_left_to_the_pixels(self):
         # A Philips header declares tissue imaging over color loops too: B-mode or color flow by its regions passes,
@@ -129,17 +128,54 @@ class TestClipRules(unittest.TestCase):
         clips = pd.DataFrame({"view": ["A4C", "A4C", "A4C", "A4C", "OTHER", "A4C"],
                               "acq_category": ["bmode", "color_flow", "spectral_doppler", "unknown", "unknown", "bmode"],
                               "acq_confidence": ["header"] * 5 + ["unknown"],
-                              "acq_vendor_validated": [False] * 5 + [True]})
-        self.assertEqual(rp.clip_rule(clips).tolist(), ["", "", "acquisition", "acquisition", "", "acquisition"])
+                              "acq_vendor_validated": [False] * 5 + [True], "n_frames": [30] * 6})
+        self.assertEqual(rp.clip_rule(clips).tolist(), ["", "", "acquisition", "acquisition", "other_view;acquisition",
+                                                        "acquisition"])
         self.assertEqual(rp.mode_source(clips).tolist(), ["pixels"] * 5 + ["header"])
 
-    def test_vendor_slots_are_named_once_each_with_a_number(self):
-        self.assertEqual(rp.vendor_slots(["Philips Medical Systems=1", "GEMS Ultrasound=2"], "GE Vingmed Ultrasound"),
-                         {"Philips Medical Systems": 1, "GEMS Ultrasound": 2})
-        for specs in (["Philips Medical Systems"], ["Philips Medical Systems=0"], ["GEMS Ultrasound=1"] * 2,
-                      ["GE Vingmed Ultrasound=1"]):
+    def test_select_leaves_out_color_read_from_the_pixels_and_3d_or_multipanel_displays(self):
+        vingmed, gems, philips = "GE Vingmed Ultrasound", "GEMS Ultrasound", "Philips Medical Systems"
+        clips = pd.DataFrame({
+            "vendor": [vingmed] * 5 + [gems, philips, philips],
+            "acq_category": ["bmode"] * 6 + ["color_flow", None],
+            "dicom_image_content": ["0001", "0041", "0051", "0021", "0041", "0041", None, None],
+            "decision": ["keep", "uncertain", "uncertain", "uncertain", "exclude", "uncertain", "keep", "exclude"],
+            "decision_reasons": ["", "unusual_image_content", "unusual_image_content;measurement_text_unavailable",
+                                 "unusual_image_content", "unusual_image_content;measurement_header",
+                                 "unusual_image_content", "", "unreadable"]})
+        out = rp.with_pilot_rule(clips)
+        # The labelled codes of GE Vingmed 3D and multi-panel displays are excluded under that name, in place of the
+        # screen's unusual_image_content; a code never labelled, or another vendor's, stays uncertain, not called 3D.
+        self.assertEqual(list(zip(out.decision, out.decision_reasons)),
+                         [("keep", ""), ("exclude", "3d_or_multipanel"),
+                          ("exclude", "measurement_text_unavailable;3d_or_multipanel"),
+                          ("uncertain", "unusual_image_content"), ("exclude", "measurement_header;3d_or_multipanel"),
+                          ("uncertain", "unusual_image_content"), ("exclude", "color_flow"),
+                          ("exclude", "unreadable;acquisition")])
+        self.assertEqual(out.exclude.tolist(), [False] + [True] * 7)
+
+    def test_vendor_slots_are_named_once_each_with_a_number_within_the_vendors_drawn_from(self):
+        # A slot of any vendor, the categories' own among them: a study of each vendor is screened.
+        self.assertEqual(rp.vendor_slots(["Philips Medical Systems=1", "GEMS Ultrasound=2", "GE Vingmed Ultrasound=1"],
+                                         None),
+                         {"Philips Medical Systems": 1, "GEMS Ultrasound": 2, "GE Vingmed Ultrasound": 1})
+        for specs in (["Philips Medical Systems"], ["Philips Medical Systems=0"], ["GEMS Ultrasound=1"] * 2):
             with self.assertRaises(SystemExit):
-                rp.vendor_slots(specs, "GE Vingmed Ultrasound")
+                rp.vendor_slots(specs, None)
+        # --vendor GE is GE's three vendor names: their slots stand, another vendor's is refused.
+        ge = rp.VENDOR_GROUPS["GE"]
+        self.assertEqual(set(ge), {"GE Vingmed Ultrasound", "GE Healthcare Ultrasound", "GEMS Ultrasound"})
+        self.assertEqual(rp.vendor_slots(["GE Healthcare Ultrasound=1", "GEMS Ultrasound=1"], ge),
+                         {"GE Healthcare Ultrasound": 1, "GEMS Ultrasound": 1})
+        with self.assertRaises(SystemExit) as stop:
+            rp.vendor_slots(["GEMS Ultrasound=1", "Philips Medical Systems=1"], ge)
+        self.assertIn("'Philips Medical Systems', outside --vendor's vendors", str(stop.exception))
+        # --vendor 'GE Vingmed Ultrasound' is that vendor alone: another GE name's slot is refused too.
+        vingmed = rp.VENDOR_GROUPS["GE Vingmed Ultrasound"]
+        self.assertEqual(rp.vendor_slots(["GE Vingmed Ultrasound=1"], vingmed), {"GE Vingmed Ultrasound": 1})
+        with self.assertRaises(SystemExit) as stop:
+            rp.vendor_slots(["GE Healthcare Ultrasound=1"], vingmed)
+        self.assertIn("'GE Healthcare Ultrasound', outside --vendor's vendors", str(stop.exception))
 
 
 def write_flags(flags, path, out, calibration=None, decisions=True):
@@ -161,6 +197,11 @@ def write_flags(flags, path, out, calibration=None, decisions=True):
     flags.assign(**{k: v for k, v in media.items() if k not in flags}).to_parquet(path)
     rp.clip_screen._write_info(path, {**sources, "thresholds": rp.clip_screen.THRESHOLDS,
                                       "calibration": calibration})
+
+
+def left_out_total(text):
+    """The total of a funnel step's `left_out` ('reason=count; ...')."""
+    return sum(int(part.rsplit("=", 1)[1]) for part in text.split("; ")) if text else 0
 
 
 def study_clips(study, patient, n_per_view=4, views=FAMILY_VIEWS):
@@ -189,9 +230,10 @@ class TestChooseStudies(unittest.TestCase):
                 short.append({"category": category, "rank": str(rank), "study_id": study, "patient_id": patient,
                               "accession": f"A-{study}"})
                 rows += study_clips(study, patient)
-        clips = pd.DataFrame(rows).drop_duplicates("video_path").assign(exclude=False)
+        # The clips as select has them: B-mode ones of classified views, those of another mode left out before.
+        clips = pd.DataFrame(rows).drop_duplicates("video_path").query("acq_category == 'bmode'").assign(exclude=False)
         clips.loc[clips.study_id.isin(flagged_psax) & clips.view.eq("PSAX"), "exclude"] = True
-        chosen = rp.choose_studies(pd.DataFrame(short), clips, 12, 3)
+        chosen = rp.choose_studies(pd.DataFrame(short), clips, 12, rp.REQUIRED_VIEW_FAMILIES, 3)
         return dict(zip(chosen.category, chosen.study_id))
 
     def test_the_best_ranked_study_is_taken(self):
@@ -223,6 +265,65 @@ class TestChooseStudies(unittest.TestCase):
                                       "valve_disease": [("v1", "p2")]}), {})
 
 
+class TestReportLink(unittest.TestCase):
+    STUDIES = pd.DataFrame({"study_id": [f"s{i}" for i in range(1, 8)],
+                            "patient_id": [f"0010{i}" for i in range(1, 8)], "study_date": ["20230101"] * 7})
+
+    @staticmethod
+    def pacs(*rows):
+        return pd.DataFrame(rows, columns=["accession", "study_id", "pacs_patient", "pacs_date"])
+
+    def test_a_report_is_linked_through_the_pacs_index_when_patients_and_dates_agree(self):
+        day = "20230101"
+        pacs = self.pacs(("A1", "s1", "101", day),
+                         ("A2", "s2", "102", day),  # the report names another patient
+                         ("A3", "s3", "103", "20220101"),  # PACS and manifest dates differ
+                         ("A5", "s5", "105", day),  # no report
+                         ("A6", "s6", "106", day), ("A7", "s6", "106", day),  # two reports
+                         ("A8", "s7", "107", day), ("A8", "s1", "101", day))  # an accession of two studies
+        reports = pd.DataFrame({"AccessionNumber": ["A1", "A2", "A3", "A6", "A7", "A8"],
+                                "Dossier": [101, 999, 103, 106, 106, 107],
+                                "Mitral valve findings": ["Valve mitrale normale"] * 6})
+        linked, reason = rp.link_reports(reports, pacs, self.STUDIES)
+        # The report's patient number, the PACS id and the manifest's agree without their zero padding; s4 has no
+        # PACS accession, and s7's names two studies.
+        self.assertEqual(linked[["study_id", "accession"]].values.tolist(), [["s1", "A1"]])
+        self.assertEqual(sorted(linked.columns), ["Mitral valve findings", "accession", "study_id"])
+        self.assertEqual(reason.to_dict(), {"s1": "", "s2": "patient_or_date_disagree",
+                                            "s3": "patient_or_date_disagree", "s4": "no_pacs_accession",
+                                            "s5": "no_report", "s6": "several_reports", "s7": "no_pacs_accession"})
+
+    def test_rows_repeated_exactly_are_one_report_and_rows_that_differ_leave_the_study_out(self):
+        pacs = self.pacs(("A1", "s1", "101", "20230101"), ("A2", "s2", "102", "20230101"))
+        reports = pd.DataFrame({"AccessionNumber": ["A1", "A1", "A2", "A2"], "Dossier": [101, 101, 102, 102],
+                                "Mitral valve findings": ["Valve mitrale normale"] * 3
+                                + ["Insuffisance mitrale sévère"]})
+        linked, reason = rp.link_reports(reports, pacs, self.STUDIES.iloc[:2])
+        self.assertEqual(linked.study_id.tolist(), ["s1"])
+        self.assertEqual(reason.to_dict(), {"s1": "", "s2": "report_rows_differ"})
+
+    def test_a_second_conflicting_report_cannot_be_hidden_by_a_valid_accession(self):
+        pacs = self.pacs(("A1", "s1", "101", "20230101"), ("A2", "s1", "101", "20230101"),
+                         ("A3", "s2", "102", "20230101"))
+        reports = pd.DataFrame({"AccessionNumber": ["A1", "A2", "A2", "A3"],
+                                "Dossier": [101, 101, 101, 102],
+                                "Mitral valve findings": ["Normal", "Moderate MR", "Severe MR", "Normal"]})
+        for seed in (0, 1):
+            with self.subTest(seed=seed):
+                linked, reason = rp.link_reports(reports.sample(frac=1, random_state=seed), pacs,
+                                                 self.STUDIES.iloc[:2])
+                self.assertEqual(linked.study_id.tolist(), ["s2"])
+                self.assertEqual(reason.to_dict(), {"s1": "report_rows_differ", "s2": ""})
+
+    def test_multiple_reports_are_ambiguous_before_identity_filtering(self):
+        pacs = self.pacs(("A1", "s1", "101", "20230101"), ("A2", "s1", "101", "20230101"))
+        reports = pd.DataFrame({"AccessionNumber": ["A1", "A2"], "Dossier": [101, 999],
+                                "Mitral valve findings": ["Normal", "Severe MR"]})
+        linked, reason = rp.link_reports(reports, pacs, self.STUDIES.iloc[:1])
+        self.assertTrue(linked.empty)
+        self.assertEqual(reason.to_dict(), {"s1": "several_reports"})
+
+
 class TestPipeline(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
@@ -244,9 +345,13 @@ class TestPipeline(unittest.TestCase):
         self.videos.to_parquet(os.path.join(self.tmp, "videos.parquet"))
         pd.DataFrame({"study_id": [f"s{i}" for i in range(1, 7)], "accession": [f"A{i}" for i in range(1, 7)],
                       "ef": [60, 62, 30, 58, 60, 60]}).to_parquet(os.path.join(self.tmp, "ef.parquet"))
-        pd.DataFrame({"study_id": [f"s{i}" for i in range(1, 7)], "rvsp": [30] * 6}).to_parquet(
-            os.path.join(self.tmp, "rvsp.parquet"))
+        pd.DataFrame({"study_id": [f"s{i}" for i in range(1, 7)], "accession": [f"A{i}" for i in range(1, 7)],
+                      "rvsp": [30] * 6}).to_parquet(os.path.join(self.tmp, "rvsp.parquet"))
         pd.DataFrame({"AccessionNumber": [f"A{i}" for i in range(1, 7)],
+                      "StudyInstanceUID": [f"s{i}" for i in range(1, 7)],
+                      "PatientID": [f"p{i}" for i in range(1, 7)], "StudyDate": ["20230101"] * 6}).to_csv(
+            os.path.join(self.tmp, "pacs.csv"), index=False)
+        pd.DataFrame({"AccessionNumber": [f"A{i}" for i in range(1, 7)], "Dossier": [f"p{i}" for i in range(1, 7)],
                       "Mitral valve findings": (["Valve mitrale normale"] * 3 + ["Insuffisance mitrale sévère"]
                                                 + [""] * 2),
                       "Aortic valve findings": [""] * 6, "Tricuspid valve findings": ["Valve tricuspide normale"] * 6,
@@ -261,22 +366,90 @@ class TestPipeline(unittest.TestCase):
         with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
             rp.main(list(argv))
 
-    def shortlist(self):
+    def shortlist(self, *options):
         self.run_cmd("shortlist", "--videos", os.path.join(self.tmp, "videos.parquet"),
                      "--ef-labels", os.path.join(self.tmp, "ef.parquet"),
                      "--rvsp-labels", os.path.join(self.tmp, "rvsp.parquet"),
+                     "--pacs", os.path.join(self.tmp, "pacs.csv"),
                      "--reports", os.path.join(self.tmp, "reports.parquet"), "--out-dir", self.out,
-                     "--min-clips", "12")
+                     "--min-clips", "10", *options)
+
+    def test_manifest_identity_conflicts_stop_before_any_clip_or_patient_filter(self):
+        listed = os.path.join(self.tmp, "excluded.csv")
+        pd.DataFrame({"patient_id": ["p999"]}).to_csv(listed, index=False)
+        for column, value in (("patient_id", "p999"), ("study_date", "20150101")):
+            for suffix in ("A4C_0.mp4", "A4C_1.mp4"):
+                with self.subTest(column=column, suffix=suffix):
+                    self.videos.to_parquet(os.path.join(self.tmp, "videos.parquet"))
+                    self.shortlist()  # A failed rerun must also clear the previous completed shortlist.
+                    rows = self.videos.copy()
+                    rows.loc[(rows.study_id == "s3") & rows.video_path.str.endswith(suffix), column] = value
+                    rows.to_parquet(os.path.join(self.tmp, "videos.parquet"))
+                    with self.assertRaises(SystemExit) as stop:
+                        self.shortlist("--exclude-patients", listed)
+                    self.assertIn("conflicting patient IDs or study dates", str(stop.exception))
+                    self.assertNotIn("p999", str(stop.exception))
+                    self.assertNotIn("s3", str(stop.exception))
+                    self.assertFalse(set(os.listdir(self.out)) & set(rp.SHORTLIST_OUTPUTS))
+
+    def test_clean_backup_clips_are_recorded_as_not_chosen_and_reconcile_with_the_pilot(self):
+        _, flags_path = self.flagged_shortlist()
+        self.run_cmd("select", "--out-dir", self.out, "--flags", flags_path)
+        clips = pd.read_csv(os.path.join(self.out, "shortlist_clips.csv"))
+        removed = pd.read_csv(os.path.join(self.out, "removed_clips.csv"))
+        pilot = pd.read_csv(os.path.join(self.out, "pilot_clips.csv"))
+        omitted = pd.read_csv(os.path.join(self.out, "not_kept_clips.csv"))
+        backups = set(clips.video_path) - set(pilot.video_path)
+        self.assertEqual(len(backups), 12)
+        backup_rows = omitted[omitted.video_path.isin(backups)]
+        self.assertEqual(set(backup_rows.video_path), backups)
+        self.assertEqual(set(zip(backup_rows.step, backup_rows.decision, backup_rows.reasons)),
+                         {("selection", "not_chosen", "study_not_chosen")})
+        self.assertFalse(backup_rows.in_pilot.any())
+        self.assertFalse(omitted.video_path.duplicated().any())
+        self.assertFalse(set(pilot.video_path) & set(omitted.video_path))
+        self.assertEqual(set(clips.video_path) | set(removed.video_path),
+                         set(pilot.video_path) | set(omitted.video_path))
+        funnel = pd.read_csv(os.path.join(self.out, "funnel.csv"), keep_default_na=False)
+        self.assertEqual(funnel.iloc[-2].videos - funnel.iloc[-1].videos, len(backup_rows))
+
+    def test_artifacts_without_the_identity_and_report_checks_cannot_be_reused(self):
+        _, flags_path = self.flagged_shortlist()
+        self.run_cmd("select", "--out-dir", self.out, "--flags", flags_path)
+        path = os.path.join(self.out, "selection.json")
+        with open(path) as f:
+            selection = json.load(f)
+        selection.pop("link_policy")
+        with open(path, "w") as f:
+            json.dump(selection, f)
+        with self.assertRaises(SystemExit) as stop:
+            self.run_cmd("candidates", "--out-dir", self.out,
+                         "--reports", os.path.join(self.tmp, "reports.parquet"), "--provisional-screen")
+        self.assertIn("predates the study identity and report ambiguity checks", str(stop.exception))
+        self.assertFalse(set(os.listdir(self.out)) & set(rp.CANDIDATE_OUTPUTS))
+        path = os.path.join(self.out, "shortlist.json")
+        with open(path) as f:
+            record = json.load(f)
+        record["criteria"].pop("link_policy")
+        with open(path, "w") as f:
+            json.dump(record, f)
+        with self.assertRaises(SystemExit) as stop:
+            self.run_cmd("select", "--out-dir", self.out, "--flags", flags_path)
+        self.assertIn("predates the study identity and report ambiguity checks", str(stop.exception))
+        self.assertFalse(set(os.listdir(self.out)) & set(rp.SELECTION_OUTPUTS))
 
     def test_shortlist_keeps_training_studies_and_removes_unreviewable_clips(self):
         self.shortlist()
         short = pd.read_csv(os.path.join(self.out, "shortlist.csv"), dtype=str)
         self.assertEqual(sorted(short.study_id), ["s1", "s2", "s3", "s4"])
         clips = pd.read_csv(os.path.join(self.out, "shortlist_clips.csv"))
-        other = clips[clips.view == "OTHER"]
-        self.assertEqual(len(other), 12)
-        self.assertEqual(set(other.form), {"view_type_review"})
-        self.assertEqual(set(clips[clips.view != "OTHER"].form), {"column_review"})
+        # V1: the B-mode clips of classified views alone, all for the column review; the color clips and the OTHER
+        # ones (color too, in this fixture) are removed and listed.
+        self.assertEqual((len(clips), set(clips.form), set(clips.acq_category)),
+                         (4 * len(FAMILY_VIEWS) * 2, {"column_review"}, {"bmode"}))
+        removed = pd.read_csv(os.path.join(self.out, "removed_clips.csv"))
+        self.assertEqual(removed.reasons.value_counts().to_dict(),
+                         {"color_flow": 4 * len(FAMILY_VIEWS) * 2, "other_view;color_flow": 12})
         # Every clip has its opaque key before the screen, so sheets and Labelbox name it the same way.
         self.assertFalse(clips.global_key.duplicated().any())
         self.assertTrue(clips.global_key.str.fullmatch(r"radar-pilot-[0-9a-f]{24}").all())
@@ -287,6 +460,79 @@ class TestPipeline(unittest.TestCase):
         with self.assertRaises(SystemExit) as stop:
             self.run_cmd("select", "--out-dir", self.out, "--flags", os.path.join(self.tmp, "flags.parquet"))
         self.assertIn("shortlist_clips.csv changed", str(stop.exception))
+
+    def test_a_report_needs_no_ef_label_and_an_ef_counts_only_for_its_own_report(self):
+        path = os.path.join(self.tmp, "ef.parquet")
+        ef = pd.read_parquet(path)
+        # s2 (normal) and s4 (valve disease) have no EF label; s1's is that of another report.
+        ef = ef[~ef.study_id.isin(["s2", "s4"])]
+        ef.assign(accession=ef.accession.where(ef.study_id != "s1", "A9")).to_parquet(path)
+        self.shortlist()
+        short = pd.read_csv(os.path.join(self.out, "shortlist.csv"), dtype=str)
+        # Severe MR makes s4 valve disease without an EF; a normal study needs one.
+        self.assertEqual(dict(zip(short.study_id, short.category)), {"s3": "lv_dysfunction", "s4": "valve_disease"})
+        with open(os.path.join(self.out, "shortlist.json")) as f:
+            record = json.load(f)
+        # Every training study (s5 is in the validation split) has its one report.
+        self.assertEqual(record["report_link"], {"linked": 5, "no_pacs_accession": 0, "report_rows_differ": 0,
+                                                 "no_report": 0, "patient_or_date_disagree": 0, "several_reports": 0})
+        self.assertEqual(record["inputs"]["pacs"], rp.sha256(os.path.join(self.tmp, "pacs.csv")))
+
+    def test_a_report_row_repeated_exactly_is_one_report_up_to_the_candidates(self):
+        path = os.path.join(self.tmp, "reports.parquet")
+        reports = pd.read_parquet(path)
+        pd.concat([reports, reports], ignore_index=True).to_parquet(path)
+        _, flags_path = self.flagged_shortlist()
+        self.assertEqual(sorted(pd.read_csv(os.path.join(self.out, "shortlist.csv"), dtype=str).study_id),
+                         ["s1", "s2", "s3", "s4"])
+        self.run_cmd("select", "--out-dir", self.out, "--flags", flags_path)
+        self.run_cmd("candidates", "--out-dir", self.out, "--reports", path, "--provisional-screen")
+        with open(os.path.join(self.out, "candidates_summary.json")) as f:
+            self.assertEqual(json.load(f)["candidates"], len(pd.read_csv(os.path.join(self.out, "pilot_clips.csv"))))
+
+    def test_the_funnel_accounts_for_every_step_from_the_manifest_to_the_pilot(self):
+        _, flags_path = self.flagged_shortlist()
+        self.run_cmd("select", "--out-dir", self.out, "--flags", flags_path)
+        funnel = pd.read_csv(os.path.join(self.out, "funnel.csv"), keep_default_na=False)
+        self.assertEqual(funnel.stage.tolist(), ["shortlist"] * 11 + ["select"] * 3)
+        self.assertEqual(funnel.iloc[0][["videos", "studies", "patients"]].tolist(), [len(self.videos), 6, 6])
+        # A step leaves what the one before it left, less what it left out, counted in clips or studies; a step
+        # that leaves nothing out leaves the same videos.
+        for before, row in zip(funnel.iloc[:-1].itertuples(), funnel.iloc[1:].itertuples()):
+            unit = "studies" if row.left_out_unit == "studies" else "videos"
+            self.assertEqual(getattr(before, unit) - getattr(row, unit), left_out_total(row.left_out), row.step)
+        # s5's clips are in the validation split; s6, with no PSAX, misses a view family.
+        self.assertEqual((funnel.left_out[1], funnel.note[1], funnel.left_out[7]),
+                         ("non_train=24", "splits: val=24", "view_families=1"))
+        pilot = pd.read_csv(os.path.join(self.out, "pilot_clips.csv"))
+        self.assertEqual(funnel.iloc[-1][["videos", "studies", "left_out"]].tolist(), [len(pilot), 3, "not_chosen=1"])
+        with open(os.path.join(self.out, "shortlist.json")) as f:
+            self.assertEqual(len(json.load(f)["funnel"]), 11)
+        with open(os.path.join(self.out, "summary.md")) as f:
+            self.assertIn("| training split | 128 |", f.read())
+
+    def test_the_view_families_a_study_needs_are_an_option_select_keeps(self):
+        # s6, a normal study, has no PSAX: eligible once PSAX is not asked for.
+        self.shortlist("--view-families", "A4C", "A2C", "PLAX")
+        self.assertIn("s6", set(pd.read_csv(os.path.join(self.out, "shortlist.csv"), dtype=str).study_id))
+        with open(os.path.join(self.out, "shortlist.json")) as f:
+            self.assertEqual(json.load(f)["criteria"]["required_view_families"], ["A4C", "A2C", "PLAX"])
+        # select asks for the shortlist's families: with every PSAX clip flagged, each study still qualifies.
+        clips = pd.read_csv(os.path.join(self.out, "shortlist_clips.csv"))
+        flags_path = os.path.join(self.tmp, "flags.parquet")
+        psax = clips.view.eq("PSAX")
+        write_flags(clips[["video_path"]].assign(exclude=psax, exclude_reason=np.where(psax, "measurement", "")),
+                    flags_path, self.out)
+        self.run_cmd("select", "--out-dir", self.out, "--flags", flags_path)
+        studies = pd.read_csv(os.path.join(self.out, "pilot_studies.csv"), dtype=str)
+        self.assertEqual(studies.category.tolist(), ["normal", "lv_dysfunction", "valve_disease"])
+        # Given without a family, none is needed; a family no classified view has is refused.
+        self.shortlist("--view-families")
+        with open(os.path.join(self.out, "shortlist.json")) as f:
+            self.assertEqual(json.load(f)["criteria"]["required_view_families"], [])
+        with self.assertRaises(SystemExit) as stop:
+            self.shortlist("--view-families", "A4C", "PSAXMID")
+        self.assertIn("['PSAXMID'] name no classified view", str(stop.exception))
 
     def test_the_pilot_folder_must_be_private(self):
         os.makedirs(self.out)
@@ -308,33 +554,72 @@ class TestPipeline(unittest.TestCase):
     def test_reference_clips_come_from_other_studies_of_the_same_layouts(self):
         self.shortlist()
         reference = pd.read_csv(os.path.join(self.out, "reference_clips.csv"))
-        # s6 (train, no PSAX) is the only other training study; s5 is a validation patient.
-        self.assertEqual(set(reference.study_id), {"s6"})
-        self.assertEqual(len(reference), 20)
+        # s6 (train, no PSAX) is the only other training study, its 10 B-mode clips the only eligible ones; s5 is a
+        # validation patient.
+        self.assertEqual((set(reference.study_id), set(reference.acq_category)), ({"s6"}, {"bmode"}))
+        self.assertEqual(len(reference), 10)
         self.run_cmd("shortlist", "--videos", os.path.join(self.tmp, "videos.parquet"),
                      "--ef-labels", os.path.join(self.tmp, "ef.parquet"),
                      "--rvsp-labels", os.path.join(self.tmp, "rvsp.parquet"),
+                     "--pacs", os.path.join(self.tmp, "pacs.csv"),
                      "--reports", os.path.join(self.tmp, "reports.parquet"), "--out-dir", self.out,
-                     "--min-clips", "12", "--reference-per-layout", "3")
+                     "--min-clips", "10", "--reference-per-layout", "3")
         reference = pd.read_csv(os.path.join(self.out, "reference_clips.csv"))
-        self.assertEqual(reference.groupby(["vendor", "model", "acq_category"]).size().tolist(), [3, 3])
+        self.assertEqual(reference.groupby(["vendor", "model", "acq_category"]).size().tolist(), [3])
         self.assertTrue(reference.global_key.str.startswith("radar-pilot-").all())
         with open(os.path.join(self.out, "shortlist.json")) as f:
-            self.assertEqual(json.load(f)["clips_removed_by_metadata_rule"], {})
+            self.assertEqual(json.load(f)["clips_removed_by_metadata_rule"], {"color_flow": 60, "other_view": 12})
 
-    def add_philips(self, study="s7", patient="p7"):
-        """A Philips study of 2013 (outside --years) with a linked report, its EF in no category; its headers read
-        every clip as B-mode, as the archive's do."""
+    def add_philips(self, study="s7", patient="p7", date="20130101", ef=45):
+        """A Philips study, by default of 2013 (outside --years) with a linked report, its EF in no category; its
+        headers read every clip as B-mode, as the archive's do."""
         rows = [dict(r, vendor="Philips Medical Systems", model="iE33", acq_category="bmode",
-                     acq_vendor_validated=False, study_date="20130101") for r in study_clips(study, patient)]
+                     acq_vendor_validated=False, study_date=date) for r in study_clips(study, patient)]
         pd.concat([self.videos, pd.DataFrame(rows)]).to_parquet(os.path.join(self.tmp, "videos.parquet"))
-        for name, row in (("ef.parquet", {"study_id": study, "accession": "A7", "ef": 45}),
-                          ("rvsp.parquet", {"study_id": study, "rvsp": 30}),
-                          ("reports.parquet", {"AccessionNumber": "A7", "Mitral valve findings": "Valve mitrale normale",
+        for name, row in (("ef.parquet", {"study_id": study, "accession": "A7", "ef": ef}),
+                          ("rvsp.parquet", {"study_id": study, "accession": "A7", "rvsp": 30}),
+                          ("reports.parquet", {"AccessionNumber": "A7", "Dossier": patient,
+                                               "Mitral valve findings": "Valve mitrale normale",
                                                "Aortic valve findings": "", "Tricuspid valve findings": "",
                                                "AV Mean Gradient": 5.0, "Left ventricule findings": ""})):
             path = os.path.join(self.tmp, name)
             pd.concat([pd.read_parquet(path), pd.DataFrame([row])]).to_parquet(path)
+        path = os.path.join(self.tmp, "pacs.csv")
+        pd.concat([pd.read_csv(path, dtype=str), pd.DataFrame([{"AccessionNumber": "A7", "StudyInstanceUID": study,
+                                                                "PatientID": patient, "StudyDate": date}])]
+                  ).to_csv(path, index=False)
+
+    def test_the_categories_draw_from_any_vendor_unless_vendor_ge_keeps_them_to_ge(self):
+        # s7, a Philips study of 2023 with an EF of 30, is LV dysfunction as s3 is.
+        self.add_philips(date="20230101", ef=30)
+        self.shortlist()
+        short = pd.read_csv(os.path.join(self.out, "shortlist.csv"), dtype=str)
+        clips = pd.read_csv(os.path.join(self.out, "shortlist_clips.csv"), dtype=str)
+        self.assertEqual(sorted(short.study_id[short.category == "lv_dysfunction"]), ["s3", "s7"])
+        # Its clips are screened with their mode read from the pixels, the GE ones from the header.
+        self.assertEqual(clips.groupby("vendor").mode_source.agg(set).to_dict(),
+                         {"GE Vingmed Ultrasound": {"header"}, "Philips Medical Systems": {"pixels"}})
+        with open(os.path.join(self.out, "shortlist.json")) as f:
+            record = json.load(f)
+        self.assertEqual((record["criteria"]["vendor"], record["criteria"]["vendors"]), ("any", "any"))
+        self.assertEqual(record["funnel"][4]["step"], "vendor: any (no --vendor)")
+        # --vendor GE leaves it out, counted in the funnel; a Philips slot is refused there.
+        self.shortlist("--vendor", "GE")
+        short = pd.read_csv(os.path.join(self.out, "shortlist.csv"), dtype=str)
+        self.assertEqual(short.study_id[short.category == "lv_dysfunction"].tolist(), ["s3"])
+        with open(os.path.join(self.out, "shortlist.json")) as f:
+            record = json.load(f)
+        self.assertEqual(record["criteria"]["vendors"], list(rp.VENDOR_GROUPS["GE"]))
+        self.assertEqual(record["funnel"][4]["left_out"], f"other_vendor={len(FAMILY_VIEWS) * 4}")
+        with self.assertRaises(SystemExit) as stop:
+            self.shortlist("--vendor", "GE", "--vendor-studies", "Philips Medical Systems=1")
+        self.assertIn("outside --vendor's vendors", str(stop.exception))
+        # GE Vingmed alone: the funnel names the vendor once.
+        self.shortlist("--vendor", "GE Vingmed Ultrasound")
+        with open(os.path.join(self.out, "shortlist.json")) as f:
+            record = json.load(f)
+        self.assertEqual((record["criteria"]["vendors"], record["funnel"][4]["step"]),
+                         (["GE Vingmed Ultrasound"], "--vendor GE Vingmed Ultrasound"))
 
     def test_a_vendor_slot_adds_a_study_of_another_vendor_and_leaves_the_categories_alone(self):
         self.shortlist()
@@ -347,8 +632,9 @@ class TestPipeline(unittest.TestCase):
         self.run_cmd("shortlist", "--videos", os.path.join(self.tmp, "videos.parquet"),
                      "--ef-labels", os.path.join(self.tmp, "ef.parquet"),
                      "--rvsp-labels", os.path.join(self.tmp, "rvsp.parquet"),
+                     "--pacs", os.path.join(self.tmp, "pacs.csv"),
                      "--reports", os.path.join(self.tmp, "reports.parquet"), "--out-dir", self.out,
-                     "--min-clips", "12", *slot)
+                     "--min-clips", "10", *slot)
         short = pd.read_csv(os.path.join(self.out, "shortlist.csv"), dtype=str)
         clips = pd.read_csv(os.path.join(self.out, "shortlist_clips.csv"), dtype=str)
         self.assertEqual(short[short.category == "vendor:Philips Medical Systems"].study_id.tolist(), ["s7"])
@@ -365,6 +651,17 @@ class TestPipeline(unittest.TestCase):
             record = json.load(f)
         self.assertEqual((record["criteria"]["vendor_studies"], record["pool_per_vendor_slot"]),
                          ({"Philips Medical Systems": 1}, {"Philips Medical Systems": 1}))
+        # The slot's funnel row counts the shortlist so far, its own clips in the note: the clips to screen.
+        draw, slot_row, screened = (next(r for r in record["funnel"] if r["step"].startswith(step))
+                                    for step in ("seeded draw", "vendor slot:", "shortlist: clips to screen"))
+        added = int((clips.study_id == "s7").sum())
+
+        def counts(row):
+            return [row[k] for k in ("videos", "studies", "patients")]
+
+        self.assertEqual(counts(slot_row), [draw["videos"] + added, draw["studies"] + 1, draw["patients"] + 1])
+        self.assertEqual(slot_row["note"], f"adds videos={added}, studies=1, patients=1; pool=1")
+        self.assertEqual(counts(screened), [len(clips), *counts(slot_row)[1:]])
         # The patients of a validation list are drawn nowhere: without s7's patient no Philips study is left.
         listed = os.path.join(self.tmp, "validation_clips.csv")
         pd.DataFrame({"patient_id": ["p7"]}).to_csv(listed, index=False)
@@ -372,15 +669,17 @@ class TestPipeline(unittest.TestCase):
             self.run_cmd("shortlist", "--videos", os.path.join(self.tmp, "videos.parquet"),
                          "--ef-labels", os.path.join(self.tmp, "ef.parquet"),
                          "--rvsp-labels", os.path.join(self.tmp, "rvsp.parquet"),
+                         "--pacs", os.path.join(self.tmp, "pacs.csv"),
                          "--reports", os.path.join(self.tmp, "reports.parquet"), "--out-dir", self.out,
-                         "--min-clips", "12", *slot, "--exclude-patients", listed)
+                         "--min-clips", "10", *slot, "--exclude-patients", listed)
         self.assertIn("No training study of Philips Medical Systems", str(stop.exception))
         pd.DataFrame({"patient_id": ["p1"]}).to_csv(listed, index=False)
         self.run_cmd("shortlist", "--videos", os.path.join(self.tmp, "videos.parquet"),
                      "--ef-labels", os.path.join(self.tmp, "ef.parquet"),
                      "--rvsp-labels", os.path.join(self.tmp, "rvsp.parquet"),
+                     "--pacs", os.path.join(self.tmp, "pacs.csv"),
                      "--reports", os.path.join(self.tmp, "reports.parquet"), "--out-dir", self.out,
-                     "--min-clips", "12", *slot, "--exclude-patients", listed)
+                     "--min-clips", "10", *slot, "--exclude-patients", listed)
         short = pd.read_csv(os.path.join(self.out, "shortlist.csv"), dtype=str)
         self.assertNotIn("p1", set(short.patient_id))
         self.assertNotIn("p1", set(pd.read_csv(os.path.join(self.out, "reference_clips.csv"), dtype=str).patient_id))
@@ -390,30 +689,38 @@ class TestPipeline(unittest.TestCase):
         self.run_cmd("shortlist", "--videos", os.path.join(self.tmp, "videos.parquet"),
                      "--ef-labels", os.path.join(self.tmp, "ef.parquet"),
                      "--rvsp-labels", os.path.join(self.tmp, "rvsp.parquet"),
+                     "--pacs", os.path.join(self.tmp, "pacs.csv"),
                      "--reports", os.path.join(self.tmp, "reports.parquet"), "--out-dir", self.out,
-                     "--min-clips", "12", "--vendor-studies", "Philips Medical Systems=1")
+                     "--min-clips", "10", "--vendor-studies", "Philips Medical Systems=1")
         clips = pd.read_csv(os.path.join(self.out, "shortlist_clips.csv"), dtype=str)
         flags_path = os.path.join(self.tmp, "flags.parquet")
         philips = clips.vendor == "Philips Medical Systems"
-        # Read from the pixels, the Philips clips are B-mode in every view: no view in both modes, no slot study.
-        flags = clips[["video_path"]].assign(exclude=False, exclude_reason="", pixel_mode="bmode")
+        # Read from the pixels, every clip is color flow: the GE clips keep their header's B-mode, while the Philips
+        # study has no B-mode clip, so no slot study.
+        flags = clips[["video_path"]].assign(exclude=False, exclude_reason="", pixel_mode="color_flow")
         write_flags(flags, flags_path, self.out)
+        fill = ("--vendor-slots", "Philips Medical Systems")
         with self.assertRaises(SystemExit) as stop:
-            self.run_cmd("select", "--out-dir", self.out, "--flags", flags_path)
+            self.run_cmd("select", "--out-dir", self.out, "--flags", flags_path, *fill)
         self.assertIn("none for vendor:Philips Medical Systems", str(stop.exception))
-        # Half of them color, as their pixels show it: the study qualifies at that mode.
-        color = philips & clips.video_path.str.contains(r"_[02]\.mp4$")
-        flags.loc[color, "pixel_mode"] = "color_flow"
+        # Half of the Philips clips B-mode, as their pixels show it: the study qualifies on those, and its color
+        # clips are left out, listed with their reason.
+        flags.loc[philips & ~clips.video_path.str.contains(r"_[02]\.mp4$"), "pixel_mode"] = "bmode"
         write_flags(flags, flags_path, self.out)
-        self.run_cmd("select", "--out-dir", self.out, "--flags", flags_path)
+        self.run_cmd("select", "--out-dir", self.out, "--flags", flags_path, *fill)
         studies = pd.read_csv(os.path.join(self.out, "pilot_studies.csv"), dtype=str)
         self.assertEqual(studies.set_index("category").study_id.get("vendor:Philips Medical Systems"), "s7")
         pilot = pd.read_csv(os.path.join(self.out, "pilot_clips.csv"), dtype=str)
         s7 = pilot[pilot.study_id == "s7"]
-        self.assertEqual((set(s7.header_acq_category), set(s7.acq_category), set(s7.mode_source)),
-                         ({"bmode"}, {"bmode", "color_flow"}, {"pixels"}))
+        self.assertEqual((len(s7), set(s7.header_acq_category), set(s7.acq_category), set(s7.mode_source)),
+                         (len(FAMILY_VIEWS) * 2, {"bmode"}, {"bmode"}, {"pixels"}))
         ge = pilot[pilot.study_id != "s7"]  # a header mode stays the header's, whatever the pixels show.
-        self.assertTrue((ge.acq_category == ge.header_acq_category).all())
+        self.assertEqual((len(ge), set(ge.acq_category)), (3 * len(FAMILY_VIEWS) * 2, {"bmode"}))
+        not_kept = pd.read_csv(os.path.join(self.out, "not_kept_clips.csv"), dtype=str)
+        left_out = not_kept[not_kept.study_id == "s7"]
+        self.assertEqual((len(left_out), set(zip(left_out.step, left_out.decision, left_out.reasons,
+                                                 left_out.acq_category, left_out.header_acq_category))),
+                         (len(FAMILY_VIEWS) * 2, {("screen", "exclude", "color_flow", "color_flow", "bmode")}))
         with open(os.path.join(self.out, "selection.json")) as f:
             selection = json.load(f)
         self.assertEqual((selection["studies"], selection["vendor_slots"]), (4, ["vendor:Philips Medical Systems"]))
@@ -422,8 +729,8 @@ class TestPipeline(unittest.TestCase):
         with open(os.path.join(self.out, "candidates.json"), encoding="utf-8") as f:
             candidates = json.load(f)
         keys = clips.set_index("global_key")
-        modes = {c["modality"] for c in candidates if keys.loc[c["global_key"], "study_id"] == "s7"}
-        self.assertEqual(modes, {"bmode", "color_flow"})
+        self.assertEqual({c["modality"] for c in candidates}, {"bmode"})
+        self.assertEqual(sum(keys.loc[c["global_key"], "study_id"] == "s7" for c in candidates), len(s7))
         with open(os.path.join(self.out, "candidates_summary.json")) as f:
             self.assertEqual(json.load(f)["candidates_by_mode_source"]["pixels"], len(s7))
 
@@ -432,16 +739,19 @@ class TestPipeline(unittest.TestCase):
         self.run_cmd("shortlist", "--videos", os.path.join(self.tmp, "videos.parquet"),
                      "--ef-labels", os.path.join(self.tmp, "ef.parquet"),
                      "--rvsp-labels", os.path.join(self.tmp, "rvsp.parquet"),
+                     "--pacs", os.path.join(self.tmp, "pacs.csv"),
                      "--reports", os.path.join(self.tmp, "reports.parquet"), "--out-dir", self.out,
-                     "--min-clips", "12", "--vendor-studies", "Philips Medical Systems=1")
+                     "--min-clips", "10", "--vendor-studies", "Philips Medical Systems=1")
         clips = pd.read_csv(os.path.join(self.out, "shortlist_clips.csv"), dtype=str)
         flags_path = os.path.join(self.tmp, "flags.parquet")
         flags = clips[["video_path"]].assign(exclude=False, exclude_reason="", pixel_mode="bmode")
         color = (clips.vendor == "Philips Medical Systems") & clips.video_path.str.contains(r"_[02]\.mp4$")
         flags.loc[color, "pixel_mode"] = "color_flow"
         write_flags(flags, flags_path, self.out)
-        for given, slots in (((), []), (("Philips Medical Systems",), ["vendor:Philips Medical Systems"])):
-            self.run_cmd("select", "--out-dir", self.out, "--flags", flags_path, "--vendor-slots", *given)
+        # Without --vendor-slots, or with no vendor, the slot's study is screened but not taken.
+        for given, slots in (((), []), (("--vendor-slots",), []),
+                             (("--vendor-slots", "Philips Medical Systems"), ["vendor:Philips Medical Systems"])):
+            self.run_cmd("select", "--out-dir", self.out, "--flags", flags_path, *given)
             with open(os.path.join(self.out, "selection.json")) as f:
                 selection = json.load(f)
             self.assertEqual((selection["studies"], selection["vendor_slots"]), (3 + len(slots), slots))
@@ -482,6 +792,113 @@ class TestPipeline(unittest.TestCase):
         with self.assertRaises(SystemExit) as stop:
             self.run_cmd("select", "--out-dir", self.out, "--flags", flags_path)
         self.assertIn("the screen's decisions", str(stop.exception))
+
+    def test_every_clip_left_out_is_listed_with_its_reasons(self):
+        # s3 and s4 (always chosen) get clips the shortlist removes under --vendor GE: no acquisition mode in the
+        # header (one of them also of another vendor), another vendor's B-mode and a still of 3 frames.
+        # A B-mode clip of GE Healthcare, one of GE's vendor names, stays (--vendor 'GE Vingmed
+        # Ultrasound' would remove it).
+        philips = {"vendor": "Philips Medical Systems", "acq_vendor_validated": False}
+        extra = [dict(study_clips("s3", "p3", n_per_view=1, views=("A4C",))[0], acq_category="unknown",
+                      acq_confidence="unknown", video_path=f"/synthetic/s3/A4C_x{i}.mp4", **kwargs)
+                 for i, kwargs in enumerate(({}, philips))]
+        extra += [dict(study_clips("s4", "p4", n_per_view=1, views=("A2C",))[0], acq_category="bmode",
+                       video_path=f"/synthetic/s4/A2C_x{i}.mp4", **kwargs)
+                  for i, kwargs in enumerate((philips, {"n_frames": 3}))]
+        healthcare = dict(study_clips("s4", "p4", n_per_view=1, views=("A2C",))[0], acq_category="bmode",
+                          vendor="GE Healthcare Ultrasound", video_path="/synthetic/s4/A2C_x3.mp4")
+        pd.concat([self.videos, pd.DataFrame(extra + [healthcare])]).to_parquet(
+            os.path.join(self.tmp, "videos.parquet"))
+        self.shortlist("--vendor", "GE")
+        clips = pd.read_csv(os.path.join(self.out, "shortlist_clips.csv"))
+        self.assertIn(healthcare["video_path"], set(clips.video_path))
+        removed = pd.read_csv(os.path.join(self.out, "removed_clips.csv"))
+        reasons = dict(zip(removed.video_path, removed.reasons))
+        self.assertEqual({p: reasons.pop(p) for p in [r["video_path"] for r in extra]},
+                         {"/synthetic/s3/A4C_x0.mp4": "acquisition", "/synthetic/s3/A4C_x1.mp4": "acquisition;vendor",
+                          "/synthetic/s4/A2C_x0.mp4": "vendor", "/synthetic/s4/A2C_x1.mp4": "few_frames"})
+        # The fixture's color clips, OTHER ones among them.
+        self.assertEqual(pd.Series(reasons).value_counts().to_dict(), {"color_flow": 48, "other_view;color_flow": 12})
+        self.assertFalse(set(removed.video_path) & set(clips.video_path))
+        self.assertTrue(removed.global_key.str.fullmatch(r"radar-pilot-[0-9a-f]{24}").all())
+        with open(os.path.join(self.out, "shortlist.json")) as f:
+            record = json.load(f)
+        self.assertEqual((record["clips_removed"], record["clips_removed_by_metadata_rule"]),
+                         (64, {"color_flow": 60, "other_view": 12, "acquisition": 2, "vendor": 2,
+                               "few_frames": 1}))
+
+        # The screen excludes an A3C clip of each normal study (one of them not chosen) and is uncertain about two
+        # clips of s4 for their GE image code: the labelled code of 3D and multi-panel displays is excluded, a code
+        # never labelled stays uncertain. With the removed clips, all are listed, each with its step, decision,
+        # reasons and pilot study.
+        flags_path = os.path.join(self.tmp, "flags.parquet")
+        flags = clips[["video_path"]].assign(decision="keep", decision_reasons="", exclude=False, exclude_reason="",
+                                             dicom_image_content="0001")
+        for path, decision, reasons, code in (
+                ("/synthetic/s1/A3C_1.mp4", "exclude", "still", "0001"),
+                ("/synthetic/s2/A3C_1.mp4", "exclude", "analysis_screen;measurement_text", "0000"),
+                ("/synthetic/s4/A4C_1.mp4", "uncertain", "unusual_image_content", "0041"),
+                ("/synthetic/s4/A5C_1.mp4", "uncertain", "unusual_image_content", "0021")):
+            flags.loc[flags.video_path == path, ["decision", "decision_reasons", "dicom_image_content"]] = [
+                decision, reasons, code]
+        write_flags(flags, flags_path, self.out)
+        self.run_cmd("select", "--out-dir", self.out, "--flags", flags_path)
+        chosen = set(pd.read_csv(os.path.join(self.out, "pilot_studies.csv"), dtype=str).study_id)
+        listed = pd.read_csv(os.path.join(self.out, "not_kept_clips.csv"), dtype={"study_id": str})
+        backups = listed[listed.step == "selection"]
+        self.assertEqual((len(backups), set(backups.reasons), set(backups.decision)),
+                         (11, {"study_not_chosen"}, {"not_chosen"}))
+        self.assertFalse(backups.in_pilot.any())
+        own = listed[~listed.reasons.isin(["color_flow", "other_view;color_flow", "study_not_chosen"])]
+        self.assertEqual(sorted(zip(own.video_path, own.step, own.decision, own.reasons)),
+                         [("/synthetic/s1/A3C_1.mp4", "screen", "exclude", "still"),
+                          ("/synthetic/s2/A3C_1.mp4", "screen", "exclude", "analysis_screen;measurement_text"),
+                          ("/synthetic/s3/A4C_x0.mp4", "shortlist", "removed", "acquisition"),
+                          ("/synthetic/s3/A4C_x1.mp4", "shortlist", "removed", "acquisition;vendor"),
+                          ("/synthetic/s4/A2C_x0.mp4", "shortlist", "removed", "vendor"),
+                          ("/synthetic/s4/A2C_x1.mp4", "shortlist", "removed", "few_frames"),
+                          ("/synthetic/s4/A4C_1.mp4", "screen", "exclude", "3d_or_multipanel"),
+                          ("/synthetic/s4/A5C_1.mp4", "screen", "uncertain", "unusual_image_content")])
+        self.assertEqual(len(listed) - len(own) - len(backups), 60)
+        self.assertEqual(listed.in_pilot.tolist(), listed.study_id.isin(chosen).tolist())
+        self.assertEqual(set(listed.study_id[~listed.in_pilot]), {"s1", "s2"} - chosen)  # the normal study not chosen.
+        self.assertEqual(os.stat(os.path.join(self.out, "not_kept_clips.csv")).st_mode & 0o777, 0o600)
+        uncertain = pd.read_csv(os.path.join(self.out, "uncertain_clips.csv"))
+        self.assertEqual(uncertain.video_path.tolist(), ["/synthetic/s4/A5C_1.mp4"])
+        pilot = pd.read_csv(os.path.join(self.out, "pilot_clips.csv"))
+        self.assertFalse({"/synthetic/s4/A4C_1.mp4", "/synthetic/s4/A5C_1.mp4"} & set(pilot.video_path))
+        with open(os.path.join(self.out, "selection.json")) as f:
+            selection = json.load(f)
+        in_pilot = removed[removed.study_id.isin(chosen)]
+        self.assertEqual((selection["clips_removed_before_screen"], selection["removed_reasons_in_pilot_studies"],
+                          selection["not_kept_clips_shortlisted"]),
+                         (len(in_pilot), in_pilot.reasons.str.split(";").explode().value_counts().to_dict(),
+                          {"removed": 64, "exclude": 3, "uncertain": 1, "not_chosen": 11}))
+        self.assertEqual(selection["pilot_rule"]["3d_or_multipanel"],
+                         {"vendor": "GE Vingmed Ultrasound", "image_codes": ["0041", "0051"]})
+        with open(os.path.join(self.out, "summary.md")) as f:
+            self.assertIn(f"removed before the screen: {len(in_pilot)}", f.read())
+
+        # A selection made before V1's rule is refused by candidates.
+        path = os.path.join(self.out, "selection.json")
+        with open(path, "w") as f:
+            json.dump({k: v for k, v in selection.items() if k != "pilot_rule"}, f)
+        with self.assertRaises(SystemExit) as stop:
+            self.run_cmd("candidates", "--out-dir", self.out, "--reports", os.path.join(self.tmp, "reports.parquet"),
+                         "--provisional-screen")
+        self.assertIn("before V1's rule", str(stop.exception))
+        self.assertFalse(set(os.listdir(self.out)) & set(rp.CANDIDATE_OUTPUTS))
+
+        # A shortlist made before removed_clips.csv existed, or before V1's rule, is refused, and nothing is selected.
+        for older in ({**record, "outputs": {k: v for k, v in record["outputs"].items()
+                                             if not k.endswith("removed_clips.csv")}},
+                      {**record, "criteria": {k: v for k, v in record["criteria"].items() if k != "captioned"}}):
+            with open(os.path.join(self.out, "shortlist.json"), "w") as f:
+                json.dump(older, f)
+            with self.assertRaises(SystemExit) as stop:
+                self.run_cmd("select", "--out-dir", self.out, "--flags", flags_path)
+            self.assertIn("an older shortlist", str(stop.exception))
+            self.assertFalse(set(os.listdir(self.out)) & set(rp.SELECTION_OUTPUTS))
 
     def test_a_pilot_short_of_its_studies_is_not_a_selection(self):
         self.shortlist()
@@ -611,7 +1028,7 @@ class TestPipeline(unittest.TestCase):
         # removed from it.
         psax = clips.video_path.str.contains(f"/{first['normal']}/PSAX")
         flags.loc[psax, ["exclude", "exclude_reason"]] = [True, "measurement"]
-        still = clips.video_path.str.endswith("/s3/A4C_0.mp4")
+        still = clips.video_path.str.endswith("/s3/A4C_1.mp4")
         flags.loc[still, ["exclude", "exclude_reason"]] = [True, "still"]
         write_flags(flags, flags_path, self.out)
         self.run_cmd("select", "--out-dir", self.out, "--flags", flags_path)
@@ -631,13 +1048,15 @@ class TestPipeline(unittest.TestCase):
                      "--provisional-screen")
         with open(os.path.join(self.out, "candidates.json"), encoding="utf-8") as f:
             candidates = json.load(f)
-        self.assertEqual(len(candidates), 3 * len(FAMILY_VIEWS) * 4 - 1)  # less the still clip.
-        self.assertNotIn("OTHER", {c["view"] for c in candidates})
+        # The B-mode clips of the three studies, less the still clip.
+        self.assertEqual(len(candidates), 3 * len(FAMILY_VIEWS) * 2 - 1)
+        self.assertEqual(({c["view"] for c in candidates} - set(FAMILY_VIEWS), {c["modality"] for c in candidates}),
+                         (set(), {"bmode"}))
+        # The OTHER videos (of s3, and s1 when chosen) were removed by the shortlist: none goes to the view and type
+        # review.
         items = pd.read_csv(os.path.join(self.out, "view_type_items.csv"))
-        # The OTHER videos of the chosen studies with any (s3, and s1 when chosen) get the view and type review.
-        self.assertEqual(len(items), 6 * len({"s1", "s3"} & set(studies.study_id)))
         keys_map = pd.read_csv(os.path.join(self.out, "global_keys.csv"))
-        self.assertEqual(set(keys_map[keys_map.form == "view_type_review"].global_key), set(items.global_key))
+        self.assertEqual((len(items), set(keys_map.form)), (0, {"column_review"}))
         shortlist_key = clips.set_index("video_path").global_key
         self.assertEqual(keys_map.global_key.tolist(), shortlist_key[keys_map.video_path].tolist())
         keys = [c["global_key"] for c in candidates]
@@ -665,7 +1084,7 @@ class TestPipeline(unittest.TestCase):
                          "--reports", os.path.join(self.tmp, "changed_reports.parquet"), "--provisional-screen")
 
         # New flags make the selection stale: candidates refuses it.
-        valve = clips.video_path.str.endswith("/s4/A4C_0.mp4")
+        valve = clips.video_path.str.endswith("/s4/A4C_1.mp4")
         flags.loc[valve, ["exclude", "exclude_reason"]] = [True, "still"]
         write_flags(flags, flags_path, self.out)
         with self.assertRaises(SystemExit):
@@ -762,3 +1181,4 @@ class TestPipeline(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
