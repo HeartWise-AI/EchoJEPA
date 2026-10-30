@@ -18,6 +18,21 @@ from tools.labelbox.review_ontology import _classification, _option
 ROOT = Path(__file__).resolve().parents[2]
 SPEC = ROOT / "configs/radar/deepecho_video_clip_annotation_specification.json"
 FORM = ROOT / "configs/radar/labelbox/deepecho_video_clip_annotation_ontology.json"
+# How a report number is shown next to a clip: (factor from the report's unit, unit shown, decimals). The report holds
+# lengths in cm and the LA volume index in L/m², shown in mL/m² (archive median 0.0297 L/m²). Wall motion scores and
+# codes are shown as the report has them.
+REPORT_NUMBER_UNITS = {
+    "IVC Diameter (Exp 2D)": (1, "cm", 2),
+    "IVS Diastole Thickness (2D)": (1, "cm", 2),
+    "LA Dimension": (1, "cm", 2),
+    "LA Volume Index (BP MOD) DuBois": (1000, "mL/m²", 1),
+    "LVID Diastole (2D)": (1, "cm", 2),
+    "LVIW Diastolic Thickness (2D)": (1, "cm", 2),
+    "RA Area (4C)": (1, "cm²", 1),
+    "RV Basal Diastolic Dimension": (1, "cm", 2),
+    "RV Dimension": (1, "cm", 2),
+    "Visually Estimated EF": (1, "%", 0),
+}
 
 
 def load_spec():
@@ -578,10 +593,19 @@ def numeric_context(report_context):
     return out
 
 
+def report_number_text(key, value):
+    """A report number as reviewers read it: in its unit, rounded (`REPORT_NUMBER_UNITS`); any other number to two
+    decimals at most."""
+    if key not in REPORT_NUMBER_UNITS:
+        return f"{round(value, 2):g}"
+    factor, unit, decimals = REPORT_NUMBER_UNITS[key]
+    return f"{value * factor:.{decimals}f}{'' if unit == '%' else ' '}{unit}"
+
+
 def context_attachment(candidate, spec=None):
     """The text uploaded next to each video. It holds no report text: each proposal shows its report field's name,
-    not the clause it came from, and the report context keeps only numbers. The source text stays in the local
-    candidate."""
+    not the clause it came from, and the report context keeps only numbers, each in its unit and rounded. The source
+    text stays in the local candidate."""
     spec = spec or load_spec()
     lines = [f"DeepECHO column review v{spec['version']} — original, unverified proposals",
              f"View: {candidate['view']}; acquisition: {candidate['modality']}",
@@ -596,7 +620,7 @@ def context_attachment(candidate, spec=None):
         numbers = numeric_context(candidate["report_context"])
         if numbers:
             lines.append("Report numbers (not local claims):")
-            lines.extend(f"{key}: {value}" for key, value in numbers.items())
+            lines.extend(f"{key}: {report_number_text(key, value)}" for key, value in numbers.items())
     lines += ["Original caption: "+candidate["candidate_caption"], "Suggestions require submitted human review."]
     return dict(global_key=candidate["global_key"], attachment_type="RAW_TEXT",
                 attachment_name=f"DeepECHO review v{spec['version']} - original proposals",

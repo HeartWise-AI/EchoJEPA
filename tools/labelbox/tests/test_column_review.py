@@ -9,8 +9,8 @@ from unittest import mock
 from app.radar.ontology import VIEWS, load_ontology
 from tools.labelbox.column_review import (
     FORM, ROOT, SPEC, allowed_columns, build_candidate, build_form, context_attachment,
-    decode_annotations, encode_answers, finding_sentence, load_spec, prelabels, review_problems, score_review,
-    validate_annotations, view_targets,
+    decode_annotations, encode_answers, finding_sentence, load_spec, prelabels, report_number_text, review_problems,
+    score_review, validate_annotations, view_targets,
 )
 from tools.labelbox.import_column_review import (
     ONTOLOGY_NAME, ImportStopped, apply_bundle, comparable_shape, import_outcome, schema_shape, with_schema_ids,
@@ -461,9 +461,22 @@ class TestColumnSubmissions(unittest.TestCase):
         for text in ("Dysfonction", "non-dilaté", "Valve tricuspide", "Feuillets"):
             self.assertNotIn(text, value)
         self.assertIn("tricuspid_appearance | Normal | Tricuspid valve findings", value)
-        self.assertIn("Visually Estimated EF: 48", value)
-        self.assertIn("LVID Diastole (2D): 5.1", value)
-        self.assertIn("WMS Basal Inferoseptal: 2", value)
+        self.assertIn("Visually Estimated EF: 48%\n", value)
+        self.assertIn("LVID Diastole (2D): 5.10 cm\n", value)
+        self.assertIn("WMS Basal Inferoseptal: 2\n", value)
+
+    def test_report_numbers_are_shown_in_their_unit_and_rounded(self):
+        report = {"LA Volume Index (BP MOD) DuBois": 0.02854, "IVS Diastole Thickness (2D)": 1.03659,
+                  "RA Area (4C)": 20.6249, "Visually Estimated EF": 55.0, "WMS 4C Mid Anterolateral": 2.5,
+                  "MHI VD fonction systolique": 0}
+        value = context_attachment(build_candidate(report, "A4C", "bmode", global_key="synthetic-numbers"))[
+            "attachment_value"]
+        for line in ("LA Volume Index (BP MOD) DuBois: 28.5 mL/m²", "IVS Diastole Thickness (2D): 1.04 cm",
+                     "RA Area (4C): 20.6 cm²", "Visually Estimated EF: 55%", "WMS 4C Mid Anterolateral: 2.5",
+                     "MHI VD fonction systolique: 0"):
+            self.assertIn(line + "\n", value)
+        self.assertNotIn("0.0285", value)
+        self.assertEqual(report_number_text("an unlisted number", 3.14159), "3.14")
 
     def test_an_ivc_sweep_brings_its_structures_and_prefilled_ones_need_their_tick(self):
         report = {"Inferior vena cava findings": "Dilatation de la veine cave inférieure",
