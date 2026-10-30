@@ -260,6 +260,16 @@ test. Each clip carries a pilot notice and its proposals; report numbers are sho
 (lengths in cm, the LA volume index in mL/m²), and report text stays local. Batches are named `RADAR pilot
 study <hash>`. `--delete --apply` removes a pilot upload only while its projects hold no submitted review.
 
+After each review session, and always before a review is returned, export the projects under a new name:
+
+```bash
+UV_PROJECT_ENVIRONMENT=$HOME/.venvs/echojepa-labelbox uv run --frozen --only-group labelbox \
+  python -m tools.labelbox.pilot_upload --folder $PILOT/upload --export-summary $PILOT/exports/session_01.json
+```
+
+Each form's export is kept unchanged next to the summary (`session_01.column_review.export.ndjson`), with each
+label's details and its time to create (`performance_details`, which review time M7 reads). Summaries record per-clip scores, label IDs, and export SHA-256 hashes. Reject existing filenames and repository paths to prevent overwrites and exposure of reviewer names or comments.
+
 Labelbox reads videos when creating data rows and reports unreadable ones. On rerun, unlabeled failed rows are deleted and reuploaded to prevent blocking their study batches during the SDK's one-hour processing wait.
 
 ## Data and credential safety

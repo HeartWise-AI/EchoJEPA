@@ -530,10 +530,11 @@ class LabelboxUploadApi:
 
     @staticmethod
     def export_rows(project) -> list[Mapping[str, Any]]:
-        """Every exported row as a dict. `Project.export` is a streamed export: its `result` is the URL of the
-        result file, not the rows, which come from its buffered stream."""
+        """Every exported row as a dict, with each label's details and performance details (its time to create,
+        which the pilot's review time M7 reads; the SDK leaves both off by default). `Project.export` is a streamed
+        export: its `result` is the URL of the result file, not the rows, which come from its buffered stream."""
         with _step("exporting the reviews"):
-            task = project.export(params={"label_details": True, "attachments": True})
+            task = project.export(params={"label_details": True, "performance_details": True, "attachments": True})
             task.wait_till_done()
             if task.status == "FAILED" or task.has_errors():
                 raise UploadError("Project export failed.")
@@ -655,6 +656,14 @@ def _without_source_text(value: Any) -> Any:
     return value
 
 
+def _label_record(label: Mapping[str, Any]) -> dict[str, Any]:
+    """The scored label's id and its time to create in seconds (`performance_details`; None when the export has none),
+    so that each check run and the review time M7 name the label they read."""
+    performance = label.get("performance_details")
+    seconds = performance.get("seconds_to_create") if isinstance(performance, Mapping) else None
+    return {"label_id": label.get("id"), "seconds_to_create": seconds}
+
+
 def summarize_export(exports: Mapping[str, Sequence[Mapping[str, Any]]], plan: Plan) -> dict[str, Any]:
     """The review status of each of this folder's exported rows: column reviews scored with `score_review`, view and
     type reviews checked with `review_problems`. Other rows of the project (the pilot's) are left out."""
@@ -673,24 +682,43 @@ def summarize_export(exports: Mapping[str, Sequence[Mapping[str, Any]]], plan: P
                 items.append({"global_key": key, "form": form, "status": "unreviewed"})
                 continue
             answers = _answers_from_label(label)
+            item = {"global_key": key, "form": form, **_label_record(label)}
             if form == COLUMN_REVIEW:
                 try:
                     score = column_review.score_review(plan.candidates[key], answers, submitted=True)
                 except ValueError as exc:
-                    items.append({"global_key": key, "form": form, "status": "invalid", "problems": [str(exc)]})
+                    items.append({**item, "status": "invalid", "problems": [str(exc)]})
                     continue
-                items.append({"global_key": key, "form": form, "status": "invalid" if score["pending"] else "valid",
+                items.append({**item, "status": "invalid" if score["pending"] else "valid",
                               "score": _without_source_text(score)})
             else:
                 problems = view_type_review.review_problems(answers)
-                items.append({"global_key": key, "form": form, "status": "invalid" if problems else "valid",
+                items.append({**item, "status": "invalid" if problems else "valid",
                               "answers": view_type_review.with_not_applicable(answers), "problems": problems})
     return {"schema": plan.kind.summary_schema, "items": sorted(items, key=lambda item: item["global_key"])}
 
 
+def export_paths(output: Path, forms: Sequence[str]) -> dict[str, Path]:
+    """Where each form's export is kept, next to its summary: `<summary name>.<form>.export.ndjson`."""
+    return {form: output.with_name(f"{output.stem}.{form}.export.ndjson") for form in forms}
+
+
 def export_summary(api, plan: Plan, output: Path) -> dict[str, int]:
+    """Export each form's project, keep the export unchanged next to the summary, and score this folder's rows. The
+    pilot's rules keep every export (docs/radar/pilot_metrics_v1.md), so an existing summary or export is refused,
+    never overwritten; an export holds reviewers' names and comments, so it stays outside the repository."""
+    kept = export_paths(output, plan.forms())
+    if output.resolve().is_relative_to(column_review.ROOT):
+        raise UploadError("--export-summary must be outside the repository: an export holds reviewers' names.")
+    if any(path.exists() for path in (output, *kept.values())):
+        raise UploadError(f"{output.name} or its exports exist: every export is kept, so give a new name.")
     workspace = api.ensure_workspace(plan.forms(), create=False)
-    summary = summarize_export({form: api.export_rows(workspace.projects[form]) for form in plan.forms()}, plan)
+    exports = {form: api.export_rows(workspace.projects[form]) for form in plan.forms()}
+    for form, rows in exports.items():
+        _write_private(kept[form], "".join(json.dumps(row, ensure_ascii=False) + "\n" for row in rows))
+    summary = summarize_export(exports, plan)
+    summary["exports"] = {form: {"file": kept[form].name, "sha256": sha256(kept[form]), "rows": len(exports[form])}
+                          for form in exports}
     _write_private(output, json.dumps(summary, ensure_ascii=False, indent=2) + "\n")
     counts: dict[str, int] = {}
     for item in summary["items"]:
@@ -804,6 +832,8 @@ def main(argv: Sequence[str] | None = None, *, environ: Mapping[str, str] = os.e
             print(f"column review prelabels: {'imported' if result.prelabels_imported else 'existing import kept'}")
     else:
         print("summary written; " + ", ".join(f"{status}: {n}" for status, n in sorted(statuses.items())))
+        kept = export_paths(args.export_summary, plan.forms()).values()
+        print("exports kept: " + ", ".join(path.name for path in kept))
     return 0
 
 

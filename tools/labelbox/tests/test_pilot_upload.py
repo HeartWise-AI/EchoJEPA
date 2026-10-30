@@ -36,6 +36,7 @@ from tools.labelbox.pilot_upload import (
     Workspace,
     _answers_from_label,
     ensure_upload,
+    export_summary,
     main,
     preview,
     read_plan,
@@ -623,9 +624,11 @@ class SdkPayloadTests(unittest.TestCase):
             def get_buffered_stream(self):
                 return iter([SimpleNamespace(json=row) for row in rows])
 
-        project = SimpleNamespace(export=lambda params: StreamedExport())
+        asked = []
+        project = SimpleNamespace(export=lambda params: asked.append(params) or StreamedExport())
 
         self.assertEqual(LabelboxUploadApi.export_rows(project), rows)
+        self.assertTrue(asked[0]["label_details"] and asked[0]["performance_details"])  # M7 reads the latter.
 
         failed = StreamedExport()
         failed.has_errors = lambda: True
@@ -891,11 +894,73 @@ class ExportTests(unittest.TestCase):
 
         self.assertEqual([item["global_key"] for item in summary["items"]], [A4C])
 
+    def test_names_each_scored_label_and_its_time_to_create(self):
+        with tempfile.TemporaryDirectory() as folder:
+            plan = read_plan(make_folder(Path(folder)))
+        timed = exported(A4C, column_review_label(plan.candidates[A4C]))
+        label = timed["projects"]["project"]["labels"][0]
+        label.update(id="label-a4c", performance_details={"seconds_to_create": 95, "seconds_to_review": 0})
+        untimed = exported(COLOR, column_review_label(plan.candidates[COLOR]))
+
+        summary = summarize_export({COLUMN_REVIEW: [timed, untimed]}, plan)
+        items = {item["global_key"]: item for item in summary["items"]}
+
+        self.assertEqual((items[A4C]["label_id"], items[A4C]["seconds_to_create"]), ("label-a4c", 95))
+        self.assertEqual((items[COLOR]["label_id"], items[COLOR]["seconds_to_create"]), (None, None))
+
     def test_refuses_a_row_found_in_the_other_forms_project(self):
         with tempfile.TemporaryDirectory() as folder:
             plan = read_plan(make_folder(Path(folder)))
         with self.assertRaisesRegex(UploadError, "other form's project"):
             summarize_export({COLUMN_REVIEW: [exported(OTHER)]}, plan)
+
+
+class KeptExportTests(unittest.TestCase):
+    """Every export is kept unchanged next to its summary and never overwritten (docs/radar/pilot_metrics_v1.md)."""
+
+    def setUp(self):
+        self.folder = Path(tempfile.mkdtemp())
+        (self.folder / "upload").mkdir()
+        self.plan = read_plan(make_folder(self.folder / "upload"))
+        self.rows = {COLUMN_REVIEW: [exported(A4C, column_review_label(self.plan.candidates[A4C])), exported(COLOR)],
+                     VIEW_TYPE_REVIEW: [exported(OTHER)]}
+        self.exported = []
+        self.api = SimpleNamespace(
+            ensure_workspace=lambda forms, create: Workspace({}, {form: form for form in forms}, {}),
+            export_rows=lambda project: self.exported.append(project) or self.rows[project])
+
+    def tearDown(self):
+        import shutil
+
+        shutil.rmtree(self.folder)
+
+    def test_keeps_each_forms_export_as_received_and_records_it_in_the_summary(self):
+        output = self.folder / "exports" / "session_01.json"
+
+        export_summary(self.api, self.plan, output)
+
+        summary = json.loads(output.read_text())
+        for form in (COLUMN_REVIEW, VIEW_TYPE_REVIEW):
+            kept = output.with_name(f"session_01.{form}.export.ndjson")
+            self.assertEqual([json.loads(line) for line in kept.read_text().splitlines()], self.rows[form])
+            self.assertEqual(summary["exports"][form], {"file": kept.name, "sha256": sha256(kept),
+                                                        "rows": len(self.rows[form])})
+            self.assertEqual(stat.S_IMODE(kept.stat().st_mode), 0o600)
+
+    def test_never_overwrites_an_earlier_export(self):
+        output = self.folder / "session_01.json"
+        export_summary(self.api, self.plan, output)
+        before = {path.name: path.read_bytes() for path in self.folder.glob("session_01*")}
+
+        with self.assertRaisesRegex(UploadError, "every export is kept"):
+            export_summary(self.api, self.plan, output)
+        self.assertEqual({path.name: path.read_bytes() for path in self.folder.glob("session_01*")}, before)
+        self.assertEqual(len(self.exported), 2)  # the refused run exported nothing.
+
+    def test_refuses_to_keep_an_export_in_the_repository(self):
+        with self.assertRaisesRegex(UploadError, "outside the repository"):
+            export_summary(self.api, self.plan, Path(__file__).resolve().parent / "session_01.json")
+        self.assertEqual(self.exported, [])
 
 
 class MainTests(unittest.TestCase):
