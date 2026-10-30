@@ -218,12 +218,13 @@ THRESHOLD_RANGES = {"still_scan_motion_frac": (float, 0.0, 1.0), "still_motion_f
                     "inside_glyphs": (int, 1, None), "extra_cells": (int, 1, None), "inside_mark_px": (int, 1, None)}
 # Calibration (`CALIBRATION`): Recorded from the final rule's report on the validation sheets (266 clips of independent
 # patients sampled by screen_validation.py), with the real-loop measurement sheet and synthetic overlays as positive cases
-# (pilot_selection.md, Calibration and validation). It names the date, report SHA-256, evaluated screen hash, and thresholds.
+# (pilot_selection.md, Calibration and validation), read from the files as re-masked on 2026-10-28. It names the date,
+# report SHA-256, evaluated screen hash, and thresholds.
 # Calibration applies only to that exact configuration; changed code or thresholds make flags provisional again.
 # `radar_pilot.py candidates` rejects provisional flags unless --provisional-screen explicitly permits a trial.
-CALIBRATION = {"date": "2026-10-23",
-               "report": "0ef5ecf33f92e2b058c46bcd3c8f20e6d07a0dfca37ff0193d3612366b8469a7",
-               "screen": "2c23ae238bd9cee54ec4e43ef30575f1894adf7f6b8db592e8f2533ed123571b",
+CALIBRATION = {"date": "2026-10-30",
+               "report": "67bd72b5c12a194fc72698953c131e4c13b5b371d94043177f432bf5ed00cd5b",
+               "screen": "ada874de32300b267c3b730c11e7f6382e231f6652d48c79b0049d6ce9b923d6",
                "thresholds": {"still_scan_motion_frac": 0.05, "still_motion_frac": 0.01, "inside_glyphs": 2,
                               "extra_cells": 8, "inside_mark_px": 3, "policy": "hybrid", "text_decides": "all"}}
 # Still scores `calibrate` sweeps: (column, a clip is still when the score is 'below' or 'at_least' a value, values).

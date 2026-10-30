@@ -76,7 +76,9 @@ Decoder failures (cannot open, no frames, or decoding errors) exclude clips as `
 
 ## Calibration and validation
 
-**Screening thresholds remain provisional** until validated on human-labeled clips. The current rule and default thresholds are calibrated (`CALIBRATION`) from its report on 266 validation clips of independent patients: 258 of 260 clean clips kept, all 4 still clips excluded, and both measured clips removed (1 excluded, 1 uncertain). Positive cases came from 130 real loops (57 of 58 measured clips excluded, all 64 clean clips kept) and synthetic overlays. The known limitations below still apply.
+**Screening thresholds remain provisional** until validated on human-labeled clips. The current rule and default thresholds are calibrated (`CALIBRATION`, 2026-10-30) from its report on 266 validation clips of independent patients: 258 of 260 clean clips kept, all 4 still clips excluded, and both measured clips excluded. Positive cases came from 130 real loops (all 58 measured clips excluded, all 64 clean clips kept) and synthetic overlays (all 53 results boxes read). The known limitations below still apply.
+
+The calibration reads the files as re-masked on 2026-10-28, which replaced 2 validation clips in place; those 2 were answered again on a new sheet of the same 266 clips, and the other answers carried over (same video bytes). The second-shortlist audit and the diagnostic sample were left out of this calibration: their samples were drawn from flags of videos replaced since. Against the 2026-10-23 calibration, counting a heart rate as measurement text turned 9 measured clips from uncertain to excluded (1 validation, 8 unusual-code displays) and excluded the real-loop clip it kept; no clean clip changed.
 
 The calibration workflow is:
 
@@ -128,7 +130,7 @@ A `keep` decision does **not** guarantee that a clip has no measurement overlays
 
 - **Drawn measurements:** Calipers and contours are poorly detected without a measurement header. Structure detection found at most 5 of 53 synthetic copies per overlay type. Other vendors may lack the necessary header signals entirely.
 - **Measurement text:** OCR found all 53 synthetic results boxes, but real measurement text was observed mainly on analysis screens already identified by headers. `extra_cells` is too nonspecific to replace OCR.
-- **3D displays:** A measured 3D display with an ordinary GE header (code `0001`, no MEASURE) was missed in the real-loop validation. It was an `OTHER` clip, which the pilot now removes; a classified 3D display with such a header would reach the pilot.
+- **3D displays:** A measured 3D display with an ordinary GE header (code `0001`, no MEASURE) was missed in the real-loop validation until a heart rate counted as measurement text: it is now excluded only because it shows one (`HR58`). It was an `OTHER` clip, which the pilot removes anyway; a classified 3D display with such a header and no heart rate shown would reach the pilot.
 - **Short color clips:** One clean 8-frame color clip with 3.9% motion was incorrectly excluded by the 5% stillness threshold.
 - **Brief overlays:** Measurements appearing for only a short portion of the video may escape static-mark detection.
 - **Other vendors:** Header conventions are supported by GE surveys but clinically labeled mainly on GE Vingmed. The 73 labeled clips without GE headers contained only 1 still and no measured clips, leaving measurement-screening sensitivity unverified.
