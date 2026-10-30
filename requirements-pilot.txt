@@ -38,7 +38,7 @@ defusedxml==0.7.1
 einops==0.8.2
 executing==2.2.1
 fastjsonschema==2.22.2
-filelock==4.2.4
+filelock==4.2.5
 fire==0.7.1
 fqdn==1.5.1
 fsspec==2026.7.0
@@ -114,7 +114,7 @@ nvidia-nvjitlink==13.4.92
 nvidia-nvshmem-cu13==3.4.5
 nvidia-nvtx==13.0.85
 opencv-python-headless==5.0.0.93
-opentelemetry-api==1.45.1
+opentelemetry-api==1.45.2
 opentelemetry-exporter-otlp-proto-common==1.44.0
 opentelemetry-exporter-otlp-proto-http==1.44.0
 opentelemetry-proto==1.44.0
@@ -175,9 +175,9 @@ tifffile==2026.9.15
 timm==1.0.29
 tinycss2==1.5.1
 tokenizers==0.23.2
-torch==2.14.1
+torch==2.15.0
 torchvision==0.29.0
-tornado==6.5.10
+tornado==6.6
 tqdm==4.70.1
 traitlets==5.16.1
 transformers==5.21.0
