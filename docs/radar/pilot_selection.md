@@ -25,7 +25,7 @@ The workflow is `shortlist -> features -> text -> flag -> select -> candidates -
 | 3D or multi-panel displays | GE Vingmed image code `0041` or `0051` (`3d_or_multipanel`, see Unusual image data). | `radar_pilot.py select` |
 | Uncertain clips | Partial or conflicting evidence; omitted from the pilot and listed separately, not classified as invalid. | `clip_screen.py`, `radar_pilot.py select` |
 
-Every clip of a shortlisted study that is left out is listed with its reasons: `removed_clips.csv` (`shortlist`: `other_view`, `acquisition`, `color_flow`, `few_frames`, and `vendor` or `year` for a category study's clip outside `--vendor` or `--years`) and `not_kept_clips.csv` (`select`: those plus the excluded and uncertain clips after the screen, `color_flow` and `3d_or_multipanel` included, with `step`, `decision`, `reasons` and `in_pilot`). A clip lists every reason that applies. Like every output they hold patient IDs and paths and stay in the private `--out-dir`.
+Every clip of a shortlisted study that is left out is listed with its reasons: `removed_clips.csv` (`shortlist`: `other_view`, `acquisition`, `color_flow`, `few_frames`, and `vendor` or `year` for a category study's clip outside `--vendor` or `--years`) and `not_kept_clips.csv` (`select`: those plus the excluded and uncertain clips after the screen, `color_flow` and `3d_or_multipanel` included, and clean clips of unchosen backup studies (`step=selection`, `decision=not_chosen`, `reasons=study_not_chosen`), with `step`, `decision`, `reasons` and `in_pilot`). A clip lists every reason that applies. Like every output they hold patient IDs and paths and stay in the private `--out-dir`.
 
 Exclusions are automatic. Only retained clips reach Labelbox for human review. Short clips are kept unless they have 3 frames or fewer. Reviewers report missed exclusions in the form's Comments; affected clips are removed and the screening rule corrected.
 
@@ -139,7 +139,8 @@ Eligible studies must have:
 
 - A training-split patient with a TTE examination.
 - Clips of any vendor (no `--vendor`); with `--vendor GE`, of GE's three vendor names alone (GE Vingmed Ultrasound, GE Healthcare Ultrasound, GEMS Ultrasound), whose headers give the acquisition mode; with `--vendor "GE Vingmed Ultrasound"`, of GE Vingmed alone, the vendor the screen was mostly labelled on. Another vendor's mode is read from the pixels by the screen; each clip's source is `mode_source`.
-- One cleaned DeepECHO report, found through the PACS index by accession (`--pacs`), with the report, PACS and manifest agreeing on the patient and PACS and manifest on the date. Rows repeated exactly count once; an accession whose rows differ, or a study with several reports, is left out. No EF label is needed: EF and RVSP are joined where they exist for that report, so a study without EF can still be valve disease.
+- Consistent patient IDs and study dates across every training clip of each study. Conflicts stop shortlisting before patient exclusions, year/vendor filters or clip rules can hide a row; the error reports only the number of affected studies. Correct the source metadata and rebuild the manifest before retrying.
+- One cleaned DeepECHO report, found through the PACS index by accession (`--pacs`), with the report, PACS and manifest agreeing on the patient and PACS and manifest on the date. Rows repeated exactly count once; an accession whose rows differ excludes its entire study even when another accession has a valid report. Multiple reports for a study are ambiguous before patient/date filtering, so an incompatible second report cannot be hidden by a compatible one. No EF label is needed: EF and RVSP are joined where they exist for that report, so a study without EF can still be valve disease.
 - At least 20 retained classified-view B-mode clips (`--min-clips`) covering A4C, A2C, PLAX, and PSAX (`--view-families`; a family is a view's name before its first `_`). The clip rule has already left only such clips; for other vendors, B-mode is counted after the screen reads the mode.
 
 The archive manifest must contain DICOM acquisition fields from `build_manifests.py` at commit `57204d1`.
@@ -160,6 +161,8 @@ The selection workflow is:
 4. **`candidates`:** Generate column-review prefills, verifying selection, reports, and screening provenance (`view_type_items.csv` stays empty).
 
 `select` refuses a shortlist drawn before the V1 rule, and `candidates` a selection made before it.
+Artifacts must also record the current study identity and report-link policy. Shortlists and selections made before
+these checks must be regenerated from `shortlist`, followed by screening and selection; they cannot be reused.
 
 `--exclude-patients` prevents validation patients from entering pilot or reference selection.
 
@@ -172,3 +175,9 @@ Every step records input, output, media, and code SHA-256 hashes alongside the G
 Outputs and review media remain in owner-only directories (`0700`, files `0600`) outside the repository (`--out-dir` inside it is refused), with sensitive errors in private logs. Patient identifiers, report text, and global-key mappings remain private.
 
 Labelbox upload is handled separately by `tools/labelbox/pilot_upload.py` on branch `issue_22/labelbox_workflow_test`. Context attachments must contain numeric values and report-field references, **not raw report text**.
+
+## Before uploading the pilot (issue #22)
+
+Selection and screening do not establish de-identification. In the approved secure environment, verify every video and caption against the agreed de-identification check, inspect the exact outgoing metadata, and keep all source-to-pilot mappings, report clauses, identifiers, dates and local paths private. Upload only the approved video, caption and structured review metadata, including ontology and available caption-generation versions.
+
+Issue #22 calls for 3–5 representative studies and approximately 100–150 clips. The two-study option is useful for a trial; it does not satisfy that requirement. Reconcile the final composition with issue #22 before upload. The selection tool does not enforce the total clip range.

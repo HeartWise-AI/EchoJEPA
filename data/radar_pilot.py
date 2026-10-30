@@ -86,6 +86,7 @@ REPORT_PATIENT = "Dossier"
 PACS_COLUMNS = {"AccessionNumber": "accession", "StudyInstanceUID": "study_id", "PatientID": "pacs_patient",
                 "StudyDate": "pacs_date"}
 LINK_REASONS = ("no_pacs_accession", "report_rows_differ", "no_report", "patient_or_date_disagree", "several_reports")
+LINK_POLICY = "study_identity_and_reports_v2"
 CLIP_COLUMNS = ("patient_id", "study_id", "view", "video_path", "dicom_path", "vendor", "model", "acq_category",
                 "mode_source", "n_frames", "form", "global_key")
 # A vendor slot's category in shortlist.csv and pilot_studies.csv: `vendor:<vendor>`.
@@ -376,15 +377,18 @@ def link_reports(reports, pacs, studies):
              & same_patient(linked.pacs_patient, linked.patient_id)
              & matches(linked.pacs_date.str[:8] == linked.study_date.str[:8]))
     agreeing = linked[agree]
-    several = agreeing.study_id.duplicated(keep=False)
+    # Ambiguity belongs to the study, before incompatible reports are filtered out. A valid accession must not
+    # hide another report with conflicting rows or a patient/date mismatch.
+    several = set(linked.study_id[linked.study_id.duplicated(keep=False)])
     in_pacs, with_report = set(pacs.study_id), set(linked.study_id)
-    rows_differ = set(pacs.study_id[pacs.accession.isin(differing)]) - with_report
+    rows_differ = set(pacs.study_id[pacs.accession.isin(differing)])
     reason = pd.Series("", index=pd.Index(sorted(ids), name="study_id"), dtype=object)
     for name, left in zip(LINK_REASONS, (ids - in_pacs, rows_differ, in_pacs - with_report - rows_differ,
-                                         with_report - set(agreeing.study_id), set(agreeing.study_id[several]))):
+                                         with_report - set(agreeing.study_id), several)):
         reason.loc[sorted(left)] = name
-    one = agreeing[~several].drop(columns=["AccessionNumber", REPORT_PATIENT, "pacs_patient", "pacs_date",
-                                           "patient_id", "study_date"])
+    reason.loc[sorted(rows_differ)] = "report_rows_differ"
+    one = agreeing[agreeing.study_id.map(reason) == ""].drop(
+        columns=["AccessionNumber", REPORT_PATIENT, "pacs_patient", "pacs_date", "patient_id", "study_date"])
     return one.reset_index(drop=True), reason
 
 
@@ -410,6 +414,13 @@ def shortlist(args):
     funnel.append(funnel_row("shortlist", "training split", every, _count("non_train", (split != "train").sum()),
                              "clips", "splits: " + reason_counts(split[split != "train"])))
     every["patient_id"], every["study_id"] = normalize_id(every.patient_id), normalize_id(every.study_id)
+    # Validate all training clips before year/vendor/clip rules or patient exclusions can hide a conflicting row.
+    # The later first() calls are safe only if the entire study has a single identity and date.
+    identities = every.groupby("study_id")[["patient_id", "study_date"]].nunique(dropna=False)
+    conflicting = (identities > 1).any(axis=1)
+    if conflicting.any():
+        raise SystemExit(f"{int(conflicting.sum())} training studies have conflicting patient IDs or study dates "
+                         "in the manifest. Correct the source metadata and rebuild the manifest before shortlisting.")
     every["year"] = pd.to_numeric(every.study_date.astype("string").str[:4], errors="coerce")
     every["form"], every["clip_rule"], every["mode_source"] = review_form(every), clip_rule(every), mode_source(every)
     families = list(dict.fromkeys(args.view_families))
@@ -552,6 +563,7 @@ def shortlist(args):
         "created_utc": _now(), "code_commit": git_commit(), "code_sha256": clip_screen.code_sha256(__file__),
         "seed": args.seed,
         "criteria": {"split": "train", "years": args.years, "vendor": args.vendor or "any",
+                     "link_policy": LINK_POLICY,
                      "vendors": list(vendors) if vendors else "any",
                      "min_clips": args.min_clips,
                      "required_view_families": families,
@@ -712,6 +724,9 @@ def select(args):
         raise SystemExit("The shortlist lists no removed_clips.csv or was drawn before V1's rule (B-mode clips of "
                          "classified views only): an older shortlist, whose clips would reach the pilot in other "
                          "modes and views. Rerun shortlist, then the screen on its lists.")
+    if record["criteria"].get("link_policy") != LINK_POLICY:
+        raise SystemExit("The shortlist predates the study identity and report ambiguity checks: rerun shortlist, "
+                         "then the screen on its lists.")
     removed = inputs.csv(listed[3], dtype={"patient_id": str, "study_id": str, "reasons": str})
     min_clips, families = record["criteria"]["min_clips"], record["criteria"]["required_view_families"]
     flags = inputs.parquet(args.flags)
@@ -751,10 +766,12 @@ def select(args):
     uncertain = clips[clips.decision == "uncertain"]
     uncertain[[*CLIP_COLUMNS, "decision_reasons"]].to_csv(outputs[2], index=False)
     # Every clip of every shortlisted study that the pilot leaves out, with its reasons: removed before the screen
-    # (shortlist) or excluded or uncertain after it (screen: by the screen, or by `pilot_rule` on its readings).
+    # (shortlist), excluded or uncertain after it (screen), or clean but belonging to an unchosen backup study.
     not_kept = pd.concat([
         removed.assign(step="shortlist", decision="removed", header_acq_category=removed.acq_category),
-        clips[clips.exclude].assign(step="screen", reasons=clips.decision_reasons)], ignore_index=True)
+        clips[clips.exclude].assign(step="screen", reasons=lambda rows: rows.decision_reasons),
+        clips[~clips.exclude & ~clips.study_id.isin(set(chosen.study_id))].assign(
+            step="selection", decision="not_chosen", reasons="study_not_chosen")], ignore_index=True)
     not_kept = not_kept.assign(in_pilot=not_kept.study_id.isin(set(chosen.study_id)))
     not_kept[["step", "decision", "reasons", "in_pilot", *CLIP_COLUMNS, "header_acq_category"]].to_csv(
         outputs[3], index=False)
@@ -786,6 +803,7 @@ def select(args):
         # Left out after the screen, on its readings (decision exclude, step screen in not_kept_clips.csv).
         "pilot_rule": {"captioned_mode": CAPTIONED_MODE,
                        "3d_or_multipanel": {"vendor": MULTIPANEL_3D_VENDOR, "image_codes": MULTIPANEL_3D_CODES}},
+        "link_policy": LINK_POLICY,
         "n_studies": args.n_studies, "studies": int(len(chosen)), "categories": chosen.category.tolist(),
         "vendor_slots": [c for c in categories if c.startswith(VENDOR_SLOT)],
         # The modes read from the pixels against the header's where it gives them (agreement, not labels), and the
@@ -933,6 +951,9 @@ def verify_selection(out_dir, inputs=None):
     if "pilot_rule" not in selection:
         raise SystemExit("The selection was made before V1's rule (B-mode clips of classified views only): rerun "
                          "shortlist, the screen and select.")
+    if selection.get("link_policy") != LINK_POLICY:
+        raise SystemExit("The selection predates the study identity and report ambiguity checks: rerun shortlist, "
+                         "the screen and select.")
     if "flags" not in selection or screen_chain(out_dir, selection["flags"], inputs) != selection["inputs"]:
         raise SystemExit("The selection does not record the screening chain it was made from, or that chain "
                          "changed since: rerun select.")
@@ -1083,3 +1104,4 @@ def main(argv=None):
 
 if __name__ == "__main__":
     main()
+
