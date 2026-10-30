@@ -76,9 +76,9 @@ Decoder failures (cannot open, no frames, or decoding errors) exclude clips as `
 
 ## Calibration and validation
 
-**Screening thresholds remain provisional** until validated on human-labeled clips. The current rule and default thresholds are calibrated (`CALIBRATION`, 2026-10-30) from its report on 266 validation clips of independent patients: 258 of 260 clean clips kept, all 4 still clips excluded, and both measured clips excluded. Positive cases came from 130 real loops (all 58 measured clips excluded, all 64 clean clips kept) and synthetic overlays (all 53 results boxes read). The known limitations below still apply.
+**Screening thresholds remain provisional** until validated on human-labeled clips. The current rule and default thresholds are calibrated from its report on 266 validation clips of independent patients: 258 of 260 clean clips kept, all 4 still clips excluded, and both measured clips excluded. Positive cases came from 130 real loops (all 58 measured clips excluded, all 64 clean clips kept) and synthetic overlays (all 53 results boxes read). The known limitations below still apply.
 
-The calibration reads the files as re-masked on 2026-10-28, which replaced 2 validation clips in place; those 2 were answered again on a new sheet of the same 266 clips, and the other answers carried over (same video bytes). The second-shortlist audit and the diagnostic sample were left out of this calibration: their samples were drawn from flags of videos replaced since. Against the 2026-10-23 calibration, counting a heart rate as measurement text turned 9 measured clips from uncertain to excluded (1 validation, 8 unusual-code displays) and excluded the real-loop clip it kept; no clean clip changed.
+The calibration reads the files as re-masked by the archive-wide fix, which replaced 2 validation clips in place; those 2 were answered again on a new sheet of the same 266 clips, and the other answers carried over (same video bytes). The second-shortlist audit and the diagnostic sample were left out of this calibration: their samples were drawn from flags of videos replaced since. Against the previous calibration, counting a heart rate as measurement text turned 9 measured clips from uncertain to excluded (1 validation, 8 unusual-code displays) and excluded the real-loop clip it kept; no clean clip changed.
 
 The calibration workflow is:
 
