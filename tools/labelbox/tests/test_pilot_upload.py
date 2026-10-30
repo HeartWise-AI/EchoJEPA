@@ -247,8 +247,9 @@ class PlanTests(unittest.TestCase):
 
 
 class FakeApi:
-    def __init__(self, existing=()):
+    def __init__(self, existing=(), unprocessed=()):
         self.existing = set(existing)
+        self.unprocessed = set(unprocessed)
         self.calls = []
         self.uploaded = []
         self.batches = {}
@@ -263,6 +264,13 @@ class FakeApi:
 
     def existing_global_keys(self, workspace, rows):
         return self.existing & {row.global_key for row in rows}
+
+    def remove_unprocessed(self, keys):
+        removed = self.unprocessed & set(keys)
+        self.calls.append(("remove unprocessed", tuple(sorted(removed))))
+        self.existing -= removed
+        self.unprocessed -= removed
+        return removed
 
     def upload_rows(self, workspace, rows):
         self.calls.append("upload")
@@ -295,11 +303,23 @@ class OrchestrationTests(unittest.TestCase):
 
         self.assertEqual(api.uploaded, [A4C, OTHER])
         self.assertEqual(result.uploaded, 2)
-        self.assertEqual(api.calls, [("workspace", (COLUMN_REVIEW, VIEW_TYPE_REVIEW), True), "upload",
+        self.assertEqual(api.calls, [("workspace", (COLUMN_REVIEW, VIEW_TYPE_REVIEW), True),
+                                     ("remove unprocessed", ()), "upload",
                                      ("batches", f"project-{COLUMN_REVIEW}"),
                                      ("batches", f"project-{VIEW_TYPE_REVIEW}"), ("prelabels", True)])
         self.assertEqual(api.prelabeled, [A4C, COLOR])
         self.assertTrue(result.prelabels_imported)
+
+    def test_uploads_again_the_rows_labelbox_never_processed(self):
+        with tempfile.TemporaryDirectory() as folder:
+            plan = read_plan(make_folder(Path(folder)))
+        api = FakeApi(existing={A4C, COLOR}, unprocessed={COLOR})
+
+        result = ensure_upload(api, plan)
+
+        self.assertEqual(api.uploaded, [COLOR, OTHER])
+        self.assertEqual((result.uploaded, result.replaced), (2, 1))
+        self.assertEqual(api.calls[1:3], [("remove unprocessed", (COLOR,)), "upload"])
 
     def test_each_kind_imports_its_prelabels_under_its_own_name(self):
         for folder_keys, study, kind in (((A4C, COLOR, OTHER), STUDY, WORKFLOW_TEST),
@@ -373,6 +393,13 @@ class FakeClient:
         self.ontologies = list(ontologies)
         self.created = []
         self.rows = {}
+        self.unprocessed, self.queries = set(), []
+
+    def execute(self, query, params):
+        """The processing check `create_batch` waits on, the only query the uploader sends itself."""
+        self.queries.append(list(params["globalKeys"]))
+        processed = not self.unprocessed & set(params["globalKeys"])
+        return {"queryAllDataRowsHaveBeenProcessed": {"allDataRowsHaveBeenProcessed": processed}}
 
     def get_datasets(self, where=None):
         return list(self.datasets)
@@ -558,6 +585,25 @@ class SdkPayloadTests(unittest.TestCase):
         with self.assertRaisesRegex(UploadError, "belongs to another dataset"):
             sdk_api(client).existing_global_keys(workspace, plan.rows)
 
+    def test_a_failed_row_is_named_without_its_url(self):
+        url = "https://storage.example.invalid/clip"
+
+        class FailedTask(FakeTask):
+            errors = [{"message": f"Command '['ffprobe', '-v', 'quiet', '{url}']' returned non-zero exit status 1.",
+                       "failedDataRows": [{"globalKey": COLOR, "rowData": url}]}]
+
+        client = SimpleNamespace(upload_file=lambda path: url)
+        datasets = {form: SimpleNamespace(create_data_rows=lambda rows: FailedTask()) for form in FORMS}
+        with tempfile.TemporaryDirectory() as folder:
+            plan = read_plan(make_folder(Path(folder)))
+            with self.assertRaises(UploadError) as raised:
+                sdk_api(client).upload_rows(Workspace(datasets, {}, {}), plan.rows)
+
+        message = str(raised.exception)
+        self.assertIn(f"failed for 1 of 2 rows ({COLOR})", message)
+        self.assertIn("exit status 1", message)
+        self.assertNotIn("storage.example.invalid", message)
+
     def test_export_reads_the_rows_from_the_stream_not_the_result_url(self):
         rows = [exported(A4C), exported(OTHER)]
 
@@ -635,6 +681,37 @@ class SdkPayloadTests(unittest.TestCase):
         self.assertEqual(len(predictions), sum(len(prelabels(c)) for c in plan.candidates.values()))
         self.assertTrue(all("schemaId" in p and "name" not in p for p in predictions))
         self.assertEqual({p["dataRow"]["globalKey"] for p in predictions}, {A4C, COLOR})
+
+
+class UnprocessedRowTests(unittest.TestCase):
+    """Rows Labelbox created but never processed (it could not read the video), found before batching."""
+
+    def setUp(self):
+        self.client, self.deleted = FakeClient(), []
+        for key in (A4C, COLOR):
+            self.client.rows[key] = SimpleNamespace(labels=lambda: [], delete=lambda key=key: self.deleted.append(key))
+
+    def test_processed_rows_cost_one_request_and_nothing_is_deleted(self):
+        self.assertEqual(sdk_api(self.client).remove_unprocessed({COLOR, A4C}), set())
+        self.assertEqual(sdk_api(self.client).remove_unprocessed(set()), set())
+
+        self.assertEqual(self.client.queries, [sorted([A4C, COLOR])])
+        self.assertEqual(self.deleted, [])
+
+    def test_an_unprocessed_row_is_deleted_so_that_it_is_uploaded_again(self):
+        self.client.unprocessed.add(COLOR)
+
+        self.assertEqual(sdk_api(self.client).remove_unprocessed({A4C, COLOR}), {COLOR})
+        self.assertEqual(self.deleted, [COLOR])
+
+    def test_a_labelled_unprocessed_row_stops_the_run(self):
+        self.client.unprocessed.add(COLOR)
+        self.client.rows[COLOR].labels = lambda: ["a label"]
+
+        with self.assertRaises(UploadError) as raised:
+            sdk_api(self.client).remove_unprocessed({A4C, COLOR})
+        self.assertIn(f"never processed 1 labelled rows of this folder ({COLOR})", str(raised.exception))
+        self.assertEqual(self.deleted, [])
 
 
 class OperationNotAllowedException(Exception):
@@ -938,6 +1015,16 @@ class MainTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertIn("uploaded now: 3", out)
         self.assertIn("prelabels: imported", out)
+
+    def test_apply_reports_rows_uploaded_again(self):
+        api = FakeApi(existing={COLOR}, unprocessed={COLOR})
+        with tempfile.TemporaryDirectory() as folder:
+            make_folder(Path(folder))
+            code, out, _ = self.run_main("--folder", folder, "--apply", environ={"LABELBOX_API_KEY": "key"},
+                                         api_factory=lambda _key: api)
+        self.assertEqual(code, 0)
+        self.assertIn("uploaded now: 3", out)
+        self.assertIn("of which 1 again: Labelbox had not processed their videos", out)
 
     def test_delete_lists_first_and_deletes_only_with_apply(self):
         cleanup = CleanupTests("test_listing_counts_only_this_folders_work_and_deletes_nothing")

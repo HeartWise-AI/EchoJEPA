@@ -37,7 +37,7 @@ import time
 from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Iterator, Mapping, Sequence
+from typing import Any, Callable, Collection, Iterator, Mapping, Sequence
 
 from tools.labelbox import column_review, view_type_review
 from tools.labelbox.create_pilot_project import (
@@ -293,6 +293,7 @@ class UploadResult:
     batches: Mapping[str, int]
     created_batches: Mapping[str, int]
     prelabels_imported: bool
+    replaced: int = 0  # rows Labelbox had not processed, deleted and uploaded again.
 
 
 def _one(resources: Sequence[Any], kind: str, name: str) -> Any | None:
@@ -300,6 +301,13 @@ def _one(resources: Sequence[Any], kind: str, name: str) -> Any | None:
     if len(matches) > 1:
         raise UploadError(f"Several {kind}s are named {name!r}.")
     return matches[0] if matches else None
+
+
+def _failed_keys(errors: Any, keys: Sequence[str]) -> list[str]:
+    """The keys, of `keys` and in their order, that a data-row task's errors name (`failedDataRows`)."""
+    named = {row.get("globalKey") for error in (errors if isinstance(errors, list) else [errors])
+             if isinstance(error, Mapping) for row in error.get("failedDataRows") or [] if isinstance(row, Mapping)}
+    return [key for key in keys if key in named]
 
 
 def _empty_form(ontology) -> bool:
@@ -416,6 +424,31 @@ class LabelboxUploadApi:
         with _step("checking which clips Labelbox already has"):
             return set(self._rows_in_labelbox(workspace, rows))
 
+    def _processed(self, keys: Sequence[str]) -> bool:
+        """Whether Labelbox processed (read the video of) the data row of every key: the check `create_batch` repeats
+        for up to an hour before it creates a batch (the SDK's `Project.__check_data_rows_have_been_processed`)."""
+        response = self.client.execute(
+            "query AllDataRowsProcessed($globalKeys: [ID!]) { queryAllDataRowsHaveBeenProcessed("
+            "globalKeys: $globalKeys) { allDataRowsHaveBeenProcessed } }", {"globalKeys": list(keys)})
+        return bool(response["queryAllDataRowsHaveBeenProcessed"]["allDataRowsHaveBeenProcessed"])
+
+    def remove_unprocessed(self, keys: Collection[str]) -> set[str]:
+        """Delete the rows of these keys that Labelbox created but never processed, and return their keys, so that the
+        run uploads them again. Such a row (Labelbox could not read one clip's video on 2026-10-30) would hold its
+        study batch back for an hour, then fail it. A labelled one stops the run instead."""
+        with _step("checking that Labelbox processed the clips it has"):
+            if not keys or self._processed(sorted(keys)):
+                return set()
+            unprocessed = {key: self._data_row(key) for key in sorted(keys) if not self._processed([key])}
+            labelled = [key for key, data_row in unprocessed.items() if list(data_row.labels())]
+        if labelled:
+            raise UploadError(f"Labelbox never processed {len(labelled)} labelled rows of this folder "
+                              f"({', '.join(labelled)}): remove them in Labelbox, then run again.")
+        with _step("deleting the rows Labelbox could not process"):
+            for data_row in unprocessed.values():
+                data_row.delete()
+        return set(unprocessed)
+
     def upload_rows(self, workspace: Workspace, rows: Sequence[Row]) -> None:
         for form in FORMS:
             payload = []
@@ -435,8 +468,12 @@ class LabelboxUploadApi:
             with _step(f"creating the data rows in {self.targets[form].dataset_name!r}"):
                 task = workspace.datasets[form].create_data_rows(payload)
                 task.wait_till_done()
-            if task.status == "FAILED" or task.errors:
-                raise UploadError(f"Data-row creation failed: {_safe_error_summary(task.errors)}.")
+                errors = task.errors
+            if task.status == "FAILED" or errors:
+                failed = _failed_keys(errors, [item["global_key"] for item in payload])
+                which = f" for {len(failed)} of {len(payload)} rows ({', '.join(failed)})" if failed else ""
+                raise UploadError(f"Data-row creation failed{which}: {_safe_error_summary(errors)}. A rerun uploads "
+                                  "again the rows Labelbox does not have or did not process.")
 
     @staticmethod
     def ensure_batches(project, plan: Mapping[str, Sequence[str]]) -> int:
@@ -553,12 +590,13 @@ class LabelboxUploadApi:
 
 def ensure_upload(api, plan: Plan, *, replace_form: bool = False) -> UploadResult:
     """Check the projects and datasets, create and connect the forms (replacing an emptied project's form with
-    `replace_form`), upload missing rows, batch them by study (rows must be batched before their prelabels are
-    imported), then import the column review prelabels."""
+    `replace_form`), upload missing rows (and again those Labelbox never processed), batch them by study (rows must
+    be batched before their prelabels are imported), then import the column review prelabels."""
     forms = plan.forms()
     workspace = api.ensure_workspace(forms, create=True, replace_form=replace_form)
     existing = api.existing_global_keys(workspace, plan.rows)
-    missing = [row for row in plan.rows if row.global_key not in existing]
+    replaced = api.remove_unprocessed(existing)
+    missing = [row for row in plan.rows if row.global_key not in existing - replaced]
     if missing:
         api.upload_rows(workspace, missing)
     created = {form: api.ensure_batches(workspace.projects[form], plan.batches(form)) for form in forms}
@@ -567,7 +605,7 @@ def ensure_upload(api, plan: Plan, *, replace_form: bool = False) -> UploadResul
         refresh=created.get(COLUMN_REVIEW, 0) > 0)
     return UploadResult(rows=len(plan.rows), uploaded=len(missing),
                         batches={form: len(plan.batches(form)) for form in forms}, created_batches=created,
-                        prelabels_imported=imported)
+                        prelabels_imported=imported, replaced=len(replaced))
 
 
 def _answers_from_label(label: Mapping[str, Any]) -> dict[str, Any]:
@@ -757,6 +795,8 @@ def main(argv: Sequence[str] | None = None, *, environ: Mapping[str, str] = os.e
             print(f"This folder's upload holds {listed}; nothing was deleted. Run with --delete --apply to delete.")
     elif args.apply:
         print(f"rows: {result.rows} ({description}); uploaded now: {result.uploaded}")
+        if result.replaced:
+            print(f"of which {result.replaced} again: Labelbox had not processed their videos")
         for form in result.batches:
             print(f"{targets[form].project_name}: study batches {result.batches[form]}, "
                   f"created now {result.created_batches[form]}")

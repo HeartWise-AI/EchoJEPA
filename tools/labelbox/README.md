@@ -260,6 +260,8 @@ test. Each clip carries a pilot notice and its proposals; report numbers are sho
 (lengths in cm, the LA volume index in mL/m²), and report text stays local. Batches are named `RADAR pilot
 study <hash>`. `--delete --apply` removes a pilot upload only while its projects hold no submitted review.
 
+Labelbox reads videos when creating data rows and reports unreadable ones. On rerun, unlabeled failed rows are deleted and reuploaded to prevent blocking their study batches during the SDK's one-hour processing wait.
+
 ## Data and credential safety
 
 - Use synthetic or fully de-identified test clips until the workspace and storage
