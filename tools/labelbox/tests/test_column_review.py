@@ -6,15 +6,19 @@ import unittest
 from types import SimpleNamespace
 from unittest import mock
 
-from app.radar.ontology import VIEWS
+from app.radar.ontology import VIEWS, load_ontology
 from tools.labelbox.column_review import (
     FORM, ROOT, SPEC, allowed_columns, build_candidate, build_form, context_attachment,
     decode_annotations, encode_answers, finding_sentence, load_spec, prelabels, review_problems, score_review,
-    validate_annotations,
+    validate_annotations, view_targets,
 )
 from tools.labelbox.import_column_review import (
-    ImportStopped, apply_bundle, comparable_shape, import_outcome, schema_shape, with_schema_ids,
+    ONTOLOGY_NAME, ImportStopped, apply_bundle, comparable_shape, import_outcome, schema_shape, with_schema_ids,
 )
+
+
+def concepts(candidate):
+    return [c["concept"] for c in candidate["columns"]]
 
 
 def as_stored(form, name):
@@ -116,16 +120,75 @@ class TestColumnPrefills(unittest.TestCase):
         c = self.candidate({"MHI VD fonction systolique": 0, "Right ventricule findings": "Dysfonction sévère du ventricule droit"})
         self.assertFalse(any(x["concept"] == "rv_function" for x in c["columns"]))
 
-    def test_view_modality_and_focused_target_routing(self):
-        spec = load_spec()
+    def test_view_modality_and_structure_routing(self):
         self.assertNotIn("aortic_appearance", allowed_columns("A4C", "bmode"))
         self.assertNotIn("tricuspid_regurgitant_jet", allowed_columns("A4C", "bmode"))
         self.assertIn("tricuspid_regurgitant_jet", allowed_columns("A4C", "color_flow"))
         self.assertEqual(self.candidate(view="OTHER")["columns"], [])
-        self.assertFalse(any(c["concept"].startswith("tricuspid_") for c in self.candidate(view="A4C_LV")["columns"]))
-        self.assertEqual(self.candidate(view="A4C_ZOOM")["columns"], [])
-        c = self.candidate(view="A4C_ZOOM", targets=["tricuspid"])
-        self.assertEqual([x["concept"] for x in c["columns"]], ["tricuspid_appearance"])
+        self.assertIn("lv_size", concepts(self.candidate()))
+        # LV-focused: the LV and the view's valves, with LV function and wall motion but no chamber size.
+        lv_focused = self.candidate(view="A4C_LV")
+        self.assertEqual(lv_focused["suggested_targets"], ["lv", "mitral", "tricuspid"])
+        self.assertEqual(concepts(lv_focused), ["lv_function", "tricuspid_appearance", "wall_basal_inferoseptal"])
+        # Zoomed: the base view's structures are prefilled, and every finding but chamber size can be.
+        zoomed = self.candidate(view="A4C_ZOOM")
+        self.assertEqual(zoomed["suggested_targets"], self.candidate()["suggested_targets"])
+        self.assertEqual(concepts(zoomed), ["lv_function", "tricuspid_appearance", "wall_basal_inferoseptal"])
+        self.assertEqual(concepts(self.candidate(view="A4C_ZOOM", targets=["tricuspid"])), ["tricuspid_appearance"])
+
+    def test_each_view_prefills_the_structures_of_the_audit(self):
+        spec = load_spec()
+        a4c = ["lv", "rv", "la", "ra", "ivs", "ias", "mitral", "tricuspid", "pericardium"]
+        plax = ["lv", "rv", "la", "ivs", "mitral", "aortic", "lvot", "aorta_root", "aorta_ascending", "pericardium"]
+        self.assertEqual(spec["views"]["A4C"]["targets"], a4c)
+        self.assertEqual(spec["views"]["A5C"]["targets"], a4c + ["aortic", "lvot", "aorta_root"])
+        self.assertEqual(spec["views"]["PLAX"]["targets"], plax)
+        self.assertEqual(spec["views"]["PLAX_DEEP"]["targets"], plax + ["aorta_descending"])
+        self.assertEqual(spec["views"]["PLAX_DEEP"]["columns"], ["pericardial_effusion"])
+        self.assertEqual(set(spec["views"]["PSAX_AV"]["targets"]),
+                         {"aortic", "rv", "rvot", "ra", "la", "tricuspid", "pulmonic", "pulmonary_artery", "ias"})
+        self.assertEqual(spec["views"]["A3C"]["targets"][-3:], ["lvot", "aorta_root", "pericardium"])
+        self.assertEqual(spec["views"]["A2C"]["targets"], ["lv", "la", "mitral", "pericardium"])
+        for view, route in spec["views"].items():
+            levels = route.get("levels", {})
+            reachable = set(route["targets"]) | {t for level in levels.values() for t in level["targets"]}
+            self.assertLessEqual(reachable, set(spec["targets"]), view)
+            for key in route["columns"]:  # every finding of a view is about one of its structures
+                self.assertIn(spec["fields"][key]["target"], reachable, f"{view} {key}")
+            if view.endswith(("_ZOOM", "_LV")):  # the whole chamber may not be in the image
+                self.assertFalse({"lv_size", "rv_size", "la_size", "ra_size"} & set(route["columns"]), view)
+                self.assertIn("lv_function", route["columns"], view)
+            if view.endswith("_ZOOM"):
+                self.assertEqual(route["targets"], spec["views"][view.removesuffix("_ZOOM")]["targets"], view)
+
+    def test_the_structures_are_the_ontology_s(self):
+        """One structure list: each form structure is an ontology structure whose visibility prior names exactly the
+        views that prefill it, the PSAX and subcostal levels included."""
+        spec, ontology = load_spec(), load_ontology()
+        links = spec["target_structures"]
+        self.assertEqual(list(links), list(spec["targets"]))
+        self.assertEqual(sorted(links.values()), sorted(ontology.structures))
+        for target, structure in links.items():
+            views = {view for view, route in spec["views"].items()
+                     if target in route["targets"] + [t for level in route.get("levels", {}).values()
+                                                      for t in level["targets"]]}
+            concept = ontology.concept(ontology.visibility_concept(structure))
+            self.assertEqual(set(concept.prior_views), views, target)
+            self.assertLessEqual({(view, "bmode") for view in views} | {(view, "color_flow") for view in views},
+                                 set(concept.visible_in), target)
+
+    def test_findings_of_structures_the_audit_added(self):
+        for view, key in [("PSAX_AV", "rv_size"), ("PSAX", "rv_size"), ("PLAX", "rv_size"), ("PSAX_AV", "la_size"),
+                          ("PSAX_AV", "ra_size"), ("A3C", "aorta_root_size"), ("A5C", "aorta_root_size"),
+                          ("A5C", "tricuspid_appearance")]:
+            self.assertIn(key, allowed_columns(view, "bmode"), f"{view} {key}")
+        for view in ("A4C", "PSAX_AV", "PLAX"):  # the new structures have no findings yet
+            self.assertTrue(set(view_targets(view, None)) - {load_spec()["fields"][k]["target"]
+                                                             for k in allowed_columns(view, "bmode")})
+        self.assertEqual(finding_sentence("aortic_regurgitant_jet", "demonstrated"),
+                         "An aortic regurgitant jet is demonstrated in this color acquisition.")
+        self.assertEqual(finding_sentence("mitral_regurgitant_jet", "demonstrated"),
+                         "A mitral regurgitant jet is demonstrated in this color acquisition.")
 
     def test_cusp_count_and_prolapse_are_view_restricted(self):
         report = {"Aortic valve findings": "Valve aortique tricuspide", "Mitral valve findings": "Prolapsus mitral"}
@@ -137,13 +200,25 @@ class TestColumnPrefills(unittest.TestCase):
         self.assertEqual(av["columns"][0]["value"], "three")
 
     def test_wms_ambiguity_and_psax_level(self):
-        report = {"WMS Basal Inferoseptal": 3, "WMS 4C Apical Lateral": 1, "WMS SAX Inferior": 2}
-        c = self.candidate(report)
-        self.assertEqual([col["value"] for col in c["columns"]], ["akinetic_or_severely_hypokinetic", "normal_or_hyperkinetic"])
-        self.assertEqual(self.candidate(report, view="PSAX")["columns"], [])
-        c = self.candidate(report, view="PSAX", level="mid")
-        self.assertEqual(c["columns"][0]["concept"], "wall_mid_inferior")
-        self.assertEqual(self.candidate(report, view="PSAX", level="basal")["columns"], [])
+        report = {"WMS Basal Inferoseptal": 3, "WMS 4C Apical Lateral": 1, "WMS SAX Inferior": 2,
+                  "Mitral valve findings": "Valve mitrale calcifiée"}
+        walls = [col["value"] for col in self.candidate(report)["columns"] if col["concept"].startswith("wall_")]
+        self.assertEqual(walls, ["akinetic_or_severely_hypokinetic", "normal_or_hyperkinetic"])
+        # The view classifier gives no PSAX level: only the structures of every level, and the reviewer states it.
+        psax = self.candidate(report, view="PSAX")
+        self.assertIsNone(psax["level"])
+        self.assertEqual(psax["suggested_targets"], ["lv", "rv", "ivs", "pericardium"])
+        self.assertEqual(psax["columns"], [])
+        self.assertNotIn("psax_level", decode_annotations(prelabels(psax)))
+        self.assertEqual(concepts(self.candidate(report, view="PSAX", level="mid")),
+                         ["mitral_appearance", "wall_mid_inferior"])
+        self.assertEqual(concepts(self.candidate(report, view="PSAX", level="basal_mitral")), ["mitral_appearance"])
+        self.assertEqual(self.candidate(report, view="PSAX", level="apical")["columns"], [])
+        self.assertEqual(self.candidate(report, view="PSAX", level="mid")["suggested_targets"][-2:],
+                         ["papillary_muscles", "chordae"])
+        for view, level in [("PSAX", "basal"), ("PSAX", "not_applicable"), ("A4C", "mid")]:
+            with self.assertRaises(ValueError):
+                self.candidate(report, view=view, level=level)
 
     def test_static_images_have_no_temporal_prefills(self):
         c = self.candidate(input_kind="image")
@@ -153,10 +228,13 @@ class TestColumnPrefills(unittest.TestCase):
 
     def test_subcostal_subtypes_do_not_mix_ivc_and_chambers(self):
         report = {"Inferior vena cava findings": "Dilatation de la veine cave inférieure", **self.report}
-        self.assertEqual(self.candidate(report, view="SUBCOSTAL")["columns"], [])
-        c = self.candidate(report, view="SUBCOSTAL", level="ivc", targets=["ivc"])
-        self.assertEqual([x["concept"] for x in c["columns"]], ["ivc_size"])
-        self.assertFalse(any(c["concept"] == "ivc_size" for c in self.candidate(report, view="SUBCOSTAL", level="four_chamber", targets=["lv"])["columns"]))
+        four_chamber = self.candidate(report, view="SUBCOSTAL")  # the default subtype
+        self.assertEqual(four_chamber["level"], "four_chamber")
+        self.assertEqual(concepts(four_chamber), ["lv_function", "lv_size", "tricuspid_appearance"])
+        ivc = self.candidate(report, view="SUBCOSTAL", level="ivc")
+        self.assertEqual(ivc["suggested_targets"], ["ivc", "hepatic_veins"])
+        self.assertEqual(concepts(ivc), ["ivc_size"])
+        self.assertEqual(self.candidate(report, view="SUBCOSTAL", level="unresolved")["columns"], [])
 
 
 class TestColumnSubmissions(unittest.TestCase):
@@ -282,7 +360,43 @@ class TestColumnSubmissions(unittest.TestCase):
         unread = changed(done, uninterpretable=uninterpretable)  # the other answers are not read
         self.assertEqual(review_problems(self.c, unread), [])
         self.assertEqual(review_problems(self.c, changed(done, review_columns=[])),
-                         ["Original columns must be reviewed; additions go in missing_columns"])
+                         ["A prefilled finding was unticked: mark it Incorrect and remove it instead"])
+        self.assertEqual(review_problems(self.c, changed(done, psax_level={"name": "mid"})), ["psax_level"])
+
+    def test_a_ticked_finding_that_was_not_prefilled_is_an_addition(self):
+        self.a.update(review_completed="yes", review_columns=[*self.a["review_columns"], "lv_size"],
+                      lv_size__value="dilated", lv_size__status="yes")
+        score = self.score()
+        self.assertEqual(score["omissions"],
+                         [{"concept": "lv_size", "value": "dilated", "origin": "reviewer_addition"}])
+        self.assertEqual((score["pending"], score["original_count"]), ([], 2))
+        self.assertIn("The visible LV cavity is dilated.", score["caption"])
+        self.a["lv_size__status"] = "cannot_assess"
+        self.assertEqual(self.score()["pending"], ["lv_size__status"])
+        self.a.update(lv_size__status="yes", missing_information="yes", missing_columns=["lv_size"],
+                      lv_size__missing_value="dilated", lv_size__missing_visible="yes")
+        self.assertIn("missing_columns", self.score()["pending"])  # added twice
+
+    def test_the_level_fits_the_confirmed_view(self):
+        psax = build_candidate({"Left ventricule findings": "Dysfonction légère du ventricule gauche"},
+                               "PSAX", "bmode", global_key="synthetic-psax")
+        answers = {**decode_annotations(prelabels(psax)), "review_completed": "yes"}
+        self.assertEqual(score_review(psax, answers, submitted=True)["pending"], ["psax_level"])
+        for level, pending in [("not_applicable", ["psax_level"]), ("unresolved", []), ("mid", [])]:
+            self.assertEqual(score_review(psax, {**answers, "psax_level": level}, submitted=True)["pending"], pending)
+        # The mitral valve is claimed at the mid level too; a level's structures come with it, unticked.
+        mid = {**answers, "psax_level": "mid", "missing_information": "yes",
+               "missing_columns": ["mitral_motion", "wall_mid_anterior"],
+               "mitral_motion__missing_value": "normal", "mitral_motion__missing_visible": "yes",
+               "wall_mid_anterior__missing_value": "normal", "wall_mid_anterior__missing_visible": "yes"}
+        score = score_review(psax, mid, submitted=True)
+        self.assertTrue(score["routing"])
+        self.assertIn("mitral leaflets show normal motion", score["caption"])
+        self.assertFalse(score_review(psax, {**mid, "psax_level": "apical"}, submitted=True)["routing"])
+        self.assertNotIn("mitral", mid["visible_targets"])
+        # A view corrected away from PSAX has no level.
+        corrected = {**answers, "view": "PLAX", "psax_level": "apical"}
+        self.assertEqual(score_review(psax, corrected, submitted=True)["pending"], ["psax_level"])
 
     def test_encode_answers_inverts_decoding(self):
         records = prelabels(self.c) + [{"name": "review_completed", "answer": {"name": "yes"}}]
@@ -330,7 +444,7 @@ class TestColumnSubmissions(unittest.TestCase):
         self.assertNotIn("review_completed", decode_annotations(prelabels(self.c)))
         attachment = context_attachment(self.c)
         self.assertEqual(attachment["attachment_type"], "RAW_TEXT")
-        self.assertEqual(attachment["attachment_name"], "DeepECHO review v2 - original proposals")
+        self.assertEqual(attachment["attachment_name"], "DeepECHO review v3 - original proposals")
         self.assertTrue(attachment["attachment_name"].isascii())
         self.assertIn("tricuspid_appearance", attachment["attachment_value"])
         with self.assertRaises(ValueError):
@@ -351,6 +465,22 @@ class TestColumnSubmissions(unittest.TestCase):
         self.assertIn("LVID Diastole (2D): 5.1", value)
         self.assertIn("WMS Basal Inferoseptal: 2", value)
 
+    def test_an_ivc_sweep_brings_its_structures_and_prefilled_ones_need_their_tick(self):
+        report = {"Inferior vena cava findings": "Dilatation de la veine cave inférieure",
+                  "Right ventricule findings": "Ventricule droit non dilaté"}
+        subcostal = build_candidate(report, "SUBCOSTAL", "bmode", global_key="synthetic-subcostal")
+        self.assertEqual(concepts(subcostal), ["rv_size"])
+        answers = {**decode_annotations(prelabels(subcostal)), "review_completed": "yes"}
+        self.assertTrue(score_review(subcostal, answers, submitted=True)["caption"])
+        unticked = {**answers, "visible_targets": [t for t in answers["visible_targets"] if t != "rv"]}
+        self.assertFalse(score_review(subcostal, unticked, submitted=True)["routing"])
+        ivc = {**answers, "psax_level": "ivc", "rv_size__status": "no", "rv_size__error": "wrong_view",
+               "rv_size__correction": "remove", "missing_information": "yes", "missing_columns": ["ivc_size"],
+               "ivc_size__missing_value": "dilated", "ivc_size__missing_visible": "yes"}
+        score = score_review(subcostal, ivc, submitted=True)
+        self.assertEqual((score["pending"], score["routing"]), ([], True))
+        self.assertEqual(score["caption"], "IVC size: dilated in this input.")
+
     @unittest.skipUnless(importlib.util.find_spec("labelbox"), "Labelbox SDK optional")
     def test_sdk_form_roundtrip(self):
         from labelbox import OntologyBuilder
@@ -358,13 +488,13 @@ class TestColumnSubmissions(unittest.TestCase):
 
 
 @unittest.skipUnless(importlib.util.find_spec("labelbox"), "Labelbox SDK optional")
-class TestV2Import(unittest.TestCase):
+class TestImport(unittest.TestCase):
     def setUp(self):
         import labelbox as lb
         self.candidates = [build_candidate({"Tricuspid valve findings": "Normal"}, "A4C", "bmode", global_key="synthetic-import")]
-        self.ontology = SimpleNamespace(name="DeepECHO column review v2", uid="ontology",
-                                        media_type=lb.MediaType.Video,
-                                        normalized=as_stored(build_form(), "DeepECHO column review v2"))
+        self.assertEqual(ONTOLOGY_NAME, "DeepECHO column review v3")
+        self.ontology = SimpleNamespace(name=ONTOLOGY_NAME, uid="ontology", media_type=lb.MediaType.Video,
+                                        normalized=as_stored(build_form(), ONTOLOGY_NAME))
         self.row = SimpleNamespace(media_attributes={"frameCount": 24}, _attachments=[])
         self.row.attachments = lambda: self.row._attachments
         self.row.create_attachment = lambda **kw: self.row._attachments.append(SimpleNamespace(**kw))
@@ -405,7 +535,7 @@ class TestV2Import(unittest.TestCase):
 
     def batch_name(self):
         payloads = [p for c in self.candidates for p in prelabels(c)]
-        return "deepecho-v2-" + hashlib.sha256(json.dumps(payloads, sort_keys=True).encode()).hexdigest()[:16]
+        return "deepecho-v3-" + hashlib.sha256(json.dumps(payloads, sort_keys=True).encode()).hexdigest()[:16]
 
     def test_a_failed_import_of_named_predictions_is_superseded(self):
         # The run before schema ids: its batch and context are in, its job (same prelabels, by name) failed.

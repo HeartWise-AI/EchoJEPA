@@ -6,7 +6,7 @@ Once agreed, the pilot outcome is reported under these rules whatever it is. A c
 seeing pilot results needs a new version and is judged on new pilot studies, never on the clips already reviewed.
 
 The pilot reviews every valid video of 2–3 training-split studies. It tests whether the caption-and-review workflow
-is feasible under [`radar-caption-ontology-v1`](ontology_v1.md) with column review v2. It does not measure clinical
+is feasible under [`radar-caption-ontology-v1`](ontology_v1.md) with column review v3. It does not measure clinical
 accuracy or model performance, and its small size allows only coarse decisions. The metrics follow `score_review`
 in `tools/labelbox/column_review.py`.
 
@@ -21,7 +21,7 @@ prefilled columns).
 |---|---|
 | **Uninterpretable clip?** (`uninterpretable`) | no; yes, with a reason |
 | **View** (`view`) and **Acquisition mode** (`modality`) | prefilled from the candidate and corrected in place; the immutable uploaded candidate provides the original values for accuracy calculations |
-| Targets and level (`visible_targets`, `psax_level`) | the targets the clip covers; the PSAX level or subcostal subtype |
+| Structures and level (`visible_targets`, `psax_level`) | which of the view's prefilled structures the clip shows; the PSAX level or subcostal subtype |
 | **Each prefilled column** | supported; incorrect, with an error reason and a corrected value or "remove"; cannot assess, with a limitation |
 | **Missing information?** (`missing_information`) | no; yes, with each missing column, its value and the confirmation that it is visible |
 | **Additional statement?** (`unsupported_information`) | no; yes, with each column or statement type and its error reason |
@@ -85,8 +85,10 @@ The **review checks** are three, and a review that fails any of them is returned
   its limitation, every missing column its value and "visible in this input: yes", every additional statement its
   reason (and its copied text for a statement type), and an uninterpretable clip its reason (and a comment for
   "Other");
-- **consistency:** the reviewed columns are exactly the candidate's, with their original values; no missing column is
-  already a candidate column; and no additional statement names a column left supported. Submitted view and mode
+- **consistency:** every candidate column is reviewed, with its original value (a column ticked among them without
+  being prefilled counts as a missing column, and must be supported); no missing column is already a candidate
+  column or ticked among them; no additional statement names a column left supported; and a PSAX or subcostal clip
+  has a level of its view, any other clip none. Submitted view and mode
   values are compared directly with the immutable uploaded candidate.
 
 An uninterpretable clip is checked only for its answers and its reason: its other answers are not read.

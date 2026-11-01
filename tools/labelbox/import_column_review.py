@@ -1,4 +1,4 @@
-"""Apply the v2 ontology and prelabels to an explicitly selected video project.
+"""Apply the v3 ontology and prelabels to an explicitly selected video project.
 
 Existing data rows only. No asset upload, ground-truth import, invitations, or
 provisioning. Dry run is the default; API credentials stay in the environment.
@@ -14,9 +14,10 @@ import sys
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 
-from tools.labelbox.column_review import build_form, context_attachment, prelabels
+from tools.labelbox.column_review import build_form, context_attachment, load_spec, prelabels
 
-ONTOLOGY_NAME = "DeepECHO column review v2"
+VERSION = load_spec()["version"]
+ONTOLOGY_NAME = f"DeepECHO column review v{VERSION}"
 # The form the predictions are sent in: 1 named questions and answers, 2 their schema ids. An import job is named
 # after the prelabels and this form, so a job of an earlier form, which may have failed, never stands for this one.
 PREDICTION_FORMAT = 2
@@ -121,20 +122,20 @@ def apply_bundle(client, project_id, candidates, *, mal_import, retry_failed=Fal
     if attached is not None and not attached.normalized.get("tools") and not attached.normalized.get("classifications") and project.data_row_count == 0:
         attached = None
     if attached is not None and comparable_shape(attached.normalized) != expected:
-        raise ValueError("Selected project has a different ontology; use a v2 project")
+        raise ValueError(f"Selected project has a different ontology; use a v{VERSION} project")
     existing = list(client.get_ontologies(ONTOLOGY_NAME))
     exact = [o for o in existing if o.name == ONTOLOGY_NAME]
     if len(exact) > 1:
-        raise ValueError("Multiple v2 ontologies found")
+        raise ValueError(f"Multiple v{VERSION} ontologies found")
     if exact and comparable_shape(exact[0].normalized) != expected:
-        raise ValueError("Named v2 ontology has a different schema")
+        raise ValueError(f"Named v{VERSION} ontology has a different schema")
     digest = hashlib.sha256(json.dumps(payloads, sort_keys=True).encode()).hexdigest()[:16]
-    name = "deepecho-v2-"+digest  # the batch; before PREDICTION_FORMAT, the import job too.
+    name = f"deepecho-v{VERSION}-"+digest  # the batch; before PREDICTION_FORMAT, the import job too.
     job_name = f"{name}-f{PREDICTION_FORMAT}"
     jobs = [j for j in project.get_mal_prediction_imports() if j.name == name or j.name.startswith(name + "-")]
     batches = [b for b in project.batches() if b.name == name]
     if len(batches) > 1:
-        raise ValueError("Multiple matching v2 batches")
+        raise ValueError(f"Multiple matching v{VERSION} batches")
     for candidate, row in zip(candidates, rows):
         # A duplicate context name with different content is an audit mismatch.
         desired = context_attachment(candidate)
@@ -187,7 +188,8 @@ def main(argv=None):
     candidates = json.loads(args.candidates.read_text())
     payloads = [p for c in candidates for p in prelabels(c)]
     if not args.apply:
-        print(f"Dry run: v2 ontology, {len(candidates)} existing video rows, {len(payloads)} draft classifications.")
+        print(f"Dry run: v{VERSION} ontology, {len(candidates)} existing video rows, "
+              f"{len(payloads)} draft classifications.")
         print("No Labelbox requests. Review completed is not prefilled.")
         return 0
     key = os.environ.get("LABELBOX_API_KEY", "").strip()
@@ -202,10 +204,10 @@ def main(argv=None):
             result = apply_bundle(lb.Client(api_key=key), args.project_id, candidates,
                                   mal_import=lb.MALPredictionImport, retry_failed=args.retry_failed)
     except ImportStopped as exc:
-        print(f"Labelbox v2 import stopped: {exc}", file=sys.stderr)
+        print(f"Labelbox v{VERSION} import stopped: {exc}", file=sys.stderr)
         return 1
     except Exception as exc:
-        print(f"Labelbox v2 import failed ({type(exc).__name__}).", file=sys.stderr)
+        print(f"Labelbox v{VERSION} import failed ({type(exc).__name__}).", file=sys.stderr)
         return 1
     finally:
         logging.disable(previous)
