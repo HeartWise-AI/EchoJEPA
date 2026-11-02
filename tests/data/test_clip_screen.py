@@ -305,9 +305,9 @@ class TestClipFeatures(unittest.TestCase):
         lines = ["EF 55 %", "LVIDd 4.5 cm", "EDV 120 ml", "Gn 50 dB", "HR 72 bpm", "Depth 16 cm", "16 cm", "2.1 m/s",
                  "E/e' 12", "E/e 9"]
         status, found = cs.measurement_text(speckle(), ("stand-in", lambda frame: lines))
-        # A name with its number, or a number with a measurement unit; settings, the heart rate and depths are not.
+        # A name with its number (the heart rate's too), or a number with a measurement unit; settings and depths are not.
         self.assertEqual((status, json.loads(found)),
-                         ("checked", ["2.1 m/s", "E/e 9", "E/e' 12", "EDV 120", "EF 55", "LVIDd 4.5"]))
+                         ("checked", ["2.1 m/s", "E/e 9", "E/e' 12", "EDV 120", "EF 55", "HR 72", "LVIDd 4.5"]))
         self.assertEqual(cs.measurement_text(speckle(), ("stand-in", lambda frame: ["Gn 50", "FR 54 Hz"]))[1], "[]")
         with mock.patch.object(cs, "ocr_backend", return_value=None):
             self.assertEqual(cs.measurement_text(speckle()), ("unavailable", None))  # missing, not absent.
@@ -1958,11 +1958,28 @@ class TestTextPass(unittest.TestCase):
         status, found = cs.measurement_text([np.zeros((4, 4, 3), np.uint8)], ("stand-in", lambda frame: lines))
         self.assertEqual((status, json.loads(found)), ("checked", ["EF 55", "LVIDd 4.5"]))
 
+    def test_a_word_taller_than_text_is_not_read(self):
+        # As RapidOCR read a PSAX frame 434 pixels high: the aortic valve region as the word 'LA', which joined the depth
+        # scale's '0' beside it into the line 'LA 0', a named measurement.
+        words = [(word_box(125, 102, 456, 341), "LA"), (word_box(128, 194, 142, 204), "0"),
+                 (word_box(300, 10, 320, 22), "EF"), (word_box(324, 11, 350, 23), "55 %")]
+        self.assertEqual(cs.text_lines(words), ["EF 55 %", "LA 0"])
+        self.assertEqual(cs.text_sized(words, 434), words[1:])  # 239 pixels: over TEXT_MAX_HEIGHT of the frame.
+        self.assertEqual(cs.text_lines(cs.text_sized(words, 434)), ["EF 55 %", "0"])
+        self.assertEqual(cs.text_sized(words[:1], 2400), words[:1])  # the same word in a frame 2,400 pixels high.
+
+    def test_a_heart_rate_is_a_measurement(self):
+        lines = ["HR 63 bpm", "HR: 63", "63 bpm", "Gn 50"]
+        found = cs.measurement_text([np.zeros((4, 4, 3), np.uint8)], ("stand-in", lambda frame: lines))[1]
+        self.assertEqual(json.loads(found), ["63 bpm", "HR 63", "HR: 63"])
+        for read in (["HR 63"], ["63 bpm"], ["63 BPM", "64 cm/s"]):
+            self.assertEqual(cs.text_evidence(json.dumps(read)), "measurement_text", read)  # named or not.
+
     def test_a_name_glued_to_its_number_is_still_read(self):
         # As RapidOCR read drawn text: the space dropped between a name and its number, and in a settings line.
         lines = ["EF55%", "Gn50FR54Hz", "HR72bpm", "Depth16cm", "LAX", "E/e'12"]
         found = cs.measurement_text([np.zeros((4, 4, 3), np.uint8)], ("stand-in", lambda frame: lines))[1]
-        self.assertEqual(json.loads(found), ["E/e'12", "EF55"])  # a name followed by a letter is another word.
+        self.assertEqual(json.loads(found), ["E/e'12", "EF55", "HR72"])  # a name followed by a letter is another word.
 
     def test_names_units_and_settings_are_read_whatever_their_case(self):
         # Names and units in either case are read ('LVIDS' as OCR may read 'LVIDs'); settings lines in either case are
@@ -1971,7 +1988,7 @@ class TestTextPass(unittest.TestCase):
                  "hr 72 bpm", "DEPTH 16 CM", "SCALE 64 CM/S", "nyquist 0.8 M/S", "LAX", "Lax 3"]
         found = cs.measurement_text([np.zeros((4, 4, 3), np.uint8)], ("stand-in", lambda frame: lines))[1]
         self.assertEqual(json.loads(found), ["0.8 M/S", "120 ML", "64 CM/S", "LVIDS 4.5", "VMAX 2.1", "ef55",
-                                             "lvef 60"])
+                                             "hr 72", "lvef 60"])
         for read, evidence in ((["ef55"], "measurement_text"), (["LVIDS 4.5"], "measurement_text"),
                                (["120 ML"], "measurement_unit"), (["64 CM/S", "0.8 M/S"], "none")):
             self.assertEqual(cs.text_evidence(json.dumps(read)), evidence, read)
@@ -1999,7 +2016,7 @@ class TestTextPass(unittest.TestCase):
             with open(junk, "wb") as f:
                 f.write(b"not a video")
             seen = []
-            backend = ("stand-in", lambda frame: seen.append(frame.shape) or ["EDV 120 ml", "HR 72 bpm"])
+            backend = ("stand-in", lambda frame: seen.append(frame.shape) or ["EDV 120 ml", "Gn 50 dB"])
             decode = cs.decoded_frames
             with mock.patch.object(cs, "_OCR", backend):
                 row = cs._text_worker(("k", path, cs.sha256(path), T))
