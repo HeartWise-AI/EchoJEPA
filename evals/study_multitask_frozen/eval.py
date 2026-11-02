@@ -449,33 +449,38 @@ def manifest_paths(args_data):
 def study_probe_options(classifier, data, pretrained):
     """Resolve architecture options once for construction and checkpoint fingerprinting."""
     encoder = pretrained.get("pretrain_kwargs", {}).get("encoder", {})
+    study_use_rope = bool(classifier.get("study_use_rope", False))
     grid = None
-    if classifier.get("pooling_mode") == "hierarchical":
+    if classifier.get("pooling_mode") == "hierarchical" or study_use_rope:
         patch = int(encoder.get("patch_size", 16))
         tubelet = int(encoder.get("tubelet_size", 2))
         frames, resolution = int(data.get("frames_per_clip", 16)), int(data.get("resolution", 224))
         if frames % tubelet or resolution % patch:
-            raise ValueError("Hierarchical pooling requires frames/resolution divisible by tubelet/patch size.")
+            raise ValueError("Hierarchical pooling and study RoPE require frames/resolution divisible by "
+                             "tubelet/patch size.")
         grid = (frames // tubelet, resolution // patch, resolution // patch)
-    return dict(query_mode=classifier.get("query_mode", "shared"), task_groups=classifier.get("task_groups"),
-                view_dropout=float(classifier.get("view_dropout", 0.0)),
-                num_acquisition_classes=len(set((data.get("acquisition_labels_map") or {}).values())),
-                local_depth=int(classifier.get("local_depth", 1)),
-                local_num_queries=int(classifier.get("local_num_queries", 4)),
-                local_use_rope=bool(classifier.get("local_use_rope", False)), token_grid=grid,
-                num_clips_per_video=int(data.get("num_clips_per_video", 1)))
+    options = dict(query_mode=classifier.get("query_mode", "shared"), task_groups=classifier.get("task_groups"),
+                   view_dropout=float(classifier.get("view_dropout", 0.0)),
+                   num_acquisition_classes=len(set((data.get("acquisition_labels_map") or {}).values())),
+                   local_depth=int(classifier.get("local_depth", 1)),
+                   local_num_queries=int(classifier.get("local_num_queries", 4)),
+                   local_use_rope=bool(classifier.get("local_use_rope", False)), token_grid=grid,
+                   num_clips_per_video=int(data.get("num_clips_per_video", 1)))
+    if study_use_rope:  # only when on, so the fingerprints of configs without it stay as they were
+        options["study_use_rope"] = True
+    return options
 
 
 def check_token_grid(encoder, grid, frames_per_clip, resolution, device):
-    """Refuse a hierarchical token grid that does not match the loaded encoder: one blank clip
-    must come out as exactly `T x H x W` tokens of the grid."""
+    """Refuse a token grid (hierarchical pooling, study RoPE) that does not match the loaded
+    encoder: one blank clip must come out as exactly `T x H x W` tokens of the grid."""
     if grid is None:
         return
     clip = torch.zeros(1, 3, frames_per_clip, resolution, resolution, device=device)
     with torch.no_grad():
         tokens = encoder([[clip]], [torch.arange(frames_per_clip, device=device)[None]])[0].shape[1]
     if tokens != math.prod(grid):
-        raise ValueError(f"Hierarchical pooling assumes a {'x'.join(map(str, grid))} token grid per clip "
+        raise ValueError(f"The probe assumes a {'x'.join(map(str, grid))} token grid per clip "
                          f"({math.prod(grid)} tokens), but the loaded encoder gives {tokens}: set patch_size and "
                          "tubelet_size in pretrain_kwargs.encoder to the encoder's.")
 
