@@ -140,8 +140,29 @@
         {
           "schemaNodeId": null,
           "featureSchemaId": null,
-          "label": "PSAX",
+          "label": "PSAX (cannot tell the level)",
           "value": "PSAX",
+          "options": []
+        },
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "PSAX_BASAL (mitral level)",
+          "value": "PSAX_BASAL",
+          "options": []
+        },
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "PSAX_MID (papillary level)",
+          "value": "PSAX_MID",
+          "options": []
+        },
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "PSAX_APICAL",
+          "value": "PSAX_APICAL",
           "options": []
         },
         {
@@ -205,6 +226,13 @@
           "featureSchemaId": null,
           "label": "PLAX_ZOOM",
           "value": "PLAX_ZOOM",
+          "options": []
+        },
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "PLAX_ZOOM_AV (zoomed on the aortic valve)",
+          "value": "PLAX_ZOOM_AV",
           "options": []
         },
         {
@@ -445,43 +473,22 @@
     },
     {
       "type": "radio",
-      "instructions": "PSAX level / subcostal subtype (required for PSAX and subcostal clips)",
-      "name": "psax_level",
+      "instructions": "Subcostal subtype (required for subcostal clips)",
+      "name": "subcostal_level",
       "required": true,
       "options": [
         {
           "schemaNodeId": null,
           "featureSchemaId": null,
-          "label": "Not applicable (not PSAX or subcostal)",
+          "label": "Not applicable (not subcostal)",
           "value": "not_applicable",
           "options": []
         },
         {
           "schemaNodeId": null,
           "featureSchemaId": null,
-          "label": "Cannot tell the level",
+          "label": "Cannot tell the subtype",
           "value": "unresolved",
-          "options": []
-        },
-        {
-          "schemaNodeId": null,
-          "featureSchemaId": null,
-          "label": "PSAX basal / mitral level",
-          "value": "basal_mitral",
-          "options": []
-        },
-        {
-          "schemaNodeId": null,
-          "featureSchemaId": null,
-          "label": "PSAX mid / papillary level",
-          "value": "mid",
-          "options": []
-        },
-        {
-          "schemaNodeId": null,
-          "featureSchemaId": null,
-          "label": "PSAX apical level",
-          "value": "apical",
           "options": []
         },
         {
@@ -1024,6 +1031,20 @@
                   "label": "Increased",
                   "value": "increased",
                   "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Septum only, normal elsewhere",
+                  "value": "septum_only",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Posterior wall only",
+                  "value": "posterior_only",
+                  "options": []
                 }
               ],
               "schemaNodeId": null,
@@ -1151,6 +1172,20 @@
                           "label": "Increased",
                           "value": "increased",
                           "options": []
+                        },
+                        {
+                          "schemaNodeId": null,
+                          "featureSchemaId": null,
+                          "label": "Septum only, normal elsewhere",
+                          "value": "septum_only",
+                          "options": []
+                        },
+                        {
+                          "schemaNodeId": null,
+                          "featureSchemaId": null,
+                          "label": "Posterior wall only",
+                          "value": "posterior_only",
+                          "options": []
                         }
                       ],
                       "schemaNodeId": null,
@@ -1170,6 +1205,215 @@
                       "type": "radio",
                       "instructions": "Why can it not be assessed?",
                       "name": "lv_wall_thickness__limitation",
+                      "required": true,
+                      "options": [
+                        {
+                          "schemaNodeId": null,
+                          "featureSchemaId": null,
+                          "label": "Poor image quality",
+                          "value": "poor_quality",
+                          "options": []
+                        },
+                        {
+                          "schemaNodeId": null,
+                          "featureSchemaId": null,
+                          "label": "Incomplete cardiac/respiratory cycle",
+                          "value": "incomplete_cycle",
+                          "options": []
+                        },
+                        {
+                          "schemaNodeId": null,
+                          "featureSchemaId": null,
+                          "label": "Target outside the displayed input",
+                          "value": "target_outside",
+                          "options": []
+                        },
+                        {
+                          "schemaNodeId": null,
+                          "featureSchemaId": null,
+                          "label": "View / slice level unresolved",
+                          "value": "unresolved_view",
+                          "options": []
+                        },
+                        {
+                          "schemaNodeId": null,
+                          "featureSchemaId": null,
+                          "label": "Needs additional views or measurements",
+                          "value": "insufficient_input",
+                          "options": []
+                        }
+                      ],
+                      "schemaNodeId": null,
+                      "featureSchemaId": null,
+                      "attributes": null,
+                      "uiMode": "searchable"
+                    }
+                  ]
+                }
+              ],
+              "schemaNodeId": null,
+              "featureSchemaId": null,
+              "attributes": null
+            }
+          ]
+        },
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "Basal septal bulge",
+          "value": "septal_bulge",
+          "options": [
+            {
+              "type": "radio",
+              "instructions": "Proposed value (original retained in context)",
+              "name": "septal_bulge__value",
+              "required": true,
+              "options": [
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Present",
+                  "value": "present",
+                  "options": []
+                }
+              ],
+              "schemaNodeId": null,
+              "featureSchemaId": null,
+              "attributes": null,
+              "uiMode": "searchable"
+            },
+            {
+              "type": "radio",
+              "instructions": "Confirm this finding",
+              "name": "septal_bulge__status",
+              "required": true,
+              "options": [
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Supported in this input",
+                  "value": "yes",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Incorrect / should not be here",
+                  "value": "no",
+                  "options": [
+                    {
+                      "type": "radio",
+                      "instructions": "Why should it not be here?",
+                      "name": "septal_bulge__error",
+                      "required": true,
+                      "options": [
+                        {
+                          "schemaNodeId": null,
+                          "featureSchemaId": null,
+                          "label": "Wrong value / diagnosis",
+                          "value": "wrong_value",
+                          "options": []
+                        },
+                        {
+                          "schemaNodeId": null,
+                          "featureSchemaId": null,
+                          "label": "Wrong severity",
+                          "value": "wrong_severity",
+                          "options": []
+                        },
+                        {
+                          "schemaNodeId": null,
+                          "featureSchemaId": null,
+                          "label": "Wrong structure / segment",
+                          "value": "wrong_location",
+                          "options": []
+                        },
+                        {
+                          "schemaNodeId": null,
+                          "featureSchemaId": null,
+                          "label": "Contradicted by visible evidence",
+                          "value": "contradicted",
+                          "options": []
+                        },
+                        {
+                          "schemaNodeId": null,
+                          "featureSchemaId": null,
+                          "label": "Claimed structure/finding not visible",
+                          "value": "not_visible",
+                          "options": []
+                        },
+                        {
+                          "schemaNodeId": null,
+                          "featureSchemaId": null,
+                          "label": "Wrong view / target",
+                          "value": "wrong_view",
+                          "options": []
+                        },
+                        {
+                          "schemaNodeId": null,
+                          "featureSchemaId": null,
+                          "label": "Needs another acquisition mode",
+                          "value": "wrong_modality",
+                          "options": []
+                        },
+                        {
+                          "schemaNodeId": null,
+                          "featureSchemaId": null,
+                          "label": "Study-level claim in a local caption",
+                          "value": "study_only",
+                          "options": []
+                        },
+                        {
+                          "schemaNodeId": null,
+                          "featureSchemaId": null,
+                          "label": "No supporting source / invented assertion",
+                          "value": "unsupported_report",
+                          "options": []
+                        }
+                      ],
+                      "schemaNodeId": null,
+                      "featureSchemaId": null,
+                      "attributes": null,
+                      "uiMode": "searchable"
+                    },
+                    {
+                      "type": "radio",
+                      "instructions": "Correction",
+                      "name": "septal_bulge__correction",
+                      "required": true,
+                      "options": [
+                        {
+                          "schemaNodeId": null,
+                          "featureSchemaId": null,
+                          "label": "Remove this claim",
+                          "value": "remove",
+                          "options": []
+                        },
+                        {
+                          "schemaNodeId": null,
+                          "featureSchemaId": null,
+                          "label": "Present",
+                          "value": "present",
+                          "options": []
+                        }
+                      ],
+                      "schemaNodeId": null,
+                      "featureSchemaId": null,
+                      "attributes": null,
+                      "uiMode": "searchable"
+                    }
+                  ]
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Cannot assess",
+                  "value": "cannot_assess",
+                  "options": [
+                    {
+                      "type": "radio",
+                      "instructions": "Why can it not be assessed?",
+                      "name": "septal_bulge__limitation",
                       "required": true,
                       "options": [
                         {
@@ -4290,13 +4534,6 @@
                 {
                   "schemaNodeId": null,
                   "featureSchemaId": null,
-                  "label": "Edge to edge clip",
-                  "value": "edge_to_edge_clip",
-                  "options": []
-                },
-                {
-                  "schemaNodeId": null,
-                  "featureSchemaId": null,
                   "label": "Annuloplasty ring",
                   "value": "annuloplasty_ring",
                   "options": []
@@ -4426,13 +4663,6 @@
                           "featureSchemaId": null,
                           "label": "Remove this claim",
                           "value": "remove",
-                          "options": []
-                        },
-                        {
-                          "schemaNodeId": null,
-                          "featureSchemaId": null,
-                          "label": "Edge to edge clip",
-                          "value": "edge_to_edge_clip",
                           "options": []
                         },
                         {
@@ -6228,20 +6458,6 @@
                 {
                   "schemaNodeId": null,
                   "featureSchemaId": null,
-                  "label": "Edge to edge clip",
-                  "value": "edge_to_edge_clip",
-                  "options": []
-                },
-                {
-                  "schemaNodeId": null,
-                  "featureSchemaId": null,
-                  "label": "Annuloplasty ring",
-                  "value": "annuloplasty_ring",
-                  "options": []
-                },
-                {
-                  "schemaNodeId": null,
-                  "featureSchemaId": null,
                   "label": "Bioprosthesis",
                   "value": "bioprosthesis",
                   "options": []
@@ -6364,20 +6580,6 @@
                           "featureSchemaId": null,
                           "label": "Remove this claim",
                           "value": "remove",
-                          "options": []
-                        },
-                        {
-                          "schemaNodeId": null,
-                          "featureSchemaId": null,
-                          "label": "Edge to edge clip",
-                          "value": "edge_to_edge_clip",
-                          "options": []
-                        },
-                        {
-                          "schemaNodeId": null,
-                          "featureSchemaId": null,
-                          "label": "Annuloplasty ring",
-                          "value": "annuloplasty_ring",
                           "options": []
                         },
                         {
@@ -12913,6 +13115,20 @@
                           "label": "Increased",
                           "value": "increased",
                           "options": []
+                        },
+                        {
+                          "schemaNodeId": null,
+                          "featureSchemaId": null,
+                          "label": "Septum only, normal elsewhere",
+                          "value": "septum_only",
+                          "options": []
+                        },
+                        {
+                          "schemaNodeId": null,
+                          "featureSchemaId": null,
+                          "label": "Posterior wall only",
+                          "value": "posterior_only",
+                          "options": []
                         }
                       ],
                       "schemaNodeId": null,
@@ -12924,6 +13140,59 @@
                       "type": "radio",
                       "instructions": "Visible in this input?",
                       "name": "lv_wall_thickness__missing_visible",
+                      "required": true,
+                      "options": [
+                        {
+                          "schemaNodeId": null,
+                          "featureSchemaId": null,
+                          "label": "Yes",
+                          "value": "yes",
+                          "options": []
+                        },
+                        {
+                          "schemaNodeId": null,
+                          "featureSchemaId": null,
+                          "label": "Cannot assess",
+                          "value": "cannot_assess",
+                          "options": []
+                        }
+                      ],
+                      "schemaNodeId": null,
+                      "featureSchemaId": null,
+                      "attributes": null,
+                      "uiMode": "searchable"
+                    }
+                  ]
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Basal septal bulge",
+                  "value": "septal_bulge",
+                  "options": [
+                    {
+                      "type": "radio",
+                      "instructions": "Missing visible value",
+                      "name": "septal_bulge__missing_value",
+                      "required": true,
+                      "options": [
+                        {
+                          "schemaNodeId": null,
+                          "featureSchemaId": null,
+                          "label": "Present",
+                          "value": "present",
+                          "options": []
+                        }
+                      ],
+                      "schemaNodeId": null,
+                      "featureSchemaId": null,
+                      "attributes": null,
+                      "uiMode": "searchable"
+                    },
+                    {
+                      "type": "radio",
+                      "instructions": "Visible in this input?",
+                      "name": "septal_bulge__missing_visible",
                       "required": true,
                       "options": [
                         {
@@ -13820,13 +14089,6 @@
                         {
                           "schemaNodeId": null,
                           "featureSchemaId": null,
-                          "label": "Edge to edge clip",
-                          "value": "edge_to_edge_clip",
-                          "options": []
-                        },
-                        {
-                          "schemaNodeId": null,
-                          "featureSchemaId": null,
                           "label": "Annuloplasty ring",
                           "value": "annuloplasty_ring",
                           "options": []
@@ -14374,20 +14636,6 @@
                       "name": "pulmonic_device__missing_value",
                       "required": true,
                       "options": [
-                        {
-                          "schemaNodeId": null,
-                          "featureSchemaId": null,
-                          "label": "Edge to edge clip",
-                          "value": "edge_to_edge_clip",
-                          "options": []
-                        },
-                        {
-                          "schemaNodeId": null,
-                          "featureSchemaId": null,
-                          "label": "Annuloplasty ring",
-                          "value": "annuloplasty_ring",
-                          "options": []
-                        },
                         {
                           "schemaNodeId": null,
                           "featureSchemaId": null,
@@ -16695,6 +16943,89 @@
                       "type": "radio",
                       "instructions": "Why should this statement not be here?",
                       "name": "lv_wall_thickness__unsupported_kind",
+                      "required": true,
+                      "options": [
+                        {
+                          "schemaNodeId": null,
+                          "featureSchemaId": null,
+                          "label": "Wrong value / diagnosis",
+                          "value": "wrong_value",
+                          "options": []
+                        },
+                        {
+                          "schemaNodeId": null,
+                          "featureSchemaId": null,
+                          "label": "Wrong severity",
+                          "value": "wrong_severity",
+                          "options": []
+                        },
+                        {
+                          "schemaNodeId": null,
+                          "featureSchemaId": null,
+                          "label": "Wrong structure / segment",
+                          "value": "wrong_location",
+                          "options": []
+                        },
+                        {
+                          "schemaNodeId": null,
+                          "featureSchemaId": null,
+                          "label": "Contradicted by visible evidence",
+                          "value": "contradicted",
+                          "options": []
+                        },
+                        {
+                          "schemaNodeId": null,
+                          "featureSchemaId": null,
+                          "label": "Claimed structure/finding not visible",
+                          "value": "not_visible",
+                          "options": []
+                        },
+                        {
+                          "schemaNodeId": null,
+                          "featureSchemaId": null,
+                          "label": "Wrong view / target",
+                          "value": "wrong_view",
+                          "options": []
+                        },
+                        {
+                          "schemaNodeId": null,
+                          "featureSchemaId": null,
+                          "label": "Needs another acquisition mode",
+                          "value": "wrong_modality",
+                          "options": []
+                        },
+                        {
+                          "schemaNodeId": null,
+                          "featureSchemaId": null,
+                          "label": "Study-level claim in a local caption",
+                          "value": "study_only",
+                          "options": []
+                        },
+                        {
+                          "schemaNodeId": null,
+                          "featureSchemaId": null,
+                          "label": "No supporting source / invented assertion",
+                          "value": "unsupported_report",
+                          "options": []
+                        }
+                      ],
+                      "schemaNodeId": null,
+                      "featureSchemaId": null,
+                      "attributes": null,
+                      "uiMode": "searchable"
+                    }
+                  ]
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "Basal septal bulge",
+                  "value": "septal_bulge",
+                  "options": [
+                    {
+                      "type": "radio",
+                      "instructions": "Why should this statement not be here?",
+                      "name": "septal_bulge__unsupported_kind",
                       "required": true,
                       "options": [
                         {

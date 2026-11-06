@@ -612,6 +612,18 @@ def export_summary(api, plan: Plan, output: Path) -> dict[str, int]:
     return counts
 
 
+def flagged_reviews(summary: Mapping[str, Any]) -> list[str]:
+    """One line per review to send back: its opaque key, what is unresolved, and any warning for the reviewer. Labelbox
+    cannot show these at submission, because a form cannot compare two answers, so this is where they reach someone."""
+    lines = []
+    for item in summary["items"]:
+        if item["status"] == "invalid":
+            score = item.get("score", {})
+            reasons = [*item.get("problems", []), *score.get("pending", []), *score.get("warnings", [])]
+            lines.append(f"{item['global_key']}: " + "; ".join(reasons))
+    return lines
+
+
 def _write_private(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w", encoding="utf-8") as f:
@@ -710,6 +722,8 @@ def main(argv: Sequence[str] | None = None, *, environ: Mapping[str, str] = os.e
         if plan.candidates:
             print(f"column review prelabels: {'imported' if result.prelabels_imported else 'existing import kept'}")
     else:
+        for line in flagged_reviews(json.loads(args.export_summary.read_text(encoding="utf-8"))):
+            print(line)
         print("summary written; " + ", ".join(f"{status}: {n}" for status, n in sorted(statuses.items())))
     return 0
 
