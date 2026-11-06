@@ -1,6 +1,6 @@
-# configs/radar/radar-caption-ontology-v1.yaml
+# configs/radar/radar-caption-ontology-v2.yaml
 #
-# RADAR caption ontology, v1: defines the clinical concepts that may appear in view-specific echocardiography
+# RADAR caption ontology, v2: defines the clinical concepts that may appear in view-specific echocardiography
 # captions. Concepts are derived from PanEcho tasks, EchoPrime report sections, and ICM report-export fields.
 # Their relationships to the original labels are defined in `label_mappings_v1.yaml`.
 #
@@ -14,8 +14,8 @@
 #   - `potentially_visible_in`: a relevance prior based on view and acquisition category, not proof that a
 #     concept is visible. Candidate captions require reviewer validation.
 #   - The prior of a structure_visibility concept names exactly the views whose column review prefills that
-#     structure (`views` of deepecho_video_clip_annotation_specification.json, PSAX and subcostal levels included,
-#     linked by its `target_structures`). A unit test keeps the two lists the same: change both together.
+#     structure (`views` of deepecho_video_clip_annotation_specification.json, a view that refines a class counted
+#     as that class and subcostal levels included, linked by its `target_structures`). A unit test keeps the two lists the same: change both together.
 #   - `required_modality`: acquisition categories capable of providing evidence; any one listed category
 #     is sufficient.
 #   - `evidence: measurement`: values requiring calipers, tracing, or spectral measurements that cannot
@@ -32,12 +32,12 @@
 #     and acronyms (case-sensitive whole-word matches).
 #   - scales: value aliases that must be verified against actual column distributions before extraction results are trusted.
 #
-# The tag `<name>-v<version>` (radar-caption-ontology-v1) is recorded by captions, reviews and checkpoints. Once this
+# The tag `<name>-v<version>` (radar-caption-ontology-v2) is recorded by captions, reviews and checkpoints. Once this
 # version is used for a clinical pilot, material changes require a new version and renewed clinical review.
 
 schema: radar-caption-ontology
 name: radar-caption-ontology
-version: 1
+version: 2
 languages: [fr, en]
 
 # The view taxonomy is the DeepECHO view classifier's classes (the archive's `predicted_class`), in its order.
@@ -385,7 +385,7 @@ concepts:
     evidence: visual
     required_modality: [bmode, color_flow]
     potentially_visible_in:
-      - views: [apical_4c, apical_5c, apical_2c, apical_3c, parasternal_long, parasternal_short, SUBCOSTAL]
+      - views: [apical_4c, apical_5c, apical_2c, apical_3c, PLAX, PLAX_DEEP, parasternal_short, SUBCOSTAL]
         acquisitions: [bmode, color_flow]
     notes: Visibility only. Says nothing about LV size or function.
 
@@ -397,7 +397,7 @@ concepts:
     evidence: visual
     required_modality: [bmode, color_flow]
     potentially_visible_in:
-      - views: [A4C, A4C_ZOOM, apical_5c, parasternal_long, parasternal_short, PSAX_AV, RVINF, SUBCOSTAL]
+      - views: [A4C, A4C_ZOOM, apical_5c, PLAX, PLAX_DEEP, PSAX_AV, RVINF, SUBCOSTAL]
         acquisitions: [bmode, color_flow]
 
   - id: la_visible
@@ -497,7 +497,7 @@ concepts:
     evidence: visual
     required_modality: [bmode, color_flow]
     potentially_visible_in:
-      - views: [A4C, A4C_ZOOM, apical_5c, A2C, A2C_ZOOM, A3C, A3C_ZOOM, parasternal_long, parasternal_short, SUBCOSTAL]
+      - views: [A4C, A4C_ZOOM, apical_5c, A2C, A2C_ZOOM, A3C, A3C_ZOOM, PLAX, PLAX_DEEP, parasternal_short, SUBCOSTAL]
         acquisitions: [bmode, color_flow]
 
   - id: ivc_visible
@@ -635,7 +635,7 @@ concepts:
     evidence: visual
     required_modality: [bmode]
     potentially_visible_in:
-      - views: [apical_4c, apical_2c, apical_3c, parasternal_long, parasternal_short, SUBCOSTAL]
+      - views: [apical_4c, apical_2c, apical_3c, PLAX, PLAX_DEEP, parasternal_short, SUBCOSTAL]
         acquisitions: [bmode]
     report_sources:
       text_fields: [Left ventricule findings, Report conclusions findings]
@@ -668,7 +668,7 @@ concepts:
     evidence: visual
     required_modality: [bmode]
     potentially_visible_in:
-      - views: [apical_4c, apical_2c, parasternal_long, parasternal_short]
+      - views: [apical_4c, apical_2c, PLAX, PLAX_DEEP]
         acquisitions: [bmode]
     report_sources:
       text_fields: [Left ventricule findings, Report conclusions findings]
@@ -684,13 +684,50 @@ concepts:
     evidence: visual
     required_modality: [bmode]
     potentially_visible_in:
-      - views: [parasternal_long, parasternal_short, apical_4c]
+      - views: [PLAX, PLAX_DEEP, parasternal_short, apical_4c]
         acquisitions: [bmode]
     report_sources:
       text_fields: [Left ventricule findings, Report conclusions findings]
       phrase_hints: [hypertrophie ventriculaire gauche, hypertrophie du ventricule gauche, hypertrophie septale,
                      hypertrophie concentrique, left ventricular hypertrophy]
       acronyms: [HVG]
+
+  - id: lv_wall_thickening_distribution
+    labels: {fr: Répartition de l'épaississement pariétal du VG, en: Distribution of LV wall thickening}
+    structures: [left_ventricle, interventricular_septum]
+    kind: finding
+    value:
+      type: categorical
+      values: [septum_only, posterior_wall_only, whole_wall]
+      labels:
+        fr: {septum_only: septum seul, posterior_wall_only: paroi postérieure seule, whole_wall: toutes les parois}
+        en: {septum_only: septum only, posterior_wall_only: posterior wall only, whole_wall: whole wall}
+      aliases:
+        septum_only: [epaisseur du septum]
+        posterior_wall_only: [epaisseur de la paroi posterieure]
+        whole_wall: [epaisseur des parois, epaisseur parietale]
+    evidence: visual
+    required_modality: [bmode]
+    potentially_visible_in:
+      - views: [A4C, A4C_ZOOM, apical_5c, apical_3c, PLAX, PLAX_DEEP, parasternal_short]
+        acquisitions: [bmode]
+    report_sources:
+      text_fields: [Left ventricule findings, Ventricular septum findings]
+      phrase_hints: [epaisseur du septum, epaisseur de la paroi posterieure, epaisseur des parois, epaisseur parietale]
+
+  - id: septal_bulge
+    labels: {fr: Bourrelet septal basal, en: Basal septal bulge}
+    structures: [interventricular_septum]
+    kind: finding
+    value: {type: boolean}
+    evidence: visual
+    required_modality: [bmode]
+    potentially_visible_in:
+      - views: [A4C, apical_5c, PLAX, PLAX_DEEP, parasternal_short]
+        acquisitions: [bmode]
+    report_sources:
+      text_fields: [Left ventricule findings, Ventricular septum findings]
+      phrase_hints: [bourrelet septal, septal bulge]
 
   - id: lv_regional_wall_motion
     labels: {fr: Cinétique segmentaire du VG (segment le plus atteint), en: LV regional wall motion (worst segment)}
@@ -768,7 +805,7 @@ concepts:
     evidence: visual
     required_modality: [bmode]
     potentially_visible_in:
-      - views: [apical_4c, RVINF, parasternal_short, SUBCOSTAL]
+      - views: [apical_4c, RVINF, SUBCOSTAL]
         acquisitions: [bmode]
     report_sources:
       columns:
@@ -785,7 +822,7 @@ concepts:
     evidence: visual
     required_modality: [bmode]
     potentially_visible_in:
-      - views: [apical_4c, parasternal_long, parasternal_short, SUBCOSTAL]
+      - views: [apical_4c, PLAX, PLAX_DEEP, SUBCOSTAL]
         acquisitions: [bmode]
     report_sources:
       text_fields: [Report conclusions findings]
@@ -1185,7 +1222,7 @@ concepts:
     evidence: visual
     required_modality: [bmode]
     potentially_visible_in:
-      - views: [apical_4c, apical_2c, parasternal_long, parasternal_short, SUBCOSTAL]
+      - views: [apical_4c, apical_2c, PLAX, PLAX_DEEP, parasternal_short, SUBCOSTAL]
         acquisitions: [bmode]
     report_sources:
       text_fields: [Report conclusions findings]
@@ -1199,7 +1236,7 @@ concepts:
     evidence: visual
     required_modality: [bmode]
     potentially_visible_in:
-      - views: [apical_4c, RVINF, parasternal_short, SUBCOSTAL]
+      - views: [apical_4c, RVINF, SUBCOSTAL]
         acquisitions: [bmode]
     report_sources:
       text_fields: [Tricuspid valve findings, Report conclusions findings]
@@ -1221,7 +1258,7 @@ concepts:
     evidence: visual
     required_modality: [bmode, color_flow]
     potentially_visible_in:
-      - views: [apical_4c, apical_3c, apical_5c, parasternal_long]
+      - views: [apical_4c, apical_3c, apical_5c, PLAX, PLAX_DEEP]
         acquisitions: [bmode, color_flow]
     report_sources:
       text_fields: [Left ventricule findings, Report conclusions findings]

@@ -37,7 +37,7 @@ COLUMN_DEPENDENT = (("__value", "column_values"), ("__missing_value", "column_va
 # The words the generated parts need besides the forms' own labels.
 WORDS = {
     "en": {"question": "Question", "id": "Id", "required": "Required", "answers": "Answers", "yes": "yes", "no": "no",
-           "free_text": "free text", "views": "one of the 20 view classes", "each": "each",
+           "free_text": "free text", "views": "one of the 24 views", "each": "each",
            "review_columns": "the prefilled columns", "missing_columns": "any column the view carries",
            "unsupported_columns": "any column or statement type", "statement_type_also": "a statement type also needs",
            "column_values": "one of the column's values",

@@ -1,6 +1,6 @@
 {
   "schema": "deepecho-column-review",
-  "version": 3,
+  "version": 4,
   "fields": {
     "lv_function": {
       "label": "LV function",
@@ -55,7 +55,9 @@
       ],
       "values": {
         "not_increased": "Not increased",
-        "increased": "Increased"
+        "increased": "Increased",
+        "septum_only": "Septum only, normal elsewhere",
+        "posterior_only": "Posterior wall only"
       },
       "modalities": [
         "bmode",
@@ -65,7 +67,27 @@
         "IVS Diastole Thickness (2D)",
         "LVIW Diastolic Thickness (2D)"
       ],
-      "note": ""
+      "note": "Septal, posterior and whole-wall thickening have different causes, so they are different values. Increased: the report calls the septum and the posterior wall thick, or the walls together. Septum only: it calls the septum thick and the posterior wall was measured but not called thick; not claimed in a view that does not list the septum, or when the report states concentric hypertrophy. Posterior wall only: it calls the posterior wall alone thick; claimed only where that wall is seen (PLAX, PLAX_DEEP, A3C, PSAX_BASAL) and says nothing of the other walls."
+    },
+    "septal_bulge": {
+      "label": "Basal septal bulge",
+      "group": "Chambers",
+      "target": "ivs",
+      "sources": [
+        "Left ventricule findings",
+        "Ventricular septum findings"
+      ],
+      "values": {
+        "present": "Present"
+      },
+      "modalities": [
+        "bmode",
+        "color_flow"
+      ],
+      "context_columns": [
+        "IVS Diastole Thickness (2D)"
+      ],
+      "note": "A localized thickening of the basal septum: not a thick septum and not LV hypertrophy, so a finding of its own."
     },
     "rv_function": {
       "label": "RV function",
@@ -326,7 +348,6 @@
         "Aortic valve findings"
       ],
       "values": {
-        "edge_to_edge_clip": "Edge to edge clip",
         "annuloplasty_ring": "Annuloplasty ring",
         "bioprosthesis": "Bioprosthesis",
         "mechanical_prosthesis": "Mechanical prosthesis"
@@ -465,8 +486,6 @@
         "Pulmonary valve findings"
       ],
       "values": {
-        "edge_to_edge_clip": "Edge to edge clip",
-        "annuloplasty_ring": "Annuloplasty ring",
         "bioprosthesis": "Bioprosthesis",
         "mechanical_prosthesis": "Mechanical prosthesis"
       },
@@ -937,6 +956,7 @@
         "lv_function",
         "lv_size",
         "lv_wall_thickness",
+        "septal_bulge",
         "rv_function",
         "rv_size",
         "la_size",
@@ -1152,6 +1172,7 @@
         "lv_function",
         "lv_size",
         "lv_wall_thickness",
+        "septal_bulge",
         "rv_function",
         "rv_size",
         "la_size",
@@ -1193,6 +1214,7 @@
         "lv_function",
         "lv_size",
         "lv_wall_thickness",
+        "septal_bulge",
         "rv_size",
         "la_size",
         "pericardial_effusion",
@@ -1233,7 +1255,27 @@
     },
     "PLAX_DEEP": {
       "columns": [
-        "pericardial_effusion"
+        "lv_function",
+        "lv_size",
+        "lv_wall_thickness",
+        "septal_bulge",
+        "rv_size",
+        "la_size",
+        "pericardial_effusion",
+        "mitral_appearance",
+        "mitral_motion",
+        "mitral_device",
+        "mitral_regurgitant_jet",
+        "aortic_appearance",
+        "aortic_motion",
+        "aortic_device",
+        "aortic_regurgitant_jet",
+        "aorta_root_size",
+        "aorta_ascending_size",
+        "wall_basal_inferolateral",
+        "wall_mid_inferolateral",
+        "wall_basal_anteroseptal",
+        "wall_mid_anteroseptal"
       ],
       "targets": [
         "lv",
@@ -1248,15 +1290,71 @@
         "pericardium",
         "aorta_descending"
       ],
-      "wall_sources": {},
-      "note": "The PLAX structures plus the descending aorta; only pericardial effusion is claimed. Pericardial versus pleural fluid requires landmark assessment; descending aorta must not be labeled aortic root."
+      "wall_sources": {
+        "basal_inferolateral": "WMS LAX Basal Inferolateral",
+        "mid_inferolateral": "WMS LAX Mid Inferolateral",
+        "basal_anteroseptal": "WMS LAX Basal Anteroseptal",
+        "mid_anteroseptal": "WMS LAX Mid Anteroseptal"
+      },
+      "note": "The PLAX structures plus the descending aorta, and the PLAX findings. Pericardial versus pleural fluid requires landmark assessment; descending aorta must not be labeled aortic root."
     },
     "PSAX": {
+      "label": "PSAX (cannot tell the level)",
+      "prefill_view": false,
+      "targets": [
+        "lv",
+        "ivs",
+        "pericardium"
+      ],
       "columns": [
         "lv_function",
-        "lv_size",
+        "pericardial_effusion"
+      ],
+      "wall_sources": {
+        "mid_anterior": "WMS SAX Anterior",
+        "mid_anterolateral": "WMS SAX Anterolateral",
+        "mid_inferolateral": "WMS SAX Inferolateral",
+        "mid_inferior": "WMS SAX Inferior",
+        "mid_inferoseptal": "WMS SAX Inferoseptal",
+        "mid_anteroseptal": "WMS SAX Anteroseptal"
+      },
+      "note": "The view classifier's class: it gives no level, so a clip of this class opens with no view and the reviewer chooses PSAX_BASAL, PSAX_MID or PSAX_APICAL, or this view when the level cannot be told. Only what every level claims is prefilled: no RV, no chamber size, and no LV wall thickness, which only the basal level claims. A clip at the aortic valve level is PSAX_AV."
+    },
+    "PSAX_BASAL": {
+      "refines": "PSAX",
+      "label": "PSAX_BASAL (mitral level)",
+      "targets": [
+        "lv",
+        "ivs",
+        "pericardium",
+        "mitral"
+      ],
+      "columns": [
+        "lv_function",
         "lv_wall_thickness",
-        "rv_size",
+        "septal_bulge",
+        "pericardial_effusion",
+        "mitral_appearance",
+        "mitral_motion",
+        "mitral_device",
+        "mitral_regurgitant_jet"
+      ],
+      "wall_sources": {},
+      "note": "Short axis at the mitral valve, the only PSAX level that claims LV wall thickness. No RV, no chamber size."
+    },
+    "PSAX_MID": {
+      "refines": "PSAX",
+      "label": "PSAX_MID (papillary level)",
+      "targets": [
+        "lv",
+        "ivs",
+        "pericardium",
+        "mitral",
+        "papillary_muscles",
+        "chordae"
+      ],
+      "columns": [
+        "lv_function",
         "pericardial_effusion",
         "mitral_appearance",
         "mitral_motion",
@@ -1269,39 +1367,6 @@
         "wall_mid_inferolateral",
         "wall_mid_anteroseptal"
       ],
-      "targets": [
-        "lv",
-        "rv",
-        "ivs",
-        "pericardium"
-      ],
-      "levels": {
-        "basal_mitral": {
-          "targets": [
-            "mitral"
-          ],
-          "columns": []
-        },
-        "mid": {
-          "targets": [
-            "mitral",
-            "papillary_muscles",
-            "chordae"
-          ],
-          "columns": [
-            "wall_mid_inferoseptal",
-            "wall_mid_anterolateral",
-            "wall_mid_inferior",
-            "wall_mid_anterior",
-            "wall_mid_inferolateral",
-            "wall_mid_anteroseptal"
-          ]
-        },
-        "apical": {
-          "targets": [],
-          "columns": []
-        }
-      },
       "wall_sources": {
         "mid_anterior": "WMS SAX Anterior",
         "mid_anterolateral": "WMS SAX Anterolateral",
@@ -1310,7 +1375,22 @@
         "mid_inferoseptal": "WMS SAX Inferoseptal",
         "mid_anteroseptal": "WMS SAX Anteroseptal"
       },
-      "note": "The view classifier gives no PSAX level, so only structures seen at every level are prefilled and the reviewer states the level. The mitral valve is claimed at the basal/mitral and mid levels; papillary muscles, chordae and the mid wall segments at the mid level. A clip at the aortic valve level is PSAX_AV."
+      "note": "Short axis at the papillary muscles: the mitral valve is claimed here too, and the report's short-axis wall segments, which are mid segments, only here. No RV, no chamber size, no LV wall thickness."
+    },
+    "PSAX_APICAL": {
+      "refines": "PSAX",
+      "label": "PSAX_APICAL",
+      "targets": [
+        "lv",
+        "ivs",
+        "pericardium"
+      ],
+      "columns": [
+        "lv_function",
+        "pericardial_effusion"
+      ],
+      "wall_sources": {},
+      "note": "Short axis near the apex: no RV, no chamber size, no LV wall thickness."
     },
     "PSAX_AV": {
       "columns": [
@@ -1573,9 +1653,6 @@
     },
     "PLAX_ZOOM": {
       "columns": [
-        "lv_function",
-        "lv_wall_thickness",
-        "pericardial_effusion",
         "mitral_appearance",
         "mitral_motion",
         "mitral_device",
@@ -1585,31 +1662,39 @@
         "aortic_device",
         "aortic_regurgitant_jet",
         "aorta_root_size",
-        "aorta_ascending_size",
-        "wall_basal_inferolateral",
-        "wall_mid_inferolateral",
-        "wall_basal_anteroseptal",
-        "wall_mid_anteroseptal"
+        "aorta_ascending_size"
       ],
       "targets": [
-        "lv",
-        "rv",
         "la",
         "ivs",
         "mitral",
         "aortic",
         "lvot",
         "aorta_root",
-        "aorta_ascending",
-        "pericardium"
+        "aorta_ascending"
       ],
-      "wall_sources": {
-        "basal_inferolateral": "WMS LAX Basal Inferolateral",
-        "mid_inferolateral": "WMS LAX Mid Inferolateral",
-        "basal_anteroseptal": "WMS LAX Basal Anteroseptal",
-        "mid_anteroseptal": "WMS LAX Mid Anteroseptal"
-      },
-      "note": "Zoomed: the base view's structures are prefilled; untick any outside the zoom (a tick means visible, even partly). Valve, root and chamber function findings are claimed, never chamber size."
+      "wall_sources": {},
+      "note": "Zoomed: the LV, RV and pericardium are not judged, and only valve, root and ascending aorta findings are claimed; untick any structure outside the zoom (a tick means visible, even partly). A zoom on the aortic valve is PLAX_ZOOM_AV."
+    },
+    "PLAX_ZOOM_AV": {
+      "refines": "PLAX_ZOOM",
+      "label": "PLAX_ZOOM_AV (zoomed on the aortic valve)",
+      "targets": [
+        "aortic",
+        "lvot",
+        "aorta_root",
+        "aorta_ascending"
+      ],
+      "columns": [
+        "aortic_appearance",
+        "aortic_motion",
+        "aortic_device",
+        "aortic_regurgitant_jet",
+        "aorta_root_size",
+        "aorta_ascending_size"
+      ],
+      "wall_sources": {},
+      "note": "Zoomed on the aortic valve: only the valve, LVOT, aortic root and ascending aorta are prefilled and claimed. The classifier has no such class yet: a PLAX_ZOOM clip keeps its prefills until the reviewer corrects the view, and the findings this view does not claim then leave the candidate."
     },
     "OTHER": {
       "columns": [],
@@ -1712,11 +1797,8 @@
     "hepatic_veins": "hepatic_veins"
   },
   "levels": {
-    "not_applicable": "Not applicable (not PSAX or subcostal)",
-    "unresolved": "Cannot tell the level",
-    "basal_mitral": "PSAX basal / mitral level",
-    "mid": "PSAX mid / papillary level",
-    "apical": "PSAX apical level",
+    "not_applicable": "Not applicable (not subcostal)",
+    "unresolved": "Cannot tell the subtype",
     "four_chamber": "Subcostal four-chamber",
     "ivc": "Subcostal IVC / hepatic veins"
   },
@@ -1728,7 +1810,7 @@
     "5": "aneurysmal"
   },
   "prefill_policy": "Explicit report values only, routed by view, mode, structures and level. Each view prefills its structures for the reviewer to confirm or untick (a tick means visible, even partly); a structure is never added by the reviewer. Suggestions are MAL drafts. No review_completed prelabel, no missing-to-normal inference, no automatic ground truth.",
-  "scoring_policy": "Score immutable original columns; corrections and confirmed omissions are separate, and a finding ticked among the prefilled findings without being prefilled counts as a confirmed omission. Cannot assess is not an error or a negative. An uninterpretable clip is scored on nothing else and gets no caption. A PSAX or subcostal clip needs its level, and any other view has none. Exact report numbers remain context. Submitted review and exact input provenance gate release.",
+  "scoring_policy": "Score immutable original columns; corrections and confirmed omissions are separate, and a finding ticked among the prefilled findings without being prefilled counts as a confirmed omission. Cannot assess is not an error or a negative. An uninterpretable clip is scored on nothing else and gets no caption. A subcostal clip needs its subtype, and any other view has none. A view that refines the candidate's view is a correct view; the prefilled findings it does not claim leave the candidate, neither confirmed nor rejected. Exact report numbers remain context. Submitted review and exact input provenance gate release.",
   "sources": [
     "https://www.asecho.org/wp-content/uploads/2016/02/2015_ChamberQuantificationREV.pdf",
     "https://www.asecho.org/wp-content/uploads/2025/09/PIIS0894731725002925.pdf",

@@ -1,6 +1,6 @@
 # RADAR caption review: instructions for reviewers (v1)
 
-Version: `radar-caption-ontology-v1`, with column review v3 and view/type review v1.
+Version: `radar-caption-ontology-v2`, with column review v4 and view/type review v2.
 The field names and choices below match the English labels shown in Labelbox.
 
 ## What you review
@@ -24,7 +24,7 @@ study, not this clip, and are never findings to confirm.
 
 The clip is shown whole, at its original resolution, after de-identification: identifying text is blacked out. The
 model receives the same clip, every frame resized whole: nothing is cropped. Judge every finding on the whole image
-and the whole loop (see [Model input and review display](ontology_v1.md#model-input-and-review-display)).
+and the whole loop (see [Model input and review display](ontology_v2.md#model-input-and-review-display)).
 
 The terms used below:
 
@@ -41,15 +41,16 @@ The terms used below:
 1. Watch the whole loop, more than once if needed.
 2. Decide whether the clip can be interpreted at all (question 1). If it cannot, give the reason, select **Review
    completed** and submit: nothing else is read.
-3. Check the prefilled view and acquisition mode, correcting either value directly when needed (questions 2 and 3).
-4. Untick the prefilled structures the clip does not show and, for a PSAX or subcostal clip, state its level
-   (questions 4 and 5).
+3. Check the prefilled view and acquisition mode, correcting either value directly when needed; a PSAX clip has no
+   prefilled view, so choose its level (questions 2 and 3).
+4. Untick the prefilled structures the clip does not show and, for a subcostal clip, check its subtype (questions 4
+   and 5).
 5. Go through the prefilled findings one by one: supported, incorrect or cannot assess (question 6).
 6. Look for an important visible finding the candidate leaves out (question 7), and for a statement of the caption
    outside its findings (question 8).
 7. Add a comment only if needed, select **Review completed** (question 11) and submit.
 
-Every answer except **Review completed** and the level of a PSAX clip is prefilled: the clip interpretable, the view
+Every answer except **Review completed** and the view of a PSAX clip is prefilled: the clip interpretable, the view
 and mode correct, every structure of the view visible, every finding supported, nothing missing or extra. Change what
 this clip does not support; an answer you leave unchanged is your confirmation.
 
@@ -59,10 +60,10 @@ this clip does not support; an answer you leave unchanged is your confirmation.
 | # | Question | Id | Required | Answers |
 |---|---|---|---|---|
 | 1 | Is this clip uninterpretable? | `uninterpretable` | yes | `no` No, it can be interpreted; `yes` Yes, nothing in it can be judged → Why? (a reason below) |
-| 2 | View (prefilled - correct if needed) | `view` | yes | one of the 20 view classes |
+| 2 | View (prefilled - correct if needed) | `view` | yes | one of the 24 views |
 | 3 | Acquisition mode (prefilled - correct if needed) | `modality` | yes | `bmode` B-mode; `color_flow` Color Doppler; `spectral` Spectral Doppler; `m_mode` M-mode; `mixed` Mixed / analysis acquisition; `unresolved` Unresolved |
 | 4 | Structures visible in this clip, even partly (prefilled: untick any not visible) | `visible_targets` | no | `lv` LV; `rv` RV; `la` LA; `ra` RA; `ivs` Interventricular septum; `ias` Interatrial septum; `mitral` Mitral valve; `tricuspid` Tricuspid valve; `aortic` Aortic valve; `pulmonic` Pulmonic valve; `papillary_muscles` Papillary muscles; `chordae` Chordae; `lvot` LVOT; `rvot` RVOT; `pulmonary_artery` Proximal pulmonary artery; `aorta_root` Aortic root; `aorta_ascending` Ascending aorta; `aorta_arch` Aortic arch; `aorta_descending` Descending aorta; `pericardium` Pericardium; `ivc` IVC; `hepatic_veins` Hepatic veins |
-| 5 | PSAX level / subcostal subtype (required for PSAX and subcostal clips) | `psax_level` | yes | `not_applicable` Not applicable (not PSAX or subcostal); `unresolved` Cannot tell the level; `basal_mitral` PSAX basal / mitral level; `mid` PSAX mid / papillary level; `apical` PSAX apical level; `four_chamber` Subcostal four-chamber; `ivc` Subcostal IVC / hepatic veins |
+| 5 | Subcostal subtype (required for subcostal clips) | `subcostal_level` | yes | `not_applicable` Not applicable (not subcostal); `unresolved` Cannot tell the subtype; `four_chamber` Subcostal four-chamber; `ivc` Subcostal IVC / hepatic veins |
 | 6 | Prefilled findings — confirm or correct selected columns | `review_columns` | no | the prefilled columns, each: Proposed value (original retained in context) (one of the column's values) + Confirm this finding (`yes` Supported in this input; `no` Incorrect / should not be here → Why should it not be here? (an error reason) + Correction (`remove` Remove this claim, or one of the column's values); `cannot_assess` Cannot assess → Why can it not be assessed? (an assessment limitation)) |
 | 7 | Important visible finding missing from the candidate? | `missing_information` | yes | `no` No; `yes` Yes → Select missing columns and values (any column the view carries, each: Missing visible value (one of the column's values) + Visible in this input? (`yes` Yes; `cannot_assess` Cannot assess)) |
 | 8 | Additional statement that should not be here? | `unsupported_information` | yes | `no` No; `yes` Yes → Select offending columns / statements (any column or statement type, each: Why should this statement not be here? (an error reason); a statement type also needs Copy the offending statement (free text)) |
@@ -146,8 +147,7 @@ for a structure cut off at the edge of the sector, outside the color box, or out
 
 #### Absent findings
 
-Some findings state an absence: "No mitral regurgitant jet is demonstrated in this acquisition", "No pericardial
-effusion is demonstrated in the imaged region". Judge them like any other finding: supported only if this clip could
+Some findings state an absence: "No mitral regurgitant jet is seen on color Doppler", "No pericardial effusion". Judge them like any other finding: supported only if this clip could
 show the finding (right view, right mode, the structure in the image and, for a jet, color over the valve through
 systole) and it is not there. If the clip could not show it, choose **Cannot assess**.
 
@@ -171,9 +171,9 @@ EF, stenosis severity, filling pressures or pulmonary hypertension.
 
 #### Structures
 
-**Structures visible in this clip** is prefilled with every structure of the view (of its level, for a PSAX or
-subcostal clip). A tick means visible, even partly: untick only a structure that is not in the clip at all. Do not
-tick a structure that is not prefilled. Each view's structures are fixed, so that the same structures can be given to
+**Structures visible in this clip** is prefilled with every structure of the view (of its subtype, for a subcostal
+clip). A tick means visible, even partly: untick only a structure that is not in the clip at all. Do not tick a
+structure that is not prefilled. Each view's structures are fixed, so that the same structures can be given to
 the clips nobody reviews; how often each is unticked shows which ones a view really shows.
 
 Only the findings about a ticked structure count. Some structures have no findings yet (the septa, the LVOT and RVOT,
@@ -184,26 +184,47 @@ A finding about a structure that is not in the clip at all is **Incorrect**: "Cl
 A structure only partly in the image, too cut off to judge, is **Cannot assess**: "Target outside the displayed
 input".
 
+When you untick a structure, resolve each of its findings: mark it **Incorrect** and remove the claim, or tick the
+structure again. Nothing changes your answers for you, and the form cannot catch this as you submit, so a finding left
+supported on an unticked structure sends the review back. **Incorrect** here means this clip does not support the
+statement, not that the patient does not have the finding.
+
 #### Zoomed and LV-focused clips
 
 A zoomed clip is prefilled with its base view's structures: untick those outside the zoom. An LV-focused clip is
 prefilled with the LV and the view's valves. In both, no chamber size is claimed, because the whole chamber may not be
-in the image; LV function, valve and root findings and wall motion are.
+in the image; LV function, valve and root findings and wall motion are. A zoomed PLAX clip is narrower still: the LV,
+the RV and the pericardium are not judged there, only the valves, the root and the ascending aorta.
 
-#### PSAX level and subcostal subtype
+#### LV wall thickness
 
-For a PSAX clip, choose the slice level: nothing is prefilled, because the view classifier does not give it. Basal and
-mitral are one level. A clip at the aortic valve is a `PSAX_AV` clip: correct the view instead. When you cannot tell
-the level, choose "Cannot tell the level". The mitral valve is judged at the basal/mitral and mid levels; the
-papillary muscles, the chordae and the mid wall segments at the mid level only. These structures of a level are not
-prefilled and you do not tick them: they come with the level you choose.
+Thickening in different places has different causes, so each has its own answer: "Thick septum with normal LV wall
+thickness elsewhere" when the septum alone is thick, "Thickened LV posterior wall" when the posterior wall alone is, and
+"Increased LV wall thickness" when the walls are thick together. Correct one to another if the clip shows it. The first
+is claimed only in the views that list the septum (A4C, A5C, PLAX, `PSAX_BASAL`, and their zoomed and deep forms); the
+second only in PLAX, A3C and `PSAX_BASAL` clips, which show that wall.
+
+A basal septal bulge is a separate finding, "Focal basal septal thickening (septal bulge)": a localized thickening, not
+a thick septum.
+
+#### PSAX level, PLAX zoomed on the aortic valve and subcostal subtype
+
+A PSAX clip opens with no view, because the view classifier does not give the slice level: choose `PSAX_BASAL`
+(mitral level), `PSAX_MID` (papillary level) or `PSAX_APICAL`. A clip at the aortic valve is a `PSAX_AV` clip. When you
+cannot tell the level, choose `PSAX`. The RV and chamber size are not judged at the PSAX levels. LV wall thickness is judged
+at `PSAX_BASAL` only, the mitral valve at `PSAX_BASAL` and `PSAX_MID`, and the papillary muscles, the chordae and the mid
+wall segments at `PSAX_MID` only. These structures of a level are not prefilled and you do not tick them: they come
+with the view you choose.
+
+A `PLAX_ZOOM` clip zoomed on the aortic valve is a `PLAX_ZOOM_AV` clip: correct the view. Only the aortic valve, LVOT,
+aortic root and ascending aorta are judged there, and the prefilled findings about anything else leave the caption
+without an answer from you.
 
 For a subcostal clip, the four-chamber subtype and its structures are prefilled: switch an IVC sweep to "Subcostal IVC
 / hepatic veins", which brings the IVC and the hepatic veins, and mark the prefilled chamber findings incorrect ("Wrong
 view / target"). IVC and chamber findings never mix.
 
-For every other view, keep "Not applicable". When you correct the view to or from PSAX or subcostal, correct the
-level too.
+For every other view, keep "Not applicable". When you correct the view to or from subcostal, correct the subtype too.
 
 #### Missing information
 
@@ -229,7 +250,7 @@ If only some findings cannot be judged, the clip is interpretable: use **Cannot 
 
 #### The view and the acquisition mode
 
-Check question 2 against the view classes described in [ontology_v1.md](ontology_v1.md#views). If the clip belongs
+Check question 2 against the view classes described in [ontology_v2.md](ontology_v2.md#views). If the clip belongs
 to another class, replace the prefilled value with that class; use `OTHER` for off-axis or non-standard clips. If
 nothing in the clip can be classified reliably, mark the clip uninterpretable rather than choosing at random. Check
 and correct the acquisition mode directly in question 3.
@@ -251,14 +272,17 @@ A review is returned for correction when:
 - an incorrect finding has no reason or no correction, or a finding that cannot be assessed has no limitation;
 - question 7 is "Yes" without a column, its value and "Visible in this input? Yes", or lists a finding that is
   already prefilled;
+- a finding you added is not one this view carries, or is about a structure you unticked (the form lists every finding
+  on every view);
+- a finding is left supported, or given a corrected value, on a structure you unticked;
 - question 8 is "Yes" without a column or statement type and its reason, or names a finding you left supported;
 - the view or the acquisition mode is answered "No" but left as proposed, or changed without answering "No";
 - a prefilled finding is unticked, or its proposed value changed;
 - a finding ticked in question 6 without being prefilled is not marked supported, or is also added under question 7;
-- a PSAX or subcostal clip has no level, or a clip of another view has one;
+- a subcostal clip has no subtype, or a clip of another view has one;
 - the clip is uninterpretable without a reason, or with "Other" and no comment.
 
-The full rules are in [pilot_metrics_v1.md](pilot_metrics_v1.md#which-reviews-count).
+The full rules are in [pilot_metrics_v2.md](pilot_metrics_v2.md#which-reviews-count).
 
 ## Worked examples: column review
 
@@ -270,9 +294,9 @@ The clips are synthetic, described in words.
 - **Clip (synthetic):** Apical 4-chamber B-mode loop: a normal-sized LV, an RV that contracts normally, thin tricuspid leaflets.
 - **Proposed:** `A4C`, B-mode
 - **Prefilled findings:** `lv_size` Normal; `rv_function` Normal; `tricuspid_appearance` Normal
-- **Candidate caption:** "The visible LV cavity is not dilated. RV systolic function appears normal in this input. The visible tricuspid valve has a normal appearance."
+- **Candidate caption:** "LV cavity is not dilated. RV systolic function appears normal. Tricuspid valve has a normal appearance."
 - **What the reviewer changes:** nothing
-- **Rebuilt caption:** "The visible LV cavity is not dilated. RV systolic function appears normal in this input. The visible tricuspid valve has a normal appearance."
+- **Rebuilt caption:** "LV cavity is not dilated. RV systolic function appears normal. Tricuspid valve has a normal appearance."
 - **Why:** Each prefilled finding is visible in this clip at the stated value, and nothing important is left out: confirm and submit.
 
 ### 2. Wrong severity
@@ -280,12 +304,12 @@ The clips are synthetic, described in words.
 - **Clip (synthetic):** Apical 4-chamber B-mode loop: the LV contracts clearly less than normal, a moderate reduction by eye.
 - **Proposed:** `A4C`, B-mode
 - **Prefilled findings:** `lv_function` Mildly reduced
-- **Candidate caption:** "LV systolic function appears mildly reduced in this input."
+- **Candidate caption:** "LV systolic function appears mildly reduced."
 - **What the reviewer changes:**
   - LV function, Confirm this finding: **Incorrect / should not be here**
   - LV function, Why should it not be here? **Wrong severity**
   - LV function, Correction: **Moderately reduced**
-- **Rebuilt caption:** "LV systolic function appears moderately reduced in this input."
+- **Rebuilt caption:** "LV systolic function appears moderately reduced."
 - **Why:** The finding is right but its severity is not: "Wrong severity", with the value the clip shows. The rebuilt caption uses the correction; the original value stays recorded.
 
 ### 3. Contradicted finding
@@ -293,12 +317,12 @@ The clips are synthetic, described in words.
 - **Clip (synthetic):** Parasternal long-axis B-mode loop: the posterior pericardium is clearly seen, with no fluid around the heart.
 - **Proposed:** `PLAX`, B-mode
 - **Prefilled findings:** `pericardial_effusion` Present
-- **Candidate caption:** "Pericardial effusion is demonstrated in the imaged region."
+- **Candidate caption:** "Pericardial effusion is present."
 - **What the reviewer changes:**
   - Pericardial effusion, Confirm this finding: **Incorrect / should not be here**
   - Pericardial effusion, Why should it not be here? **Contradicted by visible evidence**
   - Pericardial effusion, Correction: **Not demonstrated**
-- **Rebuilt caption:** "No pericardial effusion is demonstrated in the imaged region."
+- **Rebuilt caption:** "No pericardial effusion."
 - **Why:** The clip shows the pericardium well and no effusion: the prefilled finding is contradicted. Because this clip can show an effusion, the correction can say none is demonstrated; if it could not, remove the claim instead.
 
 ### 4. Missing finding
@@ -306,13 +330,13 @@ The clips are synthetic, described in words.
 - **Clip (synthetic):** Apical 4-chamber color Doppler loop: a mitral regurgitant jet and a clearly visible tricuspid regurgitant jet.
 - **Proposed:** `A4C`, Color Doppler
 - **Prefilled findings:** `mitral_regurgitant_jet` Jet demonstrated
-- **Candidate caption:** "A mitral regurgitant jet is demonstrated in this color acquisition."
+- **Candidate caption:** "Mitral regurgitant jet is visible on color Doppler."
 - **What the reviewer changes:**
   - Important visible finding missing from the candidate? **Yes**
   - Select missing columns and values: **Tricuspid regurgitant jet**
   - Tricuspid regurgitant jet, Missing visible value: **Jet demonstrated**
   - Tricuspid regurgitant jet, Visible in this input? **Yes**
-- **Rebuilt caption:** "A mitral regurgitant jet is demonstrated in this color acquisition. A tricuspid regurgitant jet is demonstrated in this color acquisition."
+- **Rebuilt caption:** "Mitral regurgitant jet is visible on color Doppler. Tricuspid regurgitant jet is visible on color Doppler."
 - **Why:** What is prefilled is supported; the tricuspid jet is visible, relevant and not prefilled, so it is added as missing. Neither jet gets a grade: a color loop shows whether a jet is demonstrated, not an integrated severity.
 
 ### 5. Absence that cannot be judged
@@ -320,7 +344,7 @@ The clips are synthetic, described in words.
 - **Clip (synthetic):** Apical 4-chamber color Doppler loop with the color box over the tricuspid valve; the mitral valve is outside the color box.
 - **Proposed:** `A4C`, Color Doppler
 - **Prefilled findings:** `mitral_regurgitant_jet` No jet demonstrated in this acquisition
-- **Candidate caption:** "No mitral regurgitant jet is demonstrated in this acquisition."
+- **Candidate caption:** "No mitral regurgitant jet is seen on color Doppler."
 - **What the reviewer changes:**
   - Mitral regurgitant jet, Confirm this finding: **Cannot assess**
   - Mitral regurgitant jet, Why can it not be assessed? **Target outside the displayed input**
@@ -332,11 +356,11 @@ The clips are synthetic, described in words.
 - **Clip (synthetic):** Apical 2-chamber B-mode loop: a normal-sized LV; the endocardium of the mid inferior wall is not seen (dropout).
 - **Proposed:** `A2C`, B-mode
 - **Prefilled findings:** `lv_size` Normal; `wall_mid_inferior` Normal / hyperkinetic (report score 1)
-- **Candidate caption:** "The visible LV cavity is not dilated. The visible mid inferior segment shows normal or hyperkinetic motion."
+- **Candidate caption:** "LV cavity is not dilated. Mid inferior segment shows normal or hyperkinetic motion."
 - **What the reviewer changes:**
   - Mid inferior wall motion, Confirm this finding: **Cannot assess**
   - Mid inferior wall motion, Why can it not be assessed? **Poor image quality**
-- **Rebuilt caption:** "The visible LV cavity is not dilated."
+- **Rebuilt caption:** "LV cavity is not dilated."
 - **Why:** A segment whose endocardium is not seen cannot be graded. "Cannot assess" with its limitation keeps the claim out of the caption without counting it as an error; the other finding stays.
 
 ### 7. PSAX level and a missing segment
@@ -344,22 +368,22 @@ The clips are synthetic, described in words.
 - **Clip (synthetic):** Parasternal short-axis B-mode loop at the papillary muscles: the LV contracts normally, except the mid anterior wall, which moves clearly less.
 - **Proposed:** `PSAX`, B-mode
 - **Prefilled findings:** `lv_function` Normal
-- **Candidate caption:** "LV systolic function appears normal in this input."
+- **Candidate caption:** "LV systolic function appears normal."
 - **What the reviewer changes:**
-  - PSAX level / subcostal subtype (required for PSAX and subcostal clips): **PSAX mid / papillary level**
+  - View (prefilled - correct if needed): **PSAX_MID (papillary level)**
   - Important visible finding missing from the candidate? **Yes**
   - Select missing columns and values: **Mid anterior wall motion**
   - Mid anterior wall motion, Missing visible value: **Hypokinetic**
   - Mid anterior wall motion, Visible in this input? **Yes**
-- **Rebuilt caption:** "LV systolic function appears normal in this input. The visible mid anterior segment shows hypokinesis."
-- **Why:** A PSAX clip has no prefilled level: the papillary muscles show the mid level, so choose it. Its mid wall segments can be claimed only at that level, so the hypokinetic segment is added as missing once the level is set.
+- **Rebuilt caption:** "LV systolic function appears normal. Mid anterior segment shows hypokinesis."
+- **Why:** A PSAX clip opens with no view, because the view classifier does not give its level: the papillary muscles show the mid level, so choose PSAX_MID. Its mid wall segments can be claimed only at that level, so the hypokinetic segment is added as missing once the view is set.
 
 ### 8. Wrong view
 
 - **Clip (synthetic):** B-mode loop labelled apical 4-chamber, but the LV outflow tract and the aortic valve are open in the image: it is an apical 5-chamber view. Both ventricles are normal in size.
 - **Proposed:** `A4C`, B-mode
 - **Prefilled findings:** `lv_size` Normal; `rv_size` Normal
-- **Candidate caption:** "The visible LV cavity is not dilated. The visible RV cavity is not dilated."
+- **Candidate caption:** "LV cavity is not dilated. RV cavity is not dilated."
 - **What the reviewer changes:**
   - View (prefilled - correct if needed): **A5C**
 - **Rebuilt caption:** none: the view or acquisition mode was corrected
@@ -370,7 +394,7 @@ The clips are synthetic, described in words.
 - **Clip (synthetic):** Apical B-mode loop with heavy artifacts throughout: no wall or valve can be made out.
 - **Proposed:** `A4C`, B-mode
 - **Prefilled findings:** `lv_function` Normal
-- **Candidate caption:** "LV systolic function appears normal in this input."
+- **Candidate caption:** "LV systolic function appears normal."
 - **What the reviewer changes:**
   - Is this clip uninterpretable? **Yes, nothing in it can be judged**
   - Why? **Poor image quality or artifacts throughout**
@@ -388,7 +412,7 @@ a view the column review carries, in B-mode or color Doppler, goes back to the c
 | Question | Id | Required | Answers |
 |---|---|---|---|
 | What is this item? | `input_type` | yes | `cine_loop` Echo cine loop (moving echo images); `analysis_screen` Analysis or quantification screen (strain, 3D, EF tool); `no_echo_image` No echo image |
-| Which view does it show? | `view` | yes, asked when `input_type` is `cine_loop` | `A2C` A2C: Apical 2-chamber view; `A2C_LV` A2C_LV: Apical 2-chamber view, LV-focused; `A2C_ZOOM` A2C_ZOOM: Apical 2-chamber view, zoomed; `A3C` A3C: Apical 3-chamber view; `A3C_LV` A3C_LV: Apical 3-chamber view, LV-focused; `A3C_ZOOM` A3C_ZOOM: Apical 3-chamber view, zoomed; `A4C` A4C: Apical 4-chamber view; `A4C_LV` A4C_LV: Apical 4-chamber view, LV-focused; `A4C_ZOOM` A4C_ZOOM: Apical 4-chamber view, zoomed; `A5C` A5C: Apical 5-chamber view; `A5C_ZOOM` A5C_ZOOM: Apical 5-chamber view, zoomed; `PLAX` PLAX: Parasternal long-axis view; `PLAX_DEEP` PLAX_DEEP: Parasternal long-axis view, deep; `PLAX_ZOOM` PLAX_ZOOM: Parasternal long-axis view, zoomed; `PSAX` PSAX: Parasternal short-axis view; `PSAX_AV` PSAX_AV: Parasternal short-axis view at the aortic valve; `RVINF` RVINF: Right ventricular inflow view; `SUBCOSTAL` SUBCOSTAL: Subcostal view; `SUPRASTERNAL` SUPRASTERNAL: Suprasternal view; `OTHER` OTHER: off-axis or non-standard echo view; `cannot_tell` Cannot tell the view |
+| Which view does it show? | `view` | yes, asked when `input_type` is `cine_loop` | `A2C` A2C: Apical 2-chamber view; `A2C_LV` A2C_LV: Apical 2-chamber view, LV-focused; `A2C_ZOOM` A2C_ZOOM: Apical 2-chamber view, zoomed; `A3C` A3C: Apical 3-chamber view; `A3C_LV` A3C_LV: Apical 3-chamber view, LV-focused; `A3C_ZOOM` A3C_ZOOM: Apical 3-chamber view, zoomed; `A4C` A4C: Apical 4-chamber view; `A4C_LV` A4C_LV: Apical 4-chamber view, LV-focused; `A4C_ZOOM` A4C_ZOOM: Apical 4-chamber view, zoomed; `A5C` A5C: Apical 5-chamber view; `A5C_ZOOM` A5C_ZOOM: Apical 5-chamber view, zoomed; `PLAX` PLAX: Parasternal long-axis view; `PLAX_DEEP` PLAX_DEEP: Parasternal long-axis view, deep; `PLAX_ZOOM` PLAX_ZOOM: Parasternal long-axis view, zoomed; `PLAX_ZOOM_AV` PLAX_ZOOM_AV (zoomed on the aortic valve); `PSAX` PSAX (cannot tell the level); `PSAX_BASAL` PSAX_BASAL (mitral level); `PSAX_MID` PSAX_MID (papillary level); `PSAX_APICAL` PSAX_APICAL; `PSAX_AV` PSAX_AV: Parasternal short-axis view at the aortic valve; `RVINF` RVINF: Right ventricular inflow view; `SUBCOSTAL` SUBCOSTAL: Subcostal view; `SUPRASTERNAL` SUPRASTERNAL: Suprasternal view; `OTHER` OTHER: off-axis or non-standard echo view; `cannot_tell` Cannot tell the view |
 | Acquisition mode | `modality` | yes, asked when `input_type` is `cine_loop` | `bmode` B-mode; `color_flow` Color Doppler; `spectral` Spectral Doppler; `m_mode` M-mode; `mixed` Mixed / analysis acquisition; `unresolved` Unresolved |
 | Is identifying text visible (a name, a record number, a date of birth)? | `identifier_visible` | yes | `no` No; `yes` Yes: the item must be deleted |
 | Comments (no patient details) | `comments` | no | free text |

@@ -1,4 +1,4 @@
-# RADAR caption pilot: metrics and go/no-go rules (v1)
+# RADAR caption pilot: metrics and go/no-go rules (v2)
 
 **Need agreement on the thresholds below before any pilot clip is reviewed.** Until
 [issue #21](https://github.com/HeartWise-AI/EchoJEPA/issues/21) records that agreement, the thresholds are proposals.
@@ -6,9 +6,18 @@ Once agreed, the pilot outcome is reported under these rules whatever it is. A c
 seeing pilot results needs a new version and is judged on new pilot studies, never on the clips already reviewed.
 
 The pilot reviews every valid video of 2–3 training-split studies. It tests whether the caption-and-review workflow
-is feasible under [`radar-caption-ontology-v1`](ontology_v1.md) with column review v3. It does not measure clinical
+is feasible under [`radar-caption-ontology-v2`](ontology_v2.md) with column review v4. It does not measure clinical
 accuracy or model performance, and its small size allows only coarse decisions. The metrics follow `score_review`
 in `tools/labelbox/column_review.py`.
+
+## Changes from v1
+
+The first medical review changed the form, so these rules are a new version, as the rule above requires. A PSAX clip's
+view is no longer prefilled, the reviewer states its level, and the subcostal subtype is its own answer. A view that
+refines the candidate's class counts as correct, and the prefilled columns it does not claim are counted neither as
+supported nor as incorrect. A missing column the view does not carry, and a column left supported on an unticked
+structure, are returned for correction, where v1 kept the review and gave the clip no caption. The thresholds are unchanged. The clips reviewed under v1 stay reported under v1: they are
+not pooled with reviews under v2, which is judged on new pilot studies.
 
 ## What each review records
 
@@ -20,8 +29,8 @@ prefilled columns).
 | Item | Answers |
 |---|---|
 | **Uninterpretable clip?** (`uninterpretable`) | no; yes, with a reason |
-| **View** (`view`) and **Acquisition mode** (`modality`) | prefilled from the candidate and corrected in place; the immutable uploaded candidate provides the original values for accuracy calculations |
-| Structures and level (`visible_targets`, `psax_level`) | which of the view's prefilled structures the clip shows; the PSAX level or subcostal subtype |
+| **View** (`view`) and **Acquisition mode** (`modality`) | prefilled from the candidate and corrected in place (a PSAX clip's view is left for the reviewer, who states its level); the immutable uploaded candidate provides the original values for accuracy calculations, and a view that refines the candidate's class counts as correct |
+| Structures and subtype (`visible_targets`, `subcostal_level`) | which of the view's prefilled structures the clip shows; the subcostal subtype |
 | **Each prefilled column** | supported; incorrect, with an error reason and a corrected value or "remove"; cannot assess, with a limitation |
 | **Missing information?** (`missing_information`) | no; yes, with each missing column, its value and the confirmation that it is visible |
 | **Additional statement?** (`unsupported_information`) | no; yes, with each column or statement type and its error reason |
@@ -34,11 +43,11 @@ review step, if the project has one, is not part of the medical review.
 
 A **column** is one of the candidate's prefilled columns, with its original value: the claims the candidate caption
 makes, one sentence each. The view and the acquisition mode are judged by their own questions and are not columns.
-Every answer except **Review completed** is prefilled, so an answer left unchanged counts as the reviewer's
+Every answer except **Review completed** and a PSAX clip's view is prefilled, so an answer left unchanged counts as the reviewer's
 confirmation; M7 and the second reader (below) show whether the forms were checked.
 
 Columns are judged on the whole de-identified clip, which is also the whole model input: every frame resized to
-224 × 224, never cropped (see [Model input and review display](ontology_v1.md#model-input-and-review-display)). The
+224 × 224, never cropped (see [Model input and review display](ontology_v2.md#model-input-and-review-display)). The
 rates below therefore measure captions against what the model sees, and an incorrect column is a caption error, not a
 crop effect.
 
@@ -87,9 +96,12 @@ The **review checks** are three, and a review that fails any of them is returned
   "Other");
 - **consistency:** every candidate column is reviewed, with its original value (a column ticked among them without
   being prefilled counts as a missing column, and must be supported); no missing column is already a candidate
-  column or ticked among them; no additional statement names a column left supported; and a PSAX or subcostal clip
-  has a level of its view, any other clip none. Submitted view and mode
-  values are compared directly with the immutable uploaded candidate.
+  column or ticked among them, or is one the view and its ticked structures do not carry; no column is left
+  supported or given a corrected value on a structure the reviewer unticked; no additional statement names a column
+  left supported; and a subcostal clip has a
+  subtype, any other clip none. Submitted view and mode values are compared directly with the immutable uploaded
+  candidate; a view that refines the candidate's class (`PSAX_MID` for `PSAX`) counts as the same view, and the
+  prefilled columns it does not claim leave the candidate, counted neither as supported nor as incorrect.
 
 An uninterpretable clip is checked only for its answers and its reason: its other answers are not read.
 

@@ -32,7 +32,7 @@ class TestShippedOntology(unittest.TestCase):
         cls.o = load_ontology()
 
     def test_version_size_and_kinds(self):
-        self.assertEqual(self.o.tag, "radar-caption-ontology-v1")
+        self.assertEqual(self.o.tag, "radar-caption-ontology-v2")
         self.assertEqual(os.path.basename(DEFAULT_ONTOLOGY_PATH), f"{self.o.tag}.yaml")
         self.assertTrue(50 <= len(self.o.concepts) <= 65, len(self.o.concepts))
         kinds = {c.kind for c in self.o.concepts.values()}
@@ -44,6 +44,14 @@ class TestShippedOntology(unittest.TestCase):
         self.assertEqual(self.o.concept("mitral_regurgitation").kind, "finding")
         self.assertIn("severe", self.o.allowed_values("mitral_regurgitation"))
         self.assertEqual(self.o.allowed_values("mitral_valve_visible"), (True, False))
+
+    def test_the_medical_review_s_findings_and_priors(self):
+        self.assertEqual(self.o.concept("septal_bulge").kind, "finding")
+        self.assertIn("interventricular_septum", self.o.concept("septal_bulge").structures)
+        self.assertEqual(self.o.allowed_values("lv_wall_thickening_distribution"),
+                         ("septum_only", "posterior_wall_only", "whole_wall"))
+        self.assertNotIn("PLAX_ZOOM", self.o.concept("mechanical_circulatory_support").prior_views)
+        self.assertNotIn("PSAX", self.o.concept("pacing_lead").prior_views)
 
     def test_view_taxonomy(self):
         self.assertEqual(tuple(self.o.views), VIEWS)
