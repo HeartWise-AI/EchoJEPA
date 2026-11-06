@@ -221,8 +221,8 @@ or `--form view_type_review` to target one form.
   is refused; once it is empty (`--delete --apply`), `--apply --replace-form`
   gives it the committed form, so a project keeps its name across form
   versions (`RADAR Workflow Test - column review`). Projects and datasets must
-  be created using `create_pilot_project.py`. Uploads are resumable and
-  reject incompatible forms or resources.
+  be created using `create_pilot_project.py`. Uploads are resumable, 100 clips
+  at a time, and reject incompatible forms or resources.
 - **Sending a review back.** Labelbox shows no warning at submission, because a
   form cannot compare two answers. `--export-summary` prints one line per invalid
   review: its key, what is unresolved, and any warning for the reviewer. In the

@@ -79,6 +79,9 @@ VIEW_KEY_PREFIX = "radar-view-"
 VIEW_STUDY_KEY_PREFIX = "radar-view-study-"
 # Seconds between attempts to delete a study batch whose labels Labelbox is still deleting, about 5 minutes in all.
 BATCH_DELETE_WAITS = (5, 10, 15, 30, 60, 60, 60, 60)
+LOOKUP_CHUNK = 200  # global keys per Labelbox lookup job.
+LOOKUP_WAITS = (5, 30, 60)  # pauses before repeating a lookup job that failed: it only reads.
+UPLOAD_CHUNK = 100  # clips sent before their data rows are created, so that a rerun keeps the groups already done.
 
 
 @dataclass(frozen=True)
@@ -443,13 +446,38 @@ class LabelboxUploadApi:
         except ResourceNotFoundError:
             return None
 
+    def _lookup(self, keys: Sequence[str]) -> dict[str, str]:
+        """{global key: data row id} of the keys Labelbox has, a chunk of keys per job: a job waits 2 s or more, and on
+        2026-11-06 one job failing among the 1000 of a clip each stopped an upload after half an hour."""
+        found = {}
+        for start in range(0, len(keys), LOOKUP_CHUNK):
+            chunk = keys[start:start + LOOKUP_CHUNK]
+            for wait in (*LOOKUP_WAITS, None):
+                try:
+                    result = self.client.get_data_row_ids_for_global_keys(chunk)
+                    break
+                except Exception:
+                    if wait is None:
+                        raise
+                    self.sleep(wait)
+            missing = {error["global_key"] for error in result["errors"]}
+            present = [key for key in chunk if key not in missing]
+            ids = [uid for uid in result["results"] if uid]
+            if len(ids) != len(present):
+                raise UploadError("Labelbox's lookup of the global keys does not add up: nothing was changed.")
+            found.update(zip(present, ids))
+        return found
+
     def _rows_in_labelbox(self, workspace: Workspace, rows: Sequence[Row]) -> dict[str, Any]:
         """{global key: data row} of the rows Labelbox has; a key in a dataset other than its form's stops the run."""
+        ids = self._lookup([row.global_key for row in rows])
         found = {}
         for row in rows:
-            data_row = self._data_row(row.global_key)
-            if data_row is None:
+            if row.global_key not in ids:
                 continue
+            data_row = self.client.get_data_row(ids[row.global_key])
+            if data_row.global_key != row.global_key:
+                raise UploadError("Labelbox's lookup gave a global key the data row of another.")
             if data_row.dataset().uid != workspace.datasets[row.form].uid:
                 raise UploadError("A global key of this folder belongs to another dataset.")
             found[row.global_key] = data_row
@@ -486,29 +514,32 @@ class LabelboxUploadApi:
 
     def upload_rows(self, workspace: Workspace, rows: Sequence[Row]) -> None:
         for form in FORMS:
-            payload = []
-            for row in (row for row in rows if row.form == form):
-                if sha256(row.path) != row.sha256:
-                    raise UploadError("A copy changed after the checks: run again.")
-                with _step("uploading the video files"):
-                    url = self.client.upload_file(str(row.path))
-                payload.append({
-                    "row_data": url,
-                    "global_key": row.global_key,
-                    "external_id": row.global_key,
-                    "attachments": [dict(attachment) for attachment in row.attachments],
-                })
-            if not payload:
-                continue
-            with _step(f"creating the data rows in {self.targets[form].dataset_name!r}"):
-                task = workspace.datasets[form].create_data_rows(payload)
-                task.wait_till_done()
-                errors = task.errors
-            if task.status == "FAILED" or errors:
-                failed = _failed_keys(errors, [item["global_key"] for item in payload])
-                which = f" for {len(failed)} of {len(payload)} rows ({', '.join(failed)})" if failed else ""
-                raise UploadError(f"Data-row creation failed{which}: {_safe_error_summary(errors)}. A rerun uploads "
-                                  "again the rows Labelbox does not have or did not process.")
+            form_rows = [row for row in rows if row.form == form]
+            for start in range(0, len(form_rows), UPLOAD_CHUNK):
+                payload = []
+                for row in form_rows[start:start + UPLOAD_CHUNK]:
+                    if sha256(row.path) != row.sha256:
+                        raise UploadError("A copy changed after the checks: run again.")
+                    with _step("uploading the video files"):
+                        url = self.client.upload_file(str(row.path))
+                    payload.append({
+                        "row_data": url,
+                        "global_key": row.global_key,
+                        "external_id": row.global_key,
+                        "attachments": [dict(attachment) for attachment in row.attachments],
+                    })
+                with _step(f"creating the data rows in {self.targets[form].dataset_name!r}"):
+                    task = workspace.datasets[form].create_data_rows(payload)
+                    task.wait_till_done()
+                    errors = task.errors
+                if task.status == "FAILED" or errors:
+                    failed = _failed_keys(errors, [item["global_key"] for item in payload])
+                    which = f" for {len(failed)} of {len(payload)} rows ({', '.join(failed)})" if failed else ""
+                    raise UploadError(f"Data-row creation failed{which}: {_safe_error_summary(errors)}. A rerun "
+                                      "uploads again the rows Labelbox does not have or did not process.")
+                if len(form_rows) > UPLOAD_CHUNK:  # `main` silences the SDK's output, and with it `sys.stdout`.
+                    print(f"[upload] {start + len(payload)}/{len(form_rows)} clips sent", file=sys.__stdout__,
+                          flush=True)
 
     @staticmethod
     def ensure_batches(project, plan: Mapping[str, Sequence[str]]) -> int:

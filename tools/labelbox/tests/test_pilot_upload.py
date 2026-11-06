@@ -7,6 +7,7 @@ import stat
 import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
@@ -20,6 +21,8 @@ from tools.labelbox.pilot_upload import (
     CLIPS,
     COLUMN_REVIEW,
     ITEMS,
+    LOOKUP_CHUNK,
+    LOOKUP_WAITS,
     NOTICE,
     PILOT,
     PILOT_KEY_PREFIX,
@@ -28,6 +31,7 @@ from tools.labelbox.pilot_upload import (
     PREVIEW,
     STUDY_KEY_PREFIX,
     TEST_KEY_PREFIX,
+    UPLOAD_CHUNK,
     VIEW_KEY_PREFIX,
     VIEW_RELABEL,
     VIEW_REVIEW,
@@ -415,6 +419,15 @@ class FakeClient:
         processed = not self.unprocessed & set(params["globalKeys"])
         return {"queryAllDataRowsHaveBeenProcessed": {"allDataRowsHaveBeenProcessed": processed}}
 
+    def get_data_row_ids_for_global_keys(self, keys):
+        """As the SDK: an empty string in the place of a key Labelbox does not have, named in `errors`."""
+        return {"results": [key if key in self.rows else "" for key in keys],
+                "errors": [{"global_key": key, "error": "Data Row not found"} for key in keys if key not in self.rows]}
+
+    def get_data_row(self, uid):
+        self.rows[uid].global_key = uid
+        return self.rows[uid]
+
     def get_datasets(self, where=None):
         return list(self.datasets)
 
@@ -598,6 +611,77 @@ class SdkPayloadTests(unittest.TestCase):
         client.rows[OTHER] = SimpleNamespace(dataset=lambda: client.dataset(COLUMN_REVIEW))
         with self.assertRaisesRegex(UploadError, "belongs to another dataset"):
             sdk_api(client).existing_global_keys(workspace, plan.rows)
+
+    def test_the_lookup_asks_for_a_chunk_of_keys_at_a_time(self):
+        client = FakeClient()
+        keys = [f"key-{index}" for index in range(LOOKUP_CHUNK + 1)]
+        client.rows[keys[-1]] = SimpleNamespace()
+        asked = []
+        lookup = client.get_data_row_ids_for_global_keys
+        client.get_data_row_ids_for_global_keys = lambda chunk: asked.append(len(chunk)) or lookup(chunk)
+        self.assertEqual(sdk_api(client)._lookup(keys), {keys[-1]: keys[-1]})
+        self.assertEqual(asked, [LOOKUP_CHUNK, 1])
+
+    def test_the_lookup_reads_a_result_without_the_empty_places(self):
+        result = {"results": ["id-b"], "errors": [{"global_key": "a", "error": "Data Row not found"}]}
+        client = SimpleNamespace(get_data_row_ids_for_global_keys=lambda chunk: result)
+        self.assertEqual(sdk_api(client)._lookup(["a", "b"]), {"b": "id-b"})
+
+    def test_a_lookup_that_does_not_add_up_stops_the_run(self):
+        result = {"results": ["id-a", "id-b"], "errors": [{"global_key": "a", "error": "Data Row not found"}]}
+        client = SimpleNamespace(get_data_row_ids_for_global_keys=lambda chunk: result)
+        with self.assertRaisesRegex(UploadError, "does not add up"):
+            sdk_api(client)._lookup(["a", "b"])
+
+    def test_a_failed_lookup_is_repeated_then_reported(self):
+        calls, waits = [], []
+
+        def fails(times):
+            def lookup(chunk):
+                calls.append(chunk)
+                if len(calls) <= times:
+                    raise RuntimeError("Job dataRowsForGlobalKeys failed.")
+                return {"results": ["id-a"], "errors": []}
+            return SimpleNamespace(get_data_row_ids_for_global_keys=lookup)
+
+        self.assertEqual(sdk_api(fails(len(LOOKUP_WAITS)), sleep=waits.append)._lookup(["a"]), {"a": "id-a"})
+        self.assertEqual(waits, list(LOOKUP_WAITS))
+        calls.clear()
+        with self.assertRaisesRegex(RuntimeError, "failed"):
+            sdk_api(fails(len(LOOKUP_WAITS) + 1), sleep=waits.append)._lookup(["a"])
+        self.assertEqual(len(calls), len(LOOKUP_WAITS) + 1)
+
+    def test_a_row_of_another_key_stops_the_run(self):
+        client = FakeClient()
+        workspace = sdk_api(client).ensure_workspace(FORMS, create=False)
+        with tempfile.TemporaryDirectory() as folder:
+            plan = read_plan(make_folder(Path(folder)))
+        client.rows[A4C] = SimpleNamespace(dataset=lambda: client.dataset(COLUMN_REVIEW))
+        client.get_data_row = lambda uid: SimpleNamespace(global_key=OTHER, dataset=client.rows[uid].dataset)
+        with self.assertRaisesRegex(UploadError, "data row of another"):
+            sdk_api(client).existing_global_keys(workspace, plan.rows)
+
+    def test_rows_are_created_a_group_at_a_time_so_a_rerun_keeps_the_groups_done(self):
+        created = []
+
+        def create_data_rows(rows):
+            created.append(len(rows))
+            task = FakeTask()
+            if len(created) == 2:
+                task.status = "FAILED"
+            return task
+
+        client = SimpleNamespace(upload_file=lambda path: "url")
+        with tempfile.TemporaryDirectory() as folder:
+            plan = read_plan(make_folder(Path(folder)))
+            row = plan.rows[0]
+            rows = [replace(row, global_key=f"key-{index}") for index in range(UPLOAD_CHUNK + 1)]
+            workspace = Workspace({row.form: SimpleNamespace(create_data_rows=create_data_rows)}, {}, {})
+            with self.assertRaisesRegex(UploadError, "Data-row creation failed"), \
+                    mock.patch("sys.__stdout__", io.StringIO()) as shown:
+                sdk_api(client).upload_rows(workspace, rows)
+        self.assertEqual(created, [UPLOAD_CHUNK, 1])
+        self.assertEqual(shown.getvalue(), f"[upload] {UPLOAD_CHUNK}/{UPLOAD_CHUNK + 1} clips sent\n")
 
     def test_a_failed_row_is_named_without_its_url(self):
         url = "https://storage.example.invalid/clip"
