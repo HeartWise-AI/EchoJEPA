@@ -11,6 +11,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
+from tools.labelbox import view_review
 from tools.labelbox.column_review import build_candidate, build_form, load_spec, prelabels
 from tools.labelbox.create_pilot_project import DATASET_DESCRIPTION, PROJECT_DESCRIPTION
 from tools.labelbox.pilot_upload import (
@@ -27,6 +28,10 @@ from tools.labelbox.pilot_upload import (
     PREVIEW,
     STUDY_KEY_PREFIX,
     TEST_KEY_PREFIX,
+    VIEW_KEY_PREFIX,
+    VIEW_RELABEL,
+    VIEW_REVIEW,
+    VIEW_STUDY_KEY_PREFIX,
     VIEW_TYPE_REVIEW,
     WORKFLOW_TEST,
     WORKSPACES,
@@ -37,6 +42,7 @@ from tools.labelbox.pilot_upload import (
     _answers_from_label,
     ensure_upload,
     export_summary,
+    flagged_reviews,
     main,
     preview,
     read_plan,
@@ -204,7 +210,7 @@ class PlanTests(unittest.TestCase):
             rows = [{"global_key": key, "form": COLUMN_REVIEW, "study_key": STUDY, "copy_sha256": "0" * 64}
                     for key in keys]
             with tempfile.TemporaryDirectory() as folder:
-                with self.assertRaisesRegex(UploadError, "all of a workflow test or all of the pilot"):
+                with self.assertRaisesRegex(UploadError, "all of one kind of folder"):
                     read_plan(make_folder(Path(folder), listed=rows))
 
     def test_a_pilot_folder_is_read_as_the_pilots(self):
@@ -292,7 +298,7 @@ class FakeApi:
         known.update(new)
         return len(new)
 
-    def ensure_prelabels(self, workspace, candidates, *, name, refresh=False):
+    def ensure_prelabels(self, workspace, candidates, *, name, refresh=False, form=COLUMN_REVIEW):
         self.calls.append(("prelabels", refresh))
         self.prelabel_name = name
         if self.prelabeled is not None and not refresh:
@@ -968,6 +974,131 @@ class KeptExportTests(unittest.TestCase):
         with self.assertRaisesRegex(UploadError, "outside the repository"):
             export_summary(self.api, self.plan, Path(__file__).resolve().parent / "session_01.json")
         self.assertEqual(self.exported, [])
+
+
+def make_view_folder(root: Path, views=(("a", "PLAX_ZOOM"), ("b", "PSAX"))) -> Path:
+    """An upload folder of the view relabelling set: `views` is each clip's key ending and predicted view."""
+    (root / CLIPS).mkdir()
+    (root / ITEMS).mkdir()
+    rows, predicted = [], []
+    for char, view in views:
+        key = VIEW_KEY_PREFIX + char * 24
+        path = root / CLIPS / f"{key}.mp4"
+        path.write_bytes(f"video {key}".encode())
+        rows.append({"global_key": key, "form": VIEW_REVIEW, "study_key": VIEW_STUDY_KEY_PREFIX + "d" * 24,
+                     "copy_sha256": sha256(path)})
+        predicted.append({"global_key": key, "view": view})
+    (root / ITEMS / "candidates.json").write_text("[]", encoding="utf-8")
+    write_csv(root / ITEMS / "view_type_items.csv", [], ["global_key"])
+    write_csv(root / ITEMS / "view_items.csv", predicted, ["global_key", "view"])
+    write_csv(root / ITEMS / "global_keys.csv", rows, ["global_key", "form", "study_key", "copy_sha256"])
+    return root
+
+
+class ViewRelabelTests(unittest.TestCase):
+    ZOOM, LEVEL = VIEW_KEY_PREFIX + "a" * 24, VIEW_KEY_PREFIX + "b" * 24
+
+    def plan(self, folder, **kwargs):
+        return read_plan(make_view_folder(Path(folder), **kwargs))
+
+    def test_a_view_folder_goes_to_its_own_project_in_one_batch(self):
+        with tempfile.TemporaryDirectory() as folder:
+            plan = self.plan(folder)
+        self.assertEqual(plan.kind, VIEW_RELABEL)
+        self.assertEqual(plan.forms(), [VIEW_REVIEW])
+        self.assertEqual(len(plan.batches(VIEW_REVIEW)), 1)
+        self.assertEqual(set(WORKSPACES[plan.kind.workspace]), {VIEW_REVIEW})
+
+    def test_the_preview_shows_a_prefill_for_every_clip_but_psax(self):
+        with tempfile.TemporaryDirectory() as folder:
+            plan = self.plan(folder)
+        rows = {row["global_key"]: row for row in preview(plan, WORKSPACES["view_relabel"])["rows"]}
+        self.assertEqual(rows[self.ZOOM]["prelabel_records"], 1)
+        self.assertEqual(rows[self.LEVEL]["prelabel_records"], 0)
+
+    def test_a_prediction_the_form_does_not_offer_is_refused(self):
+        with tempfile.TemporaryDirectory() as folder:
+            with self.assertRaisesRegex(UploadError, "not a choice"):
+                self.plan(folder, views=(("a", "A9C"),))
+
+    def test_clips_without_a_predicted_view_are_refused(self):
+        with tempfile.TemporaryDirectory() as folder:
+            make_view_folder(Path(folder))
+            write_csv(Path(folder) / ITEMS / "view_items.csv", [], ["global_key", "view"])
+            with self.assertRaisesRegex(UploadError, "view_review items"):
+                read_plan(Path(folder))
+
+    def test_the_upload_imports_the_views_into_the_view_project(self):
+        calls = []
+
+        class Api(FakeApi):
+            def ensure_prelabels(self, workspace, candidates, *, name, refresh=False, form=COLUMN_REVIEW):
+                calls.append((form, name, [dict(c) for c in candidates]))
+                return True
+
+        with tempfile.TemporaryDirectory() as folder:
+            plan = self.plan(folder)
+            result = ensure_upload(Api(), plan)
+        self.assertTrue(result.prelabels_imported)
+        form, name, items = calls[0]
+        self.assertEqual((form, name), (VIEW_REVIEW, VIEW_RELABEL.predictions_name))
+        self.assertEqual(items, [{"global_key": self.ZOOM, "view": "PLAX_ZOOM"},
+                                 {"global_key": self.LEVEL, "view": "PSAX"}])
+
+    @unittest.skipUnless(importlib.util.find_spec("labelbox"), "Labelbox SDK not installed")
+    def test_the_views_are_imported_by_schema_id_and_psax_opens_empty(self):
+        created = []
+
+        class Job:
+            state, errors = None, []
+
+            def wait_till_done(self):
+                return None
+
+        class PredictionImport:
+            @classmethod
+            def create_from_objects(cls, **kwargs):
+                created.append(kwargs)
+                return Job()
+
+        form = copy.deepcopy(view_review.build_form())
+        for number, question in enumerate(form["classifications"]):
+            question["featureSchemaId"] = f"q{number}"
+            for choice, option in enumerate(question["options"]):
+                option["featureSchemaId"] = f"q{number}.o{choice}"
+        project = SimpleNamespace(uid="project", get_mal_prediction_imports=lambda: [],
+                                  enable_model_assisted_labeling=lambda enabled: self.assertTrue(enabled))
+        workspace = Workspace({}, {VIEW_REVIEW: project}, {VIEW_REVIEW: SimpleNamespace(normalized=form)})
+        with tempfile.TemporaryDirectory() as folder:
+            plan = self.plan(folder)
+        with mock.patch("labelbox.schema.annotation_import.MALPredictionImport", PredictionImport):
+            self.assertTrue(sdk_api(None).ensure_prelabels(workspace, plan.prelabel_items(), form=VIEW_REVIEW))
+
+        predictions = created[0]["predictions"]
+        self.assertEqual([p["dataRow"]["globalKey"] for p in predictions], [self.ZOOM])
+        self.assertTrue(all("schemaId" in p and "name" not in p for p in predictions))
+
+    def test_the_summary_keeps_the_prediction_next_to_the_answer(self):
+        with tempfile.TemporaryDirectory() as folder:
+            plan = self.plan(folder)
+        summary = summarize_export({VIEW_REVIEW: [exported(self.ZOOM, [radio("view", "PLAX_ZOOM_AV")]),
+                                                  exported(self.LEVEL, [radio("view", "unsure")])]}, plan)
+        by_key = {item["global_key"]: item for item in summary["items"]}
+        self.assertEqual((by_key[self.ZOOM]["predicted_view"], by_key[self.ZOOM]["answers"]["view"]),
+                         ("PLAX_ZOOM", "PLAX_ZOOM_AV"))
+        self.assertEqual({item["status"] for item in summary["items"]}, {"valid"})
+
+    def test_an_invalid_review_and_a_comment_are_both_printed(self):
+        comment = {"name": "Comments", "value": "comments", "text_answer": {"content": "a name in the corner"}}
+        with tempfile.TemporaryDirectory() as folder:
+            plan = self.plan(folder)
+        summary = summarize_export({VIEW_REVIEW: [exported(self.ZOOM, [radio("view", "PLAX"), comment]),
+                                                  exported(self.LEVEL, [radio("view", "PSAX")])]}, plan)
+        lines = flagged_reviews(summary)
+        self.assertEqual(len(lines), 2)
+        self.assertIn("view is required", next(line for line in lines if self.LEVEL in line))
+        self.assertIn("comment to read", next(line for line in lines if self.ZOOM in line))
+        self.assertNotIn("a name in the corner", "".join(lines))
 
 
 class MainTests(unittest.TestCase):

@@ -278,6 +278,29 @@ label's details and its time to create (`performance_details`, which review time
 
 Labelbox reads videos when creating data rows and reports unreadable ones. On rerun, unlabeled failed rows are deleted and reuploaded to prevent blocking their study batches during the SDK's one-hour processing wait.
 
+## Upload the view relabelling set
+
+One question per clip, to retrain the view classifier on the PSAX levels and
+`PLAX_ZOOM_AV` and to validate its other classes: 400 PSAX, 200 `PLAX_ZOOM` and
+400 spread evenly over the other classes, prefilled with the predicted view.
+`data/view_relabel.py` holds the steps, and its header the commands: `draw`, the
+clip screen, then `prepare`.
+
+- **The form.** `DeepECHO view review v1` asks only the view, with `unsure` for a
+  clip that is not clear or of poor quality. `PSAX` is not a choice, so a PSAX
+  clip opens with no view and Submit stays disabled until a level or `unsure`
+  is chosen. Comments are optional, and the place to report identifying text:
+  `--export-summary` names each clip with a comment, without its text.
+- **The clips.** Train split only, B-mode and color Doppler, no listed patient or
+  clip, one clip per patient. `prepare` keeps only what the calibrated screen
+  keeps, and refuses a provisional screen or a clip changed since it.
+- **The project.** `RADAR View Relabelling`, created with
+  `create_pilot_project.py --project-name "RADAR View Relabelling" --dataset-name
+  "RADAR View Relabelling Dataset" --apply`. All clips are one batch. The folder's keys
+  send it there, and once it holds reviews `--delete --apply` is refused.
+- **The labels.** The summary holds each clip's predicted view next to its answer;
+  `picked_clips.csv` in the `draw` folder maps each key to its clip, and stays there.
+
 ## Data and credential safety
 
 - Use synthetic or fully de-identified test clips until the workspace and storage

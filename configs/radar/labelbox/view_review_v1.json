@@ -1,0 +1,197 @@
+{
+  "tools": [],
+  "classifications": [
+    {
+      "type": "radio",
+      "instructions": "Which view does this clip show? (prefilled by the view classifier)",
+      "name": "view",
+      "required": true,
+      "options": [
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "A2C: Apical 2-chamber view",
+          "value": "A2C",
+          "options": []
+        },
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "A2C_LV: Apical 2-chamber view, LV-focused",
+          "value": "A2C_LV",
+          "options": []
+        },
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "A2C_ZOOM: Apical 2-chamber view, zoomed",
+          "value": "A2C_ZOOM",
+          "options": []
+        },
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "A3C: Apical 3-chamber view",
+          "value": "A3C",
+          "options": []
+        },
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "A3C_LV: Apical 3-chamber view, LV-focused",
+          "value": "A3C_LV",
+          "options": []
+        },
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "A3C_ZOOM: Apical 3-chamber view, zoomed",
+          "value": "A3C_ZOOM",
+          "options": []
+        },
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "A4C: Apical 4-chamber view",
+          "value": "A4C",
+          "options": []
+        },
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "A4C_LV: Apical 4-chamber view, LV-focused",
+          "value": "A4C_LV",
+          "options": []
+        },
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "A4C_ZOOM: Apical 4-chamber view, zoomed",
+          "value": "A4C_ZOOM",
+          "options": []
+        },
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "A5C: Apical 5-chamber view",
+          "value": "A5C",
+          "options": []
+        },
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "A5C_ZOOM: Apical 5-chamber view, zoomed",
+          "value": "A5C_ZOOM",
+          "options": []
+        },
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "PLAX: Parasternal long-axis view",
+          "value": "PLAX",
+          "options": []
+        },
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "PLAX_DEEP: Parasternal long-axis view, deep",
+          "value": "PLAX_DEEP",
+          "options": []
+        },
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "PLAX_ZOOM: Parasternal long-axis view, zoomed",
+          "value": "PLAX_ZOOM",
+          "options": []
+        },
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "PLAX_ZOOM_AV (zoomed on the aortic valve)",
+          "value": "PLAX_ZOOM_AV",
+          "options": []
+        },
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "PSAX_BASAL (mitral level)",
+          "value": "PSAX_BASAL",
+          "options": []
+        },
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "PSAX_MID (papillary level)",
+          "value": "PSAX_MID",
+          "options": []
+        },
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "PSAX_APICAL",
+          "value": "PSAX_APICAL",
+          "options": []
+        },
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "PSAX_AV: Parasternal short-axis view at the aortic valve",
+          "value": "PSAX_AV",
+          "options": []
+        },
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "RVINF: Right ventricular inflow view",
+          "value": "RVINF",
+          "options": []
+        },
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "SUBCOSTAL: Subcostal view",
+          "value": "SUBCOSTAL",
+          "options": []
+        },
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "SUPRASTERNAL: Suprasternal view",
+          "value": "SUPRASTERNAL",
+          "options": []
+        },
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "OTHER: off-axis or non-standard echo view",
+          "value": "OTHER",
+          "options": []
+        },
+        {
+          "schemaNodeId": null,
+          "featureSchemaId": null,
+          "label": "unsure (not clear / poor quality)",
+          "value": "unsure",
+          "options": []
+        }
+      ],
+      "schemaNodeId": null,
+      "featureSchemaId": null,
+      "attributes": null,
+      "scope": "global",
+      "uiMode": "searchable"
+    },
+    {
+      "type": "text",
+      "instructions": "Comments (report any identifying text here; no patient details)",
+      "name": "comments",
+      "required": false,
+      "options": [],
+      "schemaNodeId": null,
+      "featureSchemaId": null,
+      "attributes": null,
+      "scope": "global"
+    }
+  ]
+}

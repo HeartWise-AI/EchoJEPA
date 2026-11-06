@@ -11,7 +11,7 @@ Reads playable clips (`clips/<global key>.mp4`) and review items (`candidates.js
     python -m tools.labelbox.pilot_upload --folder TEST --delete              # list what this folder uploaded
     python -m tools.labelbox.pilot_upload --folder TEST --delete --apply      # delete it
 
-Use `--form column_review` or `--form view_type_review` to target one form. The folder's keys decide its workspace:
+Use `--form column_review`, `--form view_type_review` or `--form view_review` to target one form. The folder's keys decide its workspace:
 a workflow test's go to the test projects, the pilot's to the pilot projects (`--workspace` may only confirm it). A
 pilot upload is deleted only while its project holds no submitted review.
 
@@ -35,11 +35,11 @@ import re
 import sys
 import time
 from contextlib import contextmanager, redirect_stderr, redirect_stdout
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Collection, Iterator, Mapping, Sequence
 
-from tools.labelbox import column_review, view_type_review
+from tools.labelbox import column_review, view_review, view_type_review
 from tools.labelbox.create_pilot_project import (
     DATASET_DESCRIPTION,
     DEFAULT_DATASET_NAME,
@@ -57,7 +57,7 @@ from tools.labelbox.synthetic_pipeline import (
     _study_batch_plan,
 )
 
-COLUMN_REVIEW, VIEW_TYPE_REVIEW = "column_review", "view_type_review"
+COLUMN_REVIEW, VIEW_TYPE_REVIEW, VIEW_REVIEW = "column_review", "view_type_review", "view_review"
 TEST_KEY_PREFIX = "radar-workflow-test-"
 STUDY_KEY_PREFIX = "radar-workflow-test-study-"
 GLOBAL_KEY = re.compile(re.escape(TEST_KEY_PREFIX) + r"[0-9a-f]{24}")
@@ -73,6 +73,10 @@ SUMMARY_SCHEMA = "radar-workflow-test-summary-v1"
 # The pilot's keys: `data/radar_pilot.py` names each clip `radar-pilot-<HMAC digest>`, and `pilot_prepare` each study.
 PILOT_KEY_PREFIX = "radar-pilot-"
 PILOT_STUDY_KEY_PREFIX = "radar-pilot-study-"
+# The view relabelling set's keys (`data/view_relabel.py`). Its clips come from many studies, so all of them share one
+# key and one batch, not a batch per study.
+VIEW_KEY_PREFIX = "radar-view-"
+VIEW_STUDY_KEY_PREFIX = "radar-view-study-"
 # Seconds between attempts to delete a study batch whose labels Labelbox is still deleting, about 5 minutes in all.
 BATCH_DELETE_WAITS = (5, 10, 15, 30, 60, 60, 60, 60)
 
@@ -103,7 +107,14 @@ PILOT = Kind(
      "value": "RADAR caption pilot (EchoJEPA issue #22) on a real de-identified clip. "
               "Reviews made here are pilot data."},
     "radar-pilot-summary-v1", keeps_reviews=True)
-KINDS = (WORKFLOW_TEST, PILOT)
+VIEW_RELABEL = Kind(
+    "view relabelling", "view_relabel", re.compile(re.escape(VIEW_KEY_PREFIX) + r"[0-9a-f]{24}"),
+    re.compile(re.escape(VIEW_STUDY_KEY_PREFIX) + r"[0-9a-f]{24}"), "RADAR view relabelling set",
+    f"{view_review.FORM_NAME} prelabels v1",
+    {"type": "RAW_TEXT", "name": "RADAR view relabelling",
+     "value": "View relabelling for the view classifier (EchoJEPA issue #22) on a real de-identified clip."},
+    "radar-view-relabel-summary-v1", keeps_reviews=True)
+KINDS = (WORKFLOW_TEST, PILOT, VIEW_RELABEL)
 
 
 @dataclass(frozen=True)
@@ -116,7 +127,7 @@ class Target:
     build_form: Callable[[], dict]
 
 
-FORMS = (COLUMN_REVIEW, VIEW_TYPE_REVIEW)
+FORMS = (COLUMN_REVIEW, VIEW_TYPE_REVIEW, VIEW_REVIEW)
 WORKSPACES = {
     "test": {
         # The project keeps its name across form versions: `--replace-form` gives it a new form once emptied.
@@ -132,6 +143,10 @@ WORKSPACES = {
         VIEW_TYPE_REVIEW: Target("RADAR Caption Pilot - view and type review",
                                  "RADAR Caption Pilot - view and type dataset", view_type_review.FORM_NAME,
                                  view_type_review.build_form),
+    },
+    "view_relabel": {
+        VIEW_REVIEW: Target("RADAR View Relabelling", "RADAR View Relabelling Dataset", view_review.FORM_NAME,
+                            view_review.build_form),
     },
 }
 
@@ -182,6 +197,7 @@ class Plan:
     rows: tuple[Row, ...]
     candidates: Mapping[str, Mapping[str, Any]]  # column review candidates by global key.
     kind: Kind = WORKFLOW_TEST
+    views: Mapping[str, str] = field(default_factory=dict)  # the view review's predicted views by global key.
 
     def forms(self) -> list[str]:
         return [form for form in FORMS if self.rows_of(form)]
@@ -195,7 +211,15 @@ class Plan:
 
     def only(self, form: str) -> "Plan":
         return Plan(rows=tuple(self.rows_of(form)), candidates=self.candidates if form == COLUMN_REVIEW else {},
-                    kind=self.kind)
+                    kind=self.kind, views=self.views if form == VIEW_REVIEW else {})
+
+    def prelabel_form(self) -> str | None:
+        """The form this folder prefills, if any."""
+        return COLUMN_REVIEW if self.candidates else VIEW_REVIEW if self.views else None
+
+    def prelabel_items(self) -> list[Mapping[str, Any]]:
+        """What the prelabels are made from: the column review's candidates, or each clip's predicted view."""
+        return list(self.candidates.values()) or [{"global_key": key, "view": view} for key, view in self.views.items()]
 
 
 def _read_csv(path: Path) -> list[dict[str, str]]:
@@ -210,22 +234,25 @@ def read_plan(folder: Path) -> Plan:
         candidates = json.loads((items / "candidates.json").read_text(encoding="utf-8"))
         other = [row["global_key"] for row in _read_csv(items / "view_type_items.csv")]
         listed = _read_csv(items / "global_keys.csv")
+        predicted = ({row["global_key"]: row["view"] for row in _read_csv(items / "view_items.csv")}
+                     if (items / "view_items.csv").exists() else {})
     except FileNotFoundError:
         raise UploadError("The folder has no review items: run `workflow_test items` or `pilot_prepare` first.")
     except KeyError:
-        raise UploadError("view_type_items.csv needs a global_key column.")
+        raise UploadError("view_type_items.csv needs a global_key column, and view_items.csv a view column too.")
     if not listed:
         raise UploadError("global_keys.csv lists no clip.")
     keys = [row.get("global_key", "") for row in listed]
     kinds = [kind for kind in KINDS if all(kind.global_key.fullmatch(key) for key in keys)]
     if len(keys) != len(set(keys)) or len(kinds) != 1:
-        raise UploadError("Every listed clip needs its own global key, all of a workflow test or all of the pilot.")
+        raise UploadError("Every listed clip needs its own global key, all of one kind of folder.")
     kind = kinds[0]
     if any(row.get("form") not in FORMS or not kind.study_key.fullmatch(row.get("study_key", "")) for row in listed):
         raise UploadError(f"Every listed clip needs a known review form and an opaque {kind.name} study key.")
     forms = {row["global_key"]: row["form"] for row in listed}
     candidate_keys = [candidate.get("global_key") for candidate in candidates]
-    for form, keys_of_form in ((COLUMN_REVIEW, candidate_keys), (VIEW_TYPE_REVIEW, other)):
+    for form, keys_of_form in ((COLUMN_REVIEW, candidate_keys), (VIEW_TYPE_REVIEW, other),
+                               (VIEW_REVIEW, list(predicted))):
         if len(keys_of_form) != len(set(keys_of_form)) or set(keys_of_form) != {
                 key for key, listed_form in forms.items() if listed_form == form}:
             raise UploadError(f"The {form} items and the clips global_keys.csv lists for that form differ.")
@@ -242,6 +269,11 @@ def read_plan(folder: Path) -> Plan:
         except (ValueError, KeyError) as exc:
             raise UploadError(f"A column review candidate is invalid ({type(exc).__name__}).") from exc
         by_key[candidate["global_key"]] = candidate
+    try:
+        for key, view in predicted.items():
+            view_review.prelabels({"global_key": key, "view": view})  # validates the view against the form.
+    except ValueError as exc:
+        raise UploadError(f"A predicted view is invalid: {exc}.") from exc
 
     rows = []
     for row in listed:
@@ -255,7 +287,7 @@ def read_plan(folder: Path) -> Plan:
             attachments.append({"type": context["attachment_type"], "name": context["attachment_name"],
                                 "value": context["attachment_value"]})
         rows.append(Row(key, row["form"], row["study_key"], path, row["copy_sha256"], tuple(attachments)))
-    return Plan(rows=tuple(rows), candidates=by_key, kind=kind)
+    return Plan(rows=tuple(rows), candidates=by_key, kind=kind, views=predicted)
 
 
 def preview(plan: Plan, targets: Mapping[str, Target]) -> dict[str, Any]:
@@ -273,8 +305,11 @@ def preview(plan: Plan, targets: Mapping[str, Target]) -> dict[str, Any]:
             "file": row.path.name,
             "sha256": row.sha256,
             "attachments": [dict(attachment) for attachment in row.attachments],
-            "prelabel_records": len(column_review.prelabels(plan.candidates[row.global_key]))
-            if row.form == COLUMN_REVIEW else 0,
+            "prelabel_records": (len(column_review.prelabels(plan.candidates[row.global_key]))
+                                 if row.form == COLUMN_REVIEW else
+                                 len(view_review.prelabels({"global_key": row.global_key,
+                                                            "view": plan.views[row.global_key]}))
+                                 if row.form == VIEW_REVIEW else 0),
         } for row in plan.rows],
     }
 
@@ -497,14 +532,14 @@ class LabelboxUploadApi:
             return created
 
     def ensure_prelabels(self, workspace: Workspace, candidates: Sequence[Mapping[str, Any]], *,
-                         name: str = PREDICTIONS_NAME, refresh: bool = False) -> bool:
+                         name: str = PREDICTIONS_NAME, refresh: bool = False, form: str = COLUMN_REVIEW) -> bool:
         """Import the column review prelabels once, as `name`; a failed import, or one made before the batches
         changed, is replaced only while the project has no labels."""
         with _step("importing the column review prelabels"):
             from labelbox.schema.annotation_import import MALPredictionImport
             from labelbox.schema.enums import AnnotationImportState
 
-            project = workspace.projects[COLUMN_REVIEW]
+            project = workspace.projects[form]
             imports = [item for item in project.get_mal_prediction_imports() if item.name == name]
             if len(imports) > 1:
                 raise UploadError("Several imports use this folder's prelabel name.")
@@ -519,10 +554,11 @@ class LabelboxUploadApi:
             project.enable_model_assisted_labeling(True)
             if imports:
                 return False
-            named = [record for candidate in candidates for record in column_review.prelabels(candidate)]
+            build = view_review.prelabels if form == VIEW_REVIEW else column_review.prelabels
+            named = [record for candidate in candidates for record in build(candidate)]
             job = MALPredictionImport.create_from_objects(
                 client=self.client, project_id=project.uid, name=name,
-                predictions=_schema_id_predictions(named, workspace.ontologies[COLUMN_REVIEW].normalized))
+                predictions=_schema_id_predictions(named, workspace.ontologies[form].normalized))
             job.wait_till_done()
             if job.state == AnnotationImportState.FAILED or job.errors:
                 raise UploadError(f"Prelabel import failed: {_safe_error_summary(job.errors)}.")
@@ -550,8 +586,9 @@ class LabelboxUploadApi:
         with _step("listing what this folder uploaded"):
             batches = [batch for form in plan.forms() for batch in workspace.projects[form].batches()
                        if batch.name in plan.batches(form)]
-            imports = ([item for item in workspace.projects[COLUMN_REVIEW].get_mal_prediction_imports()
-                        if item.name == plan.kind.predictions_name] if COLUMN_REVIEW in plan.forms() else [])
+            prefilled = plan.prelabel_form()
+            imports = ([item for item in workspace.projects[prefilled].get_mal_prediction_imports()
+                        if item.name == plan.kind.predictions_name] if prefilled in plan.forms() else [])
             data_rows = list(self._rows_in_labelbox(workspace, plan.rows).values())
             reviewed = plan.kind.keeps_reviews and any(workspace.projects[form].get_label_count() != 0
                                                        for form in plan.forms())
@@ -601,9 +638,10 @@ def ensure_upload(api, plan: Plan, *, replace_form: bool = False) -> UploadResul
     if missing:
         api.upload_rows(workspace, missing)
     created = {form: api.ensure_batches(workspace.projects[form], plan.batches(form)) for form in forms}
-    imported = bool(plan.candidates) and api.ensure_prelabels(
-        workspace, list(plan.candidates.values()), name=plan.kind.predictions_name,
-        refresh=created.get(COLUMN_REVIEW, 0) > 0)
+    prefilled = plan.prelabel_form()
+    imported = prefilled is not None and api.ensure_prelabels(
+        workspace, plan.prelabel_items(), name=plan.kind.predictions_name, refresh=created.get(prefilled, 0) > 0,
+        form=prefilled)
     return UploadResult(rows=len(plan.rows), uploaded=len(missing),
                         batches={form: len(plan.batches(form)) for form in forms}, created_batches=created,
                         prelabels_imported=imported, replaced=len(replaced))
@@ -691,6 +729,10 @@ def summarize_export(exports: Mapping[str, Sequence[Mapping[str, Any]]], plan: P
                     continue
                 items.append({**item, "status": "invalid" if score["pending"] else "valid",
                               "score": _without_source_text(score)})
+            elif form == VIEW_REVIEW:
+                problems = view_review.review_problems(answers)
+                items.append({**item, "status": "invalid" if problems else "valid", "answers": answers,
+                              "predicted_view": plan.views[key], "problems": problems})
             else:
                 problems = view_type_review.review_problems(answers)
                 items.append({**item, "status": "invalid" if problems else "valid",
@@ -735,6 +777,8 @@ def flagged_reviews(summary: Mapping[str, Any]) -> list[str]:
             score = item.get("score", {})
             reasons = [*item.get("problems", []), *score.get("pending", []), *score.get("warnings", [])]
             lines.append(f"{item['global_key']}: " + "; ".join(reasons))
+        elif item["form"] == VIEW_REVIEW and item.get("answers", {}).get("comments", "").strip():
+            lines.append(f"{item['global_key']}: has a comment to read, which may report identifying text")
     return lines
 
 
@@ -840,8 +884,9 @@ def main(argv: Sequence[str] | None = None, *, environ: Mapping[str, str] = os.e
         for form in result.batches:
             print(f"{targets[form].project_name}: study batches {result.batches[form]}, "
                   f"created now {result.created_batches[form]}")
-        if plan.candidates:
-            print(f"column review prelabels: {'imported' if result.prelabels_imported else 'existing import kept'}")
+        if plan.prelabel_form():
+            print(f"{'column review' if plan.candidates else 'view'} prelabels: "
+                  f"{'imported' if result.prelabels_imported else 'existing import kept'}")
     else:
         for line in flagged_reviews(json.loads(args.export_summary.read_text(encoding="utf-8"))):
             print(line)
