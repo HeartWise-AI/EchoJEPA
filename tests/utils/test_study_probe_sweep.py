@@ -13,6 +13,7 @@ import yaml
 
 from evals.study_multitask_frozen.eval import aggregate_bags, check_disjoint, check_token_grid, evaluate, manifest_paths
 from evals.video_classification_frozen.modelcustom.vit_encoder_multiclip import ClipAggregation
+from src.models.radar.routing import load_routing
 from src.models.study_probe import head_specs
 from src.models.vision_transformer import VisionTransformer
 from tests.models.test_study_probe import CLASSIFIER
@@ -25,6 +26,24 @@ class TestStudySweep(unittest.TestCase):
     def setUp(self):
         self.spec = yaml.safe_load((ROOT / "configs/sweeps/study_probe.yaml").read_text())
         self.base = yaml.safe_load((ROOT / "configs/eval/vitl/study_multitask_deepecho.yaml").read_text())
+
+    def test_the_matched_baseline_is_one_registry_backed_run_per_seed(self):
+        spec = yaml.safe_load((ROOT / "configs/sweeps/radar_matched_baseline.yaml").read_text())
+        runs = expand(self.base, spec)
+        self.assertEqual([(m["variant"], m["seed"]) for _, m in runs], [("baseline", s) for s in spec["seeds"]])
+        data = runs[0][0]["experiment"]["data"]
+        self.assertEqual(data["sampling_mode"], "shared_bags")
+        self.assertTrue((ROOT / data["routing"]).exists())
+        self.assertNotIn("view_family_map", data)
+        self.assertEqual((data["num_clips_per_video"], data.get("views")), (1, None))
+        routing = load_routing(ROOT / data["routing"])
+        self.assertTrue(set(routing.view_classes) <= set(data["view_labels_map"]))
+
+    def test_the_earlier_sweep_stays_as_it_was(self):
+        defaults = self.spec["defaults"]
+        self.assertEqual(defaults["experiment.data.view_family_map"]["PSAX_AV"], "PSAX")
+        self.assertEqual(defaults["experiment.data.sampling_mode"], "random")
+        self.assertNotIn("experiment.data.routing", defaults)
 
     def test_ablation_and_factorial_cover_each_factor_and_preserve_protocol(self):
         original = copy.deepcopy(self.base)

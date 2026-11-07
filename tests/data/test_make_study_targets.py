@@ -3,6 +3,9 @@
 """`data/make_study_targets.py`: the target rules on a few hand-made report rows, the PACS link,
 the join onto videos.csv and the per-split report."""
 
+import argparse
+import contextlib
+import io
 import json
 import os
 import sys
@@ -87,6 +90,48 @@ class TestRules(unittest.TestCase):
                           mst.REGURG["none_trace"], mst.REGURG["mild"]])
         self.assertTrue(empty[list(mst.TASKS)].isna().all())
         self.assertEqual(set(mst.TASKS), set(t.columns))
+
+
+class TestReading(unittest.TestCase):
+
+    def test_a_csv_keeps_its_identifiers_as_written(self):
+        args = argparse.Namespace(report_accession_col="AccessionNumber", report_patient_col="Dossier")
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "reports.csv")
+            pd.DataFrame({"AccessionNumber": ["001", "002"], "Dossier": ["10", ""]}).to_csv(path, index=False)
+            table = mst.read_reports(path, args)
+        self.assertEqual(table.AccessionNumber.tolist(), ["001", "002"])
+        self.assertEqual(table.Dossier.tolist()[0], "10")
+
+
+class TestPatientAgreement(unittest.TestCase):
+    ARGS = argparse.Namespace(report_accession_col="AccessionNumber", report_patient_col="Dossier",
+                              pacs_accession_col="AccessionNumber", pacs_study_col="StudyInstanceUID",
+                              pacs_patient_col="PatientID")
+
+    def linked(self, report_id, pacs_id):
+        reports = pd.DataFrame({"AccessionNumber": ["1"], "Dossier": [report_id]})
+        pacs = pd.DataFrame({"AccessionNumber": ["1"], "StudyInstanceUID": ["1.2.1"], "PatientID": [pacs_id]})
+        with contextlib.redirect_stdout(io.StringIO()):
+            return len(mst.link_studies(reports, pacs, self.ARGS))
+
+    def test_the_same_patient_links_whatever_the_zeros_in_front(self):
+        for report_id, pacs_id in (("10", "10"), ("00010", "10"), ("10", "00010"), ("A1", "A1"), (10.0, "10")):
+            with self.subTest(report=report_id, pacs=pacs_id):
+                self.assertEqual(self.linked(report_id, pacs_id), 1)
+
+    def test_an_id_that_names_no_one_agrees_with_nothing(self):
+        for missing in ("   ", "", "000", "0.0", "-", "''", "UNKNOWN", "unknown", "Inconnu", "N/A", None):
+            for report_id, pacs_id in ((missing, missing), (missing, "10"), ("10", missing)):
+                with self.subTest(report=report_id, pacs=pacs_id):
+                    self.assertEqual(self.linked(report_id, pacs_id), 0)
+
+    def test_another_patient_does_not_link(self):
+        self.assertEqual(self.linked("10", "20"), 0)
+
+    def test_zeros_do_not_turn_a_real_id_into_a_placeholder_on_the_other_side(self):
+        self.assertEqual(self.linked("0UNKNOWN", "UNKNOWN"), 0)
+        self.assertEqual(self.linked("UNKNOWN", "0UNKNOWN"), 0)
 
 
 class TestEndToEnd(unittest.TestCase):

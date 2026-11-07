@@ -253,24 +253,57 @@ def parse_args(argv=None):
     return p.parse_args(argv)
 
 
+PLACEHOLDER_IDS = frozenset({"INCONNU", "N/A", "NA", "NAN", "NONE", "NULL", "UNKNOWN"})
+
+
+def id_text(series):
+    """`normalize_id`, and an integer that a float column wrote as `10.0` back to `10`. Zeros at the front stay."""
+    return normalize_id(series).str.replace(r"^(\d+)\.0+$", r"\1", regex=True)
+
+
+def usable_ids(series):
+    """`id_text`, then missing for an id that names no one: only punctuation and zeros, or a word that stands for no id
+    (`PLACEHOLDER_IDS`). Any other id, of letters or of digits, is someone's."""
+    ids = id_text(series)
+    return ids.mask(ids.str.fullmatch(r"[\W_0]*") | ids.str.upper().isin(PLACEHOLDER_IDS))
+
+
+def patient_key(series):
+    """What two patient ids are compared by: `usable_ids` without the zeros at the front, so `00010` is `10`, and
+    missing compares equal to nothing, itself included."""
+    return usable_ids(series).str.lstrip("0")
+
+
+def read_reports(path, args):
+    """The report export, with its identifier columns as written. In a CSV, pandas would otherwise read `001` as 1,
+    and every id of a column with a blank as a float."""
+    if path.endswith(".parquet"):
+        return pd.read_parquet(path)
+    ids = {args.report_accession_col: str, args.report_patient_col: str}
+    return pd.read_csv(path, dtype=ids, low_memory=False)
+
+
 def link_studies(reports, pacs, args):
     """One row per study: the report's targets keyed by StudyInstanceUID through the accession
-    number. Accessions found in several PACS studies, or reports disagreeing on a study, are dropped."""
-    reports = reports.assign(accession=normalize_id(reports[args.report_accession_col]),
-                             report_patient=normalize_id(reports[args.report_patient_col]))
+    number. Accessions found in several PACS studies, or reports disagreeing on a study, are dropped,
+    and a blank accession links nothing (pandas would match two blanks to each other). A report links
+    only if both sides name the same patient: two ids that name no one agree on nothing."""
+    reports = reports.assign(accession=id_text(reports[args.report_accession_col]),
+                             report_patient=id_text(reports[args.report_patient_col]))
     pacs = pacs.rename(columns={args.pacs_accession_col: "accession", args.pacs_study_col: "study_id",
                                 args.pacs_patient_col: "pacs_patient"})
-    pacs = pacs.assign(accession=normalize_id(pacs.accession), study_id=normalize_id(pacs.study_id),
-                       pacs_patient=normalize_id(pacs.pacs_patient))
+    pacs = pacs.assign(accession=id_text(pacs.accession), study_id=normalize_id(pacs.study_id),
+                       pacs_patient=id_text(pacs.pacs_patient))
+    reports, pacs = reports[reports.accession.fillna("") != ""], pacs[pacs.accession.fillna("") != ""]
     pacs = pacs.drop_duplicates(["accession", "study_id"])
     ambiguous = pacs.accession.duplicated(keep=False)
     print(f"[pacs]   {int(ambiguous.sum())} accession rows map to several studies: dropped.")
     pacs = pacs[~ambiguous]
     linked = reports.merge(pacs[["accession", "study_id", "pacs_patient"]], on="accession", how="inner")
-    same = linked.report_patient.str.lstrip("0") == linked.pacs_patient.str.lstrip("0")
+    same = (patient_key(linked.report_patient) == patient_key(linked.pacs_patient)).fillna(False)
     print(f"[join]   {len(linked)} of {len(reports)} reports found in the PACS index; "
-          f"{int((~same).sum())} with another patient id dropped.")
-    linked = linked[same.fillna(False)]
+          f"{int((~same).sum())} with another or no patient id dropped.")
+    linked = linked[same]
     dup = linked.study_id.duplicated(keep=False)
     if dup.any():
         print(f"[drop]   {linked.loc[dup, 'study_id'].nunique()} studies with several reports: dropped.")
@@ -282,7 +315,7 @@ def main(argv=None):
     args = parse_args(argv)
     ensure_outside_repo(args.out_dir, "--out-dir")
     os.makedirs(args.out_dir, exist_ok=True)
-    reports = pd.read_parquet(args.reports) if args.reports.endswith(".parquet") else pd.read_csv(args.reports, low_memory=False)
+    reports = read_reports(args.reports, args)
     pacs = pd.read_csv(args.pacs, dtype=str, usecols=[args.pacs_accession_col, args.pacs_study_col, args.pacs_patient_col])
     linked = link_studies(reports, pacs, args)
     targets = derive(linked)

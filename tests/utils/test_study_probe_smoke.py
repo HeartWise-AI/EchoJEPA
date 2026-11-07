@@ -19,6 +19,9 @@ import torch
 
 from app.vjepa_2_1.utils import init_video_model
 from evals.study_multitask_frozen import eval as probe
+from src.datasets.study_bags import choose_bag, evaluation_rng, training_rng
+from src.datasets.video_study_dataset import VideoStudyDataset
+from src.models.radar.routing import DEFAULT_ROUTING, load_routing
 from tests.utils.test_probe_wandb import GRID, Interrupted
 from tests.utils.test_vjepa_2_1_eval_encoder import OPTIONS
 from tests.utils.test_vjepa_2_1_utils import QuietLogs
@@ -306,6 +309,60 @@ class TestStudyProbeSmoke(QuietLogs):
         other["experiment"]["optimization"]["multihead_kwargs"] = GRID
         with self.on_cpu(), self.assertRaisesRegex(ValueError, "one setting"):
             probe.main(other)
+
+    def shared_bags_config(self, name, manifest):
+        cfg = self.config(os.path.join(self.tmp, name))
+        cfg["meta"]["seed"] = 4
+        cfg["experiment"]["data"].update(data_filename=manifest, sampling_mode="shared_bags",
+                                         routing=DEFAULT_ROUTING, eval_seed=5)
+        cfg["experiment"]["evaluation"]["num_bags"] = 2
+        return cfg
+
+    def readable_manifest(self):
+        """The manifest without its unreadable video, as a matched run's has to be."""
+        path = os.path.join(self.tmp, "readable.csv")
+        table = pd.read_csv(self.manifest, dtype=str)
+        table[~table.video_path.str.endswith(os.path.join("s7", "0002.mp4"))].to_csv(path, index=False)
+        return path
+
+    def test_an_unreadable_clip_stops_a_shared_bag_run_through_the_real_decoder(self):
+        with self.on_cpu(), self.assertRaisesRegex(RuntimeError, "a shared bag is read whole"):
+            probe.main(dict(self.shared_bags_config("shared-broken", self.manifest)))
+
+    def test_shared_bags_are_what_radar_reads_through_the_real_run(self):
+        manifest = self.readable_manifest()
+        cfg = self.shared_bags_config("shared", manifest)
+        read, select = [], VideoStudyDataset.select
+
+        def traced(dataset, paths, families=None, study_id=None):
+            chosen = select(dataset, paths, families, study_id)
+            bag = [paths[i] for i in chosen]
+            read.append((dataset.training, dataset.epoch, dataset.eval_bag_index, study_id, bag))
+            return chosen
+
+        with self.on_cpu(), mock.patch.object(VideoStudyDataset, "select", traced):
+            probe.main(dict(cfg))
+        table = pd.read_csv(manifest, dtype=str)
+        routing = load_routing()
+        candidates = {s: list(zip(rows.video_path, rows.view)) for s, rows in table.groupby("study_id")}
+        for training, epoch, bag, study, paths in read:
+            rng = training_rng(4, epoch, study) if training else evaluation_rng(5, bag, study)
+            self.assertEqual(paths, choose_bag(candidates[study], 3, "view_balanced", rng, routing.view_families))
+        self.assertEqual({r[1] for r in read if r[0]}, {0, 1})
+        self.assertEqual({r[2] for r in read if not r[0]}, {0, 1})
+        with open(os.path.join(self.folder(cfg), "run_info.json")) as f:
+            bags = json.load(f)["bags"]
+        self.assertEqual({k: bags[k]["seed"] for k in ("train", "val")}, {"train": 4, "val": 5})
+        self.assertEqual({k: bags[k]["registry_sha256"] for k in bags}, {k: routing.sha256 for k in ("train", "val")})
+
+    def test_a_run_of_another_mode_records_no_bags_and_keeps_its_fingerprint_settings(self):
+        cfg = self.config(os.path.join(self.tmp, "no-shared"))
+        with self.on_cpu():
+            probe.main(dict(cfg))
+        with open(os.path.join(self.folder(cfg), "run_info.json")) as f:
+            self.assertIsNone(json.load(f)["bags"])
+        saved = torch.load(os.path.join(self.folder(cfg), "latest.pt"), map_location="cpu", weights_only=False)
+        self.assertNotIn("bags", saved["fingerprint"]["settings"])
 
     def test_all_four_options_train_resume_and_score_selected_validation_without_test(self):
         cfg = self.config(os.path.join(self.tmp, "all-four"), view_embedding=True)
