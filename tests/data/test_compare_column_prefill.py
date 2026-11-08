@@ -238,10 +238,13 @@ class TestMeasures(unittest.TestCase):
         self.assertEqual(cmp.check_measure("la_size", "normal", {LAD: 5.1}, LIMITS), "contradiction")
 
     def test_walls_one_by_one(self):
-        self.assertEqual(cmp.check_walls("septum_only", {IVS: 1.3, LVIW: 0.8}, LIMITS), "consistent")
-        self.assertEqual(cmp.check_walls("septum_only", {IVS: 1.3, LVIW: 1.05}, LIMITS), "grey")   # lab: not yet
-        self.assertEqual(cmp.check_walls("septum_only", {IVS: 1.3, LVIW: 1.2}, LIMITS), "contradiction")
+        # A regional value speaks of its own wall only (form v5): a thick posterior wall does not contradict it.
+        self.assertEqual(cmp.check_walls("septal_thickening", {IVS: 1.3, LVIW: 1.2}, LIMITS), "consistent")
+        self.assertEqual(cmp.check_walls("septal_thickening", {IVS: 1.0, LVIW: 0.8}, LIMITS), "grey")    # lab: not yet
+        self.assertEqual(cmp.check_walls("septal_thickening", {IVS: 0.85}, LIMITS), "contradiction")
+        self.assertEqual(cmp.check_walls("posterior_thickening", {IVS: 0.8}, LIMITS), "no_measurement")
         self.assertEqual(cmp.check_walls("increased", {IVS: 0.8, LVIW: 1.3}, LIMITS), "contradiction")
+        self.assertEqual(cmp.check_walls("not_increased", {IVS: 0.8, LVIW: 1.05}, LIMITS), "grey")
         self.assertEqual(cmp.check_walls("not_increased", {}, LIMITS), "no_measurement")
 
 
@@ -310,10 +313,10 @@ class TestWithColumnReview(unittest.TestCase):
         cls.cr, cls.spec = cmp.load_column_review(COLUMN_REVIEW_ROOT)
         cmp.index_columns(cls.spec)
 
-    def test_every_value_has_a_polarity_and_v4(self):
+    def test_every_value_has_a_polarity_and_v5(self):
         values = {v for field in self.spec["fields"].values() for v in field["values"]}
         self.assertLessEqual(values, set(cmp.POLARITY))
-        self.assertEqual(self.spec["version"], 4)
+        self.assertEqual(self.spec["version"], cmp.SPEC_VERSION)
 
     def test_the_checkout_leaves_the_path(self):
         self.assertNotIn(os.path.abspath(COLUMN_REVIEW_ROOT), sys.path)

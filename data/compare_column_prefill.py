@@ -3,8 +3,8 @@
 """Column review prefill, checked finding by finding: against the report's other source and against the RADAR parser.
 Counts only, on one split.
 
-RADAR structures are to be captioned from the column review's report prefill (`tools/labelbox/column_review.py`, v4,
-on the column review branch). Every finding it derives is checked against the report's other source: a finding read
+RADAR structures are to be captioned from the column review's report prefill (`tools/labelbox/column_review.py`, form
+v5, on the column review branch). Every finding it derives is checked against the report's other source: a finding read
 from the text against the structured column for the same attribute (`STRUCTURED_CHECKS`), a finding read from a
 structured column (the RV function code, the wall motion scores) against the text. Where no other source exists, the
 check is skipped. Separately, the RADAR parser (`radar_normality.py`) reads the same text, and its reading is compared
@@ -110,7 +110,8 @@ POLARITY = {
     "normal": "normal", "not_increased": "normal", "not_demonstrated": "normal", "preserved": "normal",
     "three": "normal", "normal_or_hyperkinetic": "normal",
     "dilated": "abnormal", "mildly_reduced": "abnormal", "moderately_reduced": "abnormal",
-    "severely_reduced": "abnormal", "increased": "abnormal", "septum_only": "abnormal", "posterior_only": "abnormal",
+    "severely_reduced": "abnormal", "increased": "abnormal", "septal_thickening": "abnormal",
+    "posterior_thickening": "abnormal",
     "present": "abnormal", "calcified": "abnormal", "sclerotic": "abnormal", "thickened": "abnormal",
     "prolapse": "abnormal", "flail": "abnormal", "tethered": "abnormal", "restricted": "abnormal", "two": "abnormal",
     "reduced": "abnormal", "hypokinetic": "abnormal", "severely_hypokinetic": "abnormal", "akinetic": "abnormal",
@@ -137,8 +138,12 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DEFAULT_LIMITS = os.path.join(REPO, "configs", "radar", "prefill_check_limits_v0.yaml")
 LIMITS_SCHEMA = "radar-prefill-check-limits"
 THICK_WALLS_OF = ("septum", "posterior")
-THICK_WALLS = {"not_increased": set(), "increased": {"septum", "posterior"}, "septum_only": {"septum"},
-               "posterior_only": {"posterior"}}
+# What a wall thickness value says of each wall (form v5): a regional value says nothing of the other wall.
+WALLS_SAID = {"not_increased": {"septum": "normal", "posterior": "normal"},
+              "increased": {"septum": "abnormal", "posterior": "abnormal"},
+              "septal_thickening": {"septum": "abnormal"},
+              "posterior_thickening": {"posterior": "abnormal"}}
+SPEC_VERSION = 5    # the column review form this tool reads; another version is refused
 DECIDED = ("normal", "abnormal", "device")
 UNSURE = ("uncertain", "conflict", "not_assessed")
 OUTCOMES = ("agree", "finding_mismatch", "disagree", "prefill_only", "parser_only", "parser_unsure", "prefill_other")
@@ -206,8 +211,8 @@ def parser_reading(facts, covered=()):
     (`GENERIC_FINDINGS`). Claims that do not speak for a column (`speaks_for_column`) are left out. The
     whole-structure statements are resolved first. Only a whole that resolves to normal joins the attributes' own
     facts, as in `assess`; a whole that resolves to conflict, uncertain or not assessed is the status of a `covered`
-    attribute with no facts of its own, and a whole abnormal says nothing of any one attribute. `covered`: attributes the whole structure speaks for, never a device, the aortic cusp count or wall
-    motion."""
+    attribute with no facts of its own, and a whole abnormal says nothing of any one attribute. `covered`: attributes
+    the whole structure speaks for, never a device, the aortic cusp count or wall motion."""
     claims = [c for c in (SimpleNamespace(**f) for f in facts if f["source"] == "text") if speaks_for_column(c)]
     whole = [c for c in claims if c.attribute == rn.OVERALL]
     whole_status = rn._resolve(rn.OVERALL, whole, None)[0] if whole else None
@@ -321,13 +326,13 @@ def check_measure(column, value, report, limits):
 
 
 def check_walls(value, report, limits):
-    """The check of a wall thickness value, wall by wall: a contradiction on either wall, else grey on either, else
-    consistent."""
+    """The check of a wall thickness value, wall by wall, on the walls it speaks of (`WALLS_SAID`): a contradiction
+    on one of them, else grey on one, else consistent."""
     results = []
-    for wall, source in limits["walls"].items():
+    for wall, side in WALLS_SAID[value].items():
+        source = limits["walls"][wall]
         measured = measurement(report, source)
         if measured is not None:
-            side = "abnormal" if wall in THICK_WALLS[value] else "normal"
             results.append(check_value(side, measured, source))
     if not results:
         return "no_measurement"
@@ -425,7 +430,11 @@ def load_column_review(root):
         sys.path.remove(root)   # the checkout has its own `src`: nothing else may be imported from it
     if not os.path.abspath(cr.__file__).startswith(root + os.sep):
         raise SystemExit(f"tools.labelbox.column_review came from {cr.__file__}, not from {root}.")
-    return cr, cr.load_spec()
+    spec = cr.load_spec()
+    if spec.get("version") != SPEC_VERSION:
+        raise SystemExit(f"The column review at {root} has form version {spec.get('version')}; this tool reads "
+                         f"version {SPEC_VERSION}, whose wall thickness values it knows.")
+    return cr, spec
 
 
 def level_for(view, structure, spec, cr):
@@ -615,7 +624,7 @@ def parse_args(argv=None):
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--column-review-root", required=True,
                    help="A checkout holding tools/labelbox/column_review.py and its specification (the column "
-                        "review branch, v4).")
+                        "review branch, form v5).")
     p.add_argument("--reports", required=True, help="The cleaned DeepECHO report export (.parquet or .csv).")
     p.add_argument("--pacs", required=True, help="PACS index (AccessionNumber, StudyInstanceUID, PatientID).")
     p.add_argument("--clips", required=True, help="The eligible clip table (study_id, view, acquisition, split).")
