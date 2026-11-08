@@ -146,9 +146,13 @@ class TestRadarTraining(unittest.TestCase):
             self.assertTrue(0.001 <= line["temperature"] <= 0.5)
             if not line["contributed"]:
                 self.assertTrue(all(st["skipped"] for st in line["structures"].values()))
+            for st in line["structures"].values():
+                self.assertTrue(0 <= st["exact_pairs"] <= st["rows"] * (st["rows"] - 1) // 2)
         with open(os.path.join(self.root, "straight", "epochs.jsonl")) as f:
             epochs = [json.loads(line) for line in f]
         self.assertEqual([e["epoch"] for e in epochs], [0, 1])
+        self.assertIsNotNone(epochs[0]["structures"]["lv"]["median_exact_pairs"])
+        self.assertIsNone(epochs[0]["structures"]["pulmonic"]["median_exact_pairs"])
         self.assertGreaterEqual(epochs[0]["structures"]["lv"]["contributing_steps"], 1)
         self.assertEqual(epochs[0]["structures"]["pulmonic"]["contributing_steps"], 0)
 
@@ -361,6 +365,17 @@ class TestRadarTraining(unittest.TestCase):
         os.remove(os.path.join(folder, "build_info.json"))
         with self.assertRaisesRegex(ValueError, "No build_info.json"):
             radar_train.train(config, os.path.join(self.root, "edited_out"))
+
+    def test_the_arm_must_be_stated(self):
+        for loss in ({}, {"use_normal": False}, {"use_exact": "false"}, {"use_exact": None}):
+            config = copy.deepcopy(self.config)
+            config["loss"] = loss
+            with self.assertRaisesRegex(ValueError, "loss.use_exact must be set"):
+                radar_train.build_model(config, load_routing())
+        config = copy.deepcopy(self.config)
+        del config["loss"]
+        with self.assertRaisesRegex(ValueError, "loss.use_exact must be set"):
+            radar_train.build_model(config, load_routing())
 
     def test_every_arm_records_the_rules_of_its_table(self):
         config = copy.deepcopy(self.config)

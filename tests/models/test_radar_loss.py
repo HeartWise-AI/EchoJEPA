@@ -107,6 +107,23 @@ class TestStructureLoss(unittest.TestCase):
         _, stats = gated(self.z, self.t, valid, self.ids, self.normal, self.abnormal)
         self.assertTrue(all(s["skipped"] == "no_abnormal_row" for s in stats.values()))
 
+    def test_exact_pairs_count_valid_rows_the_same_in_a0_and_a1(self):
+        valid = torch.ones(self.B, self.S, dtype=torch.bool)
+        valid[3, 0] = False                     # an invalid row with a shared caption counts for nothing
+        valid[1:, 1] = False                    # one row: no pair, skipped
+        ids = self.ids.clone()
+        ids[:, 0] = torch.tensor([1, 1, 1, 1])  # valid rows 0-2 share it: 3 pairs
+        ids[:, 2] = torch.tensor([4, 4, 5, 5])  # 2 pairs
+        counts = {}
+        for name, use_exact in (("a0", False), ("a1", True)):
+            loss_fn = StructureContrastiveLoss(["a", "b", "c"], use_exact=use_exact)
+            _, stats = loss_fn(self.z, self.t, valid, ids)
+            counts[name] = {s: st["exact_pairs"] for s, st in stats.items()}
+            self.assertIsNone(stats["c"]["skipped"])
+            self.assertEqual(stats["a"]["skipped"], None if name == "a0" else "uniform_targets")
+        self.assertEqual(counts["a0"], {"a": 3, "b": 0, "c": 2})
+        self.assertEqual(counts["a0"], counts["a1"])
+
     def test_temperature_is_clamped_without_in_place_changes(self):
         loss_fn = StructureContrastiveLoss(["a", "b", "c"], init_temperature=5.0)
         valid = torch.ones(self.B, self.S, dtype=torch.bool)

@@ -124,7 +124,10 @@ class StructureContrastiveLoss(nn.Module):
         valid: [B, S] bool, the row takes part for structure s. caption_ids: [B, S] int64 canonical caption ids.
         normal, abnormal: [B, S] bool (needed with use_normal / release_gate / use_abnormal_teacher).
         teacher: [B, S, P] momentum caption embeddings (needed with use_abnormal_teacher).
-        Returns (loss, stats): stats[name] = {"rows": int, "loss": float or None, "skipped": reason or None}.
+        Returns (loss, stats): stats[name] = {"rows": int, "loss": float or None, "skipped": reason or None,
+        "exact_pairs": int}. `exact_pairs` counts the unordered pairs of valid rows with the same caption id, in every
+        arm: E makes them positives (A1-A3), the identity alone keeps them negatives (A0). It shows how far A1's
+        targets differ from A0's in the batches actually trained on.
         """
         B, S, _ = z.shape
         if S != len(self.structures):
@@ -157,7 +160,9 @@ class StructureContrastiveLoss(nn.Module):
         for s, name in enumerate(self.structures):
             idx = valid_all[:, s].nonzero(as_tuple=True)[0]
             n = int(idx.numel())
-            stat = {"rows": n, "loss": None, "skipped": None}
+            ids_s = ids_all[idx, s]
+            same = int((ids_s[:, None] == ids_s[None, :]).sum()) - n
+            stat = {"rows": n, "loss": None, "skipped": None, "exact_pairs": same // 2}
             stats[name] = stat
             if n < self.min_pairs:
                 stat["skipped"] = "too_few_rows"
@@ -167,7 +172,7 @@ class StructureContrastiveLoss(nn.Module):
             if self.release_gate and not bool(abnormal_s.any()):
                 stat["skipped"] = "no_abnormal_row"
                 continue
-            Q = caption_targets(ids_all[idx, s], normal_s, abnormal_s,
+            Q = caption_targets(ids_s, normal_s, abnormal_s,
                                 teacher_all[idx, s] if teacher_all is not None else None, tau.detach(),
                                 use_exact=self.use_exact, use_normal=self.use_normal)
             if torch.allclose(Q, torch.full_like(Q, 1.0 / n)):

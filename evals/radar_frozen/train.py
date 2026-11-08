@@ -44,16 +44,18 @@ captions whose appended EF would have been cut, and the run stops if any structu
 `text.max_overlength_fraction` (default 0.01): that calls for a longer `max_length`, not for a silent loss.
 
 Logs (rank 0): `log.jsonl`, one line per step (epoch, step, loss, learning rates, temperature, contributed,
-per-structure rows and skip reason); `epochs.jsonl`, per epoch and structure the contributing steps and the median
-number of rows over them. A resume drops the lines written after the checkpoint (an interrupted epoch), and a run
-that starts from scratch drops them all with any older checkpoint, so the logs always describe the checkpointed
-trajectory. `resumes.jsonl`
-records each resume (epoch, step, and the code digests of the checkpoint and of the resuming code).
+per-structure rows, skip reason and exact-caption pairs); `epochs.jsonl`, per epoch and structure the contributing
+steps and the medians of rows and exact-caption pairs over them. Exact-caption pairs are counted in every arm, so A0
+and A1 logs show the same quantity: pairs A1 trains as positives and A0 as negatives. A resume drops the lines
+written after the checkpoint (an interrupted epoch), and a run that starts from scratch drops them all with any older
+checkpoint, so the logs always describe the checkpointed trajectory. `resumes.jsonl` records each resume (epoch, step,
+and the code digests of the checkpoint and of the resuming code).
 
 Config: data {cache_dir, clips, captions, split, routing, normality_policy, num_clips, selection, acquisition_classes}
 (another view family map means another registry through `routing`; the old `view_families` key is refused);
 model {token_grid, embed_dim, depth, num_heads, mlp_ratio, proj_dim, activation_checkpointing};
-text {backbone, max_length, max_overlength_fraction, ...: see `build_text_encoder`}; loss {use_exact, use_normal,
+text {backbone, max_length, max_overlength_fraction, ...: see `build_text_encoder`}; loss {use_exact (required:
+false = A0, true = A1 and the base of A2/A3), use_normal,
 use_abnormal_teacher, release_gate, min_pairs, init_temperature, temperature_bounds, teacher_momentum}; optimization
 {epochs, global_batch, lr, text_lr, min_lr, weight_decay, warmup_fraction, seed, amp (none or bf16), num_workers,
 worker_start_method}; device (auto, cpu or cuda).
@@ -220,6 +222,10 @@ def fit_captions(captions, tokenizer, max_fraction=0.01):
 
 def build_model(config, routing):
     m, t, lc = config["model"], config["text"], config.get("loss", {})
+    if not isinstance(lc.get("use_exact"), bool):
+        raise ValueError("loss.use_exact must be set to true or false: false is A0 (identity targets, CLIP InfoNCE), "
+                         "true is A1 (identity plus exact-caption targets) and the base of A2 and A3. A default "
+                         "would turn a config that forgot it into the other arm.")
     trained = [s.name for s in routing.trained]
     pooler = StructurePooler(
         embed_dim=m["embed_dim"], num_structures=len(trained), token_grid=tuple(m["token_grid"]),
@@ -229,7 +235,7 @@ def build_model(config, routing):
         proj_dim=m.get("proj_dim", 256), use_activation_checkpointing=m.get("activation_checkpointing", False))
     text_encoder, tokenizer = build_text_encoder(t, m.get("proj_dim", 256))
     loss = StructureContrastiveLoss(
-        trained, use_exact=lc.get("use_exact", True), use_normal=lc.get("use_normal", False),
+        trained, use_exact=lc["use_exact"], use_normal=lc.get("use_normal", False),
         use_abnormal_teacher=lc.get("use_abnormal_teacher", False), release_gate=lc.get("release_gate", False),
         min_pairs=lc.get("min_pairs", 2), init_temperature=lc.get("init_temperature", 0.07),
         temperature_bounds=tuple(lc.get("temperature_bounds", (0.001, 0.5))))
@@ -457,20 +463,23 @@ def train(config, out_dir, resume=True, stop_after_epoch=None, allow_code_change
             skipped += int(not contributed)
             for name, stat in stats.items():
                 if stat["loss"] is not None:
-                    contributing[name].append(stat["rows"])
+                    contributing[name].append((stat["rows"], stat["exact_pairs"]))
             if rank == 0:
                 line = {"epoch": epoch, "step": step, "loss": loss, "contributed": contributed,
                         "temperature": float(model.loss.temperature.detach()),
                         "lr": {g["name"]: g["lr"] for g in optimizer.param_groups},
-                        "structures": {n: {"rows": s["rows"], "skipped": s["skipped"]} for n, s in stats.items()}}
+                        "structures": {n: {"rows": s["rows"], "skipped": s["skipped"],
+                                           "exact_pairs": s["exact_pairs"]} for n, s in stats.items()}}
                 with open(os.path.join(out_dir, "log.jsonl"), "a") as f:
                     f.write(json.dumps(line) + "\n")
             step += 1
         rng = _all_rng_states(device, world_size)
         if rank == 0:
             summary = {"epoch": epoch, "structures": {
-                name: {"contributing_steps": len(rows), "median_rows": statistics.median(rows) if rows else None}
-                for name, rows in contributing.items()}}
+                name: {"contributing_steps": len(steps),
+                       "median_rows": statistics.median(r for r, _ in steps) if steps else None,
+                       "median_exact_pairs": statistics.median(p for _, p in steps) if steps else None}
+                for name, steps in contributing.items()}}
             with open(os.path.join(out_dir, "epochs.jsonl"), "a") as f:
                 f.write(json.dumps(summary) + "\n")
             _save(path, {"model": model.state_dict(), "teacher": teacher.state_dict() if teacher else None,
