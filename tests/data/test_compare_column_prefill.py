@@ -365,7 +365,6 @@ class TestWithColumnReview(unittest.TestCase):
         self.assertIn(("S1", "lv_function", "contradiction"), [(f["study_id"], f["column"], f["detail"])
                                                                for f in strict])
 
-
     def test_generic_states_and_whole_conflicts_through_the_comparison(self):
         reports = pd.DataFrame([
             {"study_id": "S1", "Left ventricule findings": "VG nettement dilaté. Dimensions augmentées.",
@@ -380,6 +379,7 @@ class TestWithColumnReview(unittest.TestCase):
         self.assertIn(("rv", "rv_function", "moderately_reduced", "conflict", "parser_unsure", "no_measurement"), got)
         self.assertNotIn(("S2", "rv_function"), [(f["study_id"], f["column"]) for f in flagged])
         self.assertNotIn(("S1", "lv_size"), [(f["study_id"], f["column"]) for f in flagged])
+
 
 if __name__ == "__main__":
     unittest.main()
