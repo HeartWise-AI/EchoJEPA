@@ -211,7 +211,7 @@ def _text_value(key, text):
         for severity, value in [("severe|severely", "severely_reduced"), ("modere|moderate", "moderately_reduced"), ("legere?|mild", "mildly_reduced")]:
             if re.search(r"(?:dysfonction|dysfunction|reduced).*?(?:"+severity+r")|(?:"+severity+r").*?(?:dysfonction|dysfunction|reduced)", text):
                 return value
-        if (re.search(r"fonction systolique.{0,35}\bnormal|normal systolic function|systolic function.*normal", text)
+        if (re.search(r"fonction systolique.{0,35}\bnormal|\bnormal systolic function|systolic function.*\bnormal", text)
                 or (key == "lv_function" and re.search(NORMAL_EF, text)) or "function" in _normal_attributes(text)):
             return "normal"
         if key == "lv_function" and re.search(r"hyperdynamique|hyperdynamic", text):
@@ -219,7 +219,7 @@ def _text_value(key, text):
     if key in {"lv_size", "rv_size", "la_size", "ra_size", "ivc_size"}:
         negations = _negations(r"\bdilat\w*", text)
         normal = (any(negations) or "size" in _normal_attributes(text)
-                  or re.search(r"dimension normale|volume normal|taille normale|normal (?:size|dimension|volume)", text))
+                  or re.search(r"dimension normale|volume normal|taille normale|\bnormal (?:size|dimension|volume)", text))
         dilated = not all(negations)  # a dilatation the clause does not negate
         if normal and dilated:  # "VG non dilaté mais dilatation apicale": not one value
             return None
@@ -232,7 +232,7 @@ def _text_value(key, text):
         return None if re.search(r"(?:\bpas d[e']|absence d[e']|aucun|sans|\bni(?: de)?|\bplus (?:le|de)) ?bourrelet", text) else "present"
     if key.endswith("_appearance"):
         for pattern, value in [("calcifi", "calcified"), ("sclerose|sclerotic", "sclerotic"), ("epaissi|thickened", "thickened"),
-                               (r"^normale?$|feuillets.*normaux|leaflets.*normal|normal.*leaflets|cusps.*normal|valve.{0,30}\bnormal|normal (?:tricuspid|mitral|aortic|pulmonic|pulmonary) valve|(?:tricuspide|tricuspid|mitrale|mitral|aortique|aortic|pulmonic)[: ]+normal", "normal")]:
+                               (r"^normale?$|feuillets.*\bnormaux|leaflets.*\bnormal|\bnormal.*leaflets|cusps.*\bnormal|valve.{0,30}\bnormal|\bnormal (?:tricuspid|mitral|aortic|pulmonic|pulmonary) valve|(?:tricuspide|tricuspid|mitrale|mitral|aortique|aortic|pulmonic)[: ]+normal", "normal")]:
             if re.search(r"pas de|sans |no |not ", text):
                 continue
             for match in re.finditer(pattern, text):
@@ -243,7 +243,7 @@ def _text_value(key, text):
                     continue
                 return value
     if key.endswith("_motion") and not key.startswith("wall_"):
-        for pattern, value in [("prolaps", "prolapse"), ("flail|eversion", "flail"), ("tether|traction", "tethered"), ("mobilite.*reduite|ouverture.*reduite|restricted", "restricted"), ("mobilite.*normale|ouverture.*normale|normal.*(?:motion|opening)|(?:motion|opening).*normal", "normal")]:
+        for pattern, value in [("prolaps", "prolapse"), ("flail|eversion", "flail"), ("tether|traction", "tethered"), ("mobilite.*reduite|ouverture.*reduite|restricted", "restricted"), (r"mobilite.*\bnormale|ouverture.*\bnormale|\bnormal.*(?:motion|opening)|(?:motion|opening).*\bnormal", "normal")]:
             if re.search(pattern, text) and not re.search(r"pas de|sans |no |not ", text):
                 return value
     if key.endswith("_device"):
@@ -269,7 +269,7 @@ def _text_value(key, text):
     if key == "ivc_collapse" and re.search(r"collaps|respiratoire|respiratory", text):
         if re.search(r"reduit|reduced|absent|minimal", text):
             return "reduced"
-        if re.search(r"preserv|normal", text):
+        if re.search(r"preserv|\bnormal", text):
             return "preserved"
     if key.startswith("aorta_"):
         location = key.split("_")[1]
@@ -279,7 +279,7 @@ def _text_value(key, text):
         for part in text.split(","):
             if re.search(relevant, part):
                 negations = _negations(r"\bdilat\w*", part)
-                if any(negations) or re.search(r"normal", part):
+                if any(negations) or re.search(r"\bnormal", part):  # not "anormale"
                     values.add("normal")
                 if not all(negations):
                     values.add("dilated")

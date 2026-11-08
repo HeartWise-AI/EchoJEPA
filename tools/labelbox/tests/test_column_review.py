@@ -155,6 +155,17 @@ class TestColumnPrefills(unittest.TestCase):
         self.assertEqual(_text_value("aorta_ascending_size", text), "normal")
         self.assertEqual(_text_value("aorta_root_size", _normalize("Racine aortique et aorte ascendante dilatées")), "dilated")
 
+    def test_abnormal_is_not_normal(self):
+        for key, text in [("aorta_root_size", "Racine aortique anormale"), ("aorta_ascending_size", "Abnormal ascending aorta"),
+                          ("mitral_appearance", "Feuillets anormaux"), ("mitral_appearance", "Leaflets abnormal"),
+                          ("mitral_appearance", "Abnormal leaflets"), ("aortic_appearance", "Cusps abnormal"),
+                          ("mitral_motion", "Mobilité anormale"), ("mitral_motion", "Abnormal leaflet motion"),
+                          ("mitral_motion", "Opening abnormal"), ("ivc_collapse", "Collapsus respiratoire anormal"),
+                          ("lv_function", "Systolic function abnormal"), ("lv_size", "Abnormal size")]:
+            self.assertIsNone(_text_value(key, _normalize(text)), text)
+        self.assertEqual(_text_value("aorta_root_size", _normalize("Racine aortique normale")), "normal")
+        self.assertEqual(_text_value("mitral_motion", _normalize("Mobilité normale")), "normal")
+
     def test_normal_wordings_of_function_and_size(self):
         for text, function, size in [("FEVG normale", "normal", None), ("FEVG estimée normale à 60 %", "normal", None),
                                      ("De dimension, de masse et de fonction normales", "normal", "normal"),
