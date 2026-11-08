@@ -8,7 +8,7 @@ from unittest import mock
 
 from app.radar.ontology import VIEWS, load_ontology
 from tools.labelbox.column_review import (
-    FORM, ROOT, SPEC, allowed_columns, build_candidate, build_form, context_attachment,
+    FORM, ROOT, SPEC, _normalize, _text_value, allowed_columns, build_candidate, build_form, context_attachment,
     decode_annotations, encode_answers, finding_sentence, load_spec, prelabels, review_problems, score_review,
     validate_annotations, view_targets,
 )
@@ -124,6 +124,45 @@ class TestColumnPrefills(unittest.TestCase):
             self.assertFalse(any(c["concept"] == "lv_function" for c in self.candidate({"Left ventricule findings": text})["columns"]))
         c = self.candidate({"Mitral valve findings": "Pas de sténose et insuffisance mitrale légère"}, modality="color_flow")
         self.assertFalse(any(x["concept"] == "mitral_regurgitant_jet" for x in c["columns"]))
+
+    def value_of(self, key, column, text, modality="bmode", view="A4C"):
+        found = [c["value"] for c in self.candidate({column: text}, view=view, modality=modality)["columns"] if c["concept"] == key]
+        return found[0] if found else None
+
+    def test_diastolic_dysfunction_is_not_a_reduced_systolic_function(self):
+        for text, value in [("Dysfonction diastolique légère", None), ("Mild diastolic dysfunction", None),
+                            ("Dysfonction diastolique de grade 1, fonction systolique normale", "normal"),
+                            ("Dysfonction diastolique légère et dysfonction systolique modérée", "moderately_reduced"),
+                            ("Fonction diastolique normale", None), ("Dysfonction légère du ventricule gauche", "mildly_reduced")]:
+            self.assertEqual(self.value_of("lv_function", "Left ventricule findings", text), value, text)
+
+    def test_a_negation_negates_only_the_finding_it_names(self):
+        for text, value in [("Sans dilatation ou HVG", "normal"), ("Sans hypertrophie ni dilatation", "normal"),
+                            ("Pas de HVG, VG dilaté", "dilated"), ("VG non dilaté mais dilatation apicale", None)]:
+            self.assertEqual(self.value_of("lv_size", "Left ventricule findings", text), value, text)
+        for text, value in [("Insuffisance mitrale modérée sans prolapsus", "demonstrated"),
+                            ("Insuffisance mitrale légère et aucune sténose", "demonstrated"),
+                            ("Pas d'insuffisance mitrale", "not_demonstrated"), ("No significant mitral regurgitation", "not_demonstrated"),
+                            ("Mitral regurgitation not seen", "not_demonstrated"), ("Insuffisance mitrale : aucune", "not_demonstrated")]:
+            self.assertEqual(self.value_of("mitral_regurgitant_jet", "Mitral valve findings", text, modality="color_flow"), value, text)
+        self.assertIsNone(self.value_of("mitral_regurgitant_jet", "Mitral valve findings", "Insuffisance mitrale modérée sans prolapsus"))
+        for text, value in [("Épanchement péricardique minime sans tamponnade", "present"), ("Pas d'épanchement péricardique", "not_demonstrated")]:
+            self.assertEqual(_text_value("pericardial_effusion", _normalize(text)), value, text)
+
+    def test_each_aortic_segment_takes_its_own_part_of_the_clause(self):
+        text = _normalize("Racine aortique dilatée, aorte ascendante normale")
+        self.assertEqual(_text_value("aorta_root_size", text), "dilated")
+        self.assertEqual(_text_value("aorta_ascending_size", text), "normal")
+        self.assertEqual(_text_value("aorta_root_size", _normalize("Racine aortique et aorte ascendante dilatées")), "dilated")
+
+    def test_normal_wordings_of_function_and_size(self):
+        for text, function, size in [("FEVG normale", "normal", None), ("FEVG estimée normale à 60 %", "normal", None),
+                                     ("De dimension, de masse et de fonction normales", "normal", "normal"),
+                                     ("Normal size and function", "normal", "normal"), ("VG de taille normale", None, "normal"),
+                                     ("FEVG 45 % (normale > 55 %)", None, None)]:
+            self.assertEqual(self.value_of("lv_function", "Left ventricule findings", text), function, text)
+            self.assertEqual(self.value_of("lv_size", "Left ventricule findings", text), size, text)
+        self.assertIsNone(_text_value("rv_function", _normalize("FEVG normale")))
 
     def test_actual_rv_codebook_and_conflict(self):
         self.assertEqual(self.candidate({"MHI VD fonction systolique": 0})["columns"][0]["value"], "normal")

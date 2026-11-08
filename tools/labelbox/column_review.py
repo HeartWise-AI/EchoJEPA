@@ -168,22 +168,64 @@ def value_allowed(key, value, view, spec=None):
             and not (key == "lv_wall_thickness" and value == "posterior_only" and view not in POSTERIOR_WALL_VIEWS))
 
 
+# A negation word right before a finding (at most two words between, none a conjunction: "sans signe de dilatation",
+# "no significant mitral regurgitation", not "non dilaté mais dilatation apicale"), or a negating word right after it
+# ("regurgitation not seen", "insuffisance mitrale : aucune", not "légère et aucune sténose"). A negation elsewhere in
+# the clause is about something else: "insuffisance mitrale modérée sans prolapsus".
+NOT_CONJUNCTION = r"(?!(?:mais|but|et|and|avec|with)\b)"
+NEGATION_BEFORE = (r"(?:\bnon[- ]|\bpas d[e']\s?|\bsans |\baucune? |\babsence d[e']\s?|\bni (?:d[e']\s?)?|\bno |\bnot |\bwithout )"
+                   r"(?:" + NOT_CONJUNCTION + r"[\w']+ ){0,2}$")
+NEGATION_AFTER = (r"^\w*(?: " + NOT_CONJUNCTION + r"[\w']+){0,3}?\s?:?\s"
+                  r"(?:aucune?|absente?|none|not (?:seen|demonstrated|visuali[sz]ed|present|detected)"
+                  r"|non (?:vue?s?|visualisee?s?|demontree?s?|objectivee?s?))\b")
+# Diastolic function is not the systolic function these columns take: "dysfonction diastolique légère" is dropped up
+# to the next comma or conjunction, so that its severity cannot be read as a reduced systolic function.
+DIASTOLIC = r"(?:\bdys)?fonctions? diastoliques?(?:(?!,| et | mais | avec ).)*|\bdiastolic (?:dys)?function(?:(?!,| and | but | with ).)*"
+# Attributes that share one "normal": "de dimension, de masse et de fonction normales", "normal size and function".
+ATTRIBUTE = r"\b(?:dimensions?|tailles?|volumes?|masses?|fonctions?(?: systoliques?)?|epaisseurs?(?: parietales?)?|contractilite)"
+NORMAL_ATTRIBUTES = rf"((?:(?:de |d'|en )?{ATTRIBUTE}(?:, | et |, et ))*(?:de |d'|en )?{ATTRIBUTE}) normal(?:e|es|s)?\b"
+ATTRIBUTE_EN = r"\b(?:size|dimensions?|volume|mass|wall thickness|(?:systolic )?function)"
+NORMAL_ATTRIBUTES_EN = rf"\bnormal ((?:{ATTRIBUTE_EN}(?:, | and |, and ))*{ATTRIBUTE_EN})\b"
+NORMAL_EF = r"\b(?:fevg|fe vg|fraction d'ejection(?: du vg| ventriculaire gauche)?) (?:(?:est|estimee|visuellement|globale|jugee) )*normale?\b"
+
+
+def _negations(subject, text):
+    """For each mention of `subject` in the clause, whether that mention is negated."""
+    return [bool(re.search(NEGATION_BEFORE, text[:m.start()]) or re.search(NEGATION_AFTER, text[m.end():]))
+            for m in re.finditer(subject, text)]
+
+
+def _normal_attributes(text):
+    """The attributes the clause calls normal together: {"size", "function"}."""
+    words = " ".join(m.group(1) for pattern in (NORMAL_ATTRIBUTES, NORMAL_ATTRIBUTES_EN) for m in re.finditer(pattern, text))
+    return ({"size"} if re.search(r"dimension|taille|volume|\bsize", words) else set()) | (
+        {"function"} if re.search(r"fonction|contractilite|function", words) else set())
+
+
 def _text_value(key, text):
     """Narrow explicit assertions; no numeric thresholds or general NLP inference."""
     if key in {"lv_function", "rv_function"}:
+        text = re.sub(DIASTOLIC, " ", text)
         if re.search(r"pas de dysfonction|sans dysfonction|no dysfunction|not reduced", text):
             return None
         for severity, value in [("severe|severely", "severely_reduced"), ("modere|moderate", "moderately_reduced"), ("legere?|mild", "mildly_reduced")]:
             if re.search(r"(?:dysfonction|dysfunction|reduced).*?(?:"+severity+r")|(?:"+severity+r").*?(?:dysfonction|dysfunction|reduced)", text):
                 return value
-        if re.search(r"fonction systolique.{0,35}\bnormal|normal systolic function|systolic function.*normal", text):
+        if (re.search(r"fonction systolique.{0,35}\bnormal|normal systolic function|systolic function.*normal", text)
+                or (key == "lv_function" and re.search(NORMAL_EF, text)) or "function" in _normal_attributes(text)):
             return "normal"
         if key == "lv_function" and re.search(r"hyperdynamique|hyperdynamic", text):
             return "hyperdynamic"
     if key in {"lv_size", "rv_size", "la_size", "ra_size", "ivc_size"}:
-        if re.search(r"non[- ]dilate|pas de dilatation|not dilated|dimension normale|volume normal|normal (?:size|dimension|volume)", text):
+        negations = _negations(r"\bdilat\w*", text)
+        normal = (any(negations) or "size" in _normal_attributes(text)
+                  or re.search(r"dimension normale|volume normal|taille normale|normal (?:size|dimension|volume)", text))
+        dilated = not all(negations)  # a dilatation the clause does not negate
+        if normal and dilated:  # "VG non dilaté mais dilatation apicale": not one value
+            return None
+        if normal:
             return "normal"
-        if re.search(r"dilatation|dilate|dilated", text):
+        if dilated:
             return "dilated"
     if key == "septal_bulge" and re.search(r"bourrelet[^,]{0,25}sept|sept[^,]{0,25}bourrelet", text):
         # Only a negation of the bulge itself: "pas d'hypertrophie (bourrelet septal 13 mm)" states one.
@@ -217,9 +259,13 @@ def _text_value(key, text):
         # A negated stenosis in the same clause must not negate regurgitation.
         if re.search(r"pas de stenose|no stenosis", text):
             return None
-        return "not_demonstrated" if re.search(r"pas d'|absence|sans |no |not |aucune", text) else "demonstrated"
+        # Only a negation of the regurgitation itself: "insuffisance mitrale modérée sans prolapsus" states one.
+        negations = _negations(r"\binsuffisance|\bregurgita\w*", text)
+        return None if len(set(negations)) != 1 else "not_demonstrated" if negations[0] else "demonstrated"
     if key == "pericardial_effusion" and re.search(r"epanchement pericardique|pericardial effusion", text):
-        return "not_demonstrated" if re.search(r"pas d'|absence|sans |no |not |aucun", text) else "present"
+        # "Épanchement péricardique minime sans tamponnade" states an effusion.
+        negations = _negations(r"\bepanchement pericardique|\bpericardial effusion", text)
+        return None if len(set(negations)) != 1 else "not_demonstrated" if negations[0] else "present"
     if key == "ivc_collapse" and re.search(r"collaps|respiratoire|respiratory", text):
         if re.search(r"reduit|reduced|absent|minimal", text):
             return "reduced"
@@ -228,11 +274,16 @@ def _text_value(key, text):
     if key.startswith("aorta_"):
         location = key.split("_")[1]
         relevant = {"root": r"sinus de valsalva|aortic root|racine", "ascending": r"ascendante|ascending", "arch": r"crosse|aortic arch"}[location]
-        if re.search(relevant, text):
-            if re.search(r"pas de dilatation|not dilated|non[- ]dilate|normal", text):
-                return "normal"
-            if re.search(r"dilatation|dilate|dilated", text):
-                return "dilated"
+        # Only the part of the clause naming this segment: "racine aortique dilatée, aorte ascendante normale".
+        values = set()
+        for part in text.split(","):
+            if re.search(relevant, part):
+                negations = _negations(r"\bdilat\w*", part)
+                if any(negations) or re.search(r"normal", part):
+                    values.add("normal")
+                if not all(negations):
+                    values.add("dilated")
+        return values.pop() if len(values) == 1 else None
     return None
 
 
