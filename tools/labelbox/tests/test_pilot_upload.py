@@ -97,13 +97,13 @@ def checklist(question, answers):
 def column_review_label(candidate):
     columns = [answer(c["concept"], [radio(c["concept"] + "__value", c["value"]),
                                      radio(c["concept"] + "__status", "yes")]) for c in candidate["columns"]]
-    return [
-        radio("uninterpretable", "no"), radio("view", candidate["view"]), radio("modality", candidate["modality"]),
+    return [radio("uninterpretable", "no", [
+        radio("view", candidate["view"]), radio("modality", candidate["modality"]),
         radio("subcostal_level", candidate["level"]),
         checklist("visible_targets", [answer(t) for t in candidate["suggested_targets"]]),
         checklist("review_columns", columns),
         radio("missing_information", "no"), radio("unsupported_information", "no"),
-        radio("review_completed", "yes"),
+        ]), radio("review_completed", "yes"),
     ]
 
 
@@ -111,7 +111,10 @@ def label_with_a_structure_unticked(candidate):
     """A column review that leaves its first finding supported on a structure the reviewer unticked."""
     target = load_spec()["fields"][candidate["columns"][0]["concept"]]["target"]
     shown = checklist("visible_targets", [answer(t) for t in candidate["suggested_targets"] if t != target])
-    return [shown if item["value"] == "visible_targets" else item for item in column_review_label(candidate)]
+    records = column_review_label(candidate)
+    children = records[0]["radio_answer"]["classifications"]
+    records[0]["radio_answer"]["classifications"] = [shown if item["value"] == "visible_targets" else item for item in children]
+    return records
 
 
 def server_form():
@@ -155,7 +158,7 @@ class PlanTests(unittest.TestCase):
         self.assertEqual(other.attachments, (NOTICE,))
         a4c = plan.rows_of(COLUMN_REVIEW)[0]
         self.assertEqual([attachment["name"] for attachment in a4c.attachments],
-                         ["Workflow test", "DeepECHO review v4 - original proposals"])
+                         ["Workflow test", "DeepECHO review v5 - original proposals"])
 
     def test_preview_holds_no_report_text_or_local_path(self):
         plan = read_plan(make_folder(self.folder))
@@ -397,7 +400,7 @@ class WorkspaceTests(unittest.TestCase):
         workspace = sdk_api(client).ensure_workspace(FORMS, create=True)
 
         self.assertEqual(client.created, [("form", TARGETS[form].ontology_name) for form in FORMS])
-        self.assertEqual(TARGETS[COLUMN_REVIEW].ontology_name, "DeepECHO column review v4")
+        self.assertEqual(TARGETS[COLUMN_REVIEW].ontology_name, "DeepECHO column review v5")
         for form in FORMS:
             self.assertEqual(workspace.projects[form].ontology().name, TARGETS[form].ontology_name)
             self.assertIs(workspace.datasets[form], client.dataset(form))
@@ -839,8 +842,9 @@ class MainTests(unittest.TestCase):
 
     def test_the_export_summary_prints_each_review_to_send_back(self):
         def rows(plan):
-            finding_unticked = [item if item["value"] != "review_columns" else checklist("review_columns", [])
-                                for item in column_review_label(plan.candidates[COLOR])]
+            finding_unticked = column_review_label(plan.candidates[COLOR])
+            children = finding_unticked[0]["radio_answer"]["classifications"]
+            finding_unticked[0]["radio_answer"]["classifications"] = [item if item["value"] != "review_columns" else checklist("review_columns", []) for item in children]
             return {COLUMN_REVIEW: [exported(A4C, label_with_a_structure_unticked(plan.candidates[A4C])),
                                     exported(COLOR, finding_unticked)],
                     VIEW_TYPE_REVIEW: [exported(OTHER, [radio("input_type", "cine_loop")])]}
@@ -851,7 +855,7 @@ class MainTests(unittest.TestCase):
         self.assertEqual(set(lines), {A4C, COLOR, OTHER})
         self.assertRegex(lines[A4C], r"^\w+__structure_unticked; .+ is marked as not visible, but ")
         self.assertIn("mark it Incorrect and remove it instead", lines[COLOR])
-        self.assertIn("is required", lines[OTHER])
+        self.assertIn("Required review classification missing", lines[OTHER])
         self.assertIn("summary written; invalid: 3", out)
 
     def test_the_export_summary_prints_no_review_that_counts(self):
@@ -891,7 +895,7 @@ class MainTests(unittest.TestCase):
             code, out, err = self.run_main("--folder", folder, "--apply", environ={"LABELBOX_API_KEY": "key"},
                                            api_factory=lambda _key: sdk_api(NoForms()))
         self.assertEqual(code, 1)
-        self.assertIn("while creating the form 'DeepECHO column review v4' (AuthorizationError)", err)
+        self.assertIn("while creating the form 'DeepECHO column review v5' (AuthorizationError)", err)
         self.assertIn("not allowed", err)
         self.assertNotIn("secret-server-detail", out + err)
 

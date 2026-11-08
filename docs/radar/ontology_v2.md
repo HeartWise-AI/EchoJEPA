@@ -2,11 +2,11 @@
 
 The ontology is the shared vocabulary for one echo clip: its view, its acquisition mode, the cardiac structures it may
 show and the findings it may support, and how DeepECHO, EchoPrime and PanEcho labels relate to them. The pilot reviews
-clips in two Labelbox forms that use its view classes (see [Review forms](#review-forms)): column review v4 for clips
+clips in two Labelbox forms that use its view classes (see [Review forms](#review-forms)): column review v5 for clips
 of a classified view and view/type review v2 for `OTHER` clips. The
 [reviewer instructions](labeling_instructions_v1.md) and the [pilot metrics](pilot_metrics_v2.md) cover both forms.
 
-**Versions.** v2 is the ontology's version, while each form is versioned separately: column review v4 and
+**Versions.** v2 is the ontology's version, while each form is versioned separately: column review v5 and
 view/type review v2. The instructions, metrics and label mappings keep their `_v1` file names. This document defines the ontology; the [reviewer instructions](labeling_instructions_v1.md)
 define how captions and form answers are reviewed.
 
@@ -55,6 +55,12 @@ These priors define concepts, but the routes in the
 [`deepecho_video_clip_annotation_specification.json`](../../configs/radar/deepecho_video_clip_annotation_specification.json)
 determine which structures each view prefills and which columns apply to each clip, based on view, level,
 acquisition mode and the structures the reviewer confirms.
+
+The column form's wall-thickness values map to `lv_wall_thickening_distribution`, with aligned view and modality
+priors. Its `whole_wall` value describes only the walls actually visualized. A color clip supports this observation
+only when its underlying grayscale wall boundaries remain assessable. The concept's broad prior does not override
+the form's value-specific restrictions, such as excluding septal claims from A2C or requiring an explicitly visible
+septum. The mapping never supplies an LVH diagnosis or severity grade.
 
 ## Views
 
@@ -121,7 +127,7 @@ subtypes included: a unit test keeps the two lists the same.
 | `right_ventricle` | chamber | Right ventricle | Ventricule droit | `rv_visible` | `apical_5c`, `parasternal_short_av`, `rv_inflow`, `subcostal`, `A4C`, `A4C_ZOOM`, `PLAX`, `PLAX_DEEP` (bmode, color_flow) | `rv_systolic_function`, `rv_size`, `tapse`, `rv_systolic_pressure`, `pacing_lead` |
 | `left_atrium` | chamber | Left atrium | Oreillette gauche | `la_visible` | `apical_5c`, `parasternal_long`, `parasternal_short_av`, `subcostal`, `A2C`, `A2C_ZOOM`, `A3C`, `A3C_ZOOM`, `A4C`, `A4C_ZOOM` (bmode, color_flow) | `la_size`, `elevated_la_pressure` |
 | `right_atrium` | chamber | Right atrium | Oreillette droite | `ra_visible` | `apical_5c`, `parasternal_short_av`, `rv_inflow`, `subcostal`, `A4C`, `A4C_ZOOM` (bmode, color_flow) | `ra_pressure`, `ra_size`, `pacing_lead` |
-| `interventricular_septum` | septum | Interventricular septum | Septum interventriculaire | `ivs_visible` | `apical_5c`, `parasternal_long`, `parasternal_short`, `subcostal`, `A4C`, `A4C_ZOOM` (bmode, color_flow) | `lv_wall_thickening_distribution`, `septal_bulge` |
+| `interventricular_septum` | septum | Interventricular septum | Septum interventriculaire | `ivs_visible` | `apical_4c`, `apical_5c`, `apical_3c`, `parasternal_long`, `parasternal_short`, `subcostal` (bmode, color_flow) | `lv_wall_thickening_distribution`, `septal_bulge` |
 | `interatrial_septum` | septum | Interatrial septum | Septum interauriculaire | `interatrial_septum_visible` | `apical_5c`, `parasternal_short_av`, `subcostal`, `A4C`, `A4C_ZOOM` (bmode, color_flow) | `atrial_septal_hypertrophy` |
 | `mitral_valve` | valve | Mitral valve | Valve mitrale | `mitral_valve_visible` | `apical_4c`, `apical_5c`, `apical_2c`, `apical_3c`, `parasternal_long`, `parasternal_short`, `subcostal` (bmode, color_flow) | `mitral_regurgitation`, `mitral_stenosis`, `mitral_annular_calcification`, `mitral_valve_device` |
 | `aortic_valve` | valve | Aortic valve | Valve aortique | `aortic_valve_visible` | `apical_5c`, `apical_3c`, `parasternal_long`, `parasternal_short_av` (bmode, color_flow) | `aortic_regurgitation`, `aortic_stenosis`, `aortic_valve_peak_velocity`, `bicuspid_aortic_valve`, `aortic_valve_prosthesis` |
@@ -149,9 +155,9 @@ subtypes included: a unit test keeps the two lists the same.
 | `lv_systolic_function` | Left ventricular systolic function | Fonction systolique ventriculaire gauche | `left_ventricle` | scale `systolic_function` | visual | bmode | `apical_4c`, `apical_2c`, `apical_3c`, `parasternal_short`, `subcostal`, `PLAX`, `PLAX_DEEP` (bmode) |  |  |
 | `lv_ejection_fraction` | LV ejection fraction (visual estimate) | Fraction d'éjection VG (estimation visuelle) | `left_ventricle` | %, 5 to 90 | visual | bmode | `apical_4c`, `apical_2c` (bmode) | `apical_4c`, `apical_2c` | A visual estimate integrates apical 4- and 2-chamber views; one clip supports it only partly. |
 | `lv_size` | Left ventricular size | Taille du ventricule gauche | `left_ventricle` | scale `dilation` | visual | bmode | `apical_4c`, `apical_2c`, `PLAX`, `PLAX_DEEP` (bmode) |  |  |
-| `lv_wall_thickness` | Left ventricular hypertrophy | Hypertrophie ventriculaire gauche | `left_ventricle` | scale `hypertrophy` | visual | bmode | `apical_4c`, `parasternal_short`, `PLAX`, `PLAX_DEEP` (bmode) |  |  |
-| `lv_wall_thickening_distribution` | Distribution of LV wall thickening | Répartition de l'épaississement pariétal du VG | `left_ventricle`, `interventricular_septum` | `septum_only`, `posterior_wall_only`, `whole_wall` | visual | bmode | `apical_5c`, `apical_3c`, `parasternal_short`, `A4C`, `A4C_ZOOM`, `PLAX`, `PLAX_DEEP` (bmode) |  |  |
-| `septal_bulge` | Basal septal bulge | Bourrelet septal basal | `interventricular_septum` | yes / no | visual | bmode | `apical_5c`, `parasternal_short`, `A4C`, `PLAX`, `PLAX_DEEP` (bmode) |  |  |
+| `lv_wall_thickness` | Left ventricular hypertrophy | Hypertrophie ventriculaire gauche | `left_ventricle` | scale `hypertrophy` | visual | bmode | `apical_4c`, `parasternal_short`, `PLAX`, `PLAX_DEEP` (bmode) |  | Report-level LVH diagnosis and grade; not populated from the column form's visual thickness or distribution. LV mass and geometry require their own clinical assessment. |
+| `lv_wall_thickening_distribution` | Distribution of LV wall thickening | Répartition de l'épaississement pariétal du VG | `left_ventricle`, `interventricular_septum` | `not_increased`, `septal_thickening`, `posterior_wall_thickening`, `whole_wall` | visual | bmode, color_flow | `apical_4c`, `apical_5c`, `apical_2c`, `apical_3c`, `parasternal_short`, `subcostal`, `PLAX`, `PLAX_DEEP` (bmode, color_flow) |  | Visual thickening and distribution only, restricted to the walls actually seen. Regional categories are nonexclusive and say nothing about unobserved walls; whole_wall means the visualized walls, not a study-wide diagnosis. Color clips require assessable underlying grayscale wall boundaries. The form additionally requires region-specific views and confirmed visible structures. This is not the separate LVH diagnosis or grade. |
+| `septal_bulge` | Basal septal bulge | Bourrelet septal basal | `interventricular_septum` | yes / no | visual | bmode | `apical_5c`, `apical_3c`, `parasternal_short`, `A4C`, `A4C_LV`, `PLAX`, `PLAX_DEEP` (bmode) |  | Focal basal septal prominence relative to adjacent mid septum with adequate end-diastolic visualization. Uncertain morphology remains unassessable. No etiology, HCM, LVOT obstruction or global LVH diagnosis or exclusion follows from this finding alone. |
 | `lv_regional_wall_motion` | LV regional wall motion (worst segment) | Cinétique segmentaire du VG (segment le plus atteint) | `left_ventricle` | scale `wall_motion` | visual | bmode | `apical_4c`, `apical_2c`, `apical_3c`, `parasternal_short` (bmode) | `apical_4c`, `apical_2c`, `apical_3c` | The 17 segments are seen across apical 4-, 2- and 3-chamber views; a single clip covers some segments. |
 | `lv_diastolic_function` | LV diastolic function | Fonction diastolique du VG | `left_ventricle` | scale `diastolic_function` | measurement | spectral_doppler | `apical_4c` (spectral_doppler) |  | Graded from mitral inflow and tissue Doppler; spectral Doppler stills are not in the video corpus. |
 | `lvot_obstruction` | LV outflow tract obstruction | Obstruction de la chambre de chasse du VG | `left_ventricular_outflow_tract` | yes / no | measurement | spectral_doppler | `apical_5c`, `apical_3c` (spectral_doppler) |  |  |
@@ -237,7 +243,7 @@ part of this contract: a caption reviewed on the whole clip may not hold for a c
 
 Every valid video of a pilot study is reviewed in one of two Labelbox forms, each in its own project:
 
-- **column review v4**, for clips of a classified view in B-mode or color Doppler: its
+- **column review v5**, for clips of a classified view in B-mode or color Doppler: its
   specification is [`configs/radar/deepecho_video_clip_annotation_specification.json`](../../configs/radar/deepecho_video_clip_annotation_specification.json) and its form
   [`configs/radar/labelbox/deepecho_video_clip_annotation_ontology.json`](../../configs/radar/labelbox/deepecho_video_clip_annotation_ontology.json)
   (`python -m tools.labelbox.column_review --check` fails when the form no longer matches the specification);
@@ -406,9 +412,11 @@ PSAX levels, and that chamber size is not judged there: `PLAX_ZOOM` leaves the p
 `mechanical_circulatory_support`, and `PSAX` those of `rv_visible`, `rv_systolic_function`, `lv_size`, `rv_size` and
 `pacing_lead`.
 
-Thickening of the septum, of the posterior wall and of the whole wall have different causes, and a basal septal bulge
-is not a thick septum, so two findings are added: `lv_wall_thickening_distribution`, which says where the walls are
-thick while `lv_wall_thickness` keeps its grade, and `septal_bulge`. No concept was removed, and no structure or view
+Visual wall thickening and its distribution are distinct from an LVH diagnosis or grade. The form explicitly maps
+its wall-thickness values to `lv_wall_thickening_distribution`; the canonical `lv_wall_thickness` remains a
+report-level LVH diagnosis/grade and is never populated from this form column. Regional categories are nonexclusive
+and never imply normality elsewhere. `septal_bulge` is focal basal prominence relative to the adjacent mid septum;
+it does not establish or exclude an etiology, HCM, obstruction or global LVH. No concept was removed, and no structure or view
 was added or removed: the PSAX levels and `PLAX_ZOOM_AV` are answers of the review form that refine a view class, not
 view classes.
 
@@ -429,3 +437,14 @@ reviewer instructions and pilot metrics. Material changes require a new version 
    binary task kept as only related, because its phrases also match negated, possible or borderline mentions.
 6. **Field of view.** Reviewers judge findings on the whole de-identified clip, which is also the whole model input
    (resized, never cropped). The pilot's error rates therefore count caption errors, not crop effects.
+
+## Column review v5 safety revision
+
+The proposed v2 ontology now uses form v5. Its candidate version and nested form are incompatible with v4: regenerate
+candidates and prelabels, install the matching form in an empty or new approved project, and keep old exports
+separate. Do not reinterpret old septum-only labels as evidence that other walls were normal.
+
+The form asks clinical questions only for interpretable clips. New structures after view refinement require an
+explicit visibility answer. PSAX_MID excludes mitral leaflet, device and jet findings. A3C and A4C_LV now include
+septal visibility, with findings still subject to adequate visualization. Report negation and uncertainty are
+checked conservatively; uncertain statements produce no definite prefill. Report silence remains unknown.

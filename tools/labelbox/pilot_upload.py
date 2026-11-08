@@ -560,6 +560,50 @@ def _answers_from_label(label: Mapping[str, Any]) -> dict[str, Any]:
     return answers
 
 
+def _annotations_from_label(label: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Normalize export IDs without flattening paths or losing duplicate answers."""
+    def identifier(item):
+        value = item.get("value") or item.get("name")
+        if not isinstance(value, str) or not value:
+            raise ValueError("Export classification or answer has no identifier")
+        return value
+
+    def selected(item):
+        if not isinstance(item, Mapping):
+            raise ValueError("Malformed export answer")
+        return {"name": identifier(item), "classifications": records(item.get("classifications", []))}
+
+    def records(items):
+        if not isinstance(items, list):
+            raise ValueError("Malformed export classifications")
+        out = []
+        for item in items:
+            if not isinstance(item, Mapping):
+                raise ValueError("Malformed export classification")
+            kinds = [k for k in ("radio_answer", "checklist_answers", "text_answer") if k in item]
+            if len(kinds) != 1:
+                raise ValueError("Export classification must have exactly one answer type")
+            kind = kinds[0]
+            if kind == "radio_answer":
+                answer = selected(item[kind])
+            elif kind == "checklist_answers":
+                if not isinstance(item[kind], list):
+                    raise ValueError("Malformed export checklist")
+                answer = [selected(a) for a in item[kind]]
+            else:
+                text = item[kind]
+                if not isinstance(text, Mapping) or not isinstance(text.get("content"), str):
+                    raise ValueError("Malformed export text")
+                answer = text["content"]
+            out.append({"name": identifier(item), "answer": answer})
+        return out
+
+    annotations = label.get("annotations")
+    if not isinstance(annotations, Mapping):
+        raise ValueError("Export label has no annotations")
+    return records(annotations.get("classifications"))
+
+
 def _without_source_text(value: Any) -> Any:
     """A score without the report clauses its columns came from, so the summary can be shared."""
     if isinstance(value, list):
@@ -586,15 +630,23 @@ def summarize_export(exports: Mapping[str, Sequence[Mapping[str, Any]]], plan: P
             if label is None:
                 items.append({"global_key": key, "form": form, "status": "unreviewed"})
                 continue
-            answers = _answers_from_label(label)
+            try:
+                annotations = _annotations_from_label(label)
+                review_form = column_review.build_form() if form == COLUMN_REVIEW else view_type_review.build_form()
+                column_review.validate_annotations(annotations, review_form, require_complete=True)
+                answers = column_review.decode_annotations(annotations)
+            except (ValueError, KeyError, TypeError) as exc:
+                items.append({"global_key": key, "form": form, "status": "invalid", "problems": [str(exc)]})
+                continue
             if form == COLUMN_REVIEW:
                 try:
+                    problems = column_review.review_problems(plan.candidates[key], annotations)
                     score = column_review.score_review(plan.candidates[key], answers, submitted=True)
                 except ValueError as exc:
                     items.append({"global_key": key, "form": form, "status": "invalid", "problems": [str(exc)]})
                     continue
-                items.append({"global_key": key, "form": form, "status": "invalid" if score["pending"] else "valid",
-                              "score": _without_source_text(score)})
+                items.append({"global_key": key, "form": form, "status": "invalid" if problems else "valid",
+                              "problems": problems, "score": _without_source_text(score)})
             else:
                 problems = view_type_review.review_problems(answers)
                 items.append({"global_key": key, "form": form, "status": "invalid" if problems else "valid",

@@ -519,7 +519,7 @@ concepts:
     evidence: visual
     required_modality: [bmode, color_flow]
     potentially_visible_in:
-      - views: [A4C, A4C_ZOOM, apical_5c, parasternal_long, parasternal_short, SUBCOSTAL]
+      - views: [apical_4c, apical_3c, apical_5c, parasternal_long, parasternal_short, SUBCOSTAL]
         acquisitions: [bmode, color_flow]
 
   - id: lvot_visible
@@ -692,28 +692,32 @@ concepts:
                      hypertrophie concentrique, left ventricular hypertrophy]
       acronyms: [HVG]
 
+    notes: Report-level LVH diagnosis and grade; not populated from the column form's visual thickness or distribution. LV mass and geometry require their own clinical assessment.
+
   - id: lv_wall_thickening_distribution
     labels: {fr: Répartition de l'épaississement pariétal du VG, en: Distribution of LV wall thickening}
     structures: [left_ventricle, interventricular_septum]
     kind: finding
     value:
       type: categorical
-      values: [septum_only, posterior_wall_only, whole_wall]
+      values: [not_increased, septal_thickening, posterior_wall_thickening, whole_wall]
       labels:
-        fr: {septum_only: septum seul, posterior_wall_only: paroi postérieure seule, whole_wall: toutes les parois}
-        en: {septum_only: septum only, posterior_wall_only: posterior wall only, whole_wall: whole wall}
+        fr: {not_increased: parois visualisées non épaissies, septal_thickening: épaississement septal, posterior_wall_thickening: épaississement de la paroi postérieure, whole_wall: parois visualisées épaissies}
+        en: {not_increased: visualized walls not thickened, septal_thickening: septal thickening, posterior_wall_thickening: posterior-wall thickening, whole_wall: visualized walls thickened}
       aliases:
-        septum_only: [epaisseur du septum]
-        posterior_wall_only: [epaisseur de la paroi posterieure]
+        septal_thickening: [epaisseur du septum]
+        posterior_wall_thickening: [epaisseur de la paroi posterieure]
         whole_wall: [epaisseur des parois, epaisseur parietale]
     evidence: visual
-    required_modality: [bmode]
+    required_modality: [bmode, color_flow]
     potentially_visible_in:
-      - views: [A4C, A4C_ZOOM, apical_5c, apical_3c, PLAX, PLAX_DEEP, parasternal_short]
-        acquisitions: [bmode]
+      - views: [apical_4c, apical_5c, apical_2c, apical_3c, PLAX, PLAX_DEEP, parasternal_short, SUBCOSTAL]
+        acquisitions: [bmode, color_flow]
     report_sources:
       text_fields: [Left ventricule findings, Ventricular septum findings]
       phrase_hints: [epaisseur du septum, epaisseur de la paroi posterieure, epaisseur des parois, epaisseur parietale]
+
+    notes: Visual thickening and distribution only, restricted to the walls actually seen. Regional categories are nonexclusive and say nothing about unobserved walls; whole_wall means the visualized walls, not a study-wide diagnosis. Color clips require assessable underlying grayscale wall boundaries. The form additionally requires region-specific views and confirmed visible structures. This is not the separate LVH diagnosis or grade.
 
   - id: septal_bulge
     labels: {fr: Bourrelet septal basal, en: Basal septal bulge}
@@ -723,11 +727,13 @@ concepts:
     evidence: visual
     required_modality: [bmode]
     potentially_visible_in:
-      - views: [A4C, apical_5c, PLAX, PLAX_DEEP, parasternal_short]
+      - views: [A4C, A4C_LV, apical_3c, apical_5c, PLAX, PLAX_DEEP, parasternal_short]
         acquisitions: [bmode]
     report_sources:
       text_fields: [Left ventricule findings, Ventricular septum findings]
       phrase_hints: [bourrelet septal, septal bulge]
+
+    notes: Focal basal septal prominence relative to adjacent mid septum with adequate end-diastolic visualization. Uncertain morphology remains unassessable. No etiology, HCM, LVOT obstruction or global LVH diagnosis or exclusion follows from this finding alone.
 
   - id: lv_regional_wall_motion
     labels: {fr: Cinétique segmentaire du VG (segment le plus atteint), en: LV regional wall motion (worst segment)}

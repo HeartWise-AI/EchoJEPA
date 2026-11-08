@@ -84,12 +84,25 @@ def build_form(spec=None):
         _classification("text", "comments", "Comments (no patient details)", required=False, top_level=True),
         _classification("radio", "review_completed", "I reviewed this input, checked the proposed values and structures, and confirmed or corrected the suggestions.", required=True, options=[_option("yes", "Review completed")], top_level=True),
     ]
-    return {"tools": [], "classifications": questions}
+    # Only interpretable clips ask for a view, structures, and findings. In particular,
+    # an unreadable PSAX clip must not require a fabricated view to be submitted.
+    interpretability, *remaining = questions
+    dependent = [q for q in remaining if q["name"] not in {"comments", "review_completed"}]
+    for question in dependent:
+        question.pop("scope", None)
+    interpretability["options"][0]["options"] = dependent
+    return {"tools": [], "classifications": [interpretability,
+            *[q for q in remaining if q["name"] in {"comments", "review_completed"}]]}
 
 
 def _normalize(value):
     text = unicodedata.normalize("NFKD", str(value or "").lower().replace("’", "'"))
     return " ".join("".join(c for c in text if not unicodedata.combining(c)).split())
+
+
+UNCERTAINTY = (r"suspect|possible|probable|cannot (?:be )?exclud|cannot rule out|could (?:be|represent)"
+               r"|ne (?:peut|pouvant|permet)[^,;.]{0,35}exclu|(?:ne peut|cannot)[^,;.]{0,25}(?:eval|assess)"
+               r"|non evalu|non appreci|not assess|incertain|doute|borderline|limite|a confirmer|\?")
 
 
 def _clauses(report, sources):
@@ -99,7 +112,7 @@ def _clauses(report, sources):
             continue
         for clause in re.split(r"//|;|\n|\.(?!\d)", text):
             normalized = _normalize(clause)
-            if normalized and not re.search(r"suspect|possible|probable|cannot exclude|non evalu|not assess|incertain", normalized):
+            if normalized and not re.search(UNCERTAINTY, normalized):
                 yield source, clause.strip(), normalized
 
 
@@ -163,18 +176,26 @@ def value_allowed(key, value, view, spec=None):
     spec = spec or load_spec()
     return (key in spec["fields"] and value in spec["fields"][key]["values"]
             and not (key == "mitral_motion" and value == "prolapse" and str(view).split("_")[0] not in {"PLAX", "A3C"})
-            and not (key == "lv_wall_thickness" and value == "septum_only"
+            and not (key == "lv_wall_thickness" and value == "septal_thickening"
                      and "ivs" not in spec["views"].get(view, {}).get("targets", []))
-            and not (key == "lv_wall_thickness" and value == "posterior_only" and view not in POSTERIOR_WALL_VIEWS))
+            and not (key == "lv_wall_thickness" and value == "posterior_thickening" and view not in POSTERIOR_WALL_VIEWS))
 
 
-# A negation word right before a finding (at most two words between, none a conjunction: "sans signe de dilatation",
+def required_targets(key, value, spec):
+    """Visibility needed for a value, including the region named by a regional claim."""
+    targets = {spec["fields"][key]["target"]}
+    if key == "lv_wall_thickness" and value == "septal_thickening":
+        targets.add("ivs")
+    return targets
+
+
+# A negation word before a finding (at most four words between, none a conjunction: "sans signe de dilatation",
 # "no significant mitral regurgitation", not "non dilaté mais dilatation apicale"), or a negating word right after it
 # ("regurgitation not seen", "insuffisance mitrale : aucune", not "légère et aucune sténose"). A negation elsewhere in
 # the clause is about something else: "insuffisance mitrale modérée sans prolapsus".
 NOT_CONJUNCTION = r"(?!(?:mais|but|et|and|avec|with)\b)"
-NEGATION_BEFORE = (r"(?:\bnon[- ]|\bpas d[e']\s?|\bsans |\baucune? |\babsence d[e']\s?|\bni (?:d[e']\s?)?|\bno |\bnot |\bwithout )"
-                   r"(?:" + NOT_CONJUNCTION + r"[\w']+ ){0,2}$")
+NEGATION_BEFORE = (r"(?:\bnon[- ]|\bpas (?:d[e']\s?)?|\bsans |\baucune? |\babsence d[e']\s?|\bni (?:d[e']\s?)?|\bno |\bnot |\bwithout )"
+                   r"(?:" + NOT_CONJUNCTION + r"[\w']+ ){0,4}$")
 NEGATION_AFTER = (r"^\w*(?: " + NOT_CONJUNCTION + r"[\w']+){0,3}?\s?:?\s"
                   r"(?:aucune?|absente?|none|not (?:seen|demonstrated|visuali[sz]ed|present|detected)"
                   r"|non (?:vue?s?|visualisee?s?|demontree?s?|objectivee?s?))\b")
@@ -191,8 +212,19 @@ NORMAL_EF = r"\b(?:fevg|fe vg|fraction d'ejection(?: du vg| ventriculaire gauche
 
 def _negations(subject, text):
     """For each mention of `subject` in the clause, whether that mention is negated."""
-    return [bool(re.search(NEGATION_BEFORE, text[:m.start()]) or re.search(NEGATION_AFTER, text[m.end():]))
+    # Split French elisions only in the negation context, not in clinical phrases.
+    return [bool(re.search(NEGATION_BEFORE, re.sub(r"\b([dl])'", r"\1e ", text[:m.start()]))
+                 or re.search(NEGATION_AFTER, text[m.end():]))
             for m in re.finditer(subject, text)]
+
+
+def _asserted(subject, text):
+    negations = _negations(subject, text)
+    # Broad morphology patterns may include the negation inside the match itself,
+    # for example "leaflet motion is not normal". Such spans cannot assert normality.
+    internal_negation = any(re.search(r"\b(?:pas|sans|not|no|non|aucune?|absence|without|ni)\b", m.group())
+                            for m in re.finditer(subject, text))
+    return bool(negations) and not any(negations) and not internal_negation
 
 
 def _normal_attributes(text):
@@ -204,22 +236,31 @@ def _normal_attributes(text):
 
 def _text_value(key, text):
     """Narrow explicit assertions; no numeric thresholds or general NLP inference."""
+    if re.search(UNCERTAINTY, text):
+        return None
     if key in {"lv_function", "rv_function"}:
         text = re.sub(DIASTOLIC, " ", text)
         if re.search(r"pas de dysfonction|sans dysfonction|no dysfunction|not reduced", text):
             return None
-        for severity, value in [("severe|severely", "severely_reduced"), ("modere|moderate", "moderately_reduced"), ("legere?|mild", "mildly_reduced")]:
-            if re.search(r"(?:dysfonction|dysfunction|reduced).*?(?:"+severity+r")|(?:"+severity+r").*?(?:dysfonction|dysfunction|reduced)", text):
-                return value
+        severities = set()
+        for part in re.split(r",|\b(?:et|mais|avec|and|but|with)\b", text):
+            if not _asserted(r"\bdysfonction|\bdysfunction|\breduced", part):
+                continue
+            for severity, value in [(r"\bsever\w*", "severely_reduced"), (r"\bmodere\w*|\bmoderat\w*", "moderately_reduced"), (r"\bleger\w*|\bmild\w*", "mildly_reduced")]:
+                if re.search(severity, part):
+                    severities.add(value)
+        if severities:
+            return severities.pop() if len(severities) == 1 else None
         if (re.search(r"fonction systolique.{0,35}\bnormal|\bnormal systolic function|systolic function.*\bnormal", text)
                 or (key == "lv_function" and re.search(NORMAL_EF, text)) or "function" in _normal_attributes(text)):
-            return "normal"
+            return "normal" if _asserted(r"\bnormal\w*", text) else None
         if key == "lv_function" and re.search(r"hyperdynamique|hyperdynamic", text):
             return "hyperdynamic"
     if key in {"lv_size", "rv_size", "la_size", "ra_size", "ivc_size"}:
         negations = _negations(r"\bdilat\w*", text)
-        normal = (any(negations) or "size" in _normal_attributes(text)
-                  or re.search(r"dimension normale|volume normal|taille normale|\bnormal (?:size|dimension|volume)", text))
+        explicit_normal = ("size" in _normal_attributes(text)
+                           or re.search(r"dimension normale|volume normal|taille normale|\bnormal (?:size|dimension|volume)", text))
+        normal = any(negations) or (explicit_normal and _asserted(r"\bnormal\w*", text))
         dilated = not all(negations)  # a dilatation the clause does not negate
         if normal and dilated:  # "VG non dilaté mais dilatation apicale": not one value
             return None
@@ -227,13 +268,13 @@ def _text_value(key, text):
             return "normal"
         if dilated:
             return "dilated"
-    if key == "septal_bulge" and re.search(r"bourrelet[^,]{0,25}sept|sept[^,]{0,25}bourrelet", text):
+    if key == "septal_bulge" and re.search(r"bourrelet[^,]{0,25}sept|sept[^,]{0,25}bourrelet|\bbasal septal bulge", text):
         # Only a negation of the bulge itself: "pas d'hypertrophie (bourrelet septal 13 mm)" states one.
-        return None if re.search(r"(?:\bpas d[e']|absence d[e']|aucun|sans|\bni(?: de)?|\bplus (?:le|de)) ?bourrelet", text) else "present"
+        return "present" if _asserted(r"\bbourrelet|\bbasal septal bulge", text) and not re.search(r"\bplus (?:le|de) bourrelet", text) else None
     if key.endswith("_appearance"):
         for pattern, value in [("calcifi", "calcified"), ("sclerose|sclerotic", "sclerotic"), ("epaissi|thickened", "thickened"),
                                (r"^normale?$|feuillets.*\bnormaux|leaflets.*\bnormal|\bnormal.*leaflets|cusps.*\bnormal|valve.{0,30}\bnormal|\bnormal (?:tricuspid|mitral|aortic|pulmonic|pulmonary) valve|(?:tricuspide|tricuspid|mitrale|mitral|aortique|aortic|pulmonic)[: ]+normal", "normal")]:
-            if re.search(r"pas de|sans |no |not ", text):
+            if not _asserted(pattern, text):
                 continue
             for match in re.finditer(pattern, text):
                 if value == "normal" and (
@@ -244,17 +285,17 @@ def _text_value(key, text):
                 return value
     if key.endswith("_motion") and not key.startswith("wall_"):
         for pattern, value in [("prolaps", "prolapse"), ("flail|eversion", "flail"), ("tether|traction", "tethered"), ("mobilite.*reduite|ouverture.*reduite|restricted", "restricted"), (r"mobilite.*\bnormale|ouverture.*\bnormale|\bnormal.*(?:motion|opening)|(?:motion|opening).*\bnormal", "normal")]:
-            if re.search(pattern, text) and not re.search(r"pas de|sans |no |not ", text):
+            if _asserted(pattern, text):
                 return value
     if key.endswith("_device"):
         for pattern, value in [("mitraclip|triclip|edge.to.edge", "edge_to_edge_clip"), ("annuloplast|annuloplasty", "annuloplasty_ring"), ("bioprothese|bioprosthe", "bioprosthesis"), ("prothese mecanique|mechanical prosthe", "mechanical_prosthesis")]:
-            if re.search(pattern, text) and not re.search(r"pas de|sans |no |not ", text):
+            if _asserted(pattern, text):
                 return value
     if key == "aortic_cusp_count":
-        if re.search(r"tricuspide|three.cusp|3 cusps", text):
-            return "three"
-        if re.search(r"bicuspide|bicuspid|two.cusp|2 cusps", text):
-            return "two"
+        values = {value for pattern, value in [(r"tricuspide|three.cusp|3 cusps", "three"),
+                                               (r"bicuspide|bicuspid|two.cusp|2 cusps", "two")]
+                  if _asserted(pattern, text)}
+        return values.pop() if len(values) == 1 else None
     if key.endswith("_regurgitant_jet") and re.search(r"insuffisance|regurgitation|regurgitant", text):
         # A negated stenosis in the same clause must not negate regurgitation.
         if re.search(r"pas de stenose|no stenosis", text):
@@ -267,9 +308,9 @@ def _text_value(key, text):
         negations = _negations(r"\bepanchement pericardique|\bpericardial effusion", text)
         return None if len(set(negations)) != 1 else "not_demonstrated" if negations[0] else "present"
     if key == "ivc_collapse" and re.search(r"collaps|respiratoire|respiratory", text):
-        if re.search(r"reduit|reduced|absent|minimal", text):
+        if _asserted(r"reduit|reduced|absent|minimal", text):
             return "reduced"
-        if re.search(r"preserv|\bnormal", text):
+        if _asserted(r"preserv\w*|\bnormal\w*", text):
             return "preserved"
     if key.startswith("aorta_"):
         location = key.split("_")[1]
@@ -279,7 +320,7 @@ def _text_value(key, text):
         for part in text.split(","):
             if re.search(relevant, part):
                 negations = _negations(r"\bdilat\w*", part)
-                if any(negations) or re.search(r"\bnormal", part):  # not "anormale"
+                if any(negations) or _asserted(r"\bnormal\w*", part):
                     values.add("normal")
                 if not all(negations):
                     values.add("dilated")
@@ -287,7 +328,6 @@ def _text_value(key, text):
     return None
 
 
-POSTERIOR_WALL = "LVIW Diastolic Thickness (2D)"  # the report's measured wall opposite the septum.
 WALL_NEGATED = r"(?:\bpas\b|\bsans\b|absence|aucune?|\bno\b|\bnot\b)[^,]*(?:augmentation|epaississement|increased)"
 WALL_NORMAL = (r"epaisseure? (?:parietale )?normale|parois?[^,]{0,25}d'epaisseure? normale"
                r"|epaisseure? des parois[^,]{0,40}normale|normal wall thickness")
@@ -305,13 +345,17 @@ def _wall_statement(text):
     if "bourrelet" in text or re.search(WALL_NEGATED, text):
         return None
     normal = re.search(WALL_NORMAL, text)
-    if normal and not re.search(WALL_NOT_ALL, text):
+    if normal and _asserted(WALL_NORMAL, text) and not re.search(WALL_NOT_ALL, text):
         return "normal"
     if normal or "asymetrique" in text or not re.search(WALL_THICK, text):
         return None
-    if re.search(r"symetrique|diffuse", text):
+    collective = re.split(r"jusqu", text)[0]
+    if (re.search(r"symetrique|diffuse", text) and re.search(r"parietale|\bparois\b", text)
+            and not re.search(r"sept|posterieur|infero-?lateral|apical|apex|anterieur|inferieur|lateral", collective)):
         return "all"
     septum, posterior = bool(re.search(r"septum|septal", text)), bool(re.search(r"posterieure|infero-?laterale", text))
+    if septum and posterior:
+        return None  # two named walls do not establish every LV wall.
     if septum != posterior:  # "pariétale" with one wall named is every wall, thickest there: not that wall alone.
         return None if re.search(r"parietale|\bparois\b", text) else "septum" if septum else "posterior"
     return None if not septum and re.search(r"apical|apex|inferieure|anterieure|laterale", text) else "all"
@@ -323,33 +367,24 @@ def _concentric_hypertrophy(text):
 
 
 def _wall_thickness(report, field):
-    """The value, source column and clause of the whole report's wall thickness, or None. The reports name the septum
-    and the posterior wall separately, so a clause is not enough: "normal elsewhere" needs the posterior wall measured
-    and not called thick, and no concentric hypertrophy in the report: statements of the report, not a thickness
-    threshold of ours."""
+    """Explicit thickening and its reported distribution, never normality of unmentioned walls.
+    A numerical measurement is context only and cannot establish an isolated distribution.
+    """
     clauses = list(_clauses(report, field["sources"]))
     found = [(said, source, clause) for source, clause, text in clauses if (said := _wall_statement(text))]
     said = {statement for statement, _, _ in found}
     concentric = any(_concentric_hypertrophy(text) for _, _, text in clauses)
     if said == {"normal"} and not concentric:
         value = "not_increased"
-    elif "normal" not in said and ("all" in said or {"septum", "posterior"} <= said):
+    elif "normal" not in said and "all" in said:
         value = "increased"
-    elif said == {"septum"} and _measured(report.get(POSTERIOR_WALL)) and not concentric:
-        value = "septum_only"
+    elif said == {"septum"}:
+        value = "septal_thickening"
     elif said == {"posterior"}:
-        value = "posterior_only"
+        value = "posterior_thickening"
     else:
         return None
     return value, found[0][1], found[0][2]
-
-
-def _measured(raw):
-    try:
-        number = float(raw)
-    except (TypeError, ValueError, OverflowError):
-        return False
-    return number == number and number > 0  # NaN is no measurement, and neither is a placeholder 0.
 
 
 def build_candidate(report, view, modality, *, global_key, targets=None, level=None, input_kind="video", input_provenance_verified=False, spec=None):
@@ -396,7 +431,8 @@ def build_candidate(report, view, modality, *, global_key, targets=None, level=N
                 matches.append((value, "MHI VD fonction systolique", str(raw)))
         if matches and len({m[0] for m in matches}) == 1:
             value, source, text = matches[0]
-            columns.append(dict(concept=key, value=value, source_column=source, source_text=text, origin="explicit_report"))
+            if required_targets(key, value, spec) <= set(suggested_targets):
+                columns.append(dict(concept=key, value=value, source_column=source, source_text=text, origin="explicit_report"))
     candidate = dict(schema=spec["schema"], version=spec["version"], global_key=global_key, view=view, modality=modality,
                      suggested_targets=suggested_targets, level=level, columns=columns,
                      input_kind=input_kind, input_provenance_verified=input_provenance_verified)
@@ -412,9 +448,10 @@ def build_candidate(report, view, modality, *, global_key, targets=None, level=N
 AORTA_SEGMENTS = {"aorta_root_size": "Aortic root", "aorta_ascending_size": "Ascending aorta", "aorta_arch_size": "Aortic arch"}
 DEVICES = {"edge_to_edge_clip": "{valve} edge-to-edge clip", "annuloplasty_ring": "{valve} annuloplasty ring",
            "bioprosthesis": "bioprosthetic {valve} valve", "mechanical_prosthesis": "mechanical {valve} valve prosthesis"}
-WALL_THICKNESS = {"not_increased": "LV wall thickness is normal.", "increased": "Increased LV wall thickness.",
-                  "septum_only": "Thick septum with normal LV wall thickness elsewhere.",
-                  "posterior_only": "Thickened LV posterior wall."}
+WALL_THICKNESS = {"not_increased": "The visualized LV walls are not thickened.",
+                  "increased": "The visualized LV walls are thickened.",
+                  "septal_thickening": "Septal thickening is present.",
+                  "posterior_thickening": "Thickened LV posterior wall."}
 CHAMBERS = {"lv_size": "LV cavity", "rv_size": "RV cavity", "la_size": "Left atrium", "ra_size": "Right atrium", "ivc_size": "IVC"}
 
 
@@ -458,7 +495,7 @@ def finding_sentence(key, value, spec=None):
         # What this color clip shows, not whether the patient has regurgitation.
         return f"{valve.capitalize()} regurgitant jet is visible on color Doppler." if value == "demonstrated" else f"No {valve} regurgitant jet is seen on color Doppler."
     if key == "pericardial_effusion":
-        return "Pericardial effusion is present." if value == "present" else "No pericardial effusion."
+        return "Pericardial effusion is visualized in this clip." if value == "present" else "No pericardial effusion is visualized in this clip."
     if key.startswith("wall_"):
         name = key.removeprefix("wall_").replace("_", " ").capitalize()
         motion = {"normal": "normal motion and thickening", "normal_or_hyperkinetic": "normal or hyperkinetic motion", "akinetic_or_severely_hypokinetic": "akinesis or severe hypokinesis", "akinetic": "akinesis", "hypokinetic": "hypokinesis", "severely_hypokinetic": "severe hypokinesis", "hyperkinetic": "hyperkinesis", "dyskinetic": "dyskinesis", "aneurysmal": "aneurysmal deformation"}[value]
@@ -480,14 +517,14 @@ def prelabels(candidate, spec=None):
     ).hexdigest()
     selected = [{"name": c["concept"], "classifications": [
         _answer(c["concept"]+"__value", c["value"]), _answer(c["concept"]+"__status", "yes")]} for c in candidate["columns"]]
-    records = [
-        _answer("uninterpretable", "no"),
+    dependent = [
         *([_answer("view", candidate["view"])] if spec["views"][candidate["view"]].get("prefill_view", True) else []),
         _answer("modality", candidate["modality"]), _answer("subcostal_level", candidate["level"]),
         {"name": "visible_targets", "answer": [{"name": t} for t in candidate["suggested_targets"]]},
         {"name": "review_columns", "answer": selected}, _answer("missing_information", "no"),
         _answer("unsupported_information", "no"), {"name": "candidate_caption", "answer": candidate["candidate_caption"]},
     ]
+    records = [_answer("uninterpretable", "no", dependent)]
     for record in records:
         record["dataRow"] = {"globalKey": candidate["global_key"]}
         record["uuid"] = str(uuid.uuid5(
@@ -594,11 +631,12 @@ def encode_answers(answers, form):
     return encoded
 
 
-def _structure_warning(key, spec):
+def _structure_warning(key, spec, missing=None):
     """What to tell the reviewer of a claim left on a structure they unticked. The form cannot compare two answers, so
     this is read from the review afterwards, not shown at submission."""
     field = spec["fields"][key]
-    return (f"{spec['targets'][field['target']]} is marked as not visible, but \"{field['label']}\" is still claimed. "
+    name = ", ".join(spec["targets"][target] for target in sorted(missing or {field["target"]}))
+    return (f"{name} is marked as not visible, but \"{field['label']}\" is still claimed. "
             "Mark the finding Incorrect and remove the claim, or tick the structure again.")
 
 
@@ -694,30 +732,30 @@ def score_review(candidate, answers, *, submitted=False, spec=None):
         pending.append("unsupported_information")
     actual = supported + corrections + omissions
     structures = set(answers.get("visible_targets", []))
-    if view in spec["views"]:
-        # The structures not prefilled for the candidate's view that its confirmed view or level shows (a PSAX level's,
-        # an IVC sweep's) come with the answer: the reviewer never adds a structure.
-        own = spec["views"][candidate["view"]]["targets"]
-        structures |= {t for t in view_targets(view, level, spec) if t not in own and t not in candidate["suggested_targets"]}
+    # A new view permits structures; it never establishes their visibility. Newly
+    # available structures must be explicitly ticked before findings can be retained.
     allowed = allowed_columns(view, answers.get("modality"), targets=structures, level=level, input_kind=candidate.get("input_kind", "video"), spec=spec)
     # A finding the reviewer adds must be one this view and these structures carry: it is sent back to be corrected, not
     # left to cost the clip its caption without a word.
-    pending += [c["concept"]+"__not_in_view" for c in omissions if c["concept"] not in allowed]
+    pending += [c["concept"]+"__not_in_view" for c in omissions
+                if c["concept"] not in allowed or not required_targets(c["concept"], c["value"], spec) <= structures]
     # A structure the reviewer unticked cannot keep a claim: the review says both. The answer is not rewritten to settle
     # it, which would change the reviewer's judgment; it goes back to be resolved. Only what was unticked counts: a
     # corrected view leaves its other findings judged, without a caption.
-    conflicts = [c["concept"] for c in supported + corrections if spec["fields"][c["concept"]]["target"] not in structures]
+    conflicts = {c["concept"]: required_targets(c["concept"], c["value"], spec) - structures
+                 for c in supported + corrections if not required_targets(c["concept"], c["value"], spec) <= structures}
     pending += [key+"__structure_unticked" for key in conflicts]
     view_correct = view == candidate["view"] or refined
     modality_correct = answers.get("modality") == candidate["modality"]
     routing = (view_correct and modality_correct
                and candidate["view"] != "OTHER"
-               and all(c["concept"] in allowed and value_allowed(c["concept"], c["value"], view, spec) for c in actual))
+               and all(c["concept"] in allowed and value_allowed(c["concept"], c["value"], view, spec)
+                       and required_targets(c["concept"], c["value"], spec) <= structures for c in actual))
     caption = " ".join(finding_sentence(c["concept"], c["value"], spec) for c in actual) if completed and routing and not pending else ""
     resolved = len(supported) + len(rejected)
     return dict(uninterpretable=False, uninterpretable_reason=None, supported=supported, rejected=rejected,
                 cannot_assess=unresolved, out_of_view=out_of_view, corrections=corrections, omissions=omissions,
-                errors=errors, pending=pending, warnings=[_structure_warning(key, spec) for key in conflicts],
+                errors=errors, pending=pending, warnings=[_structure_warning(key, spec, missing) for key, missing in conflicts.items()],
                 original_count=len(original), resolved_count=resolved,
                 support_rate=len(supported)/len(original) if original else None,
                 error_rate=len(rejected)/resolved if resolved else None,
