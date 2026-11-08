@@ -37,7 +37,7 @@ COLUMN_DEPENDENT = (("__value", "column_values"), ("__missing_value", "column_va
 # The words the generated parts need besides the forms' own labels.
 WORDS = {
     "en": {"question": "Question", "id": "Id", "required": "Required", "answers": "Answers", "yes": "yes", "no": "no",
-           "free_text": "free text", "views": "one of the 20 view classes", "each": "each",
+           "free_text": "free text", "views": "one of the 24 views", "each": "each",
            "review_columns": "the prefilled columns", "missing_columns": "any column the view carries",
            "unsupported_columns": "any column or statement type", "statement_type_also": "a statement type also needs",
            "column_values": "one of the column's values",
@@ -113,8 +113,16 @@ def _answers(q: dict, w: dict) -> str:
 
 def render_column_form(lang: str) -> str:
     w = WORDS[lang]
-    rows = [[i, q["instructions"], f"`{q['name']}`", w["yes"] if q["required"] else w["no"], _answers(q, w)]
-            for i, q in enumerate(cr.build_form()["classifications"], 1)]
+    top = cr.build_form()["classifications"]
+    dependent = top[0]["options"][0]["options"]
+    rows = []
+    for i, q in enumerate([top[0], *dependent, *top[1:]], 1):
+        answers = ("`no` Interpret this clip: answer the fields below; `yes` Nothing can be judged: give a reason"
+                   if q["name"] == "uninterpretable" else _answers(q, w))
+        required = w["yes"] if q["required"] else w["no"]
+        if q in dependent:
+            required += ", asked only when interpretable"
+        rows.append([i, q["instructions"], f"`{q['name']}`", required, answers])
     return _table(["#", w["question"], w["id"], w["required"], w["answers"]], rows)
 
 
@@ -162,6 +170,9 @@ def _column_example(example: dict, spec: dict, form: dict) -> dict:
                                  origin="explicit_report") for k, v in example["columns"].items()]
     candidate["candidate_caption"] = " ".join(cr.finding_sentence(k, v, spec) for k, v in example["columns"].items())
     answers = {**cr.decode_annotations(cr.prelabels(candidate, spec)), **example["changes"], "review_completed": "yes"}
+    if answers.get("uninterpretable") == "yes":
+        answers = {k: v for k, v in answers.items() if k in {
+            "uninterpretable", "uninterpretable_reason", "comments", "review_completed"}}
     problems = cr.review_problems(candidate, cr.encode_answers(answers, form), spec)
     if problems:
         raise ValueError(f"example {example['id']!r} is not a valid review: {problems}")

@@ -155,7 +155,7 @@ class SyntheticCasesTests(unittest.TestCase):
             self.assertGreater(len(candidate["columns"]), 0)
             self.assertTrue(set(candidate["report_context"]).issubset(case.report))
 
-        self.assertEqual(len(build_form()["classifications"]), 11)
+        self.assertEqual(len(build_form()["classifications"]), 3)
 
     def test_renderer_creates_a_readable_mp4(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -470,8 +470,9 @@ class SdkPayloadTests(unittest.TestCase):
         )
         self.assertTrue(all("schemaId" in prediction for prediction in predictions))
         self.assertTrue(all("name" not in prediction for prediction in predictions))
-        self.assertTrue(any(isinstance(prediction["answer"], list) for prediction in predictions))
-        self.assertTrue(any(isinstance(prediction["answer"], str) for prediction in predictions))
+        nested = [c for p in predictions for c in p["answer"].get("classifications", [])]
+        self.assertTrue(any(isinstance(p["answer"], list) for p in nested))
+        self.assertTrue(any(isinstance(p["answer"], str) for p in nested))
 
     @unittest.skipUnless(importlib.util.find_spec("labelbox"), "Labelbox SDK not installed")
     def test_failed_prediction_import_is_replaced_only_without_labels(self):
