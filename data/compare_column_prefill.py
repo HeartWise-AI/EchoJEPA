@@ -150,6 +150,17 @@ DROPPED_BY_PARSER = ("disagree", "finding_mismatch")
 GENERIC_FINDINGS = frozenset({"", "state", "cue"} | {rule.name for rule in rn._COMMON})
 
 
+def speaks_for_column(claim):
+    """Whether a parser claim says something about the prefill column of its attribute. Two kinds say less than the
+    caption flag takes from them: hypertrophy that is not concentric (`pas d'HVG`, `HVG excentrique`) is about the LV
+    mass, and the walls of this lab's reports vary under it; and a denied finding of a valve (`pas de prolapsus`)
+    leaves the valve's other findings open, so it is no normal appearance or motion."""
+    if claim.attribute == "lv_wall_thickness" and claim.finding == "hypertrophy":
+        return False
+    valve_part = claim.attribute.endswith(("_appearance", "_motion")) and claim.attribute != "lv_wall_motion"
+    return not (valve_part and claim.negated)
+
+
 def parser_attribute(column):
     """The parser attribute a prefill column is compared with, or None when the parser has none."""
     if column == WALL_COLUMN:
@@ -192,12 +203,12 @@ def parser_reading(facts, covered=()):
     """What the parser read in a caption's text facts (dicts as the caption table stores them):
     statuses {attribute: status} as `assess` resolves them without measurements; `own`, the statuses of attributes
     stated by facts of their own; and {attribute: named abnormal findings}, without the generic markers
-    (`GENERIC_FINDINGS`). The whole-structure statements are resolved first. Only a whole that resolves to normal
-    joins the attributes' own facts, as in `assess`; a whole that resolves to conflict, uncertain or not assessed is
-    the status of a `covered` attribute with no facts of its own, and a whole abnormal says nothing of any one
-    attribute. `covered`: attributes the whole structure speaks for, never a device, the aortic cusp count or wall
+    (`GENERIC_FINDINGS`). Claims that do not speak for a column (`speaks_for_column`) are left out. The
+    whole-structure statements are resolved first. Only a whole that resolves to normal joins the attributes' own
+    facts, as in `assess`; a whole that resolves to conflict, uncertain or not assessed is the status of a `covered`
+    attribute with no facts of its own, and a whole abnormal says nothing of any one attribute. `covered`: attributes the whole structure speaks for, never a device, the aortic cusp count or wall
     motion."""
-    claims = [SimpleNamespace(**f) for f in facts if f["source"] == "text"]
+    claims = [c for c in (SimpleNamespace(**f) for f in facts if f["source"] == "text") if speaks_for_column(c)]
     whole = [c for c in claims if c.attribute == rn.OVERALL]
     whole_status = rn._resolve(rn.OVERALL, whole, None)[0] if whole else None
     whole_normal = [c for c in whole if c.value == "normal"] if whole_status == "normal" else []

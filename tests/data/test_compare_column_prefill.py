@@ -1,7 +1,7 @@
 # tests/data/test_compare_column_prefill.py
 
 """`data/compare_column_prefill.py` on synthetic text: the parser comparison (side, named finding against a generic
-state, whole-structure statements resolved first, aorta part), the
+state, whole-structure statements resolved first, claims that do not speak for a column, aorta part), the
 structured checks against the calibrated limits (EF grades with grey zones, the one-grade tolerance and
 `--strict-normal`, sizes, LA index before diameter, walls one by one, code findings against the text, the RV code), the
 limits file itself, the wall segment summary and count
@@ -120,6 +120,23 @@ class TestParserReading(unittest.TestCase):
     def test_a_whole_structure_abnormal_says_nothing_of_one_attribute(self):
         statuses, _, _ = reading("rv", "Ventricule droit anormal.", {"rv_size", "rv_function"})
         self.assertEqual(statuses, {})
+
+    def test_only_concentric_hypertrophy_speaks_for_the_walls(self):
+        for text in ("Pas d'hypertrophie ventriculaire gauche.",
+                     "Augmentation sévère de la masse du VG (HVG excentrique)."):
+            with self.subTest(text):
+                statuses, _, _ = reading("lv", text)
+                self.assertNotIn("lv_wall_thickness", statuses)
+        statuses, _, _ = reading("lv", "Hypertrophie ventriculaire gauche concentrique légère.")
+        self.assertEqual(statuses["lv_wall_thickness"], "abnormal")
+        statuses, _, _ = reading("lv", "Parois d'épaisseur normale.")
+        self.assertEqual(statuses["lv_wall_thickness"], "normal")
+
+    def test_a_denied_valve_finding_is_no_normal_valve(self):
+        statuses, _, _ = reading("mitral", "Pas de prolapsus de la valve mitrale.")
+        self.assertNotIn("mitral_motion", statuses)
+        statuses, _, findings = reading("mitral", "Prolapsus de la valve mitrale.")
+        self.assertEqual((statuses["mitral_motion"], findings["mitral_motion"]), ("abnormal", {"prolapse"}))
 
     def test_no_cusp_count_or_device_from_a_normal_valve(self):
         statuses, _, _ = reading("aortic", "Valve aortique normale.", covered={"aortic_cusps", "aortic_device"})

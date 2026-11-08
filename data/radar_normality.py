@@ -78,7 +78,7 @@ POLICY_SCHEMA = "radar-normality-policy"
 SCOPES = ("bmode",)
 COMBINE = ("every", "first_available")
 DEVICE_VALUES = ("abnormal", "unknown")
-RULE_VERSION = 14  # the number readers see; the policy digest changes with any edit to the rules or the policy
+RULE_VERSION = 15  # the number readers see; the policy digest changes with any edit to the rules or the policy
 FLAGS = ("normal", "abnormal", "unknown")
 DECIDED = ("normal", "abnormal")
 OVERALL = "overall"
@@ -322,6 +322,11 @@ GRAMMARS = {
             _rule("dysfunction", "lv_function", r"\bdysfonctions?(?: systoliques?)?\b"),
             _rule("hyperdynamic", "lv_function", r"\bhyperdynami\w*", "uncertain"),
             _rule("dilated", "lv_size", r"\bdilat\w*"),
+            # Concentric hypertrophy has thick walls; other hypertrophy (eccentric, unqualified, denied) is about the
+            # mass, and the walls vary. Same attribute and value: only the finding tells them apart.
+            _rule("concentric_hypertrophy", "lv_wall_thickness",
+                  r"\b(?:hypertroph\w*|hvg)(?: ventriculaires? gauches?| du ventricule gauche| du vg)?"
+                  r" concentriques?\b"),
             _rule("hypertrophy", "lv_wall_thickness", r"\bhypertroph\w*|\bhvg\b"),
             _rule("thickened", "lv_wall_thickness", r"\bepaissi\w*"),
             _rule("thrombus", "lv_thrombus", r"\bthrombus(?: intra-?cavitaires?| visualisee?s?)?\b"),
