@@ -124,6 +124,20 @@ class TestStructureLoss(unittest.TestCase):
         self.assertEqual(counts["a0"], {"a": 3, "b": 0, "c": 2})
         self.assertEqual(counts["a0"], counts["a1"])
 
+    def test_normal_pairs_count_valid_normal_rows_in_every_arm_given_the_flags(self):
+        valid = torch.ones(self.B, self.S, dtype=torch.bool)
+        valid[3, 0] = False                     # an invalid normal row counts for nothing
+        normal = torch.zeros(self.B, self.S, dtype=torch.bool)
+        normal[:, 0] = True                     # valid rows 0-2 are normal: 3 pairs
+        normal[:2, 2] = True                    # 1 pair; structure b has no normal row
+        abnormal = ~normal
+        for use_normal in (False, True):
+            _, stats = StructureContrastiveLoss(["a", "b", "c"], use_normal=use_normal)(
+                self.z, self.t, valid, self.ids, normal, abnormal)
+            self.assertEqual({s: st["normal_pairs"] for s, st in stats.items()}, {"a": 3, "b": 0, "c": 1})
+        _, stats = StructureContrastiveLoss(["a", "b", "c"])(self.z, self.t, valid, self.ids)   # no flags given
+        self.assertEqual({st["normal_pairs"] for st in stats.values()}, {None})
+
     def test_temperature_is_clamped_without_in_place_changes(self):
         loss_fn = StructureContrastiveLoss(["a", "b", "c"], init_temperature=5.0)
         valid = torch.ones(self.B, self.S, dtype=torch.bool)

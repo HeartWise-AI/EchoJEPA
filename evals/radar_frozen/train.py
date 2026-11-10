@@ -13,6 +13,11 @@ no optimizer step, no temperature clamp, no teacher update. The learning-rate sc
 schedule's length is fixed by the number of studies (`step_schedule`). After each optimizer step the temperature is
 clamped into its bounds and the momentum teacher, when the loss uses it, takes one EMA step.
 
+The teacher differs from the released RADAR code in one way: the release updates its momentum encoder once per organ
+inside each step (0.995 per update, about ten updates per step), and this one once per optimizer step. With the
+release's 0.995 the teacher here therefore moves about ten times more slowly per step; `loss.teacher_momentum`:
+0.995 ** 10 (about 0.95) gives the release's rate per step. It only matters for A3.
+
 Randomness: every rank seeds with `seed` to build the model, so initialisation is identical everywhere, then
 reseeds its stochastic stream (dropout) from (seed, rank), so ranks draw independent dropout masks.
 
@@ -44,12 +49,20 @@ captions whose appended EF would have been cut, and the run stops if any structu
 `text.max_overlength_fraction` (default 0.01): that calls for a longer `max_length`, not for a silent loss.
 
 Logs (rank 0): `log.jsonl`, one line per step (epoch, step, loss, learning rates, temperature, contributed,
-per-structure rows, skip reason and exact-caption pairs); `epochs.jsonl`, per epoch and structure the contributing
-steps and the medians of rows and exact-caption pairs over them. Exact-caption pairs are counted in every arm, so A0
-and A1 logs show the same quantity: pairs A1 trains as positives and A0 as negatives. A resume drops the lines
+per-structure rows, skip reason, exact-caption pairs and normal-normal pairs); `epochs.jsonl`, per epoch and structure
+the contributing steps and the medians of rows, exact-caption pairs and normal-normal pairs over them. Both pair
+counts are taken in every arm, so the logs of two arms show the same quantities: exact-caption pairs are positives
+in A1 and negatives in A0, normal-normal pairs are positives in A2 and A3 only, and their count is what
+`data.normal_fraction` reduces. A resume drops the lines
 written after the checkpoint (an interrupted epoch), and a run that starts from scratch drops them all with any older
 checkpoint, so the logs always describe the checkpointed trajectory. `resumes.jsonl` records each resume (epoch, step,
 and the code digests of the checkpoint and of the resuming code).
+
+Weights & Biases (rank 0, optional): with `meta.wandb_project` and `meta.wandb_entity` (and `meta.wandb_run_name`),
+each step's loss, temperature and learning rates and each epoch's per-structure medians are also logged to a run,
+through `src.utils.wandb_logging`: the config goes up with its paths cut to file names, and no caption, study
+identifier or environment metadata is sent. A resume continues the same W&B run (its id is in the checkpoint). `meta`
+is run control, outside the fingerprint, and a failure to log never stops training.
 
 Config: data {cache_dir, clips, captions, split, routing, normality_policy, num_clips, selection, acquisition_classes,
 normal_fraction (share of normal captions a training epoch keeps, drawn per epoch, default 1)}
@@ -59,7 +72,7 @@ text {backbone, max_length, max_overlength_fraction, ...: see `build_text_encode
 false = A0, true = A1 and the base of A2/A3), use_normal,
 use_abnormal_teacher, release_gate, min_pairs, init_temperature, temperature_bounds, teacher_momentum}; optimization
 {epochs, global_batch, lr, text_lr, min_lr, weight_decay, warmup_fraction, seed, amp (none or bf16), num_workers,
-worker_start_method}; device (auto, cpu or cuda).
+worker_start_method}; meta {wandb_project, wandb_entity, wandb_run_name}; device (auto, cpu or cuda).
 """
 
 import argparse
@@ -95,11 +108,13 @@ from src.models.radar.schedule import step_schedule
 from src.models.radar.structure_pooler import StructurePooler
 from src.models.radar.text_encoder import MomentumTeacher, build_text_encoder, build_tokenizer
 from src.utils.optimizer_coverage import check_optimizer_coverage
+from src.utils.wandb_logging import PRIVATE_WANDB_SETTINGS, finish_wandb, init_wandb, log_scalars
 
 CHECKPOINT = "latest.pt"
 PROTOCOL_VERSION = 2   # bump when a code change alters what a given config trains
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 RUN_CONTROL = {"optimization": ("num_workers", "worker_start_method")}   # keys that do not change what is trained
+RUN_CONTROL_SECTIONS = ("meta",)                                         # whole sections that do not either
 WORKER_START_METHODS = ("spawn", "forkserver")
 AMP_MODES = ("none", "bf16")
 
@@ -148,6 +163,8 @@ def fingerprint(config, routing, cache, n_studies, normality_digest=None, bags=N
     for section, keys in RUN_CONTROL.items():
         for key in keys:
             semantic.get(section, {}).pop(key, None)
+    for section in RUN_CONTROL_SECTIONS:
+        semantic.pop(section, None)
     data = semantic.get("data", {})
     record = {
         "config": semantic,
@@ -410,6 +427,7 @@ def train(config, out_dir, resume=True, stop_after_epoch=None, allow_code_change
     _seed_rank(seed, rank)
 
     start_epoch, step, optimizer_steps, skipped = 0, 0, 0, 0
+    wandb_id, state = None, {}
     path = os.path.join(out_dir, CHECKPOINT)
     if resume and os.path.exists(path):
         state = torch.load(path, map_location="cpu", weights_only=True)
@@ -428,6 +446,10 @@ def train(config, out_dir, resume=True, stop_after_epoch=None, allow_code_change
         start_epoch, step = state["epoch"], state["step"]
         optimizer_steps, skipped = state["optimizer_steps"], state["skipped_steps"]
         _set_rng_state(state["rng"][rank], device)
+    wandb_run, wandb_id = init_wandb(config.get("meta") or {}, config, rank, out_dir,
+                                     resuming_training=bool(start_epoch), checkpoint_run_id=state.get("wandb_run_id"),
+                                     checkpoint_has_wandb_run_id="wandb_run_id" in state,
+                                     settings=PRIVATE_WANDB_SETTINGS)
 
     loader = make_loader(dataset, sampler, tokenizer, opt.get("num_workers", 0),
                          opt.get("worker_start_method", "spawn"))
@@ -465,31 +487,41 @@ def train(config, out_dir, resume=True, stop_after_epoch=None, allow_code_change
             skipped += int(not contributed)
             for name, stat in stats.items():
                 if stat["loss"] is not None:
-                    contributing[name].append((stat["rows"], stat["exact_pairs"]))
+                    contributing[name].append((stat["rows"], stat["exact_pairs"], stat["normal_pairs"]))
             if rank == 0:
                 line = {"epoch": epoch, "step": step, "loss": loss, "contributed": contributed,
                         "temperature": float(model.loss.temperature.detach()),
                         "lr": {g["name"]: g["lr"] for g in optimizer.param_groups},
                         "structures": {n: {"rows": s["rows"], "skipped": s["skipped"],
-                                           "exact_pairs": s["exact_pairs"]} for n, s in stats.items()}}
+                                           "exact_pairs": s["exact_pairs"], "normal_pairs": s["normal_pairs"]}
+                                       for n, s in stats.items()}}
                 with open(os.path.join(out_dir, "log.jsonl"), "a") as f:
                     f.write(json.dumps(line) + "\n")
+                log_scalars(wandb_run, {"train/loss": loss, "train/temperature": line["temperature"],
+                                        "train/contributed": int(contributed), "train/epoch": epoch,
+                                        **{f"lr/{name}": lr for name, lr in line["lr"].items()}}, step=step)
             step += 1
         rng = _all_rng_states(device, world_size)
         if rank == 0:
             summary = {"epoch": epoch, "structures": {
                 name: {"contributing_steps": len(steps),
-                       "median_rows": statistics.median(r for r, _ in steps) if steps else None,
-                       "median_exact_pairs": statistics.median(p for _, p in steps) if steps else None}
+                       "median_rows": statistics.median(r for r, _, _ in steps) if steps else None,
+                       "median_exact_pairs": statistics.median(p for _, p, _ in steps) if steps else None,
+                       "median_normal_pairs": statistics.median(p for _, _, p in steps) if steps else None}
                 for name, steps in contributing.items()}}
             with open(os.path.join(out_dir, "epochs.jsonl"), "a") as f:
                 f.write(json.dumps(summary) + "\n")
+            log_scalars(wandb_run, {f"structures/{name}/{key}": value
+                                    for name, entry in summary["structures"].items()
+                                    for key, value in entry.items() if value is not None}, step=step)
             _save(path, {"model": model.state_dict(), "teacher": teacher.state_dict() if teacher else None,
                          "optimizer": optimizer.state_dict(), "epoch": epoch + 1, "step": step,
                          "optimizer_steps": optimizer_steps, "skipped_steps": skipped, "fingerprint": record,
-                         "code_sha256": code, "world_size": world_size, "device_type": device.type, "rng": rng})
+                         "code_sha256": code, "world_size": world_size, "device_type": device.type, "rng": rng,
+                         "wandb_run_id": wandb_id})
         if world_size > 1:
             dist.barrier()
+    finish_wandb(wandb_run)
     return {"epochs_completed": last_epoch, "steps": step, "optimizer_steps": optimizer_steps,
             "skipped_steps": skipped, "losses": losses, "schedule": schedule, "fingerprint": record["sha256"],
             "loader_workers": {"num_workers": loader.num_workers,

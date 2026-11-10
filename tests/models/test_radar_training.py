@@ -17,6 +17,9 @@ schedule and optimizer checks over several optimizer steps, in one and two CPU p
 - A0 and A1 run on flags of a provisional policy; A2 and A3 are refused until the caption table says approved.
 - A captioned structure without a usable clip takes no part in training: its row is not valid, and the null token it
   falls back on changes neither the loss nor any gradient.
+- Each step and epoch logs the exact-caption and normal-normal pair counts; `data.normal_fraction` lowers the latter.
+- With `meta.wandb_project`, rank 0 logs each step and epoch to one W&B run, which a resume continues; the run's
+  config holds no path, `meta` is outside the fingerprint, and without a project nothing is logged.
 - With RADAR_CUDA_TESTS=1 on a machine with a GPU: the stochastic resume on CUDA (CUDA RNG states).
 """
 
@@ -43,7 +46,9 @@ from src.datasets.radar_token_cache import TokenCache
 from src.models.radar.routing import load_routing
 from src.models.radar.schedule import step_schedule
 from src.models.radar.text_encoder import HashTokenizer, MomentumTeacher
+from src.utils import wandb_logging
 from tests.models.radar_synthetic import DIM, GRID, make_synthetic, seal_captions, synthetic_config
+from tests.utils.test_vjepa_2_1_wandb import FakeWandb
 
 SHIPPED_POLICY = os.path.join(radar_train.REPO, "configs", "radar", "radar_normality_policy_v0.yaml")
 
@@ -148,11 +153,16 @@ class TestRadarTraining(unittest.TestCase):
                 self.assertTrue(all(st["skipped"] for st in line["structures"].values()))
             for st in line["structures"].values():
                 self.assertTrue(0 <= st["exact_pairs"] <= st["rows"] * (st["rows"] - 1) // 2)
+                self.assertTrue(0 <= st["normal_pairs"] <= st["rows"] * (st["rows"] - 1) // 2)
+        self.assertGreater(max(line["structures"]["pericardium"]["normal_pairs"] for line in lines), 0)
+        self.assertEqual({line["structures"]["lv"]["normal_pairs"] for line in lines}, {0})   # LV captions: unknown
         with open(os.path.join(self.root, "straight", "epochs.jsonl")) as f:
             epochs = [json.loads(line) for line in f]
         self.assertEqual([e["epoch"] for e in epochs], [0, 1])
         self.assertIsNotNone(epochs[0]["structures"]["lv"]["median_exact_pairs"])
         self.assertIsNone(epochs[0]["structures"]["pulmonic"]["median_exact_pairs"])
+        self.assertEqual(epochs[0]["structures"]["lv"]["median_normal_pairs"], 0)
+        self.assertIsNone(epochs[0]["structures"]["pulmonic"]["median_normal_pairs"])
         self.assertGreaterEqual(epochs[0]["structures"]["lv"]["contributing_steps"], 1)
         self.assertEqual(epochs[0]["structures"]["pulmonic"]["contributing_steps"], 0)
 
@@ -229,6 +239,53 @@ class TestRadarTraining(unittest.TestCase):
         changed = synthetic_config(self.paths, lr=2e-3)
         with self.assertRaisesRegex(ValueError, "fingerprint"):
             radar_train.train(changed, out)
+
+    def test_normal_fraction_lowers_the_logged_normal_pairs(self):
+        config = copy.deepcopy(self.config)
+        config["data"]["normal_fraction"] = 0.01           # nearly every normal caption sits out
+        out = os.path.join(self.root, "normal_fraction")
+        radar_train.train(config, out, stop_after_epoch=1)
+
+        def pairs(folder):
+            with open(os.path.join(self.root, folder, "log.jsonl")) as f:
+                return sum(st["normal_pairs"] for line in map(json.loads, f) if line["epoch"] == 0
+                           for st in line["structures"].values())
+        self.assertLess(pairs("normal_fraction"), pairs("straight"))
+
+    def test_wandb_logs_steps_and_epochs_and_a_resume_continues_the_run(self):
+        config = {**copy.deepcopy(self.config),
+                  "meta": {"wandb_project": "radar", "wandb_entity": "team", "wandb_run_name": "a3"}}
+        out, fake = os.path.join(self.root, "wandb"), FakeWandb()
+        with mock.patch.object(wandb_logging, "wandb", fake):
+            first = radar_train.train(config, out, stop_after_epoch=1)
+            second = radar_train.train(config, out)
+        self.assertEqual(first["fingerprint"], self.straight["fingerprint"])          # meta is run control
+        self.assertEqual(second["losses"], self.straight["losses"][4:])
+        self.assertEqual([c["resume"] for c in fake.calls], ["never", "must"])
+        self.assertEqual(fake.calls[1]["id"], fake.runs[0].id)                         # the id came from latest.pt
+        self.assertTrue(all(run.finished for run in fake.runs))
+        steps = [p for run in fake.runs for p in run.logged if "train/loss" in p]
+        self.assertEqual([p[wandb_logging.STEP_METRIC] for p in steps], list(range(8)))
+        self.assertEqual([p["train/loss"] for p in steps], self.straight["losses"])
+        epochs = [p for run in fake.runs for p in run.logged if "structures/lv/contributing_steps" in p]
+        self.assertEqual(len(epochs), 2)
+        self.assertIn("structures/pericardium/median_normal_pairs", epochs[0])
+        self.assertNotIn("structures/pulmonic/median_rows", epochs[0])                 # never contributes: no median
+
+        def strings(value):
+            if isinstance(value, dict):
+                return [s for v in value.values() for s in strings(v)]
+            if isinstance(value, (list, tuple)):
+                return [s for v in value for s in strings(v)]
+            return [value] if isinstance(value, str) else []
+        self.assertFalse([s for s in strings(fake.calls[0]["config"]) if os.sep in s])   # no path leaves the host
+        self.assertEqual(fake.calls[0]["config"]["data"]["captions"], "captions.csv")
+
+    def test_without_a_wandb_project_nothing_is_logged(self):
+        fake = FakeWandb()
+        with mock.patch.object(wandb_logging, "wandb", fake):
+            radar_train.train(self.config, os.path.join(self.root, "no_wandb"), stop_after_epoch=1)
+        self.assertEqual(fake.calls, [])
 
     def test_resume_with_other_code(self):
         out = os.path.join(self.root, "code_change")

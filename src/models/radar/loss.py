@@ -125,9 +125,11 @@ class StructureContrastiveLoss(nn.Module):
         normal, abnormal: [B, S] bool (needed with use_normal / release_gate / use_abnormal_teacher).
         teacher: [B, S, P] momentum caption embeddings (needed with use_abnormal_teacher).
         Returns (loss, stats): stats[name] = {"rows": int, "loss": float or None, "skipped": reason or None,
-        "exact_pairs": int}. `exact_pairs` counts the unordered pairs of valid rows with the same caption id, in every
-        arm: E makes them positives (A1-A3), the identity alone keeps them negatives (A0). It shows how far A1's
-        targets differ from A0's in the batches actually trained on.
+        "exact_pairs": int, "normal_pairs": int or None}. `exact_pairs` counts the unordered pairs of valid rows with
+        the same caption id, in every arm: E makes them positives (A1-A3), the identity alone keeps them negatives
+        (A0). It shows how far A1's targets differ from A0's in the batches actually trained on. `normal_pairs` counts
+        the unordered pairs of valid rows that are both normal, in every arm that is given the flags (None without
+        them): N makes them positives (A2, A3), so it shows how many positives `data.normal_fraction` leaves.
         """
         B, S, _ = z.shape
         if S != len(self.structures):
@@ -162,13 +164,15 @@ class StructureContrastiveLoss(nn.Module):
             n = int(idx.numel())
             ids_s = ids_all[idx, s]
             same = int((ids_s[:, None] == ids_s[None, :]).sum()) - n
-            stat = {"rows": n, "loss": None, "skipped": None, "exact_pairs": same // 2}
+            normal_s = flags[idx, s, 0] if flags is not None else None
+            abnormal_s = flags[idx, s, 1] if flags is not None else None
+            normals = int(normal_s.sum()) if normal_s is not None else None
+            stat = {"rows": n, "loss": None, "skipped": None, "exact_pairs": same // 2,
+                    "normal_pairs": normals * (normals - 1) // 2 if normals is not None else None}
             stats[name] = stat
             if n < self.min_pairs:
                 stat["skipped"] = "too_few_rows"
                 continue
-            normal_s = flags[idx, s, 0] if flags is not None else None
-            abnormal_s = flags[idx, s, 1] if flags is not None else None
             if self.release_gate and not bool(abnormal_s.any()):
                 stat["skipped"] = "no_abnormal_row"
                 continue
