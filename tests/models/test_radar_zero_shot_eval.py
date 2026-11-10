@@ -512,8 +512,19 @@ class TestZeroShotEval(unittest.TestCase):
         self.assertNotIn("V00", printed.getvalue())
 
     def test_the_shipped_prompt_file_is_scored(self):
-        report = self.run_eval("shipped", prompts=zs.DEFAULT_PROMPTS)
-        self.assertEqual(list(report["tasks"]), ["lv_ejection_fraction"])
+        """Every task of the shipped file is scored once the label table holds its column, with that column's codes."""
+        shipped = zero_shot.load_prompt_tasks(zs.DEFAULT_PROMPTS)
+        frame = self.label_frame.copy()
+        for task in shipped.values():
+            if task.target not in frame.columns:
+                codes = sorted(set(task.values)) if task.mode == "categorical" else [0, 1]
+                frame[task.target] = [codes[i % len(codes)] for i in range(len(frame))]
+        labels = os.path.join(self.root, "shipped_labels.csv")
+        frame.to_csv(labels)
+        report = self.run_eval("shipped", prompts=zs.DEFAULT_PROMPTS, labels=labels)
+        self.assertEqual(list(report["tasks"]), list(shipped))
+        self.assertEqual({name: entry["mode"] for name, entry in report["tasks"].items()},
+                         {name: task.mode for name, task in shipped.items()})
         self.assertEqual(report["tasks"]["lv_ejection_fraction"]["metrics"], self.report["tasks"]["ef"]["metrics"])
 
 

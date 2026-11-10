@@ -1,20 +1,186 @@
 # RADAR zero-shot prompt file, version 0 (schema read by src/models/radar/zero_shot.py).
 #
-# Modes: binary (positive and negative prompt sets, RADAR), categorical (one prompt per ordered grade) and regression
+# Modes: binary (positive and negative prompt sets, RADAR), categorical (one prompt set per grade) and regression
 # (a template with a <#> slot swept over an integer range, EchoCLIP). `held_out` prompts are for reporting only.
 # `target` is the column of the study-level label table (data/make_study_targets.py) holding the reference; a
-# categorical task's `values` are that column's codes.
+# categorical task's `values` are that column's codes (THREE_WAY: 0 mild, 1 moderate or severe, 2 normal).
+# `parser_attribute` is the attribute of the caption parser (data/radar_normality.py) the prompts state; the loader
+# does not read it, tests/data/test_radar_prompts.py does.
 #
-# This file holds ONLY wording that already exists in the caption table. The LV caption builder appends exactly
-# `FEVG estimée visuellement : N %.` (data/radar_captions.py, EF_SENTENCE), so this template is in the distribution the
-# encoder trained on. Every other task (binary findings, grades, RVSP) needs prompt wording that a clinician approves
-# first, in the same language as the captions (French at present): add them here after that review, not before.
+# STATUS: PROVISIONAL. Apart from the EF template, which is the sentence the LV caption builder appends
+# (`FEVG estimée visuellement : N %.`, EF_SENTENCE in data/radar_captions.py), the wording was written from the
+# parser's own vocabulary (rules v15), not taken from reports and not yet reviewed by a clinician. What is checked, by
+# test, for every prompt: the caption filter keeps it whole (B-mode scope, `retain_caption`), the parser understands
+# every word, and it reads the stated attribute as the prompt's side (normal or abnormal). That shows the prompts are
+# in the parser's language, not that reports are worded this way: review the wording, then replace or extend the sets
+# with sentences mined from the training captions (RADAR pools hundreds of real sentences per finding).
+#
+# Only tasks with a label column are here, because the evaluation refuses a task whose `target` is missing from the
+# label table. Doppler findings (stenosis, regurgitation, pressures, diastology) have no task: V1 captions hold no
+# Doppler statement. Parser findings with no label column yet are in prompts_v0_findings.yaml.
 
 tasks:
   lv_ejection_fraction:
     mode: regression
     structure: lv
     target: lvef
+    parser_attribute: lv_function
     label_sources:
       - "FEVG estimée visuellement : <#> %."
     range: [5, 90]          # the ontology's range for a visual LVEF estimate (EF_RANGE in data/radar_captions.py)
+  lv_systolic_function:
+    mode: categorical
+    structure: lv
+    target: lv_systolic_function
+    parser_attribute: lv_function
+    label_sources:
+      - "Fonction systolique du ventricule gauche normale."
+      - "Fonction systolique globale du ventricule gauche normale."
+      - "Bonne fonction systolique du ventricule gauche."
+      - "Fonction systolique du ventricule gauche préservée."
+      - "Dysfonction systolique légère du ventricule gauche."
+      - "Fonction systolique du ventricule gauche légèrement diminuée."
+      - "Dysfonction systolique modérée du ventricule gauche."
+      - "Dysfonction systolique sévère du ventricule gauche."
+      - "Fonction systolique du ventricule gauche modérément diminuée."
+      - "Fonction systolique du ventricule gauche sévèrement diminuée."
+    values: [2, 2, 2, 2, 0, 0, 1, 1, 1, 1]
+  lv_size:
+    mode: categorical
+    structure: lv
+    target: lv_size
+    parser_attribute: lv_size
+    label_sources:
+      - "Ventricule gauche de taille normale."
+      - "Ventricule gauche de dimension normale."
+      - "Ventricule gauche non dilaté."
+      - "Ventricule gauche légèrement dilaté."
+      - "Dilatation légère du ventricule gauche."
+      - "Ventricule gauche modérément dilaté."
+      - "Ventricule gauche sévèrement dilaté."
+      - "Dilatation modérée du ventricule gauche."
+      - "Dilatation sévère du ventricule gauche."
+    values: [2, 2, 2, 0, 0, 1, 1, 1, 1]
+  lvh_any:
+    mode: binary
+    structure: lv
+    parser_attribute: lv_wall_thickness
+    label_sources:
+      - "Hypertrophie ventriculaire gauche."
+      - "Hypertrophie concentrique du ventricule gauche."
+      - "Hypertrophie ventriculaire gauche légère."
+      - "Hypertrophie ventriculaire gauche modérée."
+      - "Hypertrophie ventriculaire gauche sévère."
+    negative_sources:
+      - "Pas d'hypertrophie ventriculaire gauche."
+      - "Absence d'hypertrophie ventriculaire gauche."
+      - "Ventricule gauche non hypertrophié."
+      - "Épaisseur pariétale normale."
+  # The negatives hold the mild grade on purpose: the label is moderate or severe against the rest.
+  lvh_modsev:
+    mode: binary
+    structure: lv
+    parser_attribute: lv_wall_thickness
+    label_sources:
+      - "Hypertrophie ventriculaire gauche modérée."
+      - "Hypertrophie ventriculaire gauche sévère."
+      - "Hypertrophie concentrique modérée du ventricule gauche."
+      - "Hypertrophie concentrique sévère du ventricule gauche."
+    negative_sources:
+      - "Pas d'hypertrophie ventriculaire gauche."
+      - "Absence d'hypertrophie ventriculaire gauche."
+      - "Ventricule gauche non hypertrophié."
+      - "Épaisseur pariétale normale."
+      - "Hypertrophie ventriculaire gauche légère."
+      - "Hypertrophie concentrique légère du ventricule gauche."
+  rv_dysfunction:
+    mode: binary
+    structure: rv
+    parser_attribute: rv_function
+    label_sources:
+      - "Dysfonction systolique du ventricule droit."
+      - "Fonction systolique du ventricule droit diminuée."
+      - "Dysfonction systolique légère du ventricule droit."
+      - "Dysfonction systolique modérée du ventricule droit."
+      - "Dysfonction systolique sévère du ventricule droit."
+    negative_sources:
+      - "Fonction systolique du ventricule droit normale."
+      - "Bonne fonction systolique du ventricule droit."
+      - "Fonction systolique du ventricule droit préservée."
+  rv_dilated:
+    mode: binary
+    structure: rv
+    parser_attribute: rv_size
+    label_sources:
+      - "Ventricule droit dilaté."
+      - "Dilatation du ventricule droit."
+      - "Ventricule droit légèrement dilaté."
+      - "Ventricule droit modérément dilaté."
+      - "Ventricule droit sévèrement dilaté."
+    negative_sources:
+      - "Ventricule droit de taille normale."
+      - "Ventricule droit de dimension normale."
+      - "Ventricule droit non dilaté."
+  rv_size:
+    mode: categorical
+    structure: rv
+    target: rv_size
+    parser_attribute: rv_size
+    label_sources:
+      - "Ventricule droit de taille normale."
+      - "Ventricule droit de dimension normale."
+      - "Ventricule droit non dilaté."
+      - "Ventricule droit légèrement dilaté."
+      - "Dilatation légère du ventricule droit."
+      - "Ventricule droit modérément dilaté."
+      - "Ventricule droit sévèrement dilaté."
+      - "Dilatation modérée du ventricule droit."
+      - "Dilatation sévère du ventricule droit."
+    values: [2, 2, 2, 0, 0, 1, 1, 1, 1]
+  la_size:
+    mode: categorical
+    structure: la
+    target: la_size
+    parser_attribute: la_size
+    label_sources:
+      - "Oreillette gauche de taille normale."
+      - "Oreillette gauche de dimension normale."
+      - "Oreillette gauche non dilatée."
+      - "Oreillette gauche légèrement dilatée."
+      - "Dilatation légère de l'oreillette gauche."
+      - "Oreillette gauche modérément dilatée."
+      - "Oreillette gauche sévèrement dilatée."
+      - "Dilatation modérée de l'oreillette gauche."
+      - "Dilatation sévère de l'oreillette gauche."
+    values: [2, 2, 2, 0, 0, 1, 1, 1, 1]
+  pericardial_effusion:
+    mode: binary
+    structure: pericardium
+    parser_attribute: pericardial_effusion
+    label_sources:
+      - "Épanchement péricardique."
+      - "Petit épanchement péricardique."
+      - "Épanchement péricardique léger."
+      - "Épanchement péricardique modéré."
+      - "Épanchement péricardique important."
+    negative_sources:
+      - "Pas d'épanchement péricardique."
+      - "Absence d'épanchement péricardique."
+      - "Péricarde sec."
+  # Exploratory: the IVC routing is `weak` (every subcostal clip), and the label is the report's RA pressure >= 8.
+  rap_elevated:
+    mode: binary
+    structure: ivc
+    parser_attribute: ivc
+    label_sources:
+      - "Veine cave inférieure dilatée."
+      - "Veine cave inférieure peu souple."
+      - "Veine cave inférieure dilatée et peu souple."
+      - "Veine cave inférieure : variations respiratoires diminuées."
+      - "Tension veineuse centrale augmentée."
+    negative_sources:
+      - "Veine cave inférieure non dilatée."
+      - "Veine cave inférieure de calibre normal."
+      - "Veine cave inférieure non dilatée et compliante."
+      - "Veine cave inférieure souple."
+      - "Tension veineuse centrale normale."

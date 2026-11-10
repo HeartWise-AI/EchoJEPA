@@ -18,8 +18,9 @@ Three prompt modes, as in the prompt files of the two reference papers:
 `PromptTask` reads one task of a prompt file (`configs/radar/prompts_v0.yaml`). `held_out` prompts (EchoCLIP's
 `testers`) are never used to choose settings, only to report. `target` names the column of a study-level label table
 that holds the task's reference (the task's own name when the file does not give one); for a categorical task, the
-`values` are that column's codes. The wording of a prompt is a clinical choice: a file holds only wording that a
-clinician has approved, and a task without approved wording is not in it.
+`values` are that column's codes. The wording of a prompt is a clinical choice: the shipped files say in their header
+whether a clinician has reviewed it (v0 is provisional, written from the caption parser's vocabulary and checked
+against the parser by `tests/data/test_radar_prompts.py`).
 
 Inputs are L2-normalised embeddings in the shared space: structure embeddings [N, P] from the pooler and prompt
 embeddings [M, P] from the caption encoder (`encode_prompts`). Everything is computed in float32.
