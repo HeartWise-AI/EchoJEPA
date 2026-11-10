@@ -43,6 +43,7 @@ class TestPromptFile(unittest.TestCase):
         import radar_captions as rc
         task = load_prompt_tasks(PROMPTS)["lv_ejection_fraction"]
         self.assertEqual(task.mode, "regression")
+        self.assertEqual(task.target, "lvef")                       # the column data/make_study_targets.py writes
         self.assertEqual(task.label_sources[0].replace("<#>", "{}"), rc.EF_SENTENCE)
         self.assertEqual(tuple(task.value_range), tuple(int(x) for x in rc.EF_RANGE))
 
@@ -56,12 +57,22 @@ class TestPromptFile(unittest.TestCase):
             "range": "tasks:\n  a: {mode: regression, structure: lv, label_sources: ['<#>'], range: [5, 5]}\n",
             "structure": "tasks:\n  a: {mode: binary, label_sources: [x], negative_sources: [y]}\n",
             "non-empty": "tasks: {}\n",
+            "target": "tasks:\n  a: {mode: binary, structure: lv, label_sources: [x], negative_sources: [y], "
+                      "target: ''}\n",
         }
         for key, text in cases.items():
             path = write(text)
             self.addCleanup(os.remove, path)
             with self.subTest(key), self.assertRaisesRegex(ValueError, key):
                 load_prompt_tasks(path)
+
+
+    def test_the_target_is_the_task_name_unless_the_file_names_a_column(self):
+        path = write("tasks:\n  a: {mode: binary, structure: lv, label_sources: [x], negative_sources: [y]}\n"
+                     "  b: {mode: binary, structure: lv, label_sources: [x], negative_sources: [y], target: c}\n")
+        self.addCleanup(os.remove, path)
+        tasks = load_prompt_tasks(path)
+        self.assertEqual((tasks["a"].target, tasks["b"].target), ("a", "c"))
 
 
 class TestScorers(unittest.TestCase):

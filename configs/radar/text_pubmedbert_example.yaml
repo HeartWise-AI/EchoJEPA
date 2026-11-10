@@ -12,7 +12,10 @@
 #
 #   python -c "from transformers import AutoModel, AutoTokenizer as T; n='microsoft/BiomedNLP-BiomedBERT-base-uncased-abstract-fulltext'; r='e1354b7a3a09615f6aba48dfad4b7a613eef7062'; AutoModel.from_pretrained(n, revision=r).save_pretrained('<dir>', safe_serialization=True); T.from_pretrained(n, revision=r).save_pretrained('<dir>')"
 #
-# The conversion and the loader below were not run when this file was written.
+# Checked with transformers 5.17 and torch 2.14: the command above wrote config.json, model.safetensors and
+# the tokenizer files; `build_text_encoder` loaded the folder with the keys below; the 197 backbone tensors it loaded
+# equal those of the official checkpoint exactly (the pooler and the pretraining heads are not used). The folder is
+# 419 MB: keep it outside the repository.
 
 text:
   backbone: hf_pretrained

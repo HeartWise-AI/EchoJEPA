@@ -16,8 +16,10 @@ Three prompt modes, as in the prompt files of the two reference papers:
   structure is scored.
 
 `PromptTask` reads one task of a prompt file (`configs/radar/prompts_v0.yaml`). `held_out` prompts (EchoCLIP's
-`testers`) are never used to choose settings, only to report. The wording of a prompt is a clinical choice: a file
-holds only wording that a clinician has approved, and a task without approved wording is not in it.
+`testers`) are never used to choose settings, only to report. `target` names the column of a study-level label table
+that holds the task's reference (the task's own name when the file does not give one); for a categorical task, the
+`values` are that column's codes. The wording of a prompt is a clinical choice: a file holds only wording that a
+clinician has approved, and a task without approved wording is not in it.
 
 Inputs are L2-normalised embeddings in the shared space: structure embeddings [N, P] from the pooler and prompt
 embeddings [M, P] from the caption encoder (`encode_prompts`). Everything is computed in float32.
@@ -43,6 +45,7 @@ class PromptTask:
     value_range: tuple = ()          # regression: inclusive integer range filling SLOT
     held_out: tuple = ()
     negative_sources: tuple = field(default=())   # binary: the negative prompt set
+    target: str = ""                 # the label column holding the reference; the task name when empty in the file
 
 
 def load_prompt_tasks(path):
@@ -74,8 +77,11 @@ def load_prompt_tasks(path):
                 raise ValueError(f"{name}: a regression task needs range [low, high] with low < high.")
             if any(SLOT not in s for s in sources):
                 raise ValueError(f"{name}: every regression prompt needs the {SLOT} slot.")
+        target = spec.get("target", name)
+        if not isinstance(target, str) or not target.strip():
+            raise ValueError(f"{name}: target must name a label column.")
         tasks[name] = PromptTask(name, mode, spec["structure"], sources, values, value_range,
-                                 tuple(spec.get("held_out") or ()), negative)
+                                 tuple(spec.get("held_out") or ()), negative, target)
     return tasks
 
 

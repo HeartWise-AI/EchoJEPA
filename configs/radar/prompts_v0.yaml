@@ -2,6 +2,8 @@
 #
 # Modes: binary (positive and negative prompt sets, RADAR), categorical (one prompt per ordered grade) and regression
 # (a template with a <#> slot swept over an integer range, EchoCLIP). `held_out` prompts are for reporting only.
+# `target` is the column of the study-level label table (data/make_study_targets.py) holding the reference; a
+# categorical task's `values` are that column's codes.
 #
 # This file holds ONLY wording that already exists in the caption table. The LV caption builder appends exactly
 # `FEVG estimée visuellement : N %.` (data/radar_captions.py, EF_SENTENCE), so this template is in the distribution the
@@ -12,6 +14,7 @@ tasks:
   lv_ejection_fraction:
     mode: regression
     structure: lv
+    target: lvef
     label_sources:
       - "FEVG estimée visuellement : <#> %."
     range: [5, 90]          # the ontology's range for a visual LVEF estimate (EF_RANGE in data/radar_captions.py)
