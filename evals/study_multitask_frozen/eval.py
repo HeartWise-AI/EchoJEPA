@@ -43,7 +43,7 @@ from evals.video_classification_frozen.eval import (
 )
 from evals.video_classification_frozen.models import init_module
 from evals.video_classification_frozen.utils import make_transforms
-from src.datasets.video_study_dataset import SELECTION, VideoStudyDataset, read_split
+from src.datasets.video_study_dataset import SELECTION, VideoStudyDataset, read_split, shared_bag_options
 from src.models.study_probe import POOLING_MODES, StudyProbe, head_loss, head_specs, multitask_loss
 from src.utils.checkpoint_loader import robust_checkpoint_loader
 from src.utils.distributed import AllReduceSum, any_rank_failed, init_distributed
@@ -141,6 +141,7 @@ def main(args_eval, resume_preempt=False):
         "sampling_mode", "eval_seed", "view_family_map", "view_probability_columns",
         "acquisition_column", "acquisition_labels_map", "patient_column") if k in args_data}
     data_options.setdefault("eval_seed", 0)  # identical evaluation bags across training seeds
+    bag_options = shared_bag_options(args_data, seed)
 
     # -- ENCODER FINE-TUNING: the top `trainable_blocks` transformer blocks (and the final norm)
     # train with their own learning rate; 0 keeps the encoder frozen.
@@ -217,7 +218,7 @@ def main(args_eval, resume_preempt=False):
             num_videos=num_videos, shuffle_videos=shuffle_videos, training=training,
             frames_per_clip=frames_per_clip, frame_step=frame_step, duration=duration, fps=fps,
             num_clips_per_video=num_clips_per_video, transform=make_transforms(training=training, **transform_kwargs),
-            min_videos=min_videos, view_labels_map=view_labels_map, **data_options,
+            min_videos=min_videos, view_labels_map=view_labels_map, **data_options, **bag_options,
         )
 
     train_dataset = make_dataset("train", training=True)
@@ -297,6 +298,8 @@ def main(args_eval, resume_preempt=False):
         "seed": seed,
         "world_size": world_size,
     }
+    if bag_options:
+        settings["bags"] = {"train": train_dataset.bag_record(), "val": val_dataset.bag_record()}
     manifests = manifest_paths(args_data)
     fingerprint = shared(rank, world_size, device, lambda: provenance.fingerprint(
         checkpoint, manifests, {h: dict(v) for h, v in normalization_targets.items()}, settings))
@@ -365,6 +368,7 @@ def main(args_eval, resume_preempt=False):
     for epoch in range(start_epoch, num_epochs):
         logger.info(f"Epoch {epoch + 1}")
         train_sampler.set_epoch(epoch)
+        train_dataset.set_epoch(epoch)
         train_losses, train_head_losses = train_one_epoch(
             device=device, encoder=encoder, probes=probes, optimizers=optimizers, schedulers=schedulers,
             wd_schedulers=wd_schedulers, loader=train_loader, use_bfloat16=use_bfloat16, specs=specs,
@@ -961,7 +965,7 @@ def describe_run(args_eval, checkpoint, manifests, fingerprint, seed, parameter_
                            "selection": SELECTION[ds.selection], "eval_seed": ds.eval_seed}
                    for split, ds in datasets.items()},
         "study_probe": fingerprint["settings"]["classifier"],
-        "evaluation": fingerprint["settings"]["evaluation"],
+        "evaluation": fingerprint["settings"]["evaluation"], "bags": fingerprint["settings"].get("bags"),
         "heads": specs, "normalization": normalization, "parameters": parameter_counts,
         "optimization": {"optimizer": "AdamW", "lr_schedule": "linear warmup from start_lr, then cosine to final_lr",
                          "weight_decay_schedule": "cosine from weight_decay to final_weight_decay",
