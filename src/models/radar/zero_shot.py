@@ -4,10 +4,10 @@
 
 Three prompt modes, as in the prompt files of the two reference papers:
 
-- `binary` (RADAR): a positive and a negative prompt set. Each set is encoded, mean-pooled and re-normalised; the
-  probability of the finding is the softmax over the two cosine similarities, scaled by the temperature
-  (`binary_probability`). RADAR's supplement reports 0.894 AUC with one prompt and 0.933 with 500 or more, so a set
-  holds many prompts.
+- `binary` (RADAR): a positive and a negative prompt set. Each set is encoded; the probability of the finding is the
+  softmax over the two sets' mean cosine similarities, scaled by the temperature (`binary_probability`, which also
+  offers the supplement's mean-embedding variant). RADAR's supplement reports 0.894 AUC with one prompt and 0.933
+  with 500 or more, so a set holds many prompts.
 - `categorical`: one prompt set per ordered grade; softmax over the grades' mean-pooled embeddings, the grade
   prediction being the argmax or the expectation of the grade values (`categorical_probabilities`).
 - `regression` (EchoCLIP, Methods): a template with a `<#>` slot is filled with every value of a range, the prompts are
@@ -107,11 +107,24 @@ def pool(embeddings):
     return F.normalize(embeddings.float().mean(dim=0), dim=-1)
 
 
-def binary_probability(z, positive, negative, temperature):
-    """P(finding) [N] from structure embeddings z [N, P] and the two prompt sets [M, P]."""
+POOLINGS = ("mean_similarity", "mean_embedding")
+
+
+def binary_probability(z, positive, negative, temperature, pooling="mean_similarity"):
+    """P(finding) [N] from structure embeddings z [N, P] and the two prompt sets [M, P].
+
+    The released RADAR code (`forward_test_win`) averages the cosine similarities over each prompt set
+    (`mean_similarity`, the default, which gave the published numbers); the supplement describes mean-pooling the
+    prompt embeddings (`mean_embedding`). The two differ, because the norm of a mean embedding depends on how alike its
+    prompts are. With one prompt per set they coincide."""
+    if pooling not in POOLINGS:
+        raise ValueError(f"pooling must be one of {POOLINGS}, got {pooling!r}.")
     z = z.float()
-    logits = torch.stack([z @ pool(negative), z @ pool(positive)], dim=-1) / float(temperature)
-    return F.softmax(logits, dim=-1)[:, 1]
+    if pooling == "mean_similarity":
+        s_pos, s_neg = (z @ positive.float().T).mean(dim=-1), (z @ negative.float().T).mean(dim=-1)
+    else:
+        s_pos, s_neg = z @ pool(positive), z @ pool(negative)
+    return F.softmax(torch.stack([s_neg, s_pos], dim=-1) / float(temperature), dim=-1)[:, 1]
 
 
 def categorical_probabilities(z, grade_sets, temperature):

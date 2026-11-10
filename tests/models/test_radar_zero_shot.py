@@ -82,6 +82,22 @@ class TestScorers(unittest.TestCase):
         swapped = binary_probability(z, negative, positive, temperature=0.07)
         self.assertTrue(torch.allclose(p + swapped, torch.ones(2), atol=1e-6))
 
+    def test_pooling_modes_coincide_for_one_prompt_and_differ_for_a_spread_set(self):
+        z = torch.stack([unit(1, 0.3), unit(0.2, 1)])
+        one_p, one_n = unit(1, 0)[None], unit(0, 1)[None]
+        a = binary_probability(z, one_p, one_n, 0.1, pooling="mean_similarity")
+        b = binary_probability(z, one_p, one_n, 0.1, pooling="mean_embedding")
+        self.assertTrue(torch.allclose(a, b, atol=1e-6))
+        spread = torch.stack([unit(1, 0), unit(0, 1), unit(-1, 0.2)])         # a mean of unlike prompts is short
+        tight = torch.stack([unit(0, 1), unit(0.05, 1)])
+        by_similarity = binary_probability(z, spread, tight, 0.1, pooling="mean_similarity")
+        by_embedding = binary_probability(z, spread, tight, 0.1, pooling="mean_embedding")
+        self.assertFalse(torch.allclose(by_similarity, by_embedding, atol=1e-3))
+        expected = torch.softmax(torch.stack([(z @ tight.T).mean(-1), (z @ spread.T).mean(-1)], -1) / 0.1, -1)[:, 1]
+        self.assertTrue(torch.allclose(by_similarity, expected, atol=1e-6))
+        with self.assertRaisesRegex(ValueError, "pooling"):
+            binary_probability(z, spread, tight, 0.1, pooling="max")
+
     def test_categorical_probabilities_pick_the_nearest_grade_and_sum_to_one(self):
         grades = [torch.stack([unit(1, 0, 0)]), torch.stack([unit(0, 1, 0)]), torch.stack([unit(0, 0, 1)])]
         z = torch.stack([unit(0, 1, 0.1), unit(1, 0.1, 0)])
