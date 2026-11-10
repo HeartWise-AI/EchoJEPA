@@ -1,0 +1,17 @@
+# RADAR zero-shot prompt file, version 0 (schema read by src/models/radar/zero_shot.py).
+#
+# Modes: binary (positive and negative prompt sets, RADAR), categorical (one prompt per ordered grade) and regression
+# (a template with a <#> slot swept over an integer range, EchoCLIP). `held_out` prompts are for reporting only.
+#
+# This file holds ONLY wording that already exists in the caption table. The LV caption builder appends exactly
+# `FEVG estimée visuellement : N %.` (data/radar_captions.py, EF_SENTENCE), so this template is in the distribution the
+# encoder trained on. Every other task (binary findings, grades, RVSP) needs prompt wording that a clinician approves
+# first, in the same language as the captions (French at present): add them here after that review, not before.
+
+tasks:
+  lv_ejection_fraction:
+    mode: regression
+    structure: lv
+    label_sources:
+      - "FEVG estimée visuellement : <#> %."
+    range: [5, 90]          # the ontology's range for a visual LVEF estimate (EF_RANGE in data/radar_captions.py)

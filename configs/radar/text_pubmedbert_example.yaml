@@ -1,0 +1,26 @@
+# Example `text` and `data` sections for a RADAR run with PubMedBERT and normal-caption downsampling.
+# Not a full training config: merge these keys into the run's config (see the module docstring of
+# evals/radar_frozen/train.py for every key).
+#
+# PubMedBERT is English only. The caption table is French at present, so train on it only after the captions are
+# written in canonical English; on French captions use a French or multilingual encoder instead.
+#
+# Weights: the model repo ships `pytorch_model.bin` only, no safetensors, and `TextEncoder.from_pretrained` refuses
+# anything else (safetensors only, no remote code). Two open pull requests on the model repo add `model.safetensors`
+# (refs/pr/1 and refs/pr/3); they are unreviewed third-party commits, so do not point `revision` at them. Convert once
+# from the official, pinned revision into a local folder, check it, and point `name` at that folder:
+#
+#   python -c "from transformers import AutoModel, AutoTokenizer as T; n='microsoft/BiomedNLP-BiomedBERT-base-uncased-abstract-fulltext'; r='e1354b7a3a09615f6aba48dfad4b7a613eef7062'; AutoModel.from_pretrained(n, revision=r).save_pretrained('<dir>', safe_serialization=True); T.from_pretrained(n, revision=r).save_pretrained('<dir>')"
+#
+# The conversion and the loader below were not run when this file was written.
+
+text:
+  backbone: hf_pretrained
+  name: <dir>              # the local folder written above
+  revision: e1354b7a3a09615f6aba48dfad4b7a613eef7062   # official repo, main at the time of writing; ignored for a local folder
+  max_length: 256
+  max_overlength_fraction: 0.01
+  trainable_layers: null   # null trains the whole backbone; k trains only the top k layers and the projection
+
+data:
+  normal_fraction: 1.0     # sweep 1.0, 0.5, 0.25; keeps this share of normal captions each epoch, abnormal and unknown always

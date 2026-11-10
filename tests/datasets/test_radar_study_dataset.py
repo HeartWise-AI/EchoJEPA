@@ -192,6 +192,48 @@ class TestStudyDataset(unittest.TestCase):
         self.assertFalse(uncaptioned["has_caption"].any())
         self.assertEqual(uncaptioned["captions"], [""] * S)
 
+    def kept(self, ds):
+        """(normal, abnormal, unknown) captions an epoch of `ds` presents, over every study."""
+        counts = [0, 0, 0]
+        for i in range(len(ds)):
+            item = ds[i]
+            counts[0] += int(item["normal"].sum())
+            counts[1] += int(item["abnormal"].sum())
+            counts[2] += int((item["has_caption"] & ~item["normal"] & ~item["abnormal"]).sum())
+        return counts
+
+    def test_normal_fraction_leaves_out_only_normal_captions_and_only_in_training(self):
+        full = self.kept(self.dataset())
+        self.assertGreater(full[0], 0)
+        half = self.kept(self.dataset(normal_fraction=0.5, seed=3))
+        self.assertLess(half[0], full[0])
+        self.assertEqual(half[1:], full[1:])                          # abnormal and unknown are never left out
+        self.assertEqual(self.kept(self.dataset(normal_fraction=1e-12))[0], 0)
+        self.assertEqual(self.kept(self.dataset(normal_fraction=1.0)), full)
+        self.assertEqual(self.kept(self.dataset(normal_fraction=0.5, training=False)), full)   # evaluation keeps all
+
+    def test_normal_fraction_draw_is_reproducible_and_changes_with_the_epoch(self):
+        a, b = self.dataset(normal_fraction=0.5, seed=3), self.dataset(normal_fraction=0.5, seed=3)
+        same = [torch.equal(a[i]["has_caption"], b[i]["has_caption"]) for i in range(len(a))]
+        self.assertTrue(all(same))                                    # the same on every rank and worker
+        b.set_epoch(1)
+        differs = [not torch.equal(a[i]["has_caption"], b[i]["has_caption"]) for i in range(len(a))]
+        self.assertTrue(any(differs))                                 # another epoch draws again
+
+    def test_a_dropped_caption_leaves_the_clips_and_the_other_structures_alone(self):
+        full, none = self.dataset(), self.dataset(normal_fraction=1e-12)
+        for i in range(len(full)):
+            self.assertEqual(full[i]["clip_ids"], none[i]["clip_ids"])
+            self.assertTrue(torch.equal(full[i]["eligible"], none[i]["eligible"]))
+            kept = full[i]["has_caption"] & ~full[i]["normal"]
+            self.assertTrue(torch.equal(none[i]["has_caption"], kept))
+            self.assertFalse((none[i]["normal"]).any())
+
+    def test_normal_fraction_must_be_in_zero_one(self):
+        for bad in (0.0, -0.1, 1.5):
+            with self.subTest(bad), self.assertRaisesRegex(ValueError, "normal_fraction"):
+                self.dataset(normal_fraction=bad)
+
     def test_bags_depend_on_seed_epoch_and_study_only(self):
         a, b = self.dataset(seed=1), self.dataset(seed=1)
         self.assertEqual(a[12]["clip_ids"], b[12]["clip_ids"])

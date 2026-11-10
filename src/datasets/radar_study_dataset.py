@@ -30,6 +30,7 @@ caption as the empty string.
 import hashlib
 import json
 import os
+import random
 
 import pandas as pd
 import torch
@@ -42,7 +43,11 @@ NORMALITY = ("normal", "abnormal", "unknown")
 class RadarStudyDataset(torch.utils.data.Dataset):
 
     def __init__(self, clips, captions, routing, cache, num_clips=12, selection="view_balanced", training=True,
-                 seed=0, eval_seed=0, eval_bag_index=0, acquisition_classes=("bmode", "color_flow")):
+                 seed=0, eval_seed=0, eval_bag_index=0, acquisition_classes=("bmode", "color_flow"),
+                 normal_fraction=1.0):
+        if not 0.0 < normal_fraction <= 1.0:
+            raise ValueError(f"normal_fraction must be in (0, 1], got {normal_fraction}.")
+        self.normal_fraction = float(normal_fraction)
         self.routing = routing
         self.structures = [s.name for s in routing.trained]
         self.cache = cache
@@ -86,6 +91,14 @@ class RadarStudyDataset(torch.utils.data.Dataset):
     def set_epoch(self, epoch):
         self.epoch = int(epoch)
 
+    def _left_out(self, study_id, structure, normality):
+        """Whether a normal caption sits out this epoch (training only). The draw depends on (seed, epoch, study,
+        structure) alone, so every rank and every worker makes the same choice; abnormal and unknown captions are
+        never left out. Only the caption sits out: the study's clips and its other structures are unchanged."""
+        if not self.training or self.normal_fraction >= 1.0 or normality != "normal":
+            return False
+        return random.Random(f"normal:{self.seed}:{self.epoch}:{study_id}:{structure}").random() >= self.normal_fraction
+
     def __len__(self):
         return len(self.studies)
 
@@ -123,6 +136,8 @@ class RadarStudyDataset(torch.utils.data.Dataset):
         normal, abnormal = torch.zeros(S, dtype=torch.bool), torch.zeros(S, dtype=torch.bool)
         for s, name in enumerate(self.structures):
             entry = self.captions.get((study_id, name))
+            if entry is not None and self._left_out(study_id, name, entry[2]):
+                entry = None
             if entry is not None:
                 texts[s], ids[s] = entry[0], entry[1]
                 has_caption[s] = True

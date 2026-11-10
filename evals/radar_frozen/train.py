@@ -51,7 +51,8 @@ written after the checkpoint (an interrupted epoch), and a run that starts from 
 checkpoint, so the logs always describe the checkpointed trajectory. `resumes.jsonl` records each resume (epoch, step,
 and the code digests of the checkpoint and of the resuming code).
 
-Config: data {cache_dir, clips, captions, split, routing, normality_policy, num_clips, selection, acquisition_classes}
+Config: data {cache_dir, clips, captions, split, routing, normality_policy, num_clips, selection, acquisition_classes,
+normal_fraction (share of normal captions a training epoch keeps, drawn per epoch, default 1)}
 (another view family map means another registry through `routing`; the old `view_families` key is refused);
 model {token_grid, embed_dim, depth, num_heads, mlp_ratio, proj_dim, activation_checkpointing};
 text {backbone, max_length, max_overlength_fraction, ...: see `build_text_encoder`}; loss {use_exact (required:
@@ -386,7 +387,8 @@ def train(config, out_dir, resume=True, stop_after_epoch=None, allow_code_change
                                      config["text"].get("max_overlength_fraction", 0.01))
     dataset = RadarStudyDataset(clips, captions, routing, cache, num_clips=data.get("num_clips", 12),
                                 selection=data.get("selection", "view_balanced"), training=True, seed=seed,
-                                acquisition_classes=data.get("acquisition_classes", ("bmode", "color_flow")))
+                                acquisition_classes=data.get("acquisition_classes", ("bmode", "color_flow")),
+                                normal_fraction=data.get("normal_fraction", 1.0))
     global_batch = int(opt["global_batch"])
     sampler = StudyBatchSampler(len(dataset), global_batch, rank, world_size, seed)
     schedule = step_schedule(len(dataset), global_batch, opt["epochs"], opt.get("warmup_fraction", 0.05))
