@@ -16,8 +16,9 @@ most `num_stills` stills are read, balanced over still tags as clips are over vi
 (`study_bags.select_clips`), drawn from the study's RNG after its clips, so the clip bag is the v0 bag. Each item
 gets: `still_tokens` [K, Ls, D], `still_valid` [K], `still_tag_ids`, `still_type_ids` [K] (-1 padded or unknown),
 `still_eligible` [S, K] (`Routing.still_eligibility`), `still_cond` [K, c] (missing values as 0), `still_bias`
-[K, Ls] (zero without a heat-map), `still_y` [K, Q] and `still_y_mask` [K, Q] (z-scored log targets) and `demo` [4]
-(z-scored age, male, female, age missing).
+[K, Ls] (zero without a heat-map; the spatial map repeated over the cache's temporal positions, so a still encoded
+from 16 repeated frames, grid [8, H, W], reads the same map at each), `still_y` [K, Q] and `still_y_mask` [K, Q]
+(z-scored log targets) and `demo` [4] (z-scored age, male, female, age missing).
 
 Leakage guard: a conditioning column may not be a target, nor start with `y_` (a measured value is never an input
 here), and the targets' scaler and the age statistics are fitted on the source's own stills and studies (the
@@ -35,6 +36,30 @@ from src.datasets.study_bags import select_clips
 from src.models.radar.heads import encode_targets, fit_log_scaler
 
 DEMO_DIM = 4
+ENCODER_KEYS = ("encoder_sha256", "encoder")     # of a token cache's provenance (the cache writer's record)
+
+
+def same_encoder(clip_meta, still_meta):
+    """Refuse a still cache that another encoder wrote than the clip cache: their tokens would not share a space,
+    and one pooler reads both. Compares the embedding size and the encoder record of the caches' provenance (the
+    checkpoint's sha256 and how it was built). Returns True when both records are there and equal, None when
+    neither cache has one (nothing to compare: synthetic caches); one cache with a record and one without is
+    refused, since it cannot be shown."""
+    if clip_meta.get("embed_dim") != still_meta.get("embed_dim"):
+        raise ValueError(f"The still token cache has embed_dim {still_meta.get('embed_dim')}, the clip cache "
+                         f"{clip_meta.get('embed_dim')}.")
+    clip, still = ({k: (meta.get("provenance") or {}).get(k) for k in ENCODER_KEYS} for meta in (clip_meta, still_meta))
+    known = [any(v is not None for v in record.values()) for record in (clip, still)]
+    if not any(known):
+        return None
+    if not all(known):
+        raise ValueError("Only one of the clip and still token caches records its encoder: they cannot be shown "
+                         "to come from the same one.")
+    differing = [k for k in ENCODER_KEYS if clip[k] != still[k]]
+    if differing:
+        raise ValueError(f"The clip and still token caches come from different encoders ({differing} differ): "
+                         "write the still cache with the clip cache's encoder checkpoint and settings.")
+    return True
 
 
 class StillSource:
@@ -53,6 +78,9 @@ class StillSource:
         if missing:
             raise ValueError(f"{len(missing)} stills are not in the still token cache.")
         self.routing, self.cache, self.structures = routing, cache, list(structures)
+        self.grid = tuple(int(n) for n in cache.meta["token_grid"])     # [T, H, W]: T = 1 for a 2-frame still
+        if heatmap_column and self.grid[1] != self.grid[2]:
+            raise ValueError("The heat-map bias needs a square still token grid (H == W).")
         self.num_stills = int(num_stills)
         self.cond_columns, self.target_columns = list(cond_columns), list(target_columns)
         self.heatmap_column = heatmap_column
@@ -138,9 +166,8 @@ class StillSource:
                 out["still_cond"][slot] = r["cond"]
             if r["y"] is not None:
                 out["still_y"][slot], out["still_y_mask"][slot] = r["y"], r["present"]
-            if r["heatmap"]:
-                grid = int(round(Ls ** 0.5))
-                out["still_bias"][slot] = heatmap_bias(np.load(r["heatmap"]), grid)
+            if r["heatmap"]:        # one spatial map, the same at every temporal position ((t, h, w) order)
+                out["still_bias"][slot] = heatmap_bias(np.load(r["heatmap"]), self.grid[1]).repeat(self.grid[0])
         out["still_eligible"] = self.routing.still_eligibility(out["still_tag_ids"][None], out["still_valid"][None],
                                                                self.structures)[0]
         return out

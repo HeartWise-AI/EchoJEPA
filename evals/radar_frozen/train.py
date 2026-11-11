@@ -108,7 +108,7 @@ from src.datasets.radar_study_dataset import (
     file_sha256,
     read_table,
 )
-from src.datasets.radar_stills import DEMO_DIM, StillSource
+from src.datasets.radar_stills import DEMO_DIM, StillSource, same_encoder
 from src.datasets.radar_token_cache import TokenCache
 from src.datasets.study_bags import choose_bag
 from src.models.radar.heads import StillMeasurementHeads
@@ -464,6 +464,8 @@ def train(config, out_dir, resume=True, stop_after_epoch=None, allow_code_change
     captions, lengths = fit_captions(captions, build_tokenizer(config["text"]),
                                      config["text"].get("max_overlength_fraction", 0.01))
     stills = read_stills(data["stills"], routing, split, config.get("heads")) if data.get("stills") else None
+    if stills is not None:
+        same_encoder(cache.meta, stills.cache.meta)
     dataset = RadarStudyDataset(clips, captions, routing, cache, num_clips=data.get("num_clips", 12),
                                 selection=data.get("selection", "view_balanced"), training=True, seed=seed,
                                 acquisition_classes=data.get("acquisition_classes", ("bmode", "color_flow")),

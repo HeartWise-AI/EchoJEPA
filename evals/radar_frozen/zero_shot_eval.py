@@ -79,7 +79,7 @@ import yaml
 
 from evals.radar_frozen import zero_shot_metrics as zm
 from evals.radar_frozen.train import AMP_MODES, REPO, WORKER_START_METHODS, _device, _to, build_model
-from src.datasets.radar_stills import STILL_ITEM_KEYS, StillSource
+from src.datasets.radar_stills import STILL_ITEM_KEYS, StillSource, same_encoder
 from src.datasets.radar_study_dataset import RadarStudyDataset, file_sha256, read_table
 from src.datasets.radar_token_cache import TokenCache
 from src.models.radar.model import STILL_KEYS
@@ -425,6 +425,8 @@ def evaluate(config, checkpoint, clips, labels, out_dir, prompts=DEFAULT_PROMPTS
     if table.empty:
         raise ValueError("No clip to evaluate.")
     cache = TokenCache(cache_dir or data["cache_dir"], token_grid=m["token_grid"], embed_dim=m["embed_dim"])
+    if still_source is not None:
+        same_encoder(cache.meta, still_source.cache.meta)
     dataset = RadarStudyDataset(table, pd.DataFrame(columns=list(CAPTION_COLUMNS)), routing, cache,
                                 num_clips=num_clips or data.get("num_clips", 12),
                                 selection=selection or data.get("selection", "view_balanced"), training=False,

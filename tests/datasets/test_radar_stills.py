@@ -24,7 +24,7 @@ import torch
 
 from evals.radar_frozen import train as radar_train
 from evals.radar_frozen import zero_shot_eval as zse
-from src.datasets.radar_stills import StillSource
+from src.datasets.radar_stills import StillSource, same_encoder
 from src.datasets.radar_study_dataset import RadarStudyDataset, collate, file_sha256, read_table
 from src.datasets.radar_token_cache import TokenCache, TokenCacheWriter
 from src.models.radar.routing import DEFAULT_ROUTING, load_routing
@@ -195,6 +195,33 @@ class TestStillItems(unittest.TestCase):
             np.save(heat, saved)
         self.assertEqual(self.source().record(), before)
         self.assertIsNone(self.source(heatmap_column=None).record()["heatmaps_sha256"])
+
+    def test_heatmap_repeats_over_the_temporal_positions_of_a_16_frame_still(self):
+        root = os.path.join(self.root, "frames16")
+        writer = TokenCacheWriter(os.path.join(root, "cache"), (8, 2, 2), DIM)       # 16 frames, tubelet 2
+        writer.add("a", torch.randn(32, DIM))
+        writer.close()
+        table = pd.DataFrame({"study_id": ["X1"], "still_id": ["a"], "still_tag": ["AV"], "still_type": ["cw_AV"],
+                              "echonet_heatmap": [pd.read_csv(self.still_paths["table"]).echonet_heatmap.dropna()
+                                                  .iloc[0]]})
+        source = StillSource(table, self.routing, TokenCache(os.path.join(root, "cache")),
+                             [s.name for s in self.routing.trained], num_stills=1, heatmap_column="echonet_heatmap")
+        bias = source.item("X1", random.Random(0))["still_bias"][0]
+        self.assertEqual(tuple(bias.shape), (32,))
+        self.assertTrue(torch.equal(bias.reshape(8, 4), bias[:4].expand(8, 4)))
+        self.assertLess(float(bias.min()), -1.0)
+
+    def test_the_two_caches_must_come_from_one_encoder(self):
+        def meta(sha=None, dim=DIM, **encoder):
+            provenance = {} if sha is None else {"encoder_sha256": sha, "encoder": encoder, "split": "train"}
+            return {"embed_dim": dim, "provenance": provenance}
+        self.assertIsNone(same_encoder(meta(), meta()))
+        self.assertTrue(same_encoder(meta("a", module_name="m"), meta("a", module_name="m")))
+        for still, message in ((meta("b", module_name="m"), "different encoders"),
+                               (meta("a", module_name="other"), "different encoders"),
+                               (meta(), "Only one"), (meta("a", dim=DIM + 1, module_name="m"), "embed_dim")):
+            with self.assertRaisesRegex(ValueError, message):
+                same_encoder(meta("a", module_name="m"), still)
 
     def test_age_statistics_are_the_source_s_own(self):
         demo = pd.read_csv(self.still_paths["demographics"], dtype={"study_id": str})
