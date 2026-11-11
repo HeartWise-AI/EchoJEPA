@@ -75,6 +75,20 @@ class TestStillStream(unittest.TestCase):
         _, z3, _ = pooler(*clip_inputs(), **padded)
         self.assertTrue(torch.allclose(z, z3, atol=1e-6))
 
+    def test_heatmap_bias_keeps_each_still_s_weight(self):
+        pooler = make()
+        with torch.no_grad():
+            pooler.heatmap_scale.fill_(1.5)
+        inputs = still_inputs()
+        valid, raw = inputs["still_valid"], inputs["still_bias"]
+        raw[:, 0] = 0.0                                          # a still without a heat-map
+        B, K = valid.shape
+        _, _, bias = pooler._still_keys(inputs["still_tokens"], valid, inputs["still_eligible"],
+                                        inputs["still_type_ids"], inputs["still_cond"], raw, B, pooler.num_structures)
+        bias = bias.reshape(B, K, LS)
+        self.assertTrue(torch.allclose(bias.exp().sum(dim=-1), torch.full((B, K), float(LS)), atol=1e-4))
+        self.assertTrue(torch.allclose(bias[:, 0], torch.zeros(B, LS), atol=1e-6))
+
     def test_identity_at_init_and_gradients(self):
         pooler = make()
         inputs = still_inputs()

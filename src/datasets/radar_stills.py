@@ -10,7 +10,9 @@ Inputs:
 - a `TokenCache` of the stills' frozen tokens (one tubelet, e.g. grid [1, 14, 14]), keyed by `still_id`;
 - optionally `demographics`: `study_id`, `age_years`, `sex` (M, F or empty).
 
-Per study, at most `num_stills` stills are read, balanced over still tags as clips are over view families
+A still whose tag the registry does not route (or without a tag) is left out, unless it carries a measurement
+target: then it stays for the heads, feeds no structure, and is counted (`unrouted_with_targets`). Per study, at
+most `num_stills` stills are read, balanced over still tags as clips are over view families
 (`study_bags.select_clips`), drawn from the study's RNG after its clips, so the clip bag is the v0 bag. Each item
 gets: `still_tokens` [K, Ls, D], `still_valid` [K], `still_tag_ids`, `still_type_ids` [K] (-1 padded or unknown),
 `still_eligible` [S, K] (`Routing.still_eligibility`), `still_cond` [K, c] (missing values as 0), `still_bias`
@@ -18,8 +20,8 @@ gets: `still_tokens` [K, Ls, D], `still_valid` [K], `still_tag_ids`, `still_type
 (z-scored age, male, female, age missing).
 
 Leakage guard: a conditioning column may not be a target, nor start with `y_` (a measured value is never an input
-here), and the targets' scaler and the age statistics are fitted on the source they are given (the training split)
-and passed to the others.
+here), and the targets' scaler and the age statistics are fitted on the source's own stills and studies (the
+training split's, whatever else the demographics table holds) and passed to the others.
 """
 
 import hashlib
@@ -58,6 +60,15 @@ class StillSource:
         stills = stills.assign(study_id=stills.study_id.astype(str), still_id=stills.still_id.astype(str),
                                still_tag=stills.still_tag.fillna("").astype(str),
                                still_type=stills.still_type.fillna("").astype(str))
+        # A still whose tag the registry does not route feeds no structure: left out, or it would take a bag slot
+        # from one that does. One that carries a measurement target stays, for the heads: it is counted apart.
+        routed = stills.still_tag.map(lambda tag: routing.still_tag_index(tag) >= 0).to_numpy(dtype=bool)
+        values = (stills[self.target_columns].to_numpy(dtype=float) if self.target_columns
+                  else np.zeros((len(stills), 0)))
+        measured = (np.isfinite(values) & (values > 0)).any(axis=1)
+        self.unrouted = int((~routed & ~measured).sum())
+        self.unrouted_with_targets = int((~routed & measured).sum())
+        stills = stills[routed | measured]
         cond = np.nan_to_num(stills[self.cond_columns].to_numpy(dtype=np.float32)) if self.cond_columns else None
         if target_columns:
             y, present = encode_targets(stills[self.target_columns].to_numpy(dtype=float), self.scaler,
@@ -76,8 +87,9 @@ class StillSource:
         if demographics is not None:
             demo = demographics.assign(study_id=demographics.study_id.astype(str))
             ages = pd.to_numeric(demo.age_years, errors="coerce")
-            if demo_stats is None:
-                demo_stats = [float(ages.mean()), float(max(ages.std(ddof=0), 1e-6))] if ages.notna().any() \
+            if demo_stats is None:      # fitted on this source's studies only: the table may hold every split
+                own = ages[demo.study_id.isin(self.by_study).to_numpy()]
+                demo_stats = [float(own.mean()), float(max(own.std(ddof=0), 1e-6))] if own.notna().any() \
                     else [0.0, 1.0]
             for study, age, sex in zip(demo.study_id, ages, demo.sex.fillna("").astype(str)):
                 known = bool(np.isfinite(age))
@@ -91,13 +103,18 @@ class StillSource:
 
     def record(self):
         """What fixes this source's stills (part of the run's fingerprint)."""
-        digest = hashlib.sha256()
+        digest, heat = hashlib.sha256(), hashlib.sha256()
         for study in sorted(self.by_study):
             for r in self.by_study[study]:
                 digest.update(f"{study}\0{r['still_id']}\0{r['tag']}\0{r['type']}\n".encode("utf-8"))
+                if r["heatmap"]:        # the file's contents: the table only pins its path
+                    with open(r["heatmap"], "rb") as f:
+                        heat.update(f"{r['still_id']}\0{hashlib.sha256(f.read()).hexdigest()}\n".encode("utf-8"))
         return {"stills_sha256": digest.hexdigest(), "num_stills": self.num_stills, "cond": self.cond_columns,
                 "targets": self.target_columns, "scaler": self.scaler, "demo_stats": self.demo_stats,
-                "heatmap": bool(self.heatmap_column)}
+                "heatmap": bool(self.heatmap_column), "unrouted": self.unrouted,
+                "unrouted_with_targets": self.unrouted_with_targets,
+                "heatmaps_sha256": heat.hexdigest() if self.heatmap_column else None}
 
     def item(self, study_id, rng):
         rows = self.by_study.get(study_id, [])

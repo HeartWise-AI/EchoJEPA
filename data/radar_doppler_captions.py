@@ -5,9 +5,11 @@ calls them). Kept out of `radar_normality.py` and `radar_captions.py` on purpose
 covers those two files, so editing them would void the approval of the B-mode policy.
 
 - `doppler_clauses`: the clauses of a report cell that `retain_caption` removes because only Doppler can ground them
-  (stenosis, regurgitation, gradients, velocities, pressures), as written; a clause that names a date or a person
-  still leaves. Their wording is read by the same patterns as the B-mode rules (`_names_doppler`).
-- `full_caption`: the B-mode caption followed by those clauses: the caption of a (study, structure) whose bag holds a
+  (stenosis, regurgitation, gradients, velocities, pressures), as written; a clause that names a date or a person,
+  or compares with an earlier examination (`_PRIOR`), still leaves. Their wording is read by the same patterns as
+  the B-mode rules (`_names_doppler`).
+- `full_caption`: the B-mode caption followed by those clauses, without the B-mode clauses they already hold: the
+  caption of a (study, structure) whose bag holds a
   Doppler still of that structure (scope `full`). Without such a still the B-mode caption is used, so a caption never
   says what the study's inputs cannot show.
 - `hemo_caption`: the templated caption of Hemo, which has no report column: RVSP, RA pressure and mean E/e' from
@@ -49,18 +51,30 @@ def doppler_clauses(text):
         if not clause or not re.search(r"[^\W\d_]", clause):
             continue
         plain = rn._plain(clause)
-        if rn._names_doppler(clause) and not rn._NOT_IN_THE_CLIP.search(plain) and not rn._DATE.search(clause):
+        if (rn._names_doppler(clause) and not rn._NOT_IN_THE_CLIP.search(plain) and not rn._DATE.search(clause)
+                and not rn._PRIOR.search(plain)):
             kept.append(clause)
     return kept
 
 
 def full_caption(bmode_caption, source):
-    """The B-mode caption followed by the Doppler clauses of the report cell `source`; "" when there are none."""
+    """The B-mode caption followed by the Doppler clauses of the report cell `source`; "" when there are none. A
+    Doppler clause is kept whole, so it may hold what the B-mode caption kept of it (`Valve calcifiée` of `Valve
+    calcifiée sans sténose`): a B-mode clause that a Doppler clause contains is not said twice."""
     clauses = doppler_clauses(source)
     if not clauses:
         return ""
-    head = (bmode_caption or "").strip().rstrip(".")
-    return ". ".join([head, *clauses] if head else clauses) + "."
+    said = [rc.canonical_caption(c) for c in clauses]
+    head = [c.strip(" .;,") for c in rc.text_clauses(bmode_caption or "")]
+    head = [c for c in head if c and not any(rc.canonical_caption(c) in s for s in said)]
+    return ". ".join([*head, *clauses]) + "."
+
+
+def doppler_caption(source):
+    """The Doppler clauses of the report cell `source` alone: the caption of a (study, structure) whose bag holds
+    stills of the structure and no clip of it (scope `doppler`); "" when there are none."""
+    clauses = doppler_clauses(source)
+    return ". ".join(clauses) + "." if clauses else ""
 
 
 def _number(value, digits):

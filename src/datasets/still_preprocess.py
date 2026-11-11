@@ -12,7 +12,8 @@ Order (`prepare_still`, recipe `PREPROCESS_VERSION`):
 2. `crop_spectral`: the DICOM spectral region (`spec_x0..spec_y1`). It leaves out the B-mode thumbnail, the scale
    labels and most of the measurement block; the velocity scale it removes comes back as numbers (`velocity_scale`).
 3. `overlay_mask` + `inpaint`: the calipers and VTI traces the sonographer drew are coloured, the spectrum is grey
-   (or one vendor tint, given as `tint`); chromatic pixels are inpainted from their neighbours.
+   (or one vendor tint, given as `tint`); chromatic pixels and their anti-aliased edge are inpainted from their
+   neighbours. A white or grey overlay is not found this way, and a mostly chromatic crop is refused.
 4. grey, resized to `size` x `size`, normalised, and repeated over `frames` frames: with the encoder's tubelet of 2,
    two frames give one temporal token, a [1, H, W] token grid.
 
@@ -27,7 +28,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-PREPROCESS_VERSION = "m1"
+PREPROCESS_VERSION = "m2"    # m2: the overlay mask is dilated; a mostly chromatic crop is refused
 IMAGENET_MEAN = (0.485, 0.456, 0.406)
 IMAGENET_STD = (0.229, 0.224, 0.225)
 
@@ -76,10 +77,11 @@ def crop_spectral(image, x0, y0, x1, y1):
     return image[y0:y1, x0:x1]
 
 
-def overlay_mask(image, chroma_threshold=40, tint=None, tint_tolerance=0.15):
-    """Pixels of drawn overlays: chroma (max - min over RGB) above `chroma_threshold`. With `tint` (the vendor's
+def overlay_mask(image, chroma_threshold=40, tint=None, tint_tolerance=0.15, dilate=2):
+    """Pixels of drawn overlays: chroma (max - min over RGB) above `chroma_threshold`, grown by `dilate` pixels so
+    the anti-aliased edge of a line, whose chroma is below the threshold, goes with it. With `tint` (the vendor's
     spectrum colour, RGB), a pixel whose colour direction is within `tint_tolerance` of the tint's is spectrum, not
-    overlay."""
+    overlay. A white or grey overlay has no chroma and is not found here."""
     rgb = image.astype(np.float32)
     chroma = rgb.max(axis=-1) - rgb.min(axis=-1)
     mask = chroma > chroma_threshold
@@ -89,6 +91,10 @@ def overlay_mask(image, chroma_threshold=40, tint=None, tint_tolerance=0.15):
         direction = rgb - rgb.min(axis=-1, keepdims=True)
         direction = direction / np.maximum(np.linalg.norm(direction, axis=-1, keepdims=True), 1e-6)
         mask &= np.linalg.norm(direction - tint, axis=-1) > tint_tolerance
+    if dilate and mask.any():
+        size = 2 * int(dilate) + 1
+        mask = F.max_pool2d(torch.from_numpy(mask)[None, None].float(), size, stride=1, padding=int(dilate))[0, 0] > 0
+        mask = mask.numpy()
     return mask
 
 
@@ -109,16 +115,24 @@ def static_clip(gray, size=224, frames=2, mean=IMAGENET_MEAN, std=IMAGENET_STD):
     return channels[:, None].repeat(1, frames, 1, 1).contiguous()
 
 
-def prepare_still(image, spectral_box, text_boxes=(), size=224, frames=2, tint=None, chroma_threshold=40, pad=4):
-    """(clip [3, frames, size, size], report {"masked_text_px", "masked_overlay_px"}) of an RGB uint8 screen."""
+def prepare_still(image, spectral_box, text_boxes=(), size=224, frames=2, tint=None, chroma_threshold=40, pad=4,
+                  max_overlay_fraction=0.2):
+    """(clip [3, frames, size, size], report {"masked_text_px", "masked_overlay_px", "overlay_fraction"}) of an RGB
+    uint8 screen. Overlays are thin lines: a crop of which more than `max_overlay_fraction` is chromatic is a tinted
+    spectrum read without its `tint`, and is refused rather than inpainted away."""
     if image.ndim != 3 or image.shape[2] != 3:
         raise ValueError("prepare_still expects an RGB image [H, W, 3].")
     screen, text = mask_boxes(image, text_boxes, pad)
     crop = crop_spectral(screen, *spectral_box)
     overlay = overlay_mask(crop, chroma_threshold, tint)
+    fraction = float(overlay.mean())
+    if fraction > max_overlay_fraction:
+        raise ValueError(f"{fraction:.0%} of the spectral region is chromatic: a tinted spectrum needs its `tint`, "
+                         "or the overlays would take the spectrum with them.")
     crop = inpaint(crop, overlay)
     gray = crop.astype(np.float32).mean(axis=-1).round().astype(np.uint8)
-    report = {"masked_text_px": int(text.sum()), "masked_overlay_px": int(overlay.sum())}
+    report = {"masked_text_px": int(text.sum()), "masked_overlay_px": int(overlay.sum()),
+              "overlay_fraction": fraction}
     return static_clip(gray, size, frames), report
 
 

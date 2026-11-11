@@ -79,6 +79,12 @@ class TestRules(unittest.TestCase):
         self.assertAlmostEqual(bsm.to_unit(0.2, "s", "time"), 200.0)
         self.assertTrue(np.isnan(bsm.to_unit(3.0, "mmHg", "velocity")))
 
+    def test_a_missing_unit_is_no_unit(self):
+        for missing in (None, float("nan"), pd.NA):
+            with self.subTest(unit=missing):
+                self.assertEqual(bsm.to_unit(30.0, missing, "pressure"), 30.0)
+                self.assertTrue(np.isnan(bsm.to_unit(2.0, missing, "velocity")))
+
     def test_aggregate(self):
         stills, dropped = bsm.aggregate_stills(meas_table())
         self.assertEqual(dropped, 1)                         # the 900 cm VTI

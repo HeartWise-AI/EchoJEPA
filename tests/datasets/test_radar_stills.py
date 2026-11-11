@@ -23,6 +23,7 @@ import pandas as pd
 import torch
 
 from evals.radar_frozen import train as radar_train
+from evals.radar_frozen import zero_shot_eval as zse
 from src.datasets.radar_stills import StillSource
 from src.datasets.radar_study_dataset import RadarStudyDataset, collate, file_sha256, read_table
 from src.datasets.radar_token_cache import TokenCache, TokenCacheWriter
@@ -128,15 +129,78 @@ class TestStillItems(unittest.TestCase):
         self.assertEqual(x["still_valid"].tolist(), [True, True])
         self.assertTrue(x["has_caption"][names.index("hemo")])
         self.assertTrue(x["still_eligible"][names.index("hemo")].any())
-        s00 = items["S00"]
-        self.assertIn("Pas de sténose", s00["captions"][names.index("aortic")])     # full: AV still in the bag
+        s00, aortic = items["S00"], names.index("aortic")
         bag = self.dataset(self.source(num_stills=1))
         one = {bag[i]["study_id"]: bag[i] for i in range(len(bag))}["S00"]
-        uses_av = bool(one["still_eligible"][names.index("aortic")].any())
-        self.assertEqual("Pas de sténose" in one["captions"][names.index("aortic")], uses_av)
+        seen = set()
+        for item in (s00, items["S03"], one):       # full: an aortic clip and an AV still in the bag, both
+            clip, still = bool(item["eligible"][aortic].any()), bool(item["still_eligible"][aortic].any())
+            seen.add((clip, still))
+            self.assertEqual("ténose" in item["captions"][aortic], clip and still, item["study_id"])
+            if still and not clip:                  # stills alone, and no `doppler` row: no caption
+                self.assertFalse(item["has_caption"][aortic])
+        self.assertTrue(seen & {(True, True), (False, True)})
         batch = collate([x, s00], HashTokenizer(vocab_size=50, max_length=16))
         self.assertEqual(tuple(batch["still_tokens"].shape), (2, 2, 4, DIM))
         self.assertEqual(tuple(batch["still_y"].shape), (2, 2, 2))
+
+    def test_no_bmode_caption_against_stills_alone_and_no_slot_for_an_unrouted_still(self):
+        names = [s.name for s in self.routing.trained]
+        text = "Valve aortique calcifiée."
+        row = {"study_id": "X99", "structure": "aortic", "caption": text, "caption_id": rc.caption_id(text),
+               "normality": "unknown", "normality_status": "provisional", "policy_digest": "synthetic",
+               "scope": "bmode"}
+        captions = pd.concat([self.captions, pd.DataFrame([row])], ignore_index=True)
+        data = RadarStudyDataset(self.clips, captions, self.routing, self.cache, num_clips=4, stills=self.source())
+        x = {data[i]["study_id"]: data[i] for i in range(len(data))}["X99"]
+        self.assertTrue(x["still_eligible"][names.index("aortic")].any())      # an AV still, and no clip
+        self.assertFalse(x["has_caption"][names.index("aortic")])
+        self.assertTrue(x["has_caption"][names.index("hemo")])
+        table = pd.read_csv(self.still_paths["table"], dtype={"study_id": str, "still_id": str})
+        table.loc[table.still_id == "X99-s0", "still_tag"] = np.nan
+        source = StillSource(table, self.routing, TokenCache(self.still_paths["cache_dir"]), names, num_stills=1)
+        self.assertEqual((source.unrouted, source.unrouted_with_targets), (1, 0))
+        kept = StillSource(table, self.routing, TokenCache(self.still_paths["cache_dir"]), names, num_stills=2,
+                           target_columns=TARGETS)                 # X99-s0 has a measured AV Vmax: kept for the heads
+        self.assertEqual((kept.unrouted, kept.unrouted_with_targets), (0, 1))
+        item = kept.item("X99", random.Random(0))
+        slot = item["still_tag_ids"].tolist().index(-1)
+        self.assertTrue(item["still_valid"][slot] and item["still_y_mask"][slot].any())
+        self.assertFalse(item["still_eligible"][:, slot].any())
+        tr = self.routing.still_tag_index("TR")
+        self.assertEqual({int(source.item("X99", random.Random(seed))["still_tag_ids"][0]) for seed in range(20)},
+                         {tr})
+
+    def test_stills_alone_read_the_doppler_caption(self):
+        names = [s.name for s in self.routing.trained]
+        text = "Sténose aortique serrée."
+        rows = [{"study_id": "X99", "structure": "aortic", "caption": c, "caption_id": rc.caption_id(c),
+                 "normality": "unknown", "normality_status": "provisional", "policy_digest": "synthetic", "scope": s}
+                for c, s in ((text, "doppler"), ("Valve aortique calcifiée. " + text, "full"))]
+        captions = pd.concat([self.captions, pd.DataFrame(rows)], ignore_index=True)
+        data = RadarStudyDataset(self.clips, captions, self.routing, self.cache, num_clips=4, stills=self.source())
+        x = {data[i]["study_id"]: data[i] for i in range(len(data))}["X99"]
+        self.assertEqual(x["captions"][names.index("aortic")], text)
+        with self.assertRaisesRegex(ValueError, "scope must be"):
+            RadarStudyDataset(self.clips, captions.assign(scope="other"), self.routing, self.cache, num_clips=4)
+
+    def test_heatmap_contents_are_in_the_record(self):
+        before = self.source().record()
+        heat = pd.read_csv(self.still_paths["table"]).echonet_heatmap.dropna().iloc[0]
+        saved = np.load(heat)
+        try:
+            np.save(heat, np.ones_like(saved))
+            self.assertNotEqual(self.source().record()["heatmaps_sha256"], before["heatmaps_sha256"])
+        finally:
+            np.save(heat, saved)
+        self.assertEqual(self.source().record(), before)
+        self.assertIsNone(self.source(heatmap_column=None).record()["heatmaps_sha256"])
+
+    def test_age_statistics_are_the_source_s_own(self):
+        demo = pd.read_csv(self.still_paths["demographics"], dtype={"study_id": str})
+        other = pd.DataFrame({"study_id": ["VAL1", "VAL2"], "age_years": [5.0, 99.0], "sex": ["M", "F"]})
+        both = self.source(demographics=pd.concat([demo, other], ignore_index=True))
+        self.assertEqual(both.demo_stats, self.source().demo_stats)
 
     def test_clip_bag_is_v0_and_no_full_caption_without_stills(self):
         v0 = load_routing()
@@ -204,6 +268,37 @@ class TestTrainingWithStills(unittest.TestCase):
             bad = json.loads(json.dumps(config))
             bad["model"].pop("stills")
             radar_train.build_model(bad, routing)
+        self.evaluation(config, routing, paths, stills)
+
+    def evaluation(self, config, routing, paths, stills):
+        """The evaluator reads the still stream of a checkpoint trained with it, or refuses."""
+        checkpoint = os.path.join(self.root, "run", "latest.pt")
+        device = torch.device("cpu")
+        model, _, state = zse.load_model(config, checkpoint, routing, device)
+        with self.assertRaisesRegex(ValueError, "training split"):      # X99 trained through its stills alone
+            zse.check_not_trained_on(config, state, ["X99"])
+        self.assertIn("X99", zse.check_not_trained_on(config, state, ["HELD-OUT"]))
+        moved = json.loads(json.dumps(config))
+        moved["data"]["stills"]["table"] = paths["clips"]
+        with self.assertRaisesRegex(ValueError, "still table the checkpoint trained on"):
+            zse.check_not_trained_on(moved, state, ["HELD-OUT"])
+        out = tempfile.mkdtemp()
+        try:
+            for kwargs, message in (({}, "trained with Doppler stills"), ({"clip_only": True}, "demographics")):
+                with self.assertRaisesRegex(ValueError, message):
+                    zse.evaluate(config, checkpoint, paths["clips"], "unused.csv", out, **kwargs)
+        finally:
+            shutil.rmtree(out, ignore_errors=True)
+        source = zse.read_eval_stills(config, state, routing, model, stills["table"], "train")
+        self.assertEqual(source.demo_stats, state["fingerprint"]["stills"]["demo_stats"])
+        clips = read_table(paths["clips"])
+        data = RadarStudyDataset(clips, pd.DataFrame(columns=list(zse.CAPTION_COLUMNS)), routing,
+                                 TokenCache(paths["cache_dir"]), num_clips=config["data"].get("num_clips", 12),
+                                 training=False, stills=source)
+        z, has = zse.embed_studies(model, data, device, num_bags=2, batch_size=3)     # demo_film: no crash
+        x, hemo = [s for s, _ in data.studies].index("X99"), [s.name for s in routing.trained].index("hemo")
+        self.assertTrue(has[:, x, hemo].all())                         # supported by its TR still
+        self.assertTrue(torch.isfinite(z).all())
 
 
 if __name__ == "__main__":

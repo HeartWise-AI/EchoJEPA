@@ -26,11 +26,14 @@ instead of their view. Still tokens get their own sin-cos position, a still mark
 `still_cond_dim`, a projection of the still's scalar conditioning (velocity scale of the crop, mode, EchoNet's
 predicted peak and confidence): its last layer starts at zero, so the stream starts as plain tokens. With
 `still_heatmap_bias`, a per-token log heat-map (EchoNet's peak heat-map pooled to the token grid) is added to the
-attention logits of the still's keys, times a learned scale that starts at zero. With `demo_dim`, the queries are
+attention logits of the still's keys, times a learned scale that starts at zero, and normalised per still so that
+the still's total prior weight stays that of unbiased tokens. With `demo_dim`, the queries are
 modulated by the study's demographics (FiLM, starting at the identity); off by default because age and sex can stand
 in for the image in the contrastive loss. A structure with neither a usable clip nor a usable still falls back on
 the null token, as before. Without the still stream, the module, its parameters and its outputs are those of v0.
 """
+
+import math
 
 import torch
 import torch.nn as nn
@@ -174,7 +177,11 @@ class StructurePooler(nn.Module):
         if self.heatmap_scale is not None:
             if still_bias is None:
                 raise ValueError("still_bias is required with still_heatmap_bias.")
-            bias = self.heatmap_scale * torch.where(still_valid[:, :, None], still_bias, 0.0).reshape(B, K * Ls)
+            bias = self.heatmap_scale.float() * torch.where(still_valid[:, :, None], still_bias, 0.0).float()
+            # The bias moves attention within a still, not between keys: each still keeps the total weight of Ls
+            # unbiased tokens, so a still with a heat-map does not lose to one without, or to the clips.
+            bias = bias - (torch.logsumexp(bias, dim=-1, keepdim=True) - math.log(Ls))
+            bias = bias.reshape(B, K * Ls)
         return x.reshape(B, K * Ls, D), usable, bias
 
     def forward(self, tokens, clip_valid, eligible, view_ids=None, acquisition_ids=None, still_tokens=None,

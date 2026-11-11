@@ -67,6 +67,21 @@ class TestPreprocess(unittest.TestCase):
         self.assertGreater(overlay_mask(tinted).mean(), 0.1)
         self.assertLess(overlay_mask(tinted, tint=(0, 0, 60)).mean(), 0.01)
 
+    def test_overlay_edge_goes_with_the_overlay_and_a_tinted_crop_is_refused(self):
+        image = np.full((40, 60, 3), 60, dtype=np.uint8)
+        image[20, 10:50] = (255, 255, 0)                        # a line
+        image[19, 10:50] = image[21, 10:50] = (80, 80, 60)      # its anti-aliased edge: chroma 20, under the threshold
+        self.assertFalse(overlay_mask(image, dilate=0)[19, 30])
+        mask = overlay_mask(image)
+        self.assertTrue(mask[19, 30] and mask[21, 30])
+        self.assertFalse(mask[5, 30])
+        tinted = screen().astype(np.int32)
+        tinted[..., 2] = np.clip(tinted[..., 2] + 60, 0, 255)
+        with self.assertRaisesRegex(ValueError, "tint"):
+            prepare_still(tinted.astype(np.uint8), (0, 40, 200, 110), size=32)
+        _, report = prepare_still(tinted.astype(np.uint8), (0, 40, 200, 110), size=32, tint=(0, 0, 60))
+        self.assertLess(report["overlay_fraction"], 0.01)
+
     def test_masking_removes_overlays_and_text(self):
         clean, _ = prepare_still(screen(), (0, 40, 200, 110), size=32)
         marked, report = prepare_still(screen(calipers=True, box=True), (0, 40, 200, 110),

@@ -7,6 +7,8 @@ the v0 table)."""
 
 import math
 import os
+import tempfile
+import shutil
 import sys
 import unittest
 
@@ -56,6 +58,15 @@ class TestRules(unittest.TestCase):
         self.assertEqual(rdc.full_caption("", "Pas de sténose aortique."), "Pas de sténose aortique.")
         self.assertEqual(rdc.full_caption(bmode, "Valve aortique calcifiée."), "")
 
+    def test_full_caption_says_nothing_twice_and_nothing_of_an_earlier_examination(self):
+        for source, full in (("Valve mitrale calcifiée sans sténose", "Valve mitrale calcifiée sans sténose."),
+                             ("Feuillets épaissis. Valve calcifiée sans sténose",
+                              "Feuillets épaissis. Valve calcifiée sans sténose.")):
+            with self.subTest(source=source):
+                self.assertEqual(rdc.full_caption(rn.retain_caption(source)[0], source), full)
+        prior = "Sténose aortique sévère. Gradient moyen 45 mmHg, comparé à 30 mmHg à l'examen précédent"
+        self.assertEqual(rdc.doppler_clauses(prior), ["Sténose aortique sévère"])
+
     def test_hemo(self):
         self.assertEqual(rdc.hemo_caption(HEMO), "Pression systolique ventriculaire droite estimée à 42 mmHg. "
                                                  "Pression auriculaire droite estimée à 3 mmHg. "
@@ -95,6 +106,33 @@ class TestBuilder(unittest.TestCase):
         self.assertNotIn(("S2", "aortic", "bmode"), rows.index)
         self.assertEqual(ledger.set_index(["study_id", "structure"]).loc[("S2", "aortic"), "reason"],
                          "doppler_only")                       # the B-mode ledger is unchanged
+        self.assertEqual(rows.loc[("S1", "aortic", "doppler"), "caption"],
+                         "Sténose aortique modérée, gradient moyen 28 mmHg. Insuffisance aortique légère.")
+        self.assertNotIn(("S1", "hemo", "doppler"), rows.index)
+
+    def test_a_study_with_stills_and_no_clip_gets_doppler_statements_only(self):
+        reports = pd.DataFrame([report("S1", V1, aortic=AORTIC, lv="VG non dilaté.", **HEMO)])
+        table, ledger = builder.build_tables(reports, V1, POLICY, doppler=True, still_only={"S1"})
+        self.assertEqual(set(zip(table.structure, table.scope)), {("aortic", "doppler"), ("hemo", "full")})
+        self.assertNotIn("calcifiée", table.set_index("structure").loc["aortic", "caption"])
+        self.assertTrue(ledger.empty)
+
+    def test_still_studies_join_the_split_and_its_patient_check(self):
+        root = tempfile.mkdtemp()
+        try:
+            path = os.path.join(root, "stills.csv")
+            pd.DataFrame({"study_id": ["C1", "C1", "T1", "V1"], "split": ["train", "train", "train", "val"],
+                          "still_id": list("abcd")}).to_csv(path, index=False)
+            splits = pd.DataFrame({"study_id": ["C1", "C2"], "split": ["train", "val"]})
+            extended, still_only, elsewhere = builder.add_still_studies(splits, path, "train", {"C1", "C2"})
+            self.assertEqual((still_only, elsewhere), ({"T1"}, {"V1"}))
+            self.assertEqual(dict(zip(extended.study_id, extended.split)),
+                             {"C1": "train", "C2": "val", "T1": "train", "V1": "val"})
+            moved = pd.DataFrame({"study_id": ["C1", "C2"], "split": ["val", "val"]})
+            with self.assertRaisesRegex(SystemExit, "another split"):
+                builder.add_still_studies(moved, path, "train", {"C1", "C2"})
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
 
 
 if __name__ == "__main__":

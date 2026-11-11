@@ -76,6 +76,9 @@ DeepEcho now has a still-image measurement dataset. It contains the CW and PW/TD
    | TDI | hemo |
 4. **Captions** (`data/build_radar_captions.py --doppler-captions`, `data/radar_doppler_captions.py`).
    - The flag adds a `scope=full` row (B-mode caption + Doppler clauses) next to the `bmode` row of every structure a still can feed. It also adds a templated Hemo row.
+   - It also adds a `scope=doppler` row (Doppler clauses alone). The dataset reads `full` when the bag holds a clip and a still of the structure, `doppler` when it holds stills alone, and `bmode` when it holds clips alone, so B-mode statements are never trained against stills alone.
+   - With `--stills <stills.csv>`, the split's studies that have stills and no eligible clip are captioned too (`doppler` rows and the Hemo row only) and go through the same patient check.
+   - Evaluation (`zero_shot_eval.py`): a checkpoint trained with stills needs `--stills` (the evaluated studies' still table) or `--clip_only`; the training-overlap check covers the studies of the training still table.
    - The dataset reads the `full` row only when the study's bag holds a still of that structure, so a caption never states what the inputs cannot show.
    - The new rules live in a separate module, because the normality policy digest covers `radar_normality.py` and `radar_captions.py`.
    - Full rows are `provisional`, so A2/A3 refuse them until a policy with Doppler scope is approved. A0/A1 run.

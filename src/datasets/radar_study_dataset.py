@@ -29,7 +29,10 @@ caption as the empty string.
 Doppler stills (optional, `stills`: a `src.datasets.radar_stills.StillSource`): each item also holds the study's
 still stream, a study with stills but no clip becomes an item of its own (its B-mode structures have no input), and a
 caption table with a `scope` column (`build_radar_captions.py --doppler-captions`) gives a structure its `full`
-caption (B-mode and Doppler statements) when the study's bag holds a still of it, its `bmode` caption otherwise.
+caption (B-mode and Doppler statements) when the study's bag holds a clip and a still of it, its `doppler` caption
+(Doppler statements only) when it holds stills alone, its `bmode` caption otherwise (`_scope`). A structure whose
+only input is a still and that has no Doppler caption gets none: B-mode statements are never trained against stills
+alone.
 Without `stills`, `full` rows are never read and items are those of v0.
 """
 
@@ -45,6 +48,7 @@ from src.datasets.radar_stills import STILL_ITEM_KEYS
 from src.datasets.study_bags import bag_record, check_study_ids, choose_bag, evaluation_rng, training_rng
 
 NORMALITY = ("normal", "abnormal", "unknown")
+SCOPES = ("bmode", "full", "doppler")
 
 
 class RadarStudyDataset(torch.utils.data.Dataset):
@@ -88,9 +92,10 @@ class RadarStudyDataset(torch.utils.data.Dataset):
         captions = captions[captions.structure.isin(self.structures)]
         if "scope" not in captions.columns:
             captions = captions.assign(scope="bmode")
-        bad_scope = set(captions.scope) - {"bmode", "full"}
+        bad_scope = set(captions.scope) - set(SCOPES)
         if bad_scope:
-            raise ValueError(f"scope must be bmode or full, got {sorted(bad_scope)}.")
+            raise ValueError(f"scope must be one of {SCOPES}, got {sorted(bad_scope)}.")
+        self.no_views = {s.name for s in routing.structures if not s.views}
         if stills is None:
             captions = captions[captions.scope == "bmode"]
         if captions.duplicated(["study_id", "structure", "scope"]).any():
@@ -131,6 +136,14 @@ class RadarStudyDataset(torch.utils.data.Dataset):
         return bag_record(candidates, self.routing.sha256, self.selection, self.num_clips,
                           self.seed if self.training else self.eval_seed)
 
+    def _scope(self, name, has_clip, has_still):
+        """The caption scope that says no more than the bag's inputs of a structure can show: `full` with a clip and
+        a still, `doppler` with stills alone (`full` for a structure without views, whose caption has no B-mode
+        statement), `bmode` with clips alone."""
+        if not has_still:
+            return "bmode"
+        return "full" if has_clip or name in self.no_views else "doppler"
+
     def __getitem__(self, index):
         study_id, clips = self.studies[index]
         by_id = {clip[0]: clip for clip in clips}
@@ -156,8 +169,10 @@ class RadarStudyDataset(torch.utils.data.Dataset):
         has_caption = torch.zeros(S, dtype=torch.bool)
         normal, abnormal = torch.zeros(S, dtype=torch.bool), torch.zeros(S, dtype=torch.bool)
         for s, name in enumerate(self.structures):
-            entry = self.captions.get((study_id, name, "full")) if has_still[s] else None
-            entry = entry or self.captions.get((study_id, name, "bmode"))
+            entry = self.captions.get((study_id, name, self._scope(name, bool(eligible[s].any()),
+                                                                   bool(has_still[s]))))
+            if entry is None and eligible[s].any():
+                entry = self.captions.get((study_id, name, "bmode"))
             if entry is not None and self._left_out(study_id, name, entry[2]):
                 entry = None
             if entry is not None:

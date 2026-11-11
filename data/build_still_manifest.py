@@ -95,7 +95,7 @@ def study_folder(paths):
 
 def to_unit(value, unit, family):
     """`value` in the family's unit (m/s, cm, mmHg, ms), or NaN when the unit does not belong to the family."""
-    unit = (unit or "").strip().lower().replace("²", "2")
+    unit = unit.strip().lower().replace("²", "2") if isinstance(unit, str) else ""     # a missing unit is NaN or NA
     factors = {"velocity": {"m/s": 1.0, "cm/s": 0.01, "mm/s": 0.001},
                "length": {"cm": 1.0, "mm": 0.1, "": 1.0},
                "pressure": {"mmhg": 1.0, "": 1.0},
