@@ -25,6 +25,12 @@ batch holds the same clips however many processes read it. Slots beyond the stud
 and gives each rank every `world_size`-th study of each global batch: the union over ranks of step k's batches is
 the single-process batch k. `collate` stacks items and tokenizes every (study, structure) caption slot, a missing
 caption as the empty string.
+
+Doppler stills (optional, `stills`: a `src.datasets.radar_stills.StillSource`): each item also holds the study's
+still stream, a study with stills but no clip becomes an item of its own (its B-mode structures have no input), and a
+caption table with a `scope` column (`build_radar_captions.py --doppler-captions`) gives a structure its `full`
+caption (B-mode and Doppler statements) when the study's bag holds a still of it, its `bmode` caption otherwise.
+Without `stills`, `full` rows are never read and items are those of v0.
 """
 
 import hashlib
@@ -35,6 +41,7 @@ import random
 import pandas as pd
 import torch
 
+from src.datasets.radar_stills import STILL_ITEM_KEYS
 from src.datasets.study_bags import bag_record, check_study_ids, choose_bag, evaluation_rng, training_rng
 
 NORMALITY = ("normal", "abnormal", "unknown")
@@ -44,7 +51,7 @@ class RadarStudyDataset(torch.utils.data.Dataset):
 
     def __init__(self, clips, captions, routing, cache, num_clips=12, selection="view_balanced", training=True,
                  seed=0, eval_seed=0, eval_bag_index=0, acquisition_classes=("bmode", "color_flow"),
-                 normal_fraction=1.0):
+                 normal_fraction=1.0, stills=None):
         if not 0.0 < normal_fraction <= 1.0:
             raise ValueError(f"normal_fraction must be in (0, 1], got {normal_fraction}.")
         self.normal_fraction = float(normal_fraction)
@@ -69,13 +76,24 @@ class RadarStudyDataset(torch.utils.data.Dataset):
             raise ValueError(f"{len(missing)} clips are not in the token cache.")
         if clips.clip_id.astype(str).duplicated().any():
             raise ValueError("A clip appears twice in the clip table.")
-        self.studies = []
-        for study_id, rows in clips.groupby(clips.study_id.astype(str), sort=True):
-            self.studies.append((study_id, sorted(zip(rows.clip_id.astype(str), rows.view.astype(str),
-                                                      rows.acquisition.astype(str)))))
+        self.stills = stills
+        by_study = {study_id: sorted(zip(rows.clip_id.astype(str), rows.view.astype(str),
+                                         rows.acquisition.astype(str)))
+                    for study_id, rows in clips.groupby(clips.study_id.astype(str), sort=True)}
+        if stills is not None:
+            for study_id in stills.studies - set(by_study):
+                by_study[study_id] = []
+        self.studies = sorted(by_study.items())
         known = {s for s, _ in self.studies}
         captions = captions[captions.structure.isin(self.structures)]
-        if captions.duplicated(["study_id", "structure"]).any():
+        if "scope" not in captions.columns:
+            captions = captions.assign(scope="bmode")
+        bad_scope = set(captions.scope) - {"bmode", "full"}
+        if bad_scope:
+            raise ValueError(f"scope must be bmode or full, got {sorted(bad_scope)}.")
+        if stills is None:
+            captions = captions[captions.scope == "bmode"]
+        if captions.duplicated(["study_id", "structure", "scope"]).any():
             raise ValueError("A (study, structure) has more than one caption.")
         unknown = set(captions.study_id.astype(str)) - known
         if unknown:
@@ -85,7 +103,7 @@ class RadarStudyDataset(torch.utils.data.Dataset):
             raise ValueError(f"normality must be one of {NORMALITY}, got {sorted(bad)}.")
         if captions.caption.map(lambda v: not isinstance(v, str) or not v.strip()).any():
             raise ValueError("A caption row is empty; leave the row out instead.")
-        self.captions = {(str(r.study_id), r.structure): (r.caption, int(r.caption_id), r.normality)
+        self.captions = {(str(r.study_id), r.structure, r.scope): (r.caption, int(r.caption_id), r.normality)
                          for r in captions.itertuples()}
 
     def set_epoch(self, epoch):
@@ -116,8 +134,9 @@ class RadarStudyDataset(torch.utils.data.Dataset):
     def __getitem__(self, index):
         study_id, clips = self.studies[index]
         by_id = {clip[0]: clip for clip in clips}
+        rng = self._rng(study_id)
         chosen = [by_id[c] for c in choose_bag([(c, v) for c, v, _ in clips], self.num_clips, self.selection,
-                                               self._rng(study_id), self.routing.view_families)]
+                                               rng, self.routing.view_families)]
         C, S = self.num_clips, len(self.structures)
         L, D = self.cache.shape
         tokens = torch.zeros(C, L, D)
@@ -131,11 +150,14 @@ class RadarStudyDataset(torch.utils.data.Dataset):
             acquisition_ids[slot] = (self.acquisition_classes.index(acquisition)
                                      if acquisition in self.acquisition_classes else -1)
         eligible = self.routing.clip_eligibility(view_ids[None], clip_valid[None], self.structures)[0]
+        still = self.stills.item(study_id, rng) if self.stills is not None else {}
+        has_still = still["still_eligible"].any(dim=-1) if still else torch.zeros(S, dtype=torch.bool)
         texts, ids = [""] * S, torch.zeros(S, dtype=torch.long)
         has_caption = torch.zeros(S, dtype=torch.bool)
         normal, abnormal = torch.zeros(S, dtype=torch.bool), torch.zeros(S, dtype=torch.bool)
         for s, name in enumerate(self.structures):
-            entry = self.captions.get((study_id, name))
+            entry = self.captions.get((study_id, name, "full")) if has_still[s] else None
+            entry = entry or self.captions.get((study_id, name, "bmode"))
             if entry is not None and self._left_out(study_id, name, entry[2]):
                 entry = None
             if entry is not None:
@@ -145,7 +167,7 @@ class RadarStudyDataset(torch.utils.data.Dataset):
         return {"study_id": study_id, "clip_ids": [c for c, _, _ in chosen], "tokens": tokens,
                 "clip_valid": clip_valid, "view_ids": view_ids, "acquisition_ids": acquisition_ids,
                 "eligible": eligible, "captions": texts, "caption_ids": ids, "has_caption": has_caption,
-                "normal": normal, "abnormal": abnormal}
+                "normal": normal, "abnormal": abnormal, **still}
 
 
 def collate(items, tokenizer):
@@ -153,6 +175,9 @@ def collate(items, tokenizer):
     batch = {key: torch.stack([item[key] for item in items])
              for key in ("tokens", "clip_valid", "view_ids", "acquisition_ids", "eligible", "caption_ids",
                          "has_caption", "normal", "abnormal")}
+    for key in STILL_ITEM_KEYS:
+        if key in items[0]:
+            batch[key] = torch.stack([item[key] for item in items])
     batch["study_id"] = [item["study_id"] for item in items]
     batch["clip_ids"] = [item["clip_ids"] for item in items]
     B, S = batch["caption_ids"].shape

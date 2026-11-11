@@ -35,6 +35,15 @@ letters or of digits, is someone's. The split is fixed upstream, so an overlap i
 to drop. The split table can place a study this way, but it says nothing of whose report a report is: linking a report
 takes a usable patient id in the report and in PACS, and the same one.
 
+Doppler stills (`--doppler-captions`, off by default; needs a routing registry with `still_structs`, version 1): for
+every structure a still may feed, a second row with `scope` = `full` is added next to the B-mode row (`scope` =
+`bmode`): the B-mode caption followed by the report cell's Doppler clauses (`radar_doppler_captions.full_caption`), or
+for Hemo, which has no report column, a caption templated from the report's RVSP, RA pressure and E/e'
+(`hemo_caption`). The training dataset reads the full row of a structure only when the study's bag holds a still of
+it. Full rows are flagged by provisional rules (`normality_status` = provisional), so A2 and A3 refuse such a table
+until a policy with Doppler scope is approved; A0 and A1 run on it. Without the flag the table is exactly as before
+(no `scope` column).
+
 Example:
     python data/build_radar_captions.py \\
         --reports /media/data1/ravram/DeepECHO/TTE_reports_concat/df_report_2006_2026_clean.parquet \\
@@ -54,6 +63,7 @@ import sys
 
 import pandas as pd
 import radar_captions as rc
+import radar_doppler_captions as rdc
 import radar_normality as rn
 from build_manifests import REPO_ROOT, ensure_outside_repo
 from make_study_targets import link_studies, normalize_id, patient_key, read_reports, usable_ids
@@ -107,22 +117,49 @@ def exclusion_row(study_id, structure, report):
             "dropped_parts": dropped, "stranded_parts": stranded, "source": source}
 
 
-def build_tables(reports, routing, policy):
-    """(caption table, exclusion ledger) of `reports`, one row per study with a `study_id` column."""
-    missing = sorted({c for s in routing.trained for c in [s.report_column, *rn.report_columns(s.name, policy)]}
-                     - set(reports.columns))
+def full_row(study_id, structure, report, bmode, policy):
+    """The `full` scope row of a structure fed by Doppler stills, or None without Doppler text (see the docstring)."""
+    if structure.caption_source == "structured":
+        caption, flag = rdc.hemo_caption(report), rdc.hemo_flag(report)
+        source = ""
+    else:
+        source = rc.caption_text(report.get(structure.report_column))
+        caption, flag = rdc.full_caption(bmode["caption"] if bmode else "", source), "unknown"
+    if not rc.canonical_caption(caption):
+        return None
+    row = {c: "" for c in COLUMNS}
+    row.update({"study_id": study_id, "structure": structure.name, "caption": caption,
+                "caption_id": rc.caption_id(caption), "normality": flag, "normality_status": rdc.FULL_STATUS,
+                "policy_digest": policy.digest, "dropped_parts": 0, "stranded_parts": 0, "facts": "[]",
+                "conflicts": "[]", "reasons": "[]", "unrecognized": "[]", "source": source, "scope": "full"})
+    return row
+
+
+def build_tables(reports, routing, policy, doppler=False):
+    """(caption table, exclusion ledger) of `reports`, one row per study with a `study_id` column. `doppler` adds
+    the `full` scope rows of the structures that Doppler stills feed."""
+    fed = {name for targets in routing.still_structs.values() for name in targets}
+    if doppler and not fed:
+        raise SystemExit("--doppler-captions needs a routing registry with still_structs (version 1).")
+    wanted = {c for s in routing.trained for c in [s.report_column, *rn.report_columns(s.name, policy)]} - {None}
+    if doppler:
+        wanted |= set(rdc.hemo_columns()) if any(s.caption_source == "structured" for s in routing.trained) else set()
+    missing = sorted(wanted - set(reports.columns))
     if missing:
         raise SystemExit(f"The reports have no column {missing}: a missing column would look like missing evidence.")
     rows, excluded = [], []
     for record in reports.to_dict("records"):
         for structure in routing.trained:
             study_id = str(record["study_id"])
-            row = caption_row(study_id, structure, record, policy)
+            row = caption_row(study_id, structure, record, policy) if structure.report_column else None
             if row is not None:
-                rows.append(row)
-            elif (exclusion := exclusion_row(study_id, structure, record)) is not None:
+                rows.append({**row, "scope": "bmode"} if doppler else row)
+            elif structure.report_column and (exclusion := exclusion_row(study_id, structure, record)) is not None:
                 excluded.append(exclusion)
-    return pd.DataFrame(rows, columns=COLUMNS), pd.DataFrame(excluded, columns=EXCLUSION_COLUMNS)
+            if doppler and structure.name in fed and (full := full_row(study_id, structure, record, row, policy)):
+                rows.append(full)
+    columns = [*COLUMNS, "scope"] if doppler else COLUMNS
+    return pd.DataFrame(rows, columns=columns), pd.DataFrame(excluded, columns=EXCLUSION_COLUMNS)
 
 
 def study_patients(splits, pacs, args):
@@ -180,6 +217,8 @@ def parse_args(argv=None):
                    help="The share of the split's studies that must link to a report, or the build stops.")
     p.add_argument("--routing", default=DEFAULT_ROUTING)
     p.add_argument("--policy", default=rn.DEFAULT_POLICY)
+    p.add_argument("--doppler-captions", action="store_true",
+                   help="Add the full-scope rows of the structures Doppler stills feed (needs a v1 routing).")
     p.add_argument("--report-accession-col", default="AccessionNumber")
     p.add_argument("--report-patient-col", default="Dossier")
     p.add_argument("--pacs-accession-col", default="AccessionNumber")
@@ -214,7 +253,7 @@ def main(argv=None):
     if linked.study_id.nunique() < args.min_linked * len(studies):
         raise SystemExit(f"Only {linked.study_id.nunique()} of the split's {len(studies)} studies link to a report: "
                          f"check the identifiers, or lower --min-linked if that is expected.")
-    table, exclusions = build_tables(linked, routing, policy)
+    table, exclusions = build_tables(linked, routing, policy, doppler=args.doppler_captions)
     path = os.path.join(args.out_dir, "captions.csv")
     write_atomic(path, lambda temporary: table.to_csv(temporary, index=False))
     ledger = os.path.join(args.out_dir, "exclusions.csv")
@@ -224,6 +263,8 @@ def main(argv=None):
             "excluded": {k: int(v) for k, v in exclusions.reason.value_counts().items()},
             "policy_digest": policy.digest, "rule_version": policy.rule_version,
             "flags": {k: int(v) for k, v in table.normality.value_counts().items()},
+            **({"scopes": {k: int(v) for k, v in table.scope.value_counts().items()}}
+               if args.doppler_captions else {}),
             "routing_sha256": routing.sha256, "captions_sha256": file_sha256(path),
             "exclusions_sha256": file_sha256(ledger),
             "clips_sha256": file_sha256(args.clips), "splits_sha256": file_sha256(args.splits),
