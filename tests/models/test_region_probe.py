@@ -6,11 +6,13 @@ one study through both passes with exactly two encoder calls."""
 
 import copy
 import io
+from pathlib import Path
 import unittest
 
 import numpy as np
 import torch
 import torch.nn.functional as F
+import yaml
 
 import src.models.vision_transformer as vit
 from evals.video_classification_frozen.modelcustom.vit_encoder_multiclip import ClipAggregation
@@ -491,6 +493,36 @@ class TestRegionStudyProbe(unittest.TestCase):
     def test_output_range_needs_the_head_normalization(self):
         with self.assertRaisesRegex(ValueError, "needs the target normalization"):
             RegionStudyProbe(192, self.specs, attention_hidden=8, normalization={}, **options())
+
+
+class TestDeepcoroJepaConfig(unittest.TestCase):
+    """configs/eval/vitl/study_multitask_deepcoro_jepa.yaml is valid and builds the probe it describes."""
+
+    def test_the_shipped_config_builds_a_probe_with_every_head(self):
+        root = Path(__file__).resolve().parents[2]
+        with open(root / "configs/eval/vitl/study_multitask_deepcoro_jepa.yaml") as f:
+            config = yaml.safe_load(f)
+        experiment = config["experiment"]
+        classifier = experiment["classifier"]
+        self.assertEqual((config["eval_name"], classifier["pooling_mode"]), ("study_multitask_frozen", "region"))
+        self.assertEqual((config["tasks_per_node"], len(experiment["optimization"]["multihead_kwargs"])), (1, 1))
+        specs = head_specs(classifier)
+        resolved = region_options(classifier, experiment["data"], config["model_kwargs"], specs)
+        groups = list(resolved["groups"])
+        self.assertEqual((len(specs), len(groups), resolved["decoder"]["blocks"]), (97, 18, [5, 11, 17]))
+        # The label definitions are in the head names: >= 70 % per segment, >= 50 % for the left main.
+        findings = [h for h in resolved["readouts"]["stenosis"]["heads"] if specs[h]["task"] == "binary"]
+        self.assertEqual(findings, ["left_main_ge50" if g == "left_main" else f"{g}_ge70" for g in groups])
+        self.assertEqual(resolved["readouts"]["pressure"]["heads"], ["ffr", "ifr", "ffr_le80", "ifr_le89"])
+        normalization = {h: {"mean": classifier["target_mean"][h], "std": classifier["target_std"][h]}
+                         for h in classifier["target_mean"]}
+        self.assertEqual(set(normalization), {h for h, spec in specs.items() if spec["task"] == "regression"})
+        probe = RegionStudyProbe(embed_dim=16, heads=specs, attention_hidden=classifier["attention_hidden"],
+                                 normalization=normalization, **resolved).eval()
+        with torch.no_grad():
+            outputs = probe.read(torch.zeros(len(groups), 16), torch.zeros(2, 8, 16))
+        self.assertEqual(list(outputs), list(specs))
+        self.assertTrue(all(v.shape == (1, 1) and bool(torch.isfinite(v).all()) for v in outputs.values()))
 
 
 if __name__ == "__main__":

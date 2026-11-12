@@ -1,0 +1,298 @@
+# configs/eval/vitl/study_multitask_deepcoro_jepa.yaml
+#
+# DeepCORO-JEPA: one EchoJEPA ViT-L reads a coronary angiogram study in two passes
+# (`pooling_mode: region`, docs/study_multitask_probe.md).
+#
+# Pass 1 embeds up to `num_videos` whole cines at 224 px; a frozen region decoder on the final
+# tokens and on encoder blocks 5, 11 and 17 labels every pixel with one of 26 coronary segment
+# classes. For each of the 18 segment groups, a box follows the group's mask in the (at most)
+# 4 cines where it is largest, and pass 2 embeds those 320 px crops with the same encoder.
+# One pooled feature per group gives: the stenosis (%) and a significant-stenosis logit per
+# segment, calcification, thrombus and chronic total occlusion per segment and per study, and
+# FFR and iFR of the left anterior descending territory with their ischaemia logits.
+#
+# Label definitions (targets of the manifest, set here by the head names only):
+#   <segment>_ge70    diameter stenosis >= 70 % (left_main_ge50: >= 50 % for the left main),
+#                     the visual thresholds of the ACC/AHA/SCAI coronary revascularization
+#                     guideline (Lawton et al., Circulation 2022;145:e18).
+#   ffr_le80          FFR <= 0.80 (De Bruyne et al., FAME 2, N Engl J Med 2012;367:991).
+#   ifr_le89          iFR <= 0.89 (Davies et al., DEFINE-FLAIR, N Engl J Med 2017;376:1824).
+#
+# Manifest: one row per cine with `video_path`, `study_id`, `patient_id`, `split` and one column
+# per head of `target_label`, constant within a study and empty where unknown (a head's loss
+# and metrics use the studies that have it).
+# Weights: `python -m tools.convert_deepcoro_bundle` writes one file with the `encoder`,
+# `region_decoder` and `probe` entries from a DeepCORO research bundle; give that file as
+# `model_kwargs.checkpoint`, `region.decoder.checkpoint` and (to continue the bundle's heads)
+# `region.init_checkpoint`. Leave `init_checkpoint` null to train new heads on that encoder.
+
+app: vjepa
+eval_name: study_multitask_frozen
+folder: /your_folder/deepcoro_jepa                          # where the run's outputs go.
+tag: study-multitask-deepcoro-jepa
+nodes: 1
+tasks_per_node: 1                                           # region pooling runs on one GPU.
+cpus_per_task: 16
+num_workers: 8
+resume_checkpoint: true
+
+meta:
+  seed: 0
+  wandb_project: echojepa-study-probe
+  wandb_entity: mhi_ai
+
+experiment:
+  data:
+    # Needs a `patient_id` column: every split is checked to be patient-disjoint.
+    data_filename: /your_manifests/coronary_videos_with_region_targets.csv
+    split_column: split
+    datapoint_loc_label: video_path
+    groupby_column: study_id
+    num_videos: 12                                # cines of a study read by pass 1.
+    shuffle_videos: false                         # the first 12 cines in path order, every time.
+    min_videos: 1
+    num_clips_per_video: 1
+    frames_per_clip: 16
+    frame_step: 2
+    resolution: 224                               # pass 1; the cines are read at `region.source_resolution`.
+
+  encoder:
+    trainable_blocks: 6                           # top 6 of ViT-L's 24 blocks (+ final norm); 0 freezes the encoder.
+    lr: 5.0e-6
+    final_lr: 5.0e-6                              # constant.
+    warmup: 0.0
+    weight_decay: 0.01
+
+  classifier:
+    pooling_mode: region
+    query_mode: group                             # each head reads its segment's feature (`task_groups`).
+    attention_hidden: 128
+    region:
+      num_classes: 26                             # classes of the region decoder; 1 to 25 are coronary segments.
+      groups:                                     # segment group -> region classes; the order is the groups' order.
+        prox_rca: [1]
+        mid_rca: [2]
+        dist_rca: [3]
+        pda: [4, 19]
+        posterolateral: [20, 21, 22, 23]
+        left_main: [5]
+        prox_lad: [6]
+        mid_lad: [7]
+        dist_lad: [8]
+        D1: [9, 10]
+        D2: [11, 12]
+        prox_lcx: [13]
+        mid_lcx: [13, 16]
+        dist_lcx: [16]
+        om1: [15]
+        om2: [24]
+        bx: [14]
+        lvp: [17, 18, 25]
+      decoder:
+        blocks: [5, 11, 17]                       # 0-based encoder blocks the decoder taps.
+        width: 128
+        checkpoint: /your_weights/deepcoro_jepa.pt          # its `region_decoder` entry; loaded strictly, frozen.
+      init_checkpoint: null                       # e.g. the same file: its `probe` entry starts the heads.
+      source_resolution: 512                      # the frames the crops are cut from.
+      crop_resolution: 320                        # pass 2.
+      crops_per_group: 4
+      tracking:
+        min_pixels: 200                           # source pixels of mask a crop needs.
+        min_frames: 3                             # frames a mask component must be seen in.
+        margin: 0.035                             # of the frame side, around the mask.
+        min_side: 0.19                            # smallest box, of the frame side.
+        line_filter: {linearity: 0.995, length: 0.29, min_pixels: 20}   # drops catheter-like straight lines.
+      readouts:
+        stenosis:
+          kind: group_mlp
+          hidden: 256
+          heads:
+            [prox_rca_stenosis, mid_rca_stenosis, dist_rca_stenosis, pda_stenosis, posterolateral_stenosis,
+             left_main_stenosis, prox_lad_stenosis, mid_lad_stenosis, dist_lad_stenosis, D1_stenosis,
+             D2_stenosis, prox_lcx_stenosis, mid_lcx_stenosis, dist_lcx_stenosis, om1_stenosis, om2_stenosis,
+             bx_stenosis, lvp_stenosis, prox_rca_ge70, mid_rca_ge70, dist_rca_ge70, pda_ge70,
+             posterolateral_ge70, left_main_ge50, prox_lad_ge70, mid_lad_ge70, dist_lad_ge70, D1_ge70, D2_ge70,
+             prox_lcx_ge70, mid_lcx_ge70, dist_lcx_ge70, om1_ge70, om2_ge70, bx_ge70, lvp_ge70]
+        calcif:
+          kind: group_linear
+          bias: -4.0
+          study_head: any_calcif
+          heads:
+            [prox_rca_calcif, mid_rca_calcif, dist_rca_calcif, pda_calcif, posterolateral_calcif,
+             left_main_calcif, prox_lad_calcif, mid_lad_calcif, dist_lad_calcif, D1_calcif, D2_calcif,
+             prox_lcx_calcif, mid_lcx_calcif, dist_lcx_calcif, om1_calcif, om2_calcif, bx_calcif, lvp_calcif]
+        thrombus:
+          kind: group_linear
+          bias: -4.0
+          study_head: any_thrombus
+          heads:
+            [prox_rca_thrombus, mid_rca_thrombus, dist_rca_thrombus, pda_thrombus, posterolateral_thrombus,
+             left_main_thrombus, prox_lad_thrombus, mid_lad_thrombus, dist_lad_thrombus, D1_thrombus,
+             D2_thrombus, prox_lcx_thrombus, mid_lcx_thrombus, dist_lcx_thrombus, om1_thrombus, om2_thrombus,
+             bx_thrombus, lvp_thrombus]
+        cto:
+          kind: group_linear
+          bias: -4.0
+          study_head: any_cto
+          heads:
+            [prox_rca_cto, mid_rca_cto, dist_rca_cto, pda_cto, posterolateral_cto, left_main_cto, prox_lad_cto,
+             mid_lad_cto, dist_lad_cto, D1_cto, D2_cto, prox_lcx_cto, mid_lcx_cto, dist_lcx_cto, om1_cto,
+             om2_cto, bx_cto, lvp_cto]
+        pressure:
+          kind: groups_mlp
+          hidden: 256
+          groups: [left_main, prox_lad, mid_lad, dist_lad, D1, D2]
+          heads: [ffr, ifr, ffr_le80, ifr_le89]
+      study_pooler: {width: 256, queries: 4, num_heads: 8, bias: -2.0}
+      output_range: {ffr: [0.0, 1.05], ifr: [0.0, 1.05]}
+    task_groups:
+      {prox_rca_stenosis: prox_rca, mid_rca_stenosis: mid_rca, dist_rca_stenosis: dist_rca, pda_stenosis: pda,
+       posterolateral_stenosis: posterolateral, left_main_stenosis: left_main, prox_lad_stenosis: prox_lad,
+       mid_lad_stenosis: mid_lad, dist_lad_stenosis: dist_lad, D1_stenosis: D1, D2_stenosis: D2,
+       prox_lcx_stenosis: prox_lcx, mid_lcx_stenosis: mid_lcx, dist_lcx_stenosis: dist_lcx, om1_stenosis: om1,
+       om2_stenosis: om2, bx_stenosis: bx, lvp_stenosis: lvp, prox_rca_ge70: prox_rca, mid_rca_ge70: mid_rca,
+       dist_rca_ge70: dist_rca, pda_ge70: pda, posterolateral_ge70: posterolateral, left_main_ge50: left_main,
+       prox_lad_ge70: prox_lad, mid_lad_ge70: mid_lad, dist_lad_ge70: dist_lad, D1_ge70: D1, D2_ge70: D2,
+       prox_lcx_ge70: prox_lcx, mid_lcx_ge70: mid_lcx, dist_lcx_ge70: dist_lcx, om1_ge70: om1, om2_ge70: om2,
+       bx_ge70: bx, lvp_ge70: lvp, prox_rca_calcif: prox_rca, mid_rca_calcif: mid_rca,
+       dist_rca_calcif: dist_rca, pda_calcif: pda, posterolateral_calcif: posterolateral,
+       left_main_calcif: left_main, prox_lad_calcif: prox_lad, mid_lad_calcif: mid_lad,
+       dist_lad_calcif: dist_lad, D1_calcif: D1, D2_calcif: D2, prox_lcx_calcif: prox_lcx,
+       mid_lcx_calcif: mid_lcx, dist_lcx_calcif: dist_lcx, om1_calcif: om1, om2_calcif: om2, bx_calcif: bx,
+       lvp_calcif: lvp, prox_rca_thrombus: prox_rca, mid_rca_thrombus: mid_rca, dist_rca_thrombus: dist_rca,
+       pda_thrombus: pda, posterolateral_thrombus: posterolateral, left_main_thrombus: left_main,
+       prox_lad_thrombus: prox_lad, mid_lad_thrombus: mid_lad, dist_lad_thrombus: dist_lad, D1_thrombus: D1,
+       D2_thrombus: D2, prox_lcx_thrombus: prox_lcx, mid_lcx_thrombus: mid_lcx, dist_lcx_thrombus: dist_lcx,
+       om1_thrombus: om1, om2_thrombus: om2, bx_thrombus: bx, lvp_thrombus: lvp, prox_rca_cto: prox_rca,
+       mid_rca_cto: mid_rca, dist_rca_cto: dist_rca, pda_cto: pda, posterolateral_cto: posterolateral,
+       left_main_cto: left_main, prox_lad_cto: prox_lad, mid_lad_cto: mid_lad, dist_lad_cto: dist_lad,
+       D1_cto: D1, D2_cto: D2, prox_lcx_cto: prox_lcx, mid_lcx_cto: mid_lcx, dist_lcx_cto: dist_lcx,
+       om1_cto: om1, om2_cto: om2, bx_cto: bx, lvp_cto: lvp}
+    target_label:
+      [prox_rca_stenosis, mid_rca_stenosis, dist_rca_stenosis, pda_stenosis, posterolateral_stenosis,
+       left_main_stenosis, prox_lad_stenosis, mid_lad_stenosis, dist_lad_stenosis, D1_stenosis, D2_stenosis,
+       prox_lcx_stenosis, mid_lcx_stenosis, dist_lcx_stenosis, om1_stenosis, om2_stenosis, bx_stenosis,
+       lvp_stenosis, prox_rca_ge70, mid_rca_ge70, dist_rca_ge70, pda_ge70, posterolateral_ge70, left_main_ge50,
+       prox_lad_ge70, mid_lad_ge70, dist_lad_ge70, D1_ge70, D2_ge70, prox_lcx_ge70, mid_lcx_ge70,
+       dist_lcx_ge70, om1_ge70, om2_ge70, bx_ge70, lvp_ge70, prox_rca_calcif, mid_rca_calcif, dist_rca_calcif,
+       pda_calcif, posterolateral_calcif, left_main_calcif, prox_lad_calcif, mid_lad_calcif, dist_lad_calcif,
+       D1_calcif, D2_calcif, prox_lcx_calcif, mid_lcx_calcif, dist_lcx_calcif, om1_calcif, om2_calcif,
+       bx_calcif, lvp_calcif, prox_rca_thrombus, mid_rca_thrombus, dist_rca_thrombus, pda_thrombus,
+       posterolateral_thrombus, left_main_thrombus, prox_lad_thrombus, mid_lad_thrombus, dist_lad_thrombus,
+       D1_thrombus, D2_thrombus, prox_lcx_thrombus, mid_lcx_thrombus, dist_lcx_thrombus, om1_thrombus,
+       om2_thrombus, bx_thrombus, lvp_thrombus, prox_rca_cto, mid_rca_cto, dist_rca_cto, pda_cto,
+       posterolateral_cto, left_main_cto, prox_lad_cto, mid_lad_cto, dist_lad_cto, D1_cto, D2_cto,
+       prox_lcx_cto, mid_lcx_cto, dist_lcx_cto, om1_cto, om2_cto, bx_cto, lvp_cto, any_calcif, any_thrombus,
+       any_cto, ffr, ifr, ffr_le80, ifr_le89]
+    head_task:
+      {prox_rca_stenosis: regression, mid_rca_stenosis: regression, dist_rca_stenosis: regression,
+       pda_stenosis: regression, posterolateral_stenosis: regression, left_main_stenosis: regression,
+       prox_lad_stenosis: regression, mid_lad_stenosis: regression, dist_lad_stenosis: regression,
+       D1_stenosis: regression, D2_stenosis: regression, prox_lcx_stenosis: regression,
+       mid_lcx_stenosis: regression, dist_lcx_stenosis: regression, om1_stenosis: regression,
+       om2_stenosis: regression, bx_stenosis: regression, lvp_stenosis: regression, prox_rca_ge70: binary,
+       mid_rca_ge70: binary, dist_rca_ge70: binary, pda_ge70: binary, posterolateral_ge70: binary,
+       left_main_ge50: binary, prox_lad_ge70: binary, mid_lad_ge70: binary, dist_lad_ge70: binary,
+       D1_ge70: binary, D2_ge70: binary, prox_lcx_ge70: binary, mid_lcx_ge70: binary, dist_lcx_ge70: binary,
+       om1_ge70: binary, om2_ge70: binary, bx_ge70: binary, lvp_ge70: binary, prox_rca_calcif: binary,
+       mid_rca_calcif: binary, dist_rca_calcif: binary, pda_calcif: binary, posterolateral_calcif: binary,
+       left_main_calcif: binary, prox_lad_calcif: binary, mid_lad_calcif: binary, dist_lad_calcif: binary,
+       D1_calcif: binary, D2_calcif: binary, prox_lcx_calcif: binary, mid_lcx_calcif: binary,
+       dist_lcx_calcif: binary, om1_calcif: binary, om2_calcif: binary, bx_calcif: binary, lvp_calcif: binary,
+       prox_rca_thrombus: binary, mid_rca_thrombus: binary, dist_rca_thrombus: binary, pda_thrombus: binary,
+       posterolateral_thrombus: binary, left_main_thrombus: binary, prox_lad_thrombus: binary,
+       mid_lad_thrombus: binary, dist_lad_thrombus: binary, D1_thrombus: binary, D2_thrombus: binary,
+       prox_lcx_thrombus: binary, mid_lcx_thrombus: binary, dist_lcx_thrombus: binary, om1_thrombus: binary,
+       om2_thrombus: binary, bx_thrombus: binary, lvp_thrombus: binary, prox_rca_cto: binary,
+       mid_rca_cto: binary, dist_rca_cto: binary, pda_cto: binary, posterolateral_cto: binary,
+       left_main_cto: binary, prox_lad_cto: binary, mid_lad_cto: binary, dist_lad_cto: binary, D1_cto: binary,
+       D2_cto: binary, prox_lcx_cto: binary, mid_lcx_cto: binary, dist_lcx_cto: binary, om1_cto: binary,
+       om2_cto: binary, bx_cto: binary, lvp_cto: binary, any_calcif: binary, any_thrombus: binary,
+       any_cto: binary, ffr: regression, ifr: regression, ffr_le80: binary, ifr_le89: binary}
+    head_structure: {}                            # one output each.
+    loss_structure:                               # mse for the stenoses; huber for FFR and iFR; bce for the rest.
+      {prox_rca_stenosis: mse, mid_rca_stenosis: mse, dist_rca_stenosis: mse, pda_stenosis: mse,
+       posterolateral_stenosis: mse, left_main_stenosis: mse, prox_lad_stenosis: mse, mid_lad_stenosis: mse,
+       dist_lad_stenosis: mse, D1_stenosis: mse, D2_stenosis: mse, prox_lcx_stenosis: mse,
+       mid_lcx_stenosis: mse, dist_lcx_stenosis: mse, om1_stenosis: mse, om2_stenosis: mse, bx_stenosis: mse,
+       lvp_stenosis: mse}
+    # Stenosis 1/18 and its finding 0.3/18 per segment, lesion findings 2/18 per segment and 1 per
+    # study, FFR and iFR 0.1 (values) and 0.5 (ischaemia).
+    head_weights:
+      {prox_rca_stenosis: 0.055556, mid_rca_stenosis: 0.055556, dist_rca_stenosis: 0.055556,
+       pda_stenosis: 0.055556, posterolateral_stenosis: 0.055556, left_main_stenosis: 0.055556,
+       prox_lad_stenosis: 0.055556, mid_lad_stenosis: 0.055556, dist_lad_stenosis: 0.055556,
+       D1_stenosis: 0.055556, D2_stenosis: 0.055556, prox_lcx_stenosis: 0.055556, mid_lcx_stenosis: 0.055556,
+       dist_lcx_stenosis: 0.055556, om1_stenosis: 0.055556, om2_stenosis: 0.055556, bx_stenosis: 0.055556,
+       lvp_stenosis: 0.055556, prox_rca_ge70: 0.016667, mid_rca_ge70: 0.016667, dist_rca_ge70: 0.016667,
+       pda_ge70: 0.016667, posterolateral_ge70: 0.016667, left_main_ge50: 0.016667, prox_lad_ge70: 0.016667,
+       mid_lad_ge70: 0.016667, dist_lad_ge70: 0.016667, D1_ge70: 0.016667, D2_ge70: 0.016667,
+       prox_lcx_ge70: 0.016667, mid_lcx_ge70: 0.016667, dist_lcx_ge70: 0.016667, om1_ge70: 0.016667,
+       om2_ge70: 0.016667, bx_ge70: 0.016667, lvp_ge70: 0.016667, prox_rca_calcif: 0.111111,
+       mid_rca_calcif: 0.111111, dist_rca_calcif: 0.111111, pda_calcif: 0.111111,
+       posterolateral_calcif: 0.111111, left_main_calcif: 0.111111, prox_lad_calcif: 0.111111,
+       mid_lad_calcif: 0.111111, dist_lad_calcif: 0.111111, D1_calcif: 0.111111, D2_calcif: 0.111111,
+       prox_lcx_calcif: 0.111111, mid_lcx_calcif: 0.111111, dist_lcx_calcif: 0.111111, om1_calcif: 0.111111,
+       om2_calcif: 0.111111, bx_calcif: 0.111111, lvp_calcif: 0.111111, prox_rca_thrombus: 0.111111,
+       mid_rca_thrombus: 0.111111, dist_rca_thrombus: 0.111111, pda_thrombus: 0.111111,
+       posterolateral_thrombus: 0.111111, left_main_thrombus: 0.111111, prox_lad_thrombus: 0.111111,
+       mid_lad_thrombus: 0.111111, dist_lad_thrombus: 0.111111, D1_thrombus: 0.111111, D2_thrombus: 0.111111,
+       prox_lcx_thrombus: 0.111111, mid_lcx_thrombus: 0.111111, dist_lcx_thrombus: 0.111111,
+       om1_thrombus: 0.111111, om2_thrombus: 0.111111, bx_thrombus: 0.111111, lvp_thrombus: 0.111111,
+       prox_rca_cto: 0.111111, mid_rca_cto: 0.111111, dist_rca_cto: 0.111111, pda_cto: 0.111111,
+       posterolateral_cto: 0.111111, left_main_cto: 0.111111, prox_lad_cto: 0.111111, mid_lad_cto: 0.111111,
+       dist_lad_cto: 0.111111, D1_cto: 0.111111, D2_cto: 0.111111, prox_lcx_cto: 0.111111,
+       mid_lcx_cto: 0.111111, dist_lcx_cto: 0.111111, om1_cto: 0.111111, om2_cto: 0.111111, bx_cto: 0.111111,
+       lvp_cto: 0.111111, any_calcif: 1.0, any_thrombus: 1.0, any_cto: 1.0, ffr: 0.1, ifr: 0.1, ffr_le80: 0.5,
+       ifr_le89: 0.5}
+    head_dropout:
+      {prox_rca_stenosis: 0.2, mid_rca_stenosis: 0.2, dist_rca_stenosis: 0.2, pda_stenosis: 0.2,
+       posterolateral_stenosis: 0.2, left_main_stenosis: 0.2, prox_lad_stenosis: 0.2, mid_lad_stenosis: 0.2,
+       dist_lad_stenosis: 0.2, D1_stenosis: 0.2, D2_stenosis: 0.2, prox_lcx_stenosis: 0.2,
+       mid_lcx_stenosis: 0.2, dist_lcx_stenosis: 0.2, om1_stenosis: 0.2, om2_stenosis: 0.2, bx_stenosis: 0.2,
+       lvp_stenosis: 0.2, prox_rca_ge70: 0.2, mid_rca_ge70: 0.2, dist_rca_ge70: 0.2, pda_ge70: 0.2,
+       posterolateral_ge70: 0.2, left_main_ge50: 0.2, prox_lad_ge70: 0.2, mid_lad_ge70: 0.2,
+       dist_lad_ge70: 0.2, D1_ge70: 0.2, D2_ge70: 0.2, prox_lcx_ge70: 0.2, mid_lcx_ge70: 0.2,
+       dist_lcx_ge70: 0.2, om1_ge70: 0.2, om2_ge70: 0.2, bx_ge70: 0.2, lvp_ge70: 0.2, ffr: 0.35, ifr: 0.35,
+       ffr_le80: 0.35, ifr_le89: 0.35}
+    target_mean:                                  # fixed scales: stenosis in units of 100 %, pressure ratios of 0.05.
+      {prox_rca_stenosis: 0.0, mid_rca_stenosis: 0.0, dist_rca_stenosis: 0.0, pda_stenosis: 0.0,
+       posterolateral_stenosis: 0.0, left_main_stenosis: 0.0, prox_lad_stenosis: 0.0, mid_lad_stenosis: 0.0,
+       dist_lad_stenosis: 0.0, D1_stenosis: 0.0, D2_stenosis: 0.0, prox_lcx_stenosis: 0.0,
+       mid_lcx_stenosis: 0.0, dist_lcx_stenosis: 0.0, om1_stenosis: 0.0, om2_stenosis: 0.0, bx_stenosis: 0.0,
+       lvp_stenosis: 0.0, ffr: 0.0, ifr: 0.0}
+    target_std:
+      {prox_rca_stenosis: 100.0, mid_rca_stenosis: 100.0, dist_rca_stenosis: 100.0, pda_stenosis: 100.0,
+       posterolateral_stenosis: 100.0, left_main_stenosis: 100.0, prox_lad_stenosis: 100.0,
+       mid_lad_stenosis: 100.0, dist_lad_stenosis: 100.0, D1_stenosis: 100.0, D2_stenosis: 100.0,
+       prox_lcx_stenosis: 100.0, mid_lcx_stenosis: 100.0, dist_lcx_stenosis: 100.0, om1_stenosis: 100.0,
+       om2_stenosis: 100.0, bx_stenosis: 100.0, lvp_stenosis: 100.0, ffr: 0.05, ifr: 0.05}
+
+  evaluation:
+    selection: weighted_loss
+
+  optimization:
+    batch_size: 8                                 # studies per optimizer step, read one at a time (two passes each).
+    num_epochs: 3
+    use_bfloat16: true
+    clip_grad: 1.0                                # joint gradient norm of the probe and the trained encoder blocks.
+    multihead_kwargs:                             # one setting: the probe runs the encoder.
+    - {start_lr: 1.0e-4, lr: 1.0e-4, final_lr: 1.0e-4, warmup: 0.0, weight_decay: 0.01, final_weight_decay: 0.01}
+
+model_kwargs:
+  checkpoint: /your_weights/deepcoro_jepa.pt      # its `encoder` entry (tools/convert_deepcoro_bundle.py).
+  module_name: evals.video_classification_frozen.modelcustom.deepcoro_clip_echojepa_encoder
+  pretrain_kwargs:
+    encoder:
+      model_name: vit_large
+      state_dict_key: encoder
+      encoder_prefix: ""
+      img_temporal_dim_size: null
+      patch_size: 16
+      tubelet_size: 2
+      uniform_power: true
+      use_rope: true
+      use_activation_checkpointing: true          # memory: two passes with gradients through 6 blocks.
+  wrapper_kwargs:
+    max_frames: 128
+    use_pos_embed: false
