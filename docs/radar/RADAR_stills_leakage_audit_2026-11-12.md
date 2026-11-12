@@ -6,6 +6,8 @@ Audit date: November 12, 2026. Reviewed [PR #47](https://github.com/HeartWise-AI
 
 No governed images, patient tables, remote clinical storage, pretrained weights, or GPUs were accessed. New tests use invented identifiers, arrays and CPU tensors. No production code or default configuration is changed by this audit. No merge or training authorization is implied.
 
+For this audit, genuine inference means predicting from an acquisition before sonographer measurements, calipers and target report values are available, consistent with the proposed unmeasured-still evaluation. DICOM calibration and demographics available at that time are legitimate inputs; their contribution still needs baseline comparisons. Interpreting an already completed measurement is a different task and would need an explicit separate claim.
+
 ## Findings that affect enablement
 
 ### 1. P1: Sanitization does not remove all answer-bearing geometry
