@@ -183,6 +183,41 @@ float32 differences rise to 0.23 stenosis points and 0.003 in probability.
 and its teacher caches stay in the research code), cohort building and oversampling, the
 peak-opacification frame sampler, the procedure head, and more than one GPU.
 
+### Fine-tuning on your own angiograms
+
+[`configs/eval/vitl/study_multitask_deepcoro_jepa_finetune_example.yaml`](../configs/eval/vitl/study_multitask_deepcoro_jepa_finetune_example.yaml)
+is the example to copy. It is the coronary configuration with `region.init_checkpoint` set, so
+the heads continue from the trained model; its header repeats the list below. What you need:
+
+| You need | Details |
+|---|---|
+| Videos | One file per cine run, in a container decord reads (for example `.avi` or `.mp4`). Grayscale X-ray coronary angiography, diagnostic contrast injections of the left or right coronary artery. The trained model has not seen PCI, stent or ventriculography runs: list only the runs you want read. Each cine gives 16 frames (every second frame), resized to 512 x 512 without cropping. The first 12 cines of a study in path order are read. |
+| No segmentation masks | The model draws its own coronary segment masks. The mask decoder comes with the weights file and stays frozen. |
+| A manifest | One comma-separated file with one row per cine: `video_path`, `study_id`, `patient_id`, `split` (`train`, `val` or `test`) and one column per head (97 columns, table above). A target has the same value on every row of a study and is empty where unknown. It holds identifiers: keep it outside the repository (`*.csv` is ignored by Git here). |
+| Patient-level splits | `patient_id` is required and a patient may be in one split only. The run stops otherwise. |
+| Labels | Per segment: the stenosis in % (0 to 100), its 0/1 finding (`_ge70`, `left_main_ge50`) and the 0/1 findings `_calcif`, `_thrombus`, `_cto`. Per study: `any_calcif`, `any_thrombus`, `any_cto` (0/1), `ffr` and `ifr` (the measured ratio, 0 to 1) and `ffr_le80`, `ifr_le89` (0/1), empty when not measured. |
+| Partial labels | Every column must exist, but a column may be entirely empty: a head's loss and metrics use only the studies that have its label. With stenosis percentages alone, fill the 36 stenosis columns and leave the other 61 empty. A head without labels gets no training signal while the encoder under it changes, so do not rely on its outputs after fine-tuning. |
+| Weights | One file with the `encoder`, `region_decoder` and `probe` entries, written by `tools/convert_deepcoro_bundle.py` (above). The example gives it as all three weights paths. |
+| One GPU | Region pooling runs on one GPU. A smoke run of the coronary configuration (top 6 encoder blocks trained, studies of 3 to 8 cines) used 10.6 GB; studies with more cines need more. |
+
+Two rows of one study, with most target columns left out:
+
+```text
+video_path,study_id,patient_id,split,prox_lad_stenosis,prox_lad_ge70,prox_lad_cto,ffr,ffr_le80
+/your_videos/study_0001/run_01.avi,study_0001,patient_0001,train,80,1,0,0.76,1
+/your_videos/study_0001/run_02.avi,study_0001,patient_0001,train,80,1,0,0.76,1
+```
+
+```bash
+# In a copy of the example: the paths marked "SET THIS".
+python -m evals.main --fname <your_copy.yaml> --devices cuda:0               # train, select on validation
+python -m evals.main --fname <your_copy.yaml> --devices cuda:0 --test_only   # score the test split once
+```
+
+The learning rates, the 3 epochs and the loss weights are those of the research run. They have
+not been tuned for a small data set: with a few hundred studies, watch the validation loss and
+consider `encoder.trainable_blocks: 0`, which trains the heads only.
+
 ### Another modality
 
 An echocardiogram model uses the same path with its own config and no code change: a region
@@ -362,7 +397,9 @@ python -m evals.main --fname configs/eval/vitl/study_multitask_frozen.yaml --dev
   selected-validation summaries, probability averaging, nonfinite outputs and patient overlap.
 - `tests/models/test_region_probe.py`: masks to boxes, tracking, crops, the region decoder,
   exactly two encoder calls per study, padded slots, the readouts and the study pooler, the
-  `region` block's validation, probe weights that must fit, and the shipped DeepCORO-JEPA config.
+  `region` block's validation, probe weights that must fit, the shipped DeepCORO-JEPA config,
+  and its fine-tuning example: the same settings with a warm start, and a manifest as its header
+  describes it, read with every label or with stenosis alone.
 - `tests/utils/test_region_probe_smoke.py`: an end-to-end region run on CPU with a tiny
   encoder and decoder: training with gradient clipping, the test, a resume, a warm start with
   and without a study pooler, and refused settings and files.

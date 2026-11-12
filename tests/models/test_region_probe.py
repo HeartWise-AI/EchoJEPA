@@ -7,15 +7,18 @@ one study through both passes with exactly two encoder calls."""
 import copy
 import io
 from pathlib import Path
+import tempfile
 import unittest
 
 import numpy as np
+import pandas as pd
 import torch
 import torch.nn.functional as F
 import yaml
 
 import src.models.vision_transformer as vit
 from evals.video_classification_frozen.modelcustom.vit_encoder_multiclip import ClipAggregation
+from src.datasets.video_study_dataset import VideoStudyDataset, read_split
 from src.models.region_probe import (
     RegionMaskDecoder,
     RegionStudyProbe,
@@ -552,6 +555,76 @@ class TestDeepcoroJepaConfig(unittest.TestCase):
             outputs = probe.read(torch.zeros(len(groups), 16), torch.zeros(2, 8, 16))
         self.assertEqual(list(outputs), list(specs))
         self.assertTrue(all(v.shape == (1, 1) and bool(torch.isfinite(v).all()) for v in outputs.values()))
+
+
+class TestDeepcoroJepaFinetuneExample(unittest.TestCase):
+    """configs/eval/vitl/study_multitask_deepcoro_jepa_finetune_example.yaml: the shipped config with
+    a warm start, and a header that describes a manifest the study dataset accepts."""
+
+    @classmethod
+    def setUpClass(cls):
+        root = Path(__file__).resolve().parents[2]
+        cls.path = root / "configs/eval/vitl/study_multitask_deepcoro_jepa_finetune_example.yaml"
+        with open(cls.path) as f:
+            cls.example = yaml.safe_load(f)
+        with open(root / "configs/eval/vitl/study_multitask_deepcoro_jepa.yaml") as f:
+            cls.shipped = yaml.safe_load(f)
+        cls.heads = list(head_specs(cls.example["experiment"]["classifier"]))
+
+    def manifest(self, filled):
+        """Two train studies, one validation and one test study of two cines each, one patient per
+        study; the `filled` target columns hold 0 and the others are empty."""
+        rows = [{"video_path": f"/your_videos/study_{s:04d}/run_{v:02d}.avi", "study_id": f"study_{s:04d}",
+                 "patient_id": f"patient_{s:04d}", "split": split,
+                 **{h: (0 if h in filled else None) for h in self.heads}}
+                for s, split in enumerate(["train", "train", "val", "test"]) for v in range(2)]
+        return pd.DataFrame(rows)
+
+    def test_it_is_the_shipped_config_with_a_warm_start(self):
+        example, shipped = copy.deepcopy(self.example), copy.deepcopy(self.shipped)
+        region = example["experiment"]["classifier"]["region"]
+        self.assertEqual(region["init_checkpoint"], region["decoder"]["checkpoint"])
+        self.assertEqual(region["init_checkpoint"], example["model_kwargs"]["checkpoint"])
+        self.assertIsNone(shipped["experiment"]["classifier"]["region"]["init_checkpoint"])
+        for config in (example, shipped):
+            del config["folder"], config["tag"], config["experiment"]["data"]["data_filename"]
+            del config["experiment"]["classifier"]["region"]["init_checkpoint"]
+        self.assertEqual(example, shipped)
+
+    def test_the_manifest_of_the_header_is_read_with_every_label_or_stenosis_alone(self):
+        data = self.example["experiment"]["data"]
+        stenosis = [h for h in self.heads if h.endswith(("_stenosis", "_ge70", "_ge50"))]
+        self.assertEqual((len(self.heads), len(stenosis)), (97, 36))
+        with tempfile.TemporaryDirectory() as tmp:
+            for filled in (self.heads, stenosis):
+                path = Path(tmp) / "manifest.csv"
+                self.manifest(set(filled)).to_csv(path, index=False)
+                splits = {}
+                for split, studies in (("train", 2), ("val", 1), ("test", 1)):
+                    rows = read_split({**data, "data_filename": str(path)}, split)
+                    splits[split] = VideoStudyDataset(
+                        rows, path_column=data["datapoint_loc_label"], group_column=data["groupby_column"],
+                        target_columns=self.heads, num_videos=data["num_videos"],
+                        shuffle_videos=data["shuffle_videos"], min_videos=data["min_videos"])
+                    self.assertEqual(len(splits[split]), studies)
+                    labelled = np.isfinite(splits[split].targets).all(axis=0)
+                    self.assertEqual([h for h, known in zip(self.heads, labelled) if known], list(filled))
+                self.assertFalse(splits["train"].patient_ids & splits["val"].patient_ids)
+
+    def test_a_missing_column_and_a_missing_patient_id_are_refused(self):
+        table = self.manifest(set(self.heads))
+        with self.assertRaisesRegex(ValueError, "has no `any_cto` column"):
+            VideoStudyDataset(table.drop(columns="any_cto"), target_columns=self.heads)
+        with self.assertRaisesRegex(ValueError, "needs a patient id column"):
+            VideoStudyDataset(table.drop(columns="patient_id"), target_columns=self.heads)
+
+    def test_the_header_names_real_columns(self):
+        header = [line[1:].strip() for line in self.path.read_text().splitlines() if line.startswith("#")]
+        sample = next(line for line in header if line.startswith("video_path,study_id")).split(",")
+        self.assertEqual(sample[:4], ["video_path", "study_id", "patient_id", "split"])
+        self.assertTrue(set(sample[4:]) <= set(self.heads))
+        words = set(" ".join(header).replace(",", " ").split())
+        self.assertTrue(set(self.example["experiment"]["classifier"]["region"]["groups"]) <= words)
 
 
 if __name__ == "__main__":
