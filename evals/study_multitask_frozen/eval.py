@@ -11,6 +11,10 @@ probes train side by side on the same features, one per `optimization.multihead_
 setting. Validation scores every study once with every probe after each epoch; `best.pt` keeps
 the epoch and probe with the best selection score. `--test_only` scores the test split once with
 that probe. `--val_only` rescores only validation. Protocol and outputs: `docs/study_multitask_probe.md`.
+
+`pooling_mode: region` replaces the pooling by the two-pass `RegionStudyProbe` (`src/models/region_probe.py`):
+the probe calls the encoder itself, once on the study's whole views and once on crops of the regions
+its mask decoder finds, one study at a time. Data, heads, losses, selection and outputs are the same.
 """
 
 import copy
@@ -43,7 +47,10 @@ from evals.video_classification_frozen.eval import (
 )
 from evals.video_classification_frozen.models import init_module
 from evals.video_classification_frozen.utils import make_transforms
+from src.datasets.utils.video import transforms as video_transforms
+from src.datasets.utils.video import volume_transforms
 from src.datasets.video_study_dataset import SELECTION, VideoStudyDataset, read_split
+from src.models.region_probe import RegionStudyProbe, region_options, validate_blocks
 from src.models.study_probe import POOLING_MODES, StudyProbe, head_loss, head_specs, multitask_loss
 from src.utils.checkpoint_loader import robust_checkpoint_loader
 from src.utils.distributed import AllReduceSum, any_rank_failed, init_distributed
@@ -76,6 +83,8 @@ TASK_METRICS = {
     "classification": {"loss", "acc", "auroc"},
 }
 LOWER_IS_BETTER = {"loss", "mae", "rmse"}
+# The pooling mode of the two-pass region probe, next to `POOLING_MODES` of `StudyProbe`.
+REGION_MODE = "region"
 
 
 def main(args_eval, resume_preempt=False):
@@ -123,8 +132,12 @@ def main(args_eval, resume_preempt=False):
     args_classifier = args_exp["classifier"]
     specs = head_specs(args_classifier)
     pooling_mode = args_classifier.get("pooling_mode", "attentive")
-    if pooling_mode not in POOLING_MODES:
-        raise ValueError(f"`experiment.classifier.pooling_mode` is one of {POOLING_MODES}, not {pooling_mode!r}.")
+    if pooling_mode not in (*POOLING_MODES, REGION_MODE):
+        raise ValueError(f"`experiment.classifier.pooling_mode` is one of {(*POOLING_MODES, REGION_MODE)}, "
+                         f"not {pooling_mode!r}.")
+    region = pooling_mode == REGION_MODE
+    if not region and args_classifier.get("region") is not None:
+        raise ValueError("`experiment.classifier.region` is read only with `pooling_mode: region`.")
     num_heads = int(args_classifier.get("num_heads", 16))
     num_probe_blocks = int(args_classifier.get("num_probe_blocks", 4))
     attention_hidden = int(args_classifier.get("attention_hidden", 256))
@@ -136,7 +149,8 @@ def main(args_eval, resume_preempt=False):
     num_view_classes = len(set(int(v) for v in view_labels_map.values())) if use_view_embedding else 0
     if args_data.get("view_probability_columns") and not use_view_embedding:
         raise ValueError("view_probability_columns requires use_view_embedding.")
-    probe_options = study_probe_options(args_classifier, args_data, args_pretrain)
+    probe_options = (region_options(args_classifier, args_data, args_pretrain, specs) if region
+                     else study_probe_options(args_classifier, args_data, args_pretrain))
     data_options = {k: args_data[k] for k in (
         "sampling_mode", "eval_seed", "view_family_map", "view_probability_columns",
         "acquisition_column", "acquisition_labels_map", "patient_column") if k in args_data}
@@ -181,6 +195,17 @@ def main(args_eval, resume_preempt=False):
     if trainable_blocks and len(opt_kwargs) != 1:
         raise ValueError("With `experiment.encoder.trainable_blocks` > 0 the probes would share the encoder's "
                          "gradients: give `multihead_kwargs` one setting.")
+    if region and len(opt_kwargs) != 1:
+        raise ValueError("Region pooling runs the encoder inside the probe: give `multihead_kwargs` one setting.")
+    # The largest gradient norm of a step, over the probe and the encoder's trainable blocks together
+    # (null: no clipping), as `optimization.clip_grad` of the V-JEPA 2.1 trainer.
+    clip_grad = args_opt.get("clip_grad")
+    if clip_grad is not None:
+        if isinstance(clip_grad, (bool, str)) or not float(clip_grad) > 0:
+            raise ValueError(f"optimization.clip_grad must be a positive number or null, got {clip_grad!r}.")
+        if len(opt_kwargs) != 1:
+            raise ValueError("`optimization.clip_grad` clips one probe's step: give `multihead_kwargs` one setting.")
+        clip_grad = float(clip_grad)
 
     try:
         mp.set_start_method("spawn")
@@ -192,6 +217,8 @@ def main(args_eval, resume_preempt=False):
     world_size, rank = init_distributed()
     logger.info(f"Initialized (rank/world-size) {rank}/{world_size}")
     use_ddp = dist.is_available() and dist.is_initialized() and world_size > 1
+    if region and world_size > 1:
+        raise ValueError("Region pooling trains one study at a time on one GPU: run it with one task.")
 
     folder = os.path.join(pretrain_folder, EVAL_NAME)
     if tag:
@@ -216,7 +243,9 @@ def main(args_eval, resume_preempt=False):
             target_columns=list(specs), view_column=view_column, views=views, labels_map=labels_map,
             num_videos=num_videos, shuffle_videos=shuffle_videos, training=training,
             frames_per_clip=frames_per_clip, frame_step=frame_step, duration=duration, fps=fps,
-            num_clips_per_video=num_clips_per_video, transform=make_transforms(training=training, **transform_kwargs),
+            num_clips_per_video=num_clips_per_video,
+            transform=(WholeFrames(probe_options["source_resolution"]) if region
+                       else make_transforms(training=training, **transform_kwargs)),
             min_videos=min_videos, view_labels_map=view_labels_map, **data_options,
         )
 
@@ -239,13 +268,26 @@ def main(args_eval, resume_preempt=False):
     encoder = init_module(module_name=args_pretrain["module_name"], frames_per_clip=frames_per_clip,
                           resolution=resolution, checkpoint=checkpoint, model_kwargs=args_pretrain["pretrain_kwargs"],
                           wrapper_kwargs=args_pretrain.get("wrapper_kwargs"), device=device)
-    check_token_grid(encoder, probe_options["token_grid"], frames_per_clip, resolution, device)
-    probes = [
-        StudyProbe(embed_dim=encoder.embed_dim, heads=specs, pooling_mode=pooling_mode, num_heads=num_heads,
-                   depth=num_probe_blocks, attention_hidden=attention_hidden, dropout=probe_dropout,
-                   num_view_classes=num_view_classes, **probe_options).to(device)
-        for _ in opt_kwargs
-    ]
+    if region:
+        blocks = getattr(getattr(encoder, "model", encoder), "blocks", None)
+        if blocks is None:
+            raise ValueError("Region pooling reads the encoder's `blocks`, which this encoder does not have.")
+        validate_blocks(probe_options["decoder"]["blocks"], len(blocks))
+        probes = [RegionStudyProbe(embed_dim=encoder.embed_dim, heads=specs, attention_hidden=attention_hidden,
+                                   dropout=probe_dropout, normalization=normalization_targets,
+                                   pixel_normalization=normalization or DEFAULT_NORMALIZATION, **probe_options)]
+        # The files' hashes join the fingerprint: a probe is continued only on the weights it started from.
+        probe_settings = {"region": {**probe_options, **load_region_weights(probes[0], args_classifier["region"])}}
+        probes[0].to(device)
+    else:
+        check_token_grid(encoder, probe_options["token_grid"], frames_per_clip, resolution, device)
+        probes = [
+            StudyProbe(embed_dim=encoder.embed_dim, heads=specs, pooling_mode=pooling_mode, num_heads=num_heads,
+                       depth=num_probe_blocks, attention_hidden=attention_hidden, dropout=probe_dropout,
+                       num_view_classes=num_view_classes, **probe_options).to(device)
+            for _ in opt_kwargs
+        ]
+        probe_settings = probe_options
     logger.info(f"Initialized {len(probes)} study probes ({pooling_mode}) with heads {list(specs)}"
                 f"{f' and {num_view_classes} view classes' if num_view_classes else ''}")
     if use_ddp:
@@ -280,7 +322,7 @@ def main(args_eval, resume_preempt=False):
         "encoder": encoder_settings,
         "classifier": {"pooling_mode": pooling_mode, "num_heads": num_heads, "num_probe_blocks": num_probe_blocks,
                        "attention_hidden": attention_hidden, "dropout": probe_dropout, "heads": specs,
-                       "labels_map": labels_map, "use_view_embedding": use_view_embedding, **probe_options},
+                       "labels_map": labels_map, "use_view_embedding": use_view_embedding, **probe_settings},
         "encoder_training": {"trainable_blocks": trainable_blocks, "optimization": encoder_opt_kwargs},
         "data": {"split_column": split_column, "path_column": path_column, "group_column": group_column,
                  "view_column": view_column, "views": list(views) if views else None,
@@ -291,7 +333,8 @@ def main(args_eval, resume_preempt=False):
                  "normalization": normalization, "min_videos": min_videos, **data_options},
         "evaluation": {"num_bags": num_eval_bags},
         "optimization": {"batch_size": batch_size, "num_epochs": num_epochs, "use_bfloat16": use_bfloat16,
-                         "multihead_kwargs": args_opt["multihead_kwargs"]},
+                         "multihead_kwargs": args_opt["multihead_kwargs"],
+                         **({} if clip_grad is None else {"clip_grad": clip_grad})},
         "selection": selection,
         "protocol": copy.deepcopy(PROTOCOL),
         "seed": seed,
@@ -368,7 +411,8 @@ def main(args_eval, resume_preempt=False):
         train_losses, train_head_losses = train_one_epoch(
             device=device, encoder=encoder, probes=probes, optimizers=optimizers, schedulers=schedulers,
             wd_schedulers=wd_schedulers, loader=train_loader, use_bfloat16=use_bfloat16, specs=specs,
-            normalization=normalization_targets, encoder_trainable=bool(trainable), world_size=world_size)
+            normalization=normalization_targets, encoder_trainable=bool(trainable), world_size=world_size,
+            clip_grad=clip_grad)
         val = [evaluate(prediction, specs, normalization_targets, selection_rule)
                for prediction in score_studies(dataset=val_dataset, probes=probes, **score_kwargs)]
         scores = np.asarray([v["score"] for v in val], dtype=float)
@@ -464,6 +508,41 @@ def study_probe_options(classifier, data, pretrained):
                 local_num_queries=int(classifier.get("local_num_queries", 4)),
                 local_use_rope=bool(classifier.get("local_use_rope", False)), token_grid=grid,
                 num_clips_per_video=int(data.get("num_clips_per_video", 1)))
+
+
+class WholeFrames:
+    """The clip transform of region pooling: every frame resized (not cropped) to `size` x `size`,
+    values in [0, 1], no augmentation and no normalization (`RegionStudyProbe` normalizes what it
+    gives the encoder, since it cuts its crops from these frames). Returns one view, as the
+    probe transforms do."""
+
+    def __init__(self, size):
+        self.transform = video_transforms.Compose([
+            video_transforms.Resize((size, size), interpolation="bilinear"), volume_transforms.ClipToTensor()])
+
+    def __call__(self, clip):
+        return [self.transform(clip)]
+
+
+def load_region_weights(probe, region):
+    """Load the weights `experiment.classifier.region` names into a `RegionStudyProbe`: the region
+    decoder (the `region_decoder` entry of `decoder.checkpoint`) and, with `init_checkpoint`, the
+    rest of the probe (its `probe` entry), both strictly and with `weights_only=True` (a `probe`
+    entry may lack the study pooler, see `RegionStudyProbe.load_weights`). Returns the files'
+    SHA-256 for the fingerprint."""
+    paths = {"decoder_sha256": region["decoder"]["checkpoint"], "init_sha256": region.get("init_checkpoint")}
+    states = {}
+    for (name, path), entry in zip(paths.items(), ("region_decoder", "probe")):
+        if path is None:
+            continue
+        saved = load_probe_checkpoint(path)
+        if not isinstance(saved, dict) or entry not in saved:
+            raise KeyError(f"{path} has no `{entry}` entry: a region probe's weights file holds `region_decoder` "
+                           "and, for `init_checkpoint`, `probe` (docs/study_multitask_probe.md).")
+        states[entry] = saved[entry]
+    if probe.load_weights(states["region_decoder"], states.get("probe")):
+        logger.info(f"{paths['init_sha256']} has no study pooler: the probe's pooler starts from its initial values.")
+    return {name: None if path is None else provenance.sha256(path) for name, path in paths.items()}
 
 
 def check_token_grid(encoder, grid, frames_per_clip, resolution, device):
@@ -599,20 +678,24 @@ def encode(encoder, clips, clip_indices, device, use_bfloat16, grad=False):
 
 
 def train_one_epoch(device, encoder, probes, optimizers, schedulers, wd_schedulers, loader, use_bfloat16, specs,
-                    normalization, encoder_trainable=False, world_size=1):
+                    normalization, encoder_trainable=False, world_size=1, clip_grad=None):
     """One pass over the training studies for every probe (and the encoder's trainable blocks,
     with the encoder in training mode). Each head's loss is the mean over the labeled studies of
-    the global batch (the present targets are counted over every rank). Returns each probe's
-    mean loss and each probe's mean loss per head, averaged over the studies of every rank."""
+    the global batch (the present targets are counted over every rank). With `clip_grad`, the
+    gradients of every optimizer's parameters are scaled together to that norm at most. Returns
+    each probe's mean loss and each probe's mean loss per head, averaged over the studies of
+    every rank."""
     for p in probes:
         p.train()
     encoder.train(mode=encoder_trainable)
+    region = isinstance(probes[0], RegionStudyProbe)
     loss_meters = [AverageMeter() for _ in probes]
     head_meters = [{h: AverageMeter() for h in specs} for _ in probes]
     for itr, batch in enumerate(loader):
         clips, targets, video_mask, clip_indices, view_ids, *extra = batch
         metadata = {k: v.to(device, non_blocking=True) for k, v in (extra[0] if extra else {}).items()}
-        features = encode(encoder, clips, clip_indices, device, use_bfloat16, grad=encoder_trainable)
+        if not region:
+            features = encode(encoder, clips, clip_indices, device, use_bfloat16, grad=encoder_trainable)
         video_mask = video_mask.to(device, non_blocking=True)
         view_ids = view_ids.to(device, non_blocking=True)
         targets = normalize_targets(targets, specs, normalization).to(device, non_blocking=True)
@@ -623,9 +706,13 @@ def train_one_epoch(device, encoder, probes, optimizers, schedulers, wd_schedule
         counts = {name: int(c) for name, c in zip(specs, global_counts)}
         batch_losses, batch_parts = [], []
         for probe in probes:
-            with autocast(device.type, dtype=torch.bfloat16, enabled=use_bfloat16):
-                outputs = probe(features, video_mask, view_ids, **metadata)
-            loss, parts = multitask_loss(specs, outputs, targets, counts=counts, world_size=world_size)
+            if region:
+                loss, parts = region_backward(encoder, probe, clips, clip_indices, video_mask, targets, specs,
+                                              counts, device, use_bfloat16)
+            else:
+                with autocast(device.type, dtype=torch.bfloat16, enabled=use_bfloat16):
+                    outputs = probe(features, video_mask, view_ids, **metadata)
+                loss, parts = multitask_loss(specs, outputs, targets, counts=counts, world_size=world_size)
             batch_losses.append(loss)
             batch_parts.append(parts)
         local = any(not bool(torch.isfinite(loss.detach()).item()) for loss in batch_losses)
@@ -633,8 +720,12 @@ def train_one_epoch(device, encoder, probes, optimizers, schedulers, wd_schedule
             raise FloatingPointError("Non-finite probe loss; stopping all ranks before the optimizer update.")
         [s.step() for s in schedulers]
         [w.step() for w in wd_schedulers]
-        for loss in batch_losses:
-            loss.backward()
+        if not region:  # a region probe's gradients are already there (`region_backward`).
+            for loss in batch_losses:
+                loss.backward()
+        if clip_grad is not None:
+            torch.nn.utils.clip_grad_norm_(
+                [p for optimizer in optimizers for group in optimizer.param_groups for p in group["params"]], clip_grad)
         for optimizer in optimizers:  # the probes', then the encoder's when it trains.
             optimizer.step()
             optimizer.zero_grad()
@@ -664,6 +755,30 @@ def train_one_epoch(device, encoder, probes, optimizers, schedulers, wd_schedule
     encoder.eval()
     return (np.array([m.avg for m in loss_meters]),
             [{h: (m.avg if m.count else float("nan")) for h, m in meters.items()} for meters in head_meters])
+
+
+def region_backward(encoder, probe, clips, clip_indices, video_mask, targets, specs, counts, device, use_bfloat16):
+    """The batch loss of a region probe and its gradients, one study at a time, so that only one
+    study's two encoder passes are in memory. Each study's share of the batch loss (each head
+    divided by its count over the batch, `counts`) is backpropagated at once; the gradients add
+    up to the batch loss's. Returns the batch loss (detached) and each head's (sum, count), as
+    `multitask_loss`. A study with a non-finite loss stops the batch before its backward pass,
+    and the loss returned is non-finite."""
+    total = torch.zeros((), device=device)
+    sums = {h: [torch.zeros((), device=device), 0] for h in specs}
+    for b in range(clips.shape[0]):
+        with autocast(device.type, dtype=torch.bfloat16, enabled=use_bfloat16):
+            outputs = probe(encoder, clips[b].to(device, non_blocking=True), video_mask[b],
+                            clip_indices[b].to(device, non_blocking=True))
+        loss, parts = multitask_loss(specs, outputs, targets[b:b + 1], counts=counts)
+        total = total + loss.detach()
+        if not bool(torch.isfinite(loss.detach()).item()):
+            break
+        loss.backward()
+        for h, (value, count) in parts.items():
+            sums[h][0] = sums[h][0] + value.detach()
+            sums[h][1] += count
+    return total, {h: (value, count) for h, (value, count) in sums.items()}
 
 
 class _EachStudyOnce(torch.utils.data.Dataset):
@@ -754,9 +869,20 @@ def _score_studies_once(device, encoder, probes, dataset, batch_size, num_worker
             continue
         clips, batch_targets, video_mask, clip_indices, view_ids, *extra = data
         metadata = {k: v.to(device, non_blocking=True) for k, v in (extra[0] if extra else {}).items()}
-        features = encode(encoder, clips, clip_indices, device, use_bfloat16)
         video_mask = video_mask.to(device, non_blocking=True)
         view_ids = view_ids.to(device, non_blocking=True)
+        if isinstance(modules[0], RegionStudyProbe):  # the probe runs the encoder, one study at a time.
+            with torch.no_grad(), autocast(device.type, dtype=torch.bfloat16, enabled=use_bfloat16):
+                for m, out in zip(modules, outputs):
+                    for b in range(clips.shape[0]):
+                        study = m(encoder, clips[b].to(device, non_blocking=True), video_mask[b],
+                                  clip_indices[b].to(device, non_blocking=True))
+                        for h, value in study.items():
+                            out[h] += value.float().cpu().tolist()
+            indices += batch_indices
+            targets += batch_targets.tolist()
+            continue
+        features = encode(encoder, clips, clip_indices, device, use_bfloat16)
         with torch.no_grad(), autocast(device.type, dtype=torch.bfloat16, enabled=use_bfloat16):
             for m, out in zip(modules, outputs):
                 for h, value in m(features, video_mask, view_ids, **metadata).items():
