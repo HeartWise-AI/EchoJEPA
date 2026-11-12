@@ -416,7 +416,8 @@ class TestRegionStudyProbe(unittest.TestCase):
             probe(self.encoder, self.clips, self.mask)
         full = F.interpolate(self.clips[:3].transpose(1, 2).flatten(0, 1), (RES, RES), mode="bilinear",
                              align_corners=False).reshape(3, FRAMES, 3, RES, RES).transpose(1, 2)
-        mean, std = torch.tensor([0.5, 0.4, 0.3]).view(1, 3, 1, 1, 1), torch.tensor([0.2, 0.25, 0.5]).view(1, 3, 1, 1, 1)
+        mean = torch.tensor([0.5, 0.4, 0.3]).view(1, 3, 1, 1, 1)
+        std = torch.tensor([0.2, 0.25, 0.5]).view(1, 3, 1, 1, 1)
         torch.testing.assert_close(seen[0], (full - mean) / std)
 
     def test_initial_outputs_follow_the_configured_priors_and_ranges(self):

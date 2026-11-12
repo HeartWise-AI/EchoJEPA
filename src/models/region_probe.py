@@ -34,7 +34,7 @@ import torch.nn.functional as F
 from src.models.study_probe import GatedAttention
 
 READOUT_KINDS = ("group_mlp", "group_linear", "groups_mlp")
-REGION_KEYS = ("num_classes", "groups", "decoder", "probe_checkpoint", "source_resolution", "crop_resolution",
+REGION_KEYS = ("num_classes", "groups", "decoder", "init_checkpoint", "source_resolution", "crop_resolution",
                "crops_per_group", "tracking", "readouts", "study_pooler", "output_range")
 DECODER_KEYS = ("blocks", "width", "checkpoint")
 TRACKING_KEYS = ("min_pixels", "min_frames", "margin", "min_side", "line_filter")
@@ -449,7 +449,8 @@ class RegionStudyProbe(nn.Module):
                 raise ValueError(f"`output_range.{head}` needs the target normalization of {head!r}.")
             self.output_range[head] = (float(low), float(high), float(scale["mean"]), float(scale["std"]))
         mean, std = pixel_normalization
-        self.register_buffer("pixel_mean", torch.tensor(mean, dtype=torch.float32).view(1, -1, 1, 1, 1), persistent=False)
+        self.register_buffer("pixel_mean", torch.tensor(mean, dtype=torch.float32).view(1, -1, 1, 1, 1),
+                             persistent=False)
         self.register_buffer("pixel_std", torch.tensor(std, dtype=torch.float32).view(1, -1, 1, 1, 1), persistent=False)
 
         self.region_decoder = RegionMaskDecoder(embed_dim, num_classes, decoder["width"], decoder["blocks"])
@@ -464,7 +465,8 @@ class RegionStudyProbe(nn.Module):
         self.attention = GatedAttention(embed_dim, hidden=attention_hidden, dropout=dropout)
 
         def head(name, features):
-            return nn.Sequential(nn.Dropout(self.specs[name]["dropout"]), nn.Linear(features, self.specs[name]["outputs"]))
+            spec = self.specs[name]
+            return nn.Sequential(nn.Dropout(spec["dropout"]), nn.Linear(features, spec["outputs"]))
 
         def trunk(features, hidden):
             return nn.Sequential(nn.LayerNorm(features), nn.Linear(features, hidden), nn.GELU())
@@ -492,6 +494,18 @@ class RegionStudyProbe(nn.Module):
 
     def token_grid(self, resolution):
         return (self.frames_per_clip // self.tubelet_size, resolution // self.patch_size, resolution // self.patch_size)
+
+    def load_weights(self, region_decoder, probe=None):
+        """Load the region decoder's state and, when given, the state of the rest of the probe
+        (its keys without `region_decoder.*`). Both must match exactly."""
+        self.region_decoder.load_state_dict(region_decoder)
+        if probe is None:
+            return
+        own = {k for k in self.state_dict() if not k.startswith("region_decoder.")}
+        if set(probe) != own:
+            raise ValueError(f"The probe weights do not fit this probe: missing {sorted(own - set(probe))[:8]}, "
+                             f"unexpected {sorted(set(probe) - own)[:8]}.")
+        self.load_state_dict(probe, strict=False)
 
     def encode(self, encoder, clips, clip_indices=None, blocks=()):
         """Normalize `clips` [N, C, T, H, W] (in [0, 1]) and embed them in one encoder call."""
