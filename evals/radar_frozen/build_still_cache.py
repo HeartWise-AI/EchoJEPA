@@ -2,8 +2,9 @@
 
 """Write the token cache of the Doppler stills: the frozen encoder's tokens of every still of a still table.
 
-Each still is prepared by `src.datasets.still_preprocess.prepare_still` (text boxes masked, cropped to the spectral
-region, coloured overlays inpainted, grey, 224 x 224) and repeated over `--frames` frames, then encoded by the same
+Each still is prepared by `src.datasets.still_preprocess.prepare_still` (cropped to the spectral region, then to a
+window beside the measurement panel and the drawn marks, running lines inpainted, grey, 224 x 224) and repeated over
+`--frames` frames, then encoded by the same
 frozen encoder, with the same settings, as the clip cache (`build_token_cache.py`; the config is the clip cache's).
 The encoder is never trained here or later: the caches differ only in how the still is presented to it.
 
@@ -13,7 +14,11 @@ serves the downstream tasks better is an experiment: write both caches from the 
 with the same split and evaluation. The cache's meta records the frames, the preprocessing recipe and the same
 `encoder_sha256` and `encoder` record as the clip cache, which training compares (`radar_stills.same_encoder`).
 
-A still that cannot be read or that the preprocessing refuses (a mostly chromatic crop) gets no tokens and is listed
+`--vendors` keeps the stills of the named manufacturers: the preprocessing finds drawn marks by their colour, so
+systems that draw calipers and traces in white or grey must be left out (the meta records the list).
+
+A still that cannot be read or that the preprocessing refuses (no window free of the panel and the marks, a mostly
+chromatic crop) gets no tokens and is listed
 in `<out>/failed.csv` with the reason's kind. `<out>/stills.csv` is the still table without those: the table to
 train on, since training refuses a still that has no tokens. `<out>` must be outside the repository.
 
@@ -79,7 +84,7 @@ def _collate(items):
 
 
 def build(config, stills_path, out, frames, split=None, device="auto", batch_size=32, num_workers=8,
-          make_encoder=build_encoder, read=read_image):
+          make_encoder=build_encoder, read=read_image, vendors=None):
     if frames not in FRAMES:
         raise ValueError(f"frames must be one of {FRAMES}.")
     table = pd.read_csv(stills_path, dtype={"study_id": str, "still_id": str}, keep_default_na=False)
@@ -88,6 +93,12 @@ def build(config, stills_path, out, frames, split=None, device="auto", batch_siz
             raise ValueError(f"The still table needs a {column!r} column.")
     if split is not None:
         table = table[table.split.astype(str) == split]
+    if vendors:
+        # Systems that draw their calipers and traces in white or grey are left out: the preprocessing finds marks
+        # by their colour and cannot keep those out of the window.
+        if "manufacturer" not in table.columns:
+            raise ValueError("--vendors needs a manufacturer column in the still table.")
+        table = table[table.manufacturer.astype(str).isin(list(vendors))]
     if table.still_id.duplicated().any():
         raise ValueError("A still appears twice in the still table.")
     table = table.reset_index(drop=True)
@@ -104,6 +115,7 @@ def build(config, stills_path, out, frames, split=None, device="auto", batch_siz
                  "input": "static still"},
         "preprocess": PREPROCESS_VERSION, "use_bfloat16": bool(config["cache"].get("use_bfloat16", True)),
         "stills_sha256": file_sha256(stills_path), "split": split, "stills": len(table),
+        "vendors": sorted(vendors) if vendors else None,
         "builder_sha256": file_sha256(os.path.abspath(__file__)), "commit": _commit()}))
     device = torch.device(device if device != "auto" else ("cuda" if torch.cuda.is_available() else "cpu"))
     writer = TokenCacheWriter(out, grid, config["cache"]["embed_dim"], config["cache"].get("dtype", "float16"),
@@ -139,6 +151,8 @@ def main(argv=None):
     parser.add_argument("--stills", required=True)
     parser.add_argument("--split", help="keep the stills of this split (default: all)")
     parser.add_argument("--frames", type=int, required=True, choices=FRAMES)
+    parser.add_argument("--vendors", nargs="*", help="keep the stills of these manufacturers only (as written in the "
+                                                     "still table); systems that draw achromatic marks are left out")
     parser.add_argument("--out", required=True)
     parser.add_argument("--batch_size", type=int, default=32)
     parser.add_argument("--num_workers", type=int, default=8)
@@ -151,7 +165,8 @@ def main(argv=None):
         config = yaml.safe_load(f)
     if args.checkpoint:
         config["encoder"]["checkpoint"] = args.checkpoint
-    build(config, args.stills, args.out, args.frames, args.split, args.device, args.batch_size, args.num_workers)
+    build(config, args.stills, args.out, args.frames, args.split, args.device, args.batch_size, args.num_workers,
+          vendors=args.vendors)
 
 
 if __name__ == "__main__":

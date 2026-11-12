@@ -12,8 +12,12 @@ import torch
 from src.datasets.still_preprocess import (
     crop_spectral,
     heatmap_bias,
+    free_window,
+    mark_columns,
     mask_boxes,
     overlay_mask,
+    panel_columns,
+    prepare_crop,
     prepare_still,
     static_clip,
     velocity_scale,
@@ -71,7 +75,11 @@ class TestPreprocess(unittest.TestCase):
         image = np.full((40, 60, 3), 60, dtype=np.uint8)
         image[20, 10:50] = (255, 255, 0)                        # a line
         image[19, 10:50] = image[21, 10:50] = (80, 80, 60)      # its anti-aliased edge: chroma 20, under the threshold
-        self.assertFalse(overlay_mask(image, dilate=0)[19, 30])
+        self.assertFalse(overlay_mask(image, dilate=0, grow_threshold=None)[19, 30])
+        self.assertTrue(overlay_mask(image, dilate=0)[19, 30])  # the paler edge touches the line: it goes with it
+        lone = image.copy()
+        lone[5, 10:50] = (80, 80, 60)                           # as pale, touching nothing strongly coloured
+        self.assertFalse(overlay_mask(lone, dilate=0)[5, 30])
         mask = overlay_mask(image)
         self.assertTrue(mask[19, 30] and mask[21, 30])
         self.assertFalse(mask[5, 30])
@@ -84,25 +92,92 @@ class TestPreprocess(unittest.TestCase):
         _, report = prepare_still(tinted, (0, 40, 200, 110), size=32)      # the tint is found in the crop
         self.assertTrue(report["tint_estimated"])
         self.assertLess(report["overlay_fraction"], 0.01)
-        tinted[60:64, 20:180] = (255, 255, 0)                             # a caliper line of another colour
+        tinted[60:64, :] = (255, 255, 0)                                  # a running line of another colour
         _, report = prepare_still(tinted, (0, 40, 200, 110), size=32)
         self.assertTrue(report["tint_estimated"])
-        self.assertGreater(report["masked_overlay_px"], 4 * 160 - 1)
+        self.assertGreater(report["masked_overlay_px"], 4 * 50 - 1)       # inpainted over the window's 50 columns
         mixed = tinted.copy()
         mixed[40:110, :100] = (200, 30, 30)                               # two colours: no single tint
         mixed[40:110, 100:] = (30, 200, 30)
         with self.assertRaisesRegex(ValueError, "no single tint"):
             prepare_still(mixed, (0, 40, 200, 110), size=32)
 
-    def test_masking_removes_overlays_and_text(self):
-        clean, _ = prepare_still(screen(), (0, 40, 200, 110), size=32)
-        marked, report = prepare_still(screen(calipers=True, box=True), (0, 40, 200, 110),
-                                       text_boxes=[(150, 45, 189, 54)], size=32)
-        unmasked, _ = prepare_still(screen(calipers=True, box=True), (0, 40, 200, 110), size=32,
-                                    chroma_threshold=1000)
-        self.assertGreater(report["masked_text_px"], 0)
-        self.assertGreater(report["masked_overlay_px"], 0)
-        self.assertLess(float((marked - clean).abs().mean()), 0.5 * float((unmasked - clean).abs().mean()))
+    def test_panel_columns(self):
+        covered = panel_columns((100, 50, 900, 400), [(600, 60, 700, 78), (600, 84, 690, 102)])
+        self.assertEqual(covered.shape, (800,))
+        self.assertFalse(covered[:488].any())                   # 12 px before the labels
+        self.assertTrue(covered[488:750].all())                 # labels and the value column (1.5 x their width)
+        self.assertFalse(covered[750:].any())
+        self.assertFalse(panel_columns((100, 50, 900, 400), ()).any())
+        below = panel_columns((100, 300, 900, 400), [(600, 60, 700, 78)])   # three text lines end above row 300
+        self.assertFalse(below.any())
+        near = panel_columns((100, 150, 900, 400), [(600, 60, 700, 78)])    # an unparsed line could reach the region
+        self.assertTrue(near.any())
+
+    def test_mark_columns_tell_a_trace_from_a_running_line(self):
+        crop = np.full((100, 400, 3), 60, dtype=np.uint8)
+        crop[90, :] = (220, 220, 40)                            # the ECG runs over the whole width: no mark
+        crop[89, ::2] = (150, 200, 60)                          # its paler, greener edge
+        crop[20:70, 200] = (230, 130, 110)                      # a traced beat: two sides and a dashed marker
+        crop[20:70, 240] = (230, 130, 110)
+        crop[70, 200:241] = (230, 130, 110)
+        columns = mark_columns(crop)
+        self.assertTrue(columns[192:249].all())
+        self.assertFalse(columns[:190].any() or columns[251:].any())
+        crop[40:47, 60] = crop[43, 57:64] = (220, 220, 40)      # a small caliper cross in the ECG's own colour
+        columns = mark_columns(crop)
+        self.assertTrue(columns[49:72].all())                   # a mark all the same
+        self.assertFalse(columns[:48].any() or columns[73:190].any())
+        self.assertFalse(mark_columns(np.full((50, 80, 3), 60, dtype=np.uint8)).any())
+
+    def test_free_window(self):
+        blocked = np.zeros(100, dtype=bool)
+        blocked[40:60] = True
+        self.assertEqual(free_window(blocked, 20), (10, 30))                 # centred in the first longest run
+        weight = np.zeros(100)
+        weight[70:80] = 1.0                                                  # a beat in the right-hand run
+        first, last = free_window(blocked, 20, weight)
+        self.assertTrue(60 <= first and first <= 70 and last >= 80 and last - first == 20)
+        with self.assertRaisesRegex(ValueError, "No window"):
+            free_window(blocked, 41)
+
+    def test_the_window_holds_no_panel_no_trace_and_no_fill(self):
+        rng = np.random.default_rng(0)
+        image = rng.integers(30, 90, size=(200, 900, 3)).astype(np.uint8)
+        image[...] = image[..., :1]                             # a grey, textured spectrum
+        image[60:140, 100:160] = 200                            # three beats: bright columns
+        image[60:140, 400:460] = 200
+        image[60:140, 700:760] = 200
+        image[10:60, 20:260] = 255                              # the panel over the first beat: labels and values
+        image[60:142, 398] = image[60:142, 462] = (230, 130, 110)     # the second beat is traced
+        image[142, 398:463] = (230, 130, 110)
+        image[190, :] = (220, 220, 40)                          # the ECG
+        boxes = [(24, 14, 100, 30), (24, 36, 100, 52)]
+        gray, report = prepare_crop(image, (0, 0, 900, 200), boxes)
+        first, last = report["window"]
+        self.assertEqual(last - first, 225)                     # a quarter of the width, measured still or not
+        self.assertTrue(first > 470 and first <= 700 and last >= 760)       # the free, untraced third beat
+        self.assertEqual(gray.shape, (200, 225))
+        self.assertLess(int((gray > 240).sum()), 1)             # nothing of the white panel
+        original = image[:, first:last].astype(np.float32).mean(axis=-1)
+        untouched = np.ones_like(original, dtype=bool)
+        untouched[184:197] = False                              # only the ECG rows were inpainted
+        self.assertTrue(np.array_equal(gray[untouched], original.round().astype(np.uint8)[untouched]))
+        self.assertLess(float(gray[187:194].max()), 150)        # the ECG line is gone
+        unmeasured, other = prepare_crop(image[:, 470:], (0, 0, 430, 200))  # no boxes: the same share of the width
+        self.assertEqual(other["window"][1] - other["window"][0], 108)
+        clip, _ = prepare_still(image, (0, 0, 900, 200), boxes, size=32)
+        self.assertEqual(tuple(clip.shape), (3, 2, 32, 32))
+        image[60:142, 698] = image[60:142, 762] = (230, 130, 110)           # every beat is drawn on
+        image[60:142, 98] = image[60:142, 162] = (230, 130, 110)
+        with self.assertRaisesRegex(ValueError, "No window"):
+            prepare_crop(image, (0, 0, 900, 200), boxes)
+
+    def test_a_faint_tinted_spectrum_is_refused_not_painted_away(self):
+        image = np.full((100, 400, 3), 5, dtype=np.uint8)
+        image[40:60, ::7] = (200, 120, 100)                     # sparse tinted signal: under the tint threshold
+        with self.assertRaisesRegex(ValueError, "painted away|chromatic|No window"):
+            prepare_crop(image, (0, 0, 400, 100))
 
     def test_static_clip(self):
         clip = static_clip(np.full((50, 80), 255, dtype=np.uint8), size=16, frames=2)

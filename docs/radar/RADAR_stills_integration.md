@@ -29,7 +29,7 @@ DeepEcho now has a still-image measurement dataset. It contains the CW and PW/TD
             |
             |   still PNG
             v
- src/datasets/still_preprocess.py:  mask label/value boxes -> crop spectral region -> inpaint coloured
+ src/datasets/still_preprocess.py:  crop spectral region -> window beside the panel and the drawn marks -> inpaint running lines
             |                        calipers/traces -> grey 224x224 -> 2 identical frames
             v
  frozen EchoJEPA encoder (one tubelet) -> tokens [1x14x14, D] -> still TokenCache (separate from the clip cache)
@@ -58,7 +58,7 @@ DeepEcho now has a still-image measurement dataset. It contains the CW and PW/TD
 2. **Still encoding** (`src/datasets/still_preprocess.py`). The still is processed in this order:
    - the text boxes are masked;
    - it is cropped to the DICOM spectral region;
-   - chromatic overlays are inpainted; a spectrum drawn in one colour (orange or sepia, mostly Toshiba) keeps its pixels: its tint is estimated from the crop, and only a crop with several colours and no single tint is refused;
+   - a window of a quarter of the spectral region is kept, the one with the most signal among those that hold neither the measurement panel nor a drawn mark (trace, caliper, cursor): a beat beside the measured one. Nothing is filled or inpainted where a mark was. Only running lines (baseline, ECG) are inpainted. A still without such a window is refused. A spectrum drawn in one colour keeps its pixels (its tint is estimated from the crop);
    - the result is converted to grey, resized, and repeated over 2 frames.
 
    With the encoder's tubelet of 2, that gives one temporal token, i.e. a `[1, 14, 14]` grid. The encoder and embedding space are the same as for the clips, and a still costs 8x fewer tokens than a 16-frame replicated clip. The velocity scale lost by cropping comes back as numbers (`v_top_ms`, `v_bot_ms`).
@@ -130,10 +130,10 @@ heads:                                      # optional
 The measured value reaches the model in four ways. Each has a control:
 
 1. **Burned-in text.**
-   - Label boxes are masked from `text_boxes`. In 2024, 16% of label boxes overlap the spectral region, and 75% of Philips boxes do.
+   - The columns under the measurement panel are cut out of the crop (label boxes from `text_boxes`, grown to hold the value column and unparsed lines). They used to be filled, which left the values readable beside the masked labels and a flat patch where the labels were.
    - Crop to the spectral region.
-   - *Gap:* the still dataset stores label boxes, not value boxes. `still_meas.py` should store value boxes too; until then the mask pads boxes and relies on the crop.
-2. **Calipers and VTI traces.** Measured stills have about 50% more chromatic pixels in the spectrum (median 1.35% vs 0.88%). Chromatic pixels are inpainted on every still, measured or not, so masking itself is not a marker.
+   - *Gap:* the still dataset stores label boxes, not value boxes; the value column's width is a rule (1.5 times the labels' width, at least 120 px). Value boxes from `still_meas.py` would make it exact.
+2. **Calipers and VTI traces.** Coloured marks are found by hue and their columns are kept out of the window, so the model reads an undrawn beat; inpainting a trace left its outline, then a smoothed band along the envelope. Achromatic marks (white or grey calipers and dotted traces, drawn by some systems) are not found: those systems are left out with `build_still_cache.py --vendors`.
 3. **Value as input.** Refused by `StillSource`. Some quantities determine each other: MaxPG = 4 Vmax² (true for ~100% of OCR pairs), and AVA comes from the VTIs. Never split such a group between input and target (`LEAK_GROUPS` in the manifest builder).
 4. **Shortcuts in alignment.** Age and sex correlate with findings such as calcified valves and E/A < 1. Demographic FiLM is off in the pooler; report a demographics-only baseline whenever it is turned on.
 

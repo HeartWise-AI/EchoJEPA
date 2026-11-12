@@ -38,10 +38,10 @@ class Encoder(torch.nn.Module):
 def screen(path):
     if "broken" in path:
         raise OSError("no such file " + path)
-    image = np.full((80, 120, 3), 90, dtype=np.uint8)
+    image = np.full((80, 420, 3), 90, dtype=np.uint8)     # wide enough for a window beside the panel
     if "tinted" in path:
-        image[:, :60, 0] = 250                               # two colours, no single tint: refused
-        image[:, 60:, 1] = 250
+        image[:, :210, 0] = 250                               # two colours, no single tint: refused
+        image[:, 210:, 1] = 250
     return image
 
 
@@ -54,7 +54,7 @@ class TestBuildStillCache(unittest.TestCase):
         with open(self.checkpoint, "wb") as f:
             f.write(b"weights")
         rows = [{"still_id": f"s{n}", "study_id": f"S{n % 2}", "split": "train" if n < 5 else "val",
-                 "png_path": f"/x/{name}.png", "spec_x0": 10, "spec_y0": 20, "spec_x1": 110, "spec_y1": 70,
+                 "png_path": f"/x/{name}.png", "spec_x0": 10, "spec_y0": 20, "spec_x1": 410, "spec_y1": 70,
                  "text_boxes": json.dumps([[12, 22, 30, 30]])}
                 for n, name in enumerate(["a", "b", "tinted", "broken", "c", "d"])]
         self.stills = os.path.join(root, "stills.csv")
@@ -96,6 +96,19 @@ class TestBuildStillCache(unittest.TestCase):
         with self.assertRaises(ValueError):
             bsc.main(["--config", "x", "--stills", self.stills, "--frames", "2",
                       "--out", os.path.join(bsc.REPO, "still_cache")])
+
+
+    def test_vendors_keep_only_the_named_manufacturers(self):
+        table = pd.read_csv(self.stills)
+        table["manufacturer"] = ["GE", "Other", "GE", "GE", "Other", "GE"]
+        table.to_csv(self.stills, index=False)
+        out = os.path.join(self.tmp.name, "ge")
+        summary = bsc.build(self.config, self.stills, out, 2, make_encoder=lambda config, device: Encoder(),
+                            read=screen, num_workers=0, vendors=["GE"])
+        self.assertEqual(summary["stills_in_table"], 4)
+        self.assertEqual(sorted(TokenCache(out).files), ["s0", "s5"])           # s2 is refused, s3 unreadable
+        with open(os.path.join(out, "meta.json")) as f:
+            self.assertEqual(json.load(f)["provenance"]["vendors"], ["GE"])
 
 
 if __name__ == "__main__":
