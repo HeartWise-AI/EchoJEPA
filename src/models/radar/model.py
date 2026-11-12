@@ -24,7 +24,8 @@ STILL_KEYS = ("still_tokens", "still_valid", "still_eligible", "still_type_ids",
 
 class RadarModel(nn.Module):
 
-    def __init__(self, pooler, text_encoder, loss, heads=None, measurement_weight=1.0, target_weights=None):
+    def __init__(self, pooler, text_encoder, loss, heads=None, measurement_weight=1.0, target_weights=None,
+                 head_cond_index=None):
         super().__init__()
         self.pooler = pooler
         self.text = text_encoder
@@ -32,6 +33,8 @@ class RadarModel(nn.Module):
         self.heads = heads
         self.measurement_weight = float(measurement_weight)
         self.target_weights = target_weights
+        # the head's side inputs among the still stream's conditioning columns (None: all of them)
+        self.head_cond_index = None if head_cond_index is None else list(head_cond_index)
         self.last_measurement = None
 
     def forward(self, batch, teacher=None):
@@ -64,7 +67,10 @@ class RadarModel(nn.Module):
         loss, stats = self.loss(z, t, valid, batch["caption_ids"], batch["normal"], batch["abnormal"], teacher_dense)
         self.last_measurement = None
         if self.heads is not None:
-            pred = self.heads(batch["still_tokens"], batch.get("still_cond"),
+            cond = batch.get("still_cond")
+            if cond is not None and self.head_cond_index is not None:
+                cond = cond[..., self.head_cond_index]
+            pred = self.heads(batch["still_tokens"], cond,
                               batch.get("demo") if self.heads.film is not None else None)
             present = batch["still_y_mask"] & batch["still_valid"][..., None]
             m_loss, m_stats = measurement_loss(pred, batch["still_y"], present, self.target_weights)

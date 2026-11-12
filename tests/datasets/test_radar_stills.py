@@ -36,7 +36,7 @@ if os.path.join(REPO, "data") not in sys.path:
     sys.path.append(os.path.join(REPO, "data"))
 import radar_captions as rc  # noqa: E402
 
-V1_PATH = os.path.join(os.path.dirname(DEFAULT_ROUTING), "radar_routing_v1.yaml")
+V1_PATH = os.path.join(os.path.dirname(DEFAULT_ROUTING), "radar_routing_v1_hemo.yaml")
 STILL_GRID = (1, 2, 2)
 TARGETS = ["y_AV_VMAX", "y_TR_VMAX"]
 COND = ["v_top_ms", "v_bot_ms", "echonet_present", "echonet_vmax_ms"]
@@ -81,7 +81,7 @@ def add_full_captions(paths, routing):
                                    ("X99", "hemo", "Pression systolique ventriculaire droite estimée à 50 mmHg.")):
         extra.append({"study_id": study, "structure": structure, "caption": text, "caption_id": rc.caption_id(text),
                       "normality": "unknown", "normality_status": "provisional", "policy_digest": "synthetic",
-                      "scope": "full"})
+                      "scope": "ev:rvsp" if structure == "hemo" else "full:stenosis"})   # the bags hold a TR and an AV still
     table = pd.concat([table, pd.DataFrame(extra)], ignore_index=True)
     table.to_csv(paths["captions"], index=False)
     info = {"split": "train", "routing_sha256": routing.sha256, "clips_sha256": file_sha256(paths["clips"]),
@@ -176,13 +176,34 @@ class TestStillItems(unittest.TestCase):
         text = "Sténose aortique serrée."
         rows = [{"study_id": "X99", "structure": "aortic", "caption": c, "caption_id": rc.caption_id(c),
                  "normality": "unknown", "normality_status": "provisional", "policy_digest": "synthetic", "scope": s}
-                for c, s in ((text, "doppler"), ("Valve aortique calcifiée. " + text, "full"))]
+                for c, s in ((text, "doppler:stenosis"), ("Valve aortique calcifiée. " + text, "full:stenosis"))]
         captions = pd.concat([self.captions, pd.DataFrame(rows)], ignore_index=True)
         data = RadarStudyDataset(self.clips, captions, self.routing, self.cache, num_clips=4, stills=self.source())
         x = {data[i]["study_id"]: data[i] for i in range(len(data))}["X99"]
         self.assertEqual(x["captions"][names.index("aortic")], text)
         with self.assertRaisesRegex(ValueError, "scope must be"):
             RadarStudyDataset(self.clips, captions.assign(scope="other"), self.routing, self.cache, num_clips=4)
+
+    @staticmethod
+    def items(data):
+        return [data[i] for i in range(len(data))]
+
+    def test_an_lvot_still_does_not_switch_on_the_stenosis_clause(self):
+        """Finding support: with LVOT stills instead of AV ones the aortic embedding is still fed by stills, but the
+        caption says no more than the clips show; a still-only study then has no aortic caption."""
+        names = [s.name for s in self.routing.trained]
+        a = names.index("aortic")
+        table = pd.read_csv(self.still_paths["table"], dtype={"study_id": str, "still_id": str})
+        table.loc[table.still_tag == "AV", ["still_tag", "still_type"]] = ["LVOT", "pw_LVOT"]
+        lvot = StillSource(table, self.routing, TokenCache(self.still_paths["cache_dir"]), names, num_stills=2)
+        with_av = {i["study_id"]: i for i in self.items(self.dataset(self.source()))}
+        with_lvot = {i["study_id"]: i for i in self.items(self.dataset(lvot))}
+        self.assertIn("Sténose aortique serrée", with_av["S03"]["captions"][a])
+        self.assertTrue(with_lvot["S03"]["still_eligible"][a].any())
+        self.assertNotIn("ténose", with_lvot["S03"]["captions"][a])
+        bmode = {i["study_id"]: i for i in self.items(self.dataset())}
+        self.assertEqual(with_lvot["S03"]["captions"][a], bmode["S03"]["captions"][a])
+        self.assertFalse(with_lvot["X99"]["has_caption"][a])
 
     def test_heatmap_contents_are_in_the_record(self):
         before = self.source().record()
@@ -296,6 +317,49 @@ class TestTrainingWithStills(unittest.TestCase):
             bad["model"].pop("stills")
             radar_train.build_model(bad, routing)
         self.evaluation(config, routing, paths, stills)
+        self.head_evaluation(config, stills)
+        self.head_experiments(config, routing)
+
+    def head_evaluation(self, config, stills):
+        """The heads are scored per target in the targets' units, with the outside prediction on the same stills."""
+        from evals.radar_frozen import eval_heads
+        checkpoint = os.path.join(self.root, "run", "latest.pt")
+        out = tempfile.mkdtemp()
+        try:
+            with self.assertRaisesRegex(ValueError, "trained on"):
+                eval_heads.evaluate(config, checkpoint, stills["table"], out, split="train")
+            report = eval_heads.evaluate(config, checkpoint, stills["table"], out, split="train", samples=20,
+                                         allow_training_stills=True)
+            self.assertEqual(set(report["targets"]), set(TARGETS))
+            av = report["targets"]["y_AV_VMAX"]
+            self.assertEqual(av["head"]["n"], 5)                         # one AV still per study
+            self.assertGreater(av["head"]["metrics"]["mae"], 0.0)
+            self.assertEqual(av["paired_stills"], 1)                     # the one study with an outside prediction
+            self.assertFalse(report["baseline_overlap_checked"])
+            self.assertEqual(report["head_inputs"], {"visual": True, "cond_columns": COND, "demographics": True})
+            table = pd.read_csv(os.path.join(out, "head_predictions.csv"))
+            self.assertEqual(len(table), 10)
+            self.assertTrue((table.measured > 0).all() and (table.prediction > 0).all())
+            with self.assertRaises(ValueError):
+                eval_heads.evaluate(config, checkpoint, stills["table"], os.path.join(REPO, "out"), split="val")
+        finally:
+            shutil.rmtree(out, ignore_errors=True)
+
+    def head_experiments(self, config, routing):
+        """The three head experiments are configs of one code path: chosen side inputs, or side inputs alone."""
+        visual = json.loads(json.dumps(config))
+        visual["heads"].update(cond_columns=COND[:2], demographics=False)
+        model, _ = radar_train.build_model(visual, routing)
+        self.assertEqual(model.head_cond_index, [0, 1])
+        self.assertIsNone(model.heads.film)
+        self.assertEqual(model.heads.cond.fc1.in_features, 2)
+        side = json.loads(json.dumps(config))
+        side["heads"]["visual"] = False
+        self.assertFalse(radar_train.build_model(side, routing)[0].heads.use_visual)
+        bad = json.loads(json.dumps(config))
+        bad["heads"]["cond_columns"] = ["y_AV_VMAX"]
+        with self.assertRaisesRegex(ValueError, "not in data.stills.cond_columns"):
+            radar_train.build_model(bad, routing)
 
     def evaluation(self, config, routing, paths, stills):
         """The evaluator reads the still stream of a checkpoint trained with it, or refuses."""

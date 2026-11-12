@@ -58,11 +58,11 @@ DeepEcho now has a still-image measurement dataset. It contains the CW and PW/TD
 2. **Still encoding** (`src/datasets/still_preprocess.py`). The still is processed in this order:
    - the text boxes are masked;
    - it is cropped to the DICOM spectral region;
-   - chromatic overlays are inpainted;
+   - chromatic overlays are inpainted; a spectrum drawn in one colour (orange or sepia, mostly Toshiba) keeps its pixels: its tint is estimated from the crop, and only a crop with several colours and no single tint is refused;
    - the result is converted to grey, resized, and repeated over 2 frames.
 
    With the encoder's tubelet of 2, that gives one temporal token, i.e. a `[1, 14, 14]` grid. The encoder and embedding space are the same as for the clips, and a still costs 8x fewer tokens than a 16-frame replicated clip. The velocity scale lost by cropping comes back as numbers (`v_top_ms`, `v_bot_ms`).
-3. **Routing** (`configs/radar/radar_routing_v1.yaml`). It is v0 plus `still_structs`, `still_types` and a trained `hemo` with `caption_source: structured`. v0 is untouched and stays the default.
+3. **Routing** (`configs/radar/radar_routing_v1.yaml`). It is v0 plus `still_structs` and `still_types`; Hemo stays untrained (regression only). `radar_routing_v1_hemo.yaml` adds a trained `hemo` with `caption_source: structured` for the ablation. v0 is untouched and stays the default.
 
    | still tag | feeds |
    |---|---|
@@ -76,6 +76,7 @@ DeepEcho now has a still-image measurement dataset. It contains the CW and PW/TD
    | TDI | hemo |
 4. **Captions** (`data/build_radar_captions.py --doppler-captions`, `data/radar_doppler_captions.py`).
    - The flag adds a `scope=full` row (B-mode caption + Doppler clauses) next to the `bmode` row of every structure a still can feed. It also adds a templated Hemo row.
+   - A structure with `finding_support` in the registry (the four valves) gets one row per set of findings instead: `full:<findings>` and `doppler:<findings>` hold only the Doppler clauses that state those findings (stenosis, regurgitation). The dataset reads the row of the findings its bag's stills show; stills that show none (an LVOT still for the aortic valve) leave the B-mode caption. A Doppler clause that names no listed finding (a bare gradient or velocity) is not written.
    - It also adds a `scope=doppler` row (Doppler clauses alone). The dataset reads `full` when the bag holds a clip and a still of the structure, `doppler` when it holds stills alone, and `bmode` when it holds clips alone, so B-mode statements are never trained against stills alone.
    - With `--stills <stills.csv>`, the split's studies that have stills and no eligible clip are captioned too (`doppler` rows and the Hemo row only) and go through the same patient check.
    - Frames per still: the still stream reads whatever token grid the still cache has (`model.stills.token_grid`): `[1, 14, 14]` for a 2-frame still, `[8, 14, 14]` for 16 repeated frames (`static_clip(frames=16)`). The heat-map bias is the same spatial map at every temporal position.
@@ -156,20 +157,41 @@ The measured value reaches the model in four ways. Each has a control:
 
 ## Not in this PR
 
-- **Still token cache writer.** It depends on open question 1. `prepare_still` is the per-still input; `TokenCacheWriter(root, [1, 14, 14], D, provenance={..., "preprocess": PREPROCESS_VERSION})` stores the result.
 - **EchoNet runner.** It should produce heat-maps in crop coordinates.
 - **Value-as-input ("interpret") arm** with modality dropout.
 - **Zero-shot Doppler prompts.**
 - **The leak audits above.**
 
-## Open questions
+## Decisions
 
-1. **Which encoder built the RADAR clip cache: EchoJEPA ViT-L (`vit_encoder_multiclip`) or the V-JEPA 2.1 ViT-B?**
-   - ViT-L: a 2-frame static clip gives one tubelet.
-   - V-JEPA 2.1: it has a native image path (`img_temporal_dim_size: 1`, image modality embedding), which may suit stills better.
-   - Either way, D and the encoder checkpoint must equal the clip cache's.
-2. **Are templated Hemo captions acceptable?** The template uses RVSP, RA pressure and mean E/e′, in French like the reports. RADAR otherwise trains on free text.
-   - The template is deterministic. Many studies will share identical Hemo captions, which A1's exact-caption positives turn into positives.
-   - The alternative is to leave Hemo untrained and use only the heads for haemodynamics.
-3. Should Doppler clauses stay in the same structure caption (`full`, as here), or go to separate `<structure>_doppler` slots?
-4. Should 2025 (more Philips) be held out as a temporal and vendor test once it has study ids?
+These replace the open questions of the first version of this document.
+
+1. **Encoder.** The RADAR clip cache was written by the V-JEPA 2.1 ViT-B (`vjepa_2_1_encoder`, 16 frames at step 2, 224 px; the cache's `meta.json` records the checkpoint's sha256). The still cache must be written by the same checkpoint with the same settings: `evals/radar_frozen/build_still_cache.py` takes the clip cache's config, and training refuses a mismatch.
+2. **Hemo: regression only for now.** In `radar_routing_v1.yaml` Hemo is untrained: no query and no contrastive caption. Haemodynamics is learned by the measurement heads from the TR, mitral inflow and tissue Doppler stills.
+   - The contrastive Hemo is an ablation, in `radar_routing_v1_hemo.yaml`.
+   - Its caption is conditioned on evidence, not one fixed sentence. The registry's `caption_evidence` says which stills each value rests on: RVSP on a TR still; E/e′ on a mitral inflow still and a tissue Doppler still. The builder writes one row per supportable set of values (scope `ev:<fields>`), and the dataset reads the row of the values its bag supports, or none.
+   - The RA pressure is never stated: it is estimated from the IVC, which no still shows.
+3. **LVOT stills and aortic stenosis text: measured, frequent, fixed by finding support.** Routing is by structure, so a bag holding only an LVOT still switched on the aortic valve's Doppler caption, which may speak of stenosis that only the AV still shows.
+   - `data/still_support_audit.py` counts it per structure and finding (stenosis, regurgitation) against a finding-support table. On the first training table, about half of the aortic stenosis statements and nearly all regurgitation statements had no still in the study that shows the finding (LVOT stills are the most common still; few stills show regurgitation).
+   - The Doppler clauses are therefore written per finding and selected by the bag's still tags (`finding_support` in the registry, `Structure.supported_findings`), as Hemo's fields already are. Routing of the tokens is unchanged: an LVOT still still feeds the aortic valve's embedding.
+   - Consequence: stills add mostly stenosis statements (where an AV, MV, TV or PV still exists) and pulmonic regurgitation; regurgitation of the other valves is rarely stated, because it is graded on colour clips, not on stills.
+4. **The patient hash salt is private.** `build_still_manifest.py` has no default salt. It reads `--salt-file` (outside the repository) or `RADAR_STILLS_SALT`, at least 32 characters, and writes only a keyed check value to `build_info.json`. A manifest built with the earlier public default must be rebuilt.
+5. **Negative Doppler values.** They are not made absolute blindly.
+   - `build_info.json` counts the negative values by quantity and vendor (`negative_values`): read that first.
+   - `--magnitude <quantities>` then takes the absolute value for the quantities whose sign is a direction of flow. Without it a negative value is not a target.
+   - `signed_values` keeps every value as read. A target whose beats disagree in sign on one still is left out.
+6. **EchoNet's prediction as a head input: three experiments and a baseline.** One code path, set in `heads`:
+
+   | Experiment | `heads` settings | What it tests |
+   |---|---|---|
+   | A. Visual only (primary) | `cond_columns: [v_top_ms, v_bot_ms]`, `demographics: false` | How much the frozen tokens hold |
+   | B. Visual + EchoNet + demographics | all conditioning columns, `demographics: true` | Performance with every input; reported apart |
+   | C. Side inputs only | `visual: false` | What is predictable without the image |
+
+   - `evals/radar_frozen/eval_heads.py` scores a checkpoint's heads per target and, on the same stills, EchoNet's own prediction (the transparent baseline).
+   - The velocity scale stays in A: the crop removes it from the image, and it is not a prediction.
+   - If EchoNet was trained on patients or studies evaluated here, its numbers are optimistic. The report says `baseline_overlap_checked: false` until that is established.
+7. **2025 is a temporal test.** No earlier work used 2025 studies (the 10k cohort, the RADAR clip tables and the full-archive manifests end in 2024). `--temporal-test-years 2025` gives those stills the split `test_temporal`; they never train. A 2025 still of a patient in train or val is left out. The random `test` split keeps the earlier years, so there are two tests: internal random and temporal.
+8. **Frames per still: the encoder stays frozen.** `build_still_cache.py --frames 2` writes a `[1, 14, 14]` cache and `--frames 16` an `[8, 14, 14]` cache from the same still table. Both are valid encoder inputs. They are compared downstream with the same split and evaluation. Adapting the encoder is considered only if those results give a reason; training a new pooler or head on frozen features is not retraining the encoder.
+
+Doppler clauses stay in the structure's caption (decided), now selected per finding. Separate `<structure>_doppler` slots are not planned.

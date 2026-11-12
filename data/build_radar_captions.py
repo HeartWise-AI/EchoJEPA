@@ -60,6 +60,7 @@ service.
 """
 
 import argparse
+import itertools
 import json
 import os
 import sys
@@ -75,7 +76,7 @@ if REPO_ROOT not in sys.path:
     sys.path.append(REPO_ROOT)
 from src.datasets.radar_study_dataset import file_sha256  # noqa: E402
 from src.datasets.study_bags import check_study_ids  # noqa: E402
-from src.models.radar.routing import DEFAULT_ROUTING, load_routing  # noqa: E402
+from src.models.radar.routing import DEFAULT_ROUTING, evidence_scope, finding_scope, load_routing  # noqa: E402
 
 COLUMNS = ("study_id", "structure", "caption", "caption_id", "normality", "normality_status", "policy_digest",
            "evidence", "boundary", "ef_status", "dropped_parts", "stranded_parts", "facts", "conflicts", "reasons",
@@ -122,16 +123,19 @@ def exclusion_row(study_id, structure, report):
 
 def full_row(study_id, structure, report, bmode, policy, scope="full"):
     """The `full` or `doppler` scope row of a structure fed by Doppler stills, or None without Doppler text (see the
-    docstring). A templated caption (Hemo) has no B-mode statement and only a `full` row."""
+    docstring). A templated caption (Hemo) has no B-mode statement; its `scope` is an evidence scope
+    (`routing.evidence_scope`) and the row states only that scope's fields. A scope `full:<findings>` or
+    `doppler:<findings>` (`routing.finding_scope`) keeps only the Doppler clauses of those findings."""
     if structure.caption_source == "structured":
-        if scope != "full":
-            return None
-        caption, flag = rdc.hemo_caption(report), rdc.hemo_flag(report)
+        fields = scope.removeprefix("ev:").split("+")
+        caption, flag = rdc.hemo_caption(report, fields), rdc.hemo_flag(report, fields)
         source = ""
     else:
         source = rc.caption_text(report.get(structure.report_column))
-        caption = (rdc.full_caption(bmode["caption"] if bmode else "", source) if scope == "full"
-                   else rdc.doppler_caption(source))
+        base, _, named = scope.partition(":")
+        findings = named.split("+") if named else None
+        caption = (rdc.full_caption(bmode["caption"] if bmode else "", source, findings) if base == "full"
+                   else rdc.doppler_caption(source, findings))
         flag = "unknown"
     if not rc.canonical_caption(caption):
         return None
@@ -169,10 +173,23 @@ def build_tables(reports, routing, policy, doppler=False, still_only=()):
                   and (exclusion := exclusion_row(study_id, structure, record)) is not None):
                 excluded.append(exclusion)
             if doppler and structure.name in fed:
-                templated = structure.caption_source == "structured"
-                for scope in ("full", "doppler"):
-                    if (with_clips or scope == "doppler" or templated) and (
-                            extra := full_row(study_id, structure, record, row, policy, scope)):
+                if structure.caption_source == "structured":
+                    # One row per set of fields a bag's stills could support, each stating only the fields the
+                    # report holds: the dataset reads the row of what its bag supports, never a fixed sentence.
+                    stated = [f for f, _ in structure.caption_evidence if f in rdc.hemo_values(record)]
+                    scopes = [evidence_scope(c) for n in range(1, len(stated) + 1)
+                              for c in itertools.combinations(stated, n)]
+                elif structure.finding_support:
+                    # One row per set of findings a bag's stills could show, with or without clips.
+                    source = rc.caption_text(record.get(structure.report_column))
+                    stated = set().union(*map(rdc.clause_findings, rdc.doppler_clauses(source)))
+                    stated = [f for f, _ in structure.finding_support if f in stated]
+                    scopes = [finding_scope(base, c) for base in ("full", "doppler") if with_clips or base == "doppler"
+                              for n in range(1, len(stated) + 1) for c in itertools.combinations(stated, n)]
+                else:
+                    scopes = [s for s in ("full", "doppler") if with_clips or s == "doppler"]
+                for scope in scopes:
+                    if extra := full_row(study_id, structure, record, row, policy, scope):
                         rows.append(extra)
     columns = [*COLUMNS, "scope"] if doppler else COLUMNS
     return pd.DataFrame(rows, columns=columns), pd.DataFrame(excluded, columns=EXCLUSION_COLUMNS)
@@ -213,12 +230,18 @@ def check_patients(built, split, splits, pacs, args, elsewhere=()):
     return {"in_table": len(patients), "held_out": len(others), "held_out_studies": len(held_out)}
 
 
-def add_still_studies(splits, stills_path, split, clip_studies):
+def add_still_studies(splits, stills_path, split, clip_studies, routed_tags=None):
     """(`splits` with the still table's studies it lacks, the split's studies with stills and no eligible clip, such
     studies of the other splits). The still table places a study whose patient the cohort split does not hold
     (`build_still_manifest.py` draws its split by patient); a study the two tables place differently stops the
-    build. The patient check then covers these studies like any other."""
-    stills = pd.read_csv(stills_path, dtype=str, usecols=["study_id", "split"]).drop_duplicates()
+    build. The patient check then covers these studies like any other. With `routed_tags` (the registry's still
+    tags), a study counts only if one of its stills has such a tag: the dataset leaves out a still that feeds no
+    structure, so a study with only such stills has no input to caption."""
+    columns = ["study_id", "split"] + (["still_tag"] if routed_tags is not None else [])
+    stills = pd.read_csv(stills_path, dtype=str, usecols=columns, keep_default_na=False)
+    if routed_tags is not None:
+        stills = stills[stills.still_tag.isin(set(routed_tags))].drop(columns="still_tag")
+    stills = stills.drop_duplicates()
     stills = stills.assign(study_id=normalize_id(stills.study_id))
     if stills.study_id.duplicated().any():
         raise SystemExit("--stills places a study in two splits.")
@@ -289,7 +312,8 @@ def main(argv=None):
     if args.stills:
         if not args.doppler_captions:
             raise SystemExit("--stills needs --doppler-captions: a study without a clip has no B-mode caption.")
-        splits, still_only, still_elsewhere = add_still_studies(splits, args.stills, args.split, set(clips.study_id))
+        splits, still_only, still_elsewhere = add_still_studies(splits, args.stills, args.split, set(clips.study_id),
+                                                                routed_tags=set(routing.still_structs))
         studies, elsewhere = studies | still_only, elsewhere | still_elsewhere
     patients = check_patients(studies, args.split, splits, pacs, args, elsewhere)
     reports = read_reports(args.reports, args)

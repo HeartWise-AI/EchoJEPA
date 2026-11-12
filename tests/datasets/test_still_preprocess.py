@@ -67,7 +67,7 @@ class TestPreprocess(unittest.TestCase):
         self.assertGreater(overlay_mask(tinted).mean(), 0.1)
         self.assertLess(overlay_mask(tinted, tint=(0, 0, 60)).mean(), 0.01)
 
-    def test_overlay_edge_goes_with_the_overlay_and_a_tinted_crop_is_refused(self):
+    def test_overlay_edge_goes_with_the_overlay_and_a_tint_is_estimated(self):
         image = np.full((40, 60, 3), 60, dtype=np.uint8)
         image[20, 10:50] = (255, 255, 0)                        # a line
         image[19, 10:50] = image[21, 10:50] = (80, 80, 60)      # its anti-aliased edge: chroma 20, under the threshold
@@ -77,10 +77,22 @@ class TestPreprocess(unittest.TestCase):
         self.assertFalse(mask[5, 30])
         tinted = screen().astype(np.int32)
         tinted[..., 2] = np.clip(tinted[..., 2] + 60, 0, 255)
-        with self.assertRaisesRegex(ValueError, "tint"):
-            prepare_still(tinted.astype(np.uint8), (0, 40, 200, 110), size=32)
-        _, report = prepare_still(tinted.astype(np.uint8), (0, 40, 200, 110), size=32, tint=(0, 0, 60))
+        tinted = tinted.astype(np.uint8)
+        _, report = prepare_still(tinted, (0, 40, 200, 110), size=32, tint=(0, 0, 60))
         self.assertLess(report["overlay_fraction"], 0.01)
+        self.assertFalse(report["tint_estimated"])
+        _, report = prepare_still(tinted, (0, 40, 200, 110), size=32)      # the tint is found in the crop
+        self.assertTrue(report["tint_estimated"])
+        self.assertLess(report["overlay_fraction"], 0.01)
+        tinted[60:64, 20:180] = (255, 255, 0)                             # a caliper line of another colour
+        _, report = prepare_still(tinted, (0, 40, 200, 110), size=32)
+        self.assertTrue(report["tint_estimated"])
+        self.assertGreater(report["masked_overlay_px"], 4 * 160 - 1)
+        mixed = tinted.copy()
+        mixed[40:110, :100] = (200, 30, 30)                               # two colours: no single tint
+        mixed[40:110, 100:] = (30, 200, 30)
+        with self.assertRaisesRegex(ValueError, "no single tint"):
+            prepare_still(mixed, (0, 40, 200, 110), size=32)
 
     def test_masking_removes_overlays_and_text(self):
         clean, _ = prepare_still(screen(), (0, 40, 200, 110), size=32)

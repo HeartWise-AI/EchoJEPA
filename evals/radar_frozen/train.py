@@ -77,7 +77,8 @@ worker_start_method}; meta {wandb_project, wandb_entity, wandb_run_name}; device
 Doppler stills (optional; a config without these sections trains exactly as v0): data.stills {table (the split's
 `stills.csv`), cache_dir (the stills' token cache), demographics (optional), num_stills, cond_columns,
 heatmap_column}; model.stills {token_grid (e.g. [1, 14, 14]), cond (default true: the pooler reads cond_columns),
-heatmap_bias, demo_film}; heads {targets, weight, target_weights, demographics, hidden_dim} for the per-still
+heatmap_bias, demo_film}; heads {targets, weight, target_weights, demographics, hidden_dim, cond_columns (the
+head's side inputs among data.stills.cond_columns; default all), visual (false: side inputs only)} for the per-still
 measurement regression (`src/models/radar/heads.py`). They need a routing registry with still routing
 (`configs/radar/radar_routing_v1.yaml`). A step contributes when a structure or a measurement target does. See
 docs/radar/RADAR_stills_integration.md.
@@ -286,11 +287,19 @@ def build_model(config, routing):
         depth=m.get("depth", 2), num_heads=m.get("num_heads", 12), mlp_ratio=m.get("mlp_ratio", 4.0),
         proj_dim=m.get("proj_dim", 256), use_activation_checkpointing=m.get("activation_checkpointing", False),
         **still_kwargs)
-    heads = None
+    heads, head_index = None, None
     if heads_config:
-        heads = StillMeasurementHeads(m["embed_dim"], heads_config["targets"], still_cond_dim=cond_dim,
+        stream_columns = list(still_data.get("cond_columns", []))
+        head_columns = list(heads_config.get("cond_columns", stream_columns))
+        unknown = [c for c in head_columns if c not in stream_columns]
+        if unknown:
+            raise ValueError(f"heads.cond_columns {unknown} are not in data.stills.cond_columns: the still stream "
+                             "reads the conditioning columns, the heads choose among them.")
+        head_index = [stream_columns.index(c) for c in head_columns]
+        heads = StillMeasurementHeads(m["embed_dim"], heads_config["targets"], still_cond_dim=len(head_columns),
                                       demo_dim=DEMO_DIM if heads_config.get("demographics", True) else 0,
-                                      hidden_dim=heads_config.get("hidden_dim", 256))
+                                      hidden_dim=heads_config.get("hidden_dim", 256),
+                                      use_visual=heads_config.get("visual", True))
     text_encoder, tokenizer = build_text_encoder(t, m.get("proj_dim", 256))
     loss = StructureContrastiveLoss(
         trained, use_exact=lc["use_exact"], use_normal=lc.get("use_normal", False),
@@ -300,7 +309,7 @@ def build_model(config, routing):
     if heads is None:
         return RadarModel(pooler, text_encoder, loss), tokenizer
     return RadarModel(pooler, text_encoder, loss, heads, heads_config.get("weight", 1.0),
-                      heads_config.get("target_weights")), tokenizer
+                      heads_config.get("target_weights"), head_index), tokenizer
 
 
 def read_stills(section, routing, split, heads=None, scaler=None, demo_stats=None):

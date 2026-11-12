@@ -98,6 +98,18 @@ class TestDistributed(unittest.TestCase):
 
 class TestHeads(unittest.TestCase):
 
+    def test_side_inputs_only_ignores_the_tokens(self):
+        heads = StillMeasurementHeads(16, TARGETS, still_cond_dim=2, demo_dim=4, hidden_dim=8, use_visual=False)
+        cond, demo = torch.randn(2, 3, 2), torch.randn(2, 4)
+        a = heads(torch.randn(2, 3, 5, 16), cond, demo)
+        b = heads(torch.randn(2, 3, 5, 16), cond, demo)
+        self.assertTrue(torch.equal(a, b))                               # other tokens, same prediction
+        self.assertFalse(torch.equal(a, heads(torch.randn(2, 3, 5, 16), cond + 1.0, demo)))
+        a.sum().backward()
+        self.assertTrue(all(p.grad is not None for p in heads.parameters()))        # all in the graph (DDP)
+        with self.assertRaises(ValueError):
+            StillMeasurementHeads(16, TARGETS, use_visual=False)         # nothing left to read
+
     def test_shapes_and_film_identity(self):
         torch.manual_seed(0)
         heads = StillMeasurementHeads(16, TARGETS, still_cond_dim=3, demo_dim=4, hidden_dim=8)

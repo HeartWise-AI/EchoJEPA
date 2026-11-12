@@ -13,7 +13,7 @@ import yaml
 
 from src.models.radar.routing import DEFAULT_ROUTING, load_routing
 
-V1 = os.path.join(os.path.dirname(DEFAULT_ROUTING), "radar_routing_v1.yaml")
+V1 = os.path.join(os.path.dirname(DEFAULT_ROUTING), "radar_routing_v1_hemo.yaml")
 
 
 class TestV1Registry(unittest.TestCase):

@@ -46,6 +46,7 @@ import torch
 
 from src.datasets.radar_stills import STILL_ITEM_KEYS
 from src.datasets.study_bags import bag_record, check_study_ids, choose_bag, evaluation_rng, training_rng
+from src.models.radar.routing import evidence_scope, finding_scope
 
 NORMALITY = ("normal", "abnormal", "unknown")
 SCOPES = ("bmode", "full", "doppler")
@@ -92,10 +93,13 @@ class RadarStudyDataset(torch.utils.data.Dataset):
         captions = captions[captions.structure.isin(self.structures)]
         if "scope" not in captions.columns:
             captions = captions.assign(scope="bmode")
-        bad_scope = set(captions.scope) - set(SCOPES)
+        bad_scope = {s for s in set(captions.scope) - set(SCOPES)
+                     if not str(s).startswith(("ev:", "full:", "doppler:"))}
         if bad_scope:
             raise ValueError(f"scope must be one of {SCOPES}, got {sorted(bad_scope)}.")
         self.no_views = {s.name for s in routing.structures if not s.views}
+        self.structured = {s.name for s in routing.structures if s.caption_source == "structured"}
+        self.by_finding = {s.name for s in routing.structures if s.finding_support}
         if stills is None:
             captions = captions[captions.scope == "bmode"]
         if captions.duplicated(["study_id", "structure", "scope"]).any():
@@ -144,6 +148,27 @@ class RadarStudyDataset(torch.utils.data.Dataset):
             return "bmode"
         return "full" if has_clip or name in self.no_views else "doppler"
 
+    def _still_tags(self, still, s):
+        """The tags of the bag's stills that feed structure `s`."""
+        usable = still["still_eligible"][s] & still["still_valid"]
+        return {self.routing.still_tags[int(i)] for i in still["still_tag_ids"][usable] if int(i) >= 0}
+
+    def _finding_scope(self, name, has_clip, still, s):
+        """The scope of a report caption with finding support: the Doppler clauses of the findings that the bag's
+        stills of the structure show (`Structure.supported_findings`), after the B-mode statement when the bag has
+        a clip of the structure. Stills that show none of its findings add no clause: `bmode` with a clip, else
+        None."""
+        findings = self.routing.structure(name).supported_findings(self._still_tags(still, s))
+        if not findings:
+            return "bmode" if has_clip else None
+        return finding_scope("full" if has_clip else "doppler", findings)
+
+    def _evidence_scope(self, name, still, s):
+        """The scope of a structured caption (Hemo): the fields that the bag's stills of the structure support
+        (`Structure.supported_fields`), or None when they support none. The caption then states exactly those."""
+        fields = self.routing.structure(name).supported_fields(self._still_tags(still, s))
+        return evidence_scope(fields) if fields else None
+
     def __getitem__(self, index):
         study_id, clips = self.studies[index]
         by_id = {clip[0]: clip for clip in clips}
@@ -169,8 +194,13 @@ class RadarStudyDataset(torch.utils.data.Dataset):
         has_caption = torch.zeros(S, dtype=torch.bool)
         normal, abnormal = torch.zeros(S, dtype=torch.bool), torch.zeros(S, dtype=torch.bool)
         for s, name in enumerate(self.structures):
-            entry = self.captions.get((study_id, name, self._scope(name, bool(eligible[s].any()),
-                                                                   bool(has_still[s]))))
+            if name in self.structured:
+                scope = self._evidence_scope(name, still, s) if still and has_still[s] else None
+            elif name in self.by_finding and still and has_still[s]:
+                scope = self._finding_scope(name, bool(eligible[s].any()), still, s)
+            else:
+                scope = self._scope(name, bool(eligible[s].any()), bool(has_still[s]))
+            entry = self.captions.get((study_id, name, scope))
             if entry is None and eligible[s].any():
                 entry = self.captions.get((study_id, name, "bmode"))
             if entry is not None and self._left_out(study_id, name, entry[2]):

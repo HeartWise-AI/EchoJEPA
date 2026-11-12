@@ -87,7 +87,9 @@ class TestRules(unittest.TestCase):
 
     def test_aggregate(self):
         stills, dropped = bsm.aggregate_stills(meas_table())
-        self.assertEqual(dropped, 1)                         # the 900 cm VTI
+        self.assertEqual(dropped["out_of_range"], 1)         # the 900 cm VTI
+        self.assertEqual(json.loads(stills.set_index("png_path").loc["/stills/d1/a.png"].signed_values)["AV_VMAX"],
+                         [3.0, 3.4])
         a = stills.set_index("png_path").loc["/stills/d1/a.png"]
         self.assertAlmostEqual(a.y_AV_VMAX, 3.2)              # mean over beats
         self.assertAlmostEqual(a.y_AV_MAXPG, 36.0)
@@ -102,6 +104,28 @@ class TestRules(unittest.TestCase):
         self.assertAlmostEqual(c.y_MV_DT, 200.0)
         self.assertEqual(stills.set_index("png_path").loc["/stills/d4/e.png"].still_tag, "")
         self.assertTrue(all(len(s) == 16 and "sop" not in s for s in stills.still_id))
+
+    def test_negative_values_are_kept_as_read_and_a_magnitude_only_where_asked(self):
+        rows = pd.DataFrame([meas_row("n", "d1", "TR", "VMAX", -2.8, "m/s"),
+                             meas_row("n", "d1", "TR", "VMAX", -3.0, "m/s"),
+                             meas_row("n", "d1", "TR", "MAXPG", -31.0, "mmHg"),
+                             meas_row("m", "d1", "AV", "VMAX", -4.0, "m/s"),
+                             meas_row("m", "d1", "AV", "VMAX", 4.0, "m/s")])
+        plain, dropped = bsm.aggregate_stills(rows)
+        n = plain.set_index("png_path").loc["/stills/d1/n.png"]
+        self.assertFalse(any(c.startswith("y_") and pd.notna(n[c]) for c in plain.columns))    # no blind absolute
+        self.assertEqual(json.loads(n.signed_values), {"TR_MAXPG": [-31.0], "TR_VMAX": [-2.8, -3.0]})
+        self.assertEqual((dropped["negative_dropped"], dropped["mixed_sign"], dropped["sign_flipped"]), (3, 1, 0))
+        flipped, dropped = bsm.aggregate_stills(rows, magnitude={"VMAX"})
+        n = flipped.set_index("png_path").loc["/stills/d1/n.png"]
+        self.assertAlmostEqual(n.y_TR_VMAX, 2.9)
+        self.assertNotIn("y_TR_MAXPG", n.dropna().index)             # only the quantities asked for
+        self.assertEqual(json.loads(n.signed_values)["TR_VMAX"], [-2.8, -3.0])              # the sign stays on record
+        self.assertEqual((dropped["sign_flipped"], dropped["negative_dropped"], dropped["mixed_sign"]), (2, 1, 1))
+        m = flipped.set_index("png_path").loc["/stills/d1/m.png"]
+        self.assertNotIn("y_AV_VMAX", m.dropna().index)              # beats of opposite sign: no target
+        counts = bsm.negative_values(bsm.normalize_meas(rows))
+        self.assertEqual(counts["TR_VMAX|Vendor"], ["<5", 2])
 
     def test_age(self):
         age = bsm.age_years(["19500615", "bad", "20300101"], ["20240615", "20240615", "20240101"])
@@ -141,10 +165,66 @@ class TestLinkAndSplit(unittest.TestCase):
         with self.assertRaisesRegex(SystemExit, "two splits"):
             bsm.assign_splits(linked, two, metadata_table(), "salt", (0.8, 0.1, 0.1))
 
+    def test_archive_wide_patient_split_comes_before_the_hash(self):
+        stills, _ = bsm.aggregate_stills(meas_table())
+        linked, _, _ = bsm.link_studies(stills, metadata_table(), "salt")
+        splits = pd.DataFrame({"study_id": ["1.2.3.1", "9.9.9"], "split": ["val", "test"],
+                               "patient_id": ["P001", "P002"]})
+        drawn, _ = bsm.assign_splits(linked, splits, metadata_table(), "salt", (0.8, 0.1, 0.1))
+        loose = drawn[~drawn.patient.isin({"P001", "P002"})].drop_duplicates("patient")
+        patient, was = loose.patient.iloc[0], loose.split.iloc[0]
+        other = next(s for s in bsm.SPLITS if s != was)
+        table = pd.DataFrame({"patient_id": ["P001", "00" + patient, "ZZZ"], "split": ["val", other, "train"]})
+        out, counts = bsm.assign_splits(linked, splits, metadata_table(), "salt", (0.8, 0.1, 0.1),
+                                        patient_splits=table)
+        self.assertEqual(set(out[out.patient == patient].split), {other})       # the table, not the hash
+        self.assertEqual(counts["patients_inherited_from_patient_splits"], 1)
+        self.assertEqual(counts["patients_drawn"], loose.patient.nunique() - 1)
+        self.assertEqual(set(out[out.patient == "P001"].split), {"val"})
+        clash = table.assign(split=["train", other, "train"])                   # the cohort split says val
+        with self.assertRaisesRegex(SystemExit, "another split in --patient-splits"):
+            bsm.assign_splits(linked, splits, metadata_table(), "salt", (0.8, 0.1, 0.1), patient_splits=clash)
+        twice = pd.concat([table, pd.DataFrame({"patient_id": ["ZZZ"], "split": ["val"]})])
+        with self.assertRaisesRegex(SystemExit, "two splits"):
+            bsm.assign_splits(linked, splits, metadata_table(), "salt", (0.8, 0.1, 0.1), patient_splits=twice)
+
     def test_hashed_split_fractions(self):
         draws = pd.Series([bsm.hashed_split(f"P{i}", "s", (0.8, 0.1, 0.1)) for i in range(4000)]).value_counts(
             normalize=True)
         self.assertAlmostEqual(draws["train"], 0.8, delta=0.03)
+
+    def test_temporal_years_are_held_out_and_never_train(self):
+        rows = meas_table()
+        late = pd.DataFrame([{**meas_row("x", "d1", "AV", "VMAX", 3.0, "m/s"), "year": 2025},      # P001: train
+                             {**meas_row("y", "d2", "AV", "VMAX", 3.0, "m/s"), "year": 2025},      # P002: test
+                             {**meas_row("z", "d4", "AV", "VMAX", 3.0, "m/s"), "year": 2025}])     # P004: only 2025
+        rows = pd.concat([rows[~rows.png_path.str.contains("/d4/")], late], ignore_index=True)
+        stills, _ = bsm.aggregate_stills(rows)
+        linked, _, _ = bsm.link_studies(stills, metadata_table(), "salt")
+        splits = pd.DataFrame({"study_id": ["1.2.3.1", "1.2.3.2"], "split": ["train", "test"]})
+        out, counts = bsm.assign_splits(linked, splits, metadata_table(), "salt", (0.8, 0.1, 0.1), [2025])
+        by_png = out.set_index("png_path").split
+        self.assertNotIn("/stills/d1/x.png", by_png.index)                  # a trained patient's 2025 still leaves
+        self.assertEqual(by_png["/stills/d2/y.png"], bsm.TEMPORAL_SPLIT)
+        self.assertEqual(by_png["/stills/d4/z.png"], bsm.TEMPORAL_SPLIT)    # whatever split the hash would draw
+        self.assertEqual(by_png["/stills/d1/a.png"], "train")
+        self.assertEqual(by_png["/stills/d2/c.png"], "test")                # the random test keeps the earlier years
+        self.assertFalse(((pd.to_numeric(out.year) == 2025) & out.split.isin(["train", "val"])).any())
+        self.assertEqual((counts["temporal_stills"], counts["temporal_stills_left_out_trained_patients"]), (2, 1))
+
+
+class TestSalt(unittest.TestCase):
+
+    def test_no_default_and_never_in_the_repository(self):
+        with self.assertRaises(SystemExit):
+            bsm.read_salt(None, environ={})
+        with self.assertRaises(SystemExit):
+            bsm.read_salt(None, environ={bsm.SALT_ENV: "short"})
+        self.assertEqual(bsm.read_salt(None, environ={bsm.SALT_ENV: "s" * 40}), "s" * 40)
+        with self.assertRaises(SystemExit):
+            bsm.read_salt(os.path.join(REPO, "salt.txt"))
+        self.assertNotEqual(bsm.salt_check("a" * 40), bsm.salt_check("b" * 40))
+        self.assertNotIn("a" * 8, bsm.salt_check("a" * 40))
 
 
 class TestMain(unittest.TestCase):
@@ -164,7 +244,13 @@ class TestMain(unittest.TestCase):
         echonet = os.path.join(self.root, "echonet.parquet")
         pd.DataFrame({"png_path": ["/stills/d1/a.png"], "pred_cms": [310.0], "heat_max": [0.9]}).to_parquet(echonet)
         out = os.path.join(self.root, "out")
-        bsm.main(["--meas", meas, "--metadata", meta, "--splits", splits, "--echonet", echonet, "--out-dir", out])
+        salt_file = os.path.join(self.root, "salt.txt")
+        with open(salt_file, "w") as f:
+            f.write("k" * 40 + "\n")
+        with self.assertRaises(SystemExit):                  # no salt, no build
+            bsm.main(["--meas", meas, "--metadata", meta, "--splits", splits, "--out-dir", out])
+        bsm.main(["--meas", meas, "--metadata", meta, "--splits", splits, "--echonet", echonet, "--out-dir", out,
+                  "--salt-file", salt_file])
         stills = pd.read_csv(os.path.join(out, "stills.csv"), dtype={"study_id": str})
         demo = pd.read_csv(os.path.join(out, "demographics.csv"), dtype={"study_id": str})
         self.assertEqual(list(stills.columns), list(bsm.STILL_COLUMNS))
@@ -177,8 +263,12 @@ class TestMain(unittest.TestCase):
         self.assertNotIn("birthdate", demo.columns)
         info = json.load(open(os.path.join(out, "build_info.json")))
         self.assertEqual((info["stills"], info["unlinked_stills"]), (5, 1))
+        self.assertNotIn("salt", info)
+        self.assertNotIn("k" * 40, json.dumps(info))
+        self.assertEqual(info["salt_check"], bsm.salt_check("k" * 40))
+        self.assertEqual(info["magnitude"], [])
         with self.assertRaises(SystemExit):
-            bsm.main(["--meas", meas, "--metadata", meta, "--splits", splits, "--out-dir",
+            bsm.main(["--meas", meas, "--metadata", meta, "--splits", splits, "--salt-file", salt_file, "--out-dir",
                       os.path.join(REPO, "tmp_stills_out")])
 
 

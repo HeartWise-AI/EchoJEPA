@@ -21,8 +21,16 @@ from 16 repeated frames, grid [8, H, W], reads the same map at each), `still_y` 
 (z-scored log targets) and `demo` [4] (z-scored age, male, female, age missing).
 
 Leakage guard: a conditioning column may not be a target, nor start with `y_` (a measured value is never an input
-here), and the targets' scaler and the age statistics are fitted on the source's own stills and studies (the
-training split's, whatever else the demographics table holds) and passed to the others.
+here), and it must be one of `INFERENCE_INPUTS`: the columns known before anyone measures the still. A name check
+alone lets through a column that holds the measurement under another name (a gradient computed from the peak
+velocity, the number of measurement rows), so every other column is refused, whatever it is called. The targets'
+scaler and the age statistics are fitted on the source's own stills and studies (the training split's, whatever
+else the demographics table holds) and passed to the others.
+
+Preprocessing guard (`known_preprocess`): a still cache that records where it came from must also record a
+preprocessing recipe of `PREPROCESS_ACCEPTED`. Tokens of stills that were not masked, or masked by a recipe nobody
+listed, are refused. This shows which recipe wrote the tokens; it does not show that the recipe removes every
+drawn measurement (see docs/radar/RADAR_stills_integration.md, leakage controls).
 """
 
 import hashlib
@@ -31,12 +39,33 @@ import numpy as np
 import pandas as pd
 import torch
 
-from src.datasets.still_preprocess import heatmap_bias
+from src.datasets.still_preprocess import PREPROCESS_VERSION, heatmap_bias
 from src.datasets.study_bags import select_clips
 from src.models.radar.heads import encode_targets, fit_log_scaler
 
 DEMO_DIM = 4
 ENCODER_KEYS = ("encoder_sha256", "encoder")     # of a token cache's provenance (the cache writer's record)
+# What a still's conditioning may hold: the velocity scale of the crop (DICOM calibration) and, when a run asks for
+# them, EchoNet's own prediction on the still. Nothing that the measurement table or the report gives.
+INFERENCE_INPUTS = ("v_top_ms", "v_bot_ms", "echonet_present", "echonet_vmax_ms", "echonet_conf")
+PREPROCESS_ACCEPTED = (PREPROCESS_VERSION,)      # recipes of `still_preprocess.prepare_still` a still cache may hold
+
+
+def known_preprocess(still_meta):
+    """Refuse a still cache whose tokens were not written from stills prepared by an accepted recipe. A cache
+    written by `build_still_cache.py` records `preprocess`; one that records an encoder or anything else about its
+    origin but no accepted recipe is refused. Returns the recipe, or None for a cache without any record or one
+    marked `synthetic` (the tests' caches: no image was ever read)."""
+    provenance = still_meta.get("provenance") or {}
+    if not provenance or provenance.get("synthetic"):
+        return None
+    recipe = provenance.get("preprocess")
+    if recipe not in PREPROCESS_ACCEPTED:
+        raise ValueError(f"The still token cache records the preprocessing recipe {recipe!r}; accepted: "
+                         f"{list(PREPROCESS_ACCEPTED)}. Tokens of stills that were not masked by an accepted recipe "
+                         "may show the measured value: write the cache again with evals/radar_frozen/"
+                         "build_still_cache.py.")
+    return recipe
 
 
 def same_encoder(clip_meta, still_meta):
@@ -72,6 +101,12 @@ class StillSource:
         leaking = [c for c in cond_columns if c in target_columns or c.startswith("y_")]
         if leaking:
             raise ValueError(f"Conditioning columns {leaking} are measured values: a target is never an input.")
+        unlisted = [c for c in cond_columns if c not in INFERENCE_INPUTS]
+        if unlisted:
+            raise ValueError(f"Conditioning columns {unlisted} are not among the inputs known before a measurement "
+                             f"({list(INFERENCE_INPUTS)}): a column that follows from the measurement is refused "
+                             "whatever its name.")
+        self.preprocess = known_preprocess(cache.meta)
         if stills.still_id.astype(str).duplicated().any():
             raise ValueError("A still appears twice in the still table.")
         missing = [s for s in stills.still_id.astype(str) if s not in cache]
@@ -97,7 +132,10 @@ class StillSource:
         self.unrouted = int((~routed & ~measured).sum())
         self.unrouted_with_targets = int((~routed & measured).sum())
         stills = stills[routed | measured]
-        cond = np.nan_to_num(stills[self.cond_columns].to_numpy(dtype=np.float32)) if self.cond_columns else None
+        # One tensor per table, of which each still holds a row (a view): a tensor per still would be a shared
+        # memory segment per still when the loader's workers start, more than the system maps.
+        cond = (torch.from_numpy(np.nan_to_num(stills[self.cond_columns].to_numpy(dtype=np.float32)))
+                if self.cond_columns else None)
         if target_columns:
             y, present = encode_targets(stills[self.target_columns].to_numpy(dtype=float), self.scaler,
                                         self.target_columns)
@@ -106,7 +144,7 @@ class StillSource:
             heat = getattr(row, heatmap_column) if heatmap_column else ""
             self.by_study.setdefault(row.study_id, []).append({
                 "still_id": row.still_id, "tag": row.still_tag, "type": row.still_type,
-                "cond": torch.from_numpy(cond[i]) if cond is not None else None,
+                "cond": cond[i] if cond is not None else None,
                 "y": y[i] if target_columns else None, "present": present[i] if target_columns else None,
                 "heatmap": heat if isinstance(heat, str) else ""})
         for rows in self.by_study.values():
@@ -119,10 +157,13 @@ class StillSource:
                 own = ages[demo.study_id.isin(self.by_study).to_numpy()]
                 demo_stats = [float(own.mean()), float(max(own.std(ddof=0), 1e-6))] if own.notna().any() \
                     else [0.0, 1.0]
-            for study, age, sex in zip(demo.study_id, ages, demo.sex.fillna("").astype(str)):
-                known = bool(np.isfinite(age))
-                self.demo[study] = torch.tensor([(age - demo_stats[0]) / demo_stats[1] if known else 0.0,
-                                                 float(sex == "M"), float(sex == "F"), float(not known)])
+            sexes = demo.sex.fillna("").astype(str)
+            known = np.isfinite(ages.to_numpy(dtype=float))
+            table = torch.from_numpy(np.stack([
+                np.where(known, (ages.to_numpy(dtype=float) - demo_stats[0]) / demo_stats[1], 0.0),
+                (sexes == "M").to_numpy(dtype=float), (sexes == "F").to_numpy(dtype=float),
+                (~known).astype(float)], axis=1).astype(np.float32))
+            self.demo = {study: table[i] for i, study in enumerate(demo.study_id)}
         self.demo_stats = demo_stats
 
     @property
