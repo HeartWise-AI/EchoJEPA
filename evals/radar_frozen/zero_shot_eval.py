@@ -50,7 +50,8 @@ Outputs in `out_dir`, which must be outside the repository because `predictions.
 
 - `predictions.csv`: one row per (study, task): `study_id`, `task`, `mode`, `structure`, `label`, `prediction`,
   `prediction_supported`, `supported_bags`, and for a categorical task `probabilities` (JSON, in grade order);
-- `metrics.json`: per task the coverage, the metrics and their intervals, and what the run read (checksums of the
+- `metrics.json`: per task the coverage, the metrics and their intervals, a `summary` (the binary tasks' mean AUROC,
+  plain and weighted by scored studies), and what the run read (checksums of the
   checkpoint, clip table, label table and prompt file, the bag record, the temperature, the pooling);
 - `thresholds.json`.
 
@@ -211,6 +212,8 @@ def encode_task(task, text_encoder, tokenizer):
                              "caption encoder reads; a truncated prompt is another prompt.")
         return encode_prompts(text_encoder, tokenizer, prompts).cpu()
 
+    if task.mode == "regression" and task.values:
+        return {"values": list(task.values), "prompts": encode(task.label_sources)}
     if task.mode == "regression":
         pairs = regression_prompts(task.label_sources, *task.value_range)
         return {"values": [v for v, _ in pairs], "prompts": encode([p for _, p in pairs])}
@@ -430,6 +433,7 @@ def evaluate(config, checkpoint, clips, labels, out_dir, prompts=DEFAULT_PROMPTS
                                    for row, ok in zip(pooled, supported)] if task.mode == "categorical" else "")
         rows.append(frame)
 
+    report["summary"] = summary(report["tasks"])
     os.makedirs(out_dir, exist_ok=True)
     pd.concat(rows, ignore_index=True).to_csv(os.path.join(out_dir, "predictions.csv"), index=False)
     report = _json(report)
@@ -442,9 +446,26 @@ def evaluate(config, checkpoint, clips, labels, out_dir, prompts=DEFAULT_PROMPTS
     return report
 
 
+def summary(tasks):
+    """The binary tasks' AUROC in one number, two ways: the plain mean over tasks (the `AvgAUC` of the released RADAR
+    metric scripts) and the mean weighted by each task's scored studies. Tasks without an AUROC (one class only) are
+    left out and counted."""
+    scored = [(t["metrics"]["auroc"], t["coverage"]["labelled_supported"]) for t in tasks.values()
+              if t["mode"] == "binary" and t["metrics"].get("auroc") is not None
+              and np.isfinite(t["metrics"]["auroc"])]
+    binary = sum(t["mode"] == "binary" for t in tasks.values())
+    if not scored:
+        return {"binary_tasks": binary, "binary_tasks_scored": 0, "mean_auroc": None, "weighted_mean_auroc": None}
+    values, weights = np.array(scored, dtype=float).T
+    return {"binary_tasks": binary, "binary_tasks_scored": len(scored), "mean_auroc": float(values.mean()),
+            "weighted_mean_auroc": float((values * weights).sum() / weights.sum())}
+
+
 def scalars(report):
     """The report's numbers as flat W&B scalars: `zero_shot/<task>/<metric>`, with `_low` and `_high` bounds."""
     out = {"zero_shot/temperature": report["temperature"], "zero_shot/studies": report["studies"]}
+    out.update({f"zero_shot/summary/{key}": value for key, value in report.get("summary", {}).items()
+                if value is not None})
     for name, task in report["tasks"].items():
         prefix = f"zero_shot/{name}"
         for key, value in {**task["coverage"], **task["metrics"]}.items():

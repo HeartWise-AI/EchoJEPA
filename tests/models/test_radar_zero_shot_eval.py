@@ -530,3 +530,31 @@ class TestZeroShotEval(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestSummary(unittest.TestCase):
+
+    def test_mean_auroc_plain_and_weighted(self):
+        from evals.radar_frozen.zero_shot_eval import summary
+
+        def task(mode, auroc, n):
+            return {"mode": mode, "metrics": {"auroc": auroc}, "coverage": {"labelled_supported": n}}
+
+        out = summary({"a": task("binary", 0.9, 100), "b": task("binary", 0.6, 300),
+                       "c": task("binary", None, 50), "d": task("binary", float("nan"), 50),
+                       "e": {"mode": "regression", "metrics": {"mae": 4.0}, "coverage": {"labelled_supported": 10}}})
+        self.assertEqual((out["binary_tasks"], out["binary_tasks_scored"]), (4, 2))
+        self.assertAlmostEqual(out["mean_auroc"], 0.75)
+        self.assertAlmostEqual(out["weighted_mean_auroc"], 0.675)
+        self.assertIsNone(summary({"e": {"mode": "regression", "metrics": {}, "coverage": {}}})["mean_auroc"])
+
+    def test_sampled_regression_prompts_are_encoded_with_their_values(self):
+        from evals.radar_frozen.zero_shot_eval import encode_task
+        from src.models.radar.text_encoder import build_text_encoder
+        from src.models.radar.zero_shot import PromptTask
+
+        encoder, tokenizer = build_text_encoder({"backbone": "tiny", "max_length": 16}, 8)
+        task = PromptTask("ef", "regression", "lv", ("ef low", "ef mid", "ef high"), values=(30, 50, 65))
+        encoded = encode_task(task, encoder, tokenizer)
+        self.assertEqual(encoded["values"], [30, 50, 65])
+        self.assertEqual(tuple(encoded["prompts"].shape), (3, 8))
