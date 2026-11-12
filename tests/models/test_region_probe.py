@@ -477,6 +477,35 @@ class TestRegionStudyProbe(unittest.TestCase):
         for head in a:
             self.assertTrue(torch.equal(a[head], b[head]), head)
 
+    def test_probe_weights_must_fit_except_for_a_missing_study_pooler(self):
+        trained = self.probe()
+        with torch.no_grad():
+            for p in trained.parameters():
+                p.add_(0.05 * torch.randn_like(p))
+        decoder = trained.region_decoder.state_dict()
+        state = {k: v for k, v in trained.state_dict().items() if not k.startswith("region_decoder.")}
+        other = self.probe(labels=None)
+        self.assertFalse(other.load_weights(decoder, state))
+        for name, value in trained.state_dict().items():
+            self.assertTrue(torch.equal(other.state_dict()[name], value), name)
+
+        # Without the whole study pooler: the rest is loaded and the pooler keeps its initial values.
+        other = self.probe(labels=None)
+        initial = {k: v.clone() for k, v in other.state_dict().items() if k.startswith("study_pooler.")}
+        without = {k: v for k, v in state.items() if not k.startswith("study_pooler.")}
+        self.assertTrue(other.load_weights(decoder, without))
+        for name, value in other.state_dict().items():
+            self.assertTrue(torch.equal(value, initial[name] if name in initial else trained.state_dict()[name]), name)
+
+        # Anything else that is missing, and anything unexpected, is refused.
+        for wrong in ({k: v for k, v in state.items() if k != "study_pooler.query"},
+                      {k: v for k, v in state.items() if k != "crop_query"},
+                      {k: v for k, v in without.items() if not k.startswith("heads.b_bright.")},
+                      {**state, "extra": torch.zeros(1)},
+                      {**state, **{f"region_decoder.{k}": v for k, v in decoder.items()}}):
+            with self.assertRaisesRegex(ValueError, "do not fit this probe"):
+                self.probe(labels=None).load_weights(decoder, wrong)
+
     def test_inputs_of_another_size_are_refused(self):
         probe = self.probe()
         with self.assertRaisesRegex(ValueError, "source_resolution"):

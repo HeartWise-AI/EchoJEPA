@@ -176,7 +176,7 @@ class TestRegionProbeSmoke(QuietLogs):
             for name in a:
                 self.assertTrue(torch.equal(a[name], b[name]), name)
 
-    def test_a_warm_start_reads_the_probe_entry_strictly(self):
+    def test_a_warm_start_reads_the_probe_entry(self):
         first = self.trained()
         trained = {k: v for k, v in self.load(first)["probes"][0].items() if not k.startswith("region_decoder.")}
         path = os.path.join(self.tmp, "init.pt")
@@ -199,11 +199,25 @@ class TestRegionProbeSmoke(QuietLogs):
         self.assertEqual(region["init_sha256"], probe.provenance.sha256(path))
         self.assertIsNone(self.load(cfg)["encoder"])  # frozen encoder: nothing of it is saved.
 
+        # A probe trained without a study pooler continues with a new one, at its initial values.
+        seen.clear()
+        without = {k: v for k, v in trained.items() if not k.startswith("study_pooler.")}
+        path = os.path.join(self.tmp, "no-pooler.pt")
+        torch.save({"probe": without}, path)
+        cfg = self.config(os.path.join(self.tmp, "warm-no-pooler"), trainable_blocks=0, init_checkpoint=path)
+        with self.on_cpu(), mock.patch.object(probe, "train_one_epoch", side_effect=first_state), \
+                mock.patch.object(probe.logger, "info") as info:
+            probe.main(dict(cfg))
+        self.assertTrue(any("has no study pooler" in str(call.args[0]) for call in info.call_args_list))
+        for name, value in without.items():
+            self.assertTrue(torch.equal(seen[0][name], value), name)
+        self.assertEqual(seen[0]["study_pooler.segment"].abs().sum().item(), 0.0)
+
         # A file without the entry, and a probe of another shape, are refused.
         with self.on_cpu(), self.assertRaisesRegex(KeyError, "no `probe` entry"):
             probe.main(self.config(os.path.join(self.tmp, "warm-missing"), init_checkpoint=self.decoder))
         partial = os.path.join(self.tmp, "partial.pt")
-        torch.save({"probe": {k: v for k, v in trained.items() if not k.startswith("study_pooler.")}}, partial)
+        torch.save({"probe": {k: v for k, v in trained.items() if k != "study_pooler.query"}}, partial)
         with self.on_cpu(), self.assertRaisesRegex(ValueError, "do not fit this probe"):
             probe.main(self.config(os.path.join(self.tmp, "warm-partial"), init_checkpoint=partial))
 

@@ -497,15 +497,20 @@ class RegionStudyProbe(nn.Module):
 
     def load_weights(self, region_decoder, probe=None):
         """Load the region decoder's state and, when given, the state of the rest of the probe
-        (its keys without `region_decoder.*`). Both must match exactly."""
+        (its keys without `region_decoder.*`). Both must match exactly, with one exception: `probe`
+        may lack the whole study pooler, which then keeps its initial values (zero offsets), so
+        that a probe trained without a pooler continues with one. Returns True in that case."""
         self.region_decoder.load_state_dict(region_decoder)
         if probe is None:
-            return
+            return False
         own = {k for k in self.state_dict() if not k.startswith("region_decoder.")}
-        if set(probe) != own:
-            raise ValueError(f"The probe weights do not fit this probe: missing {sorted(own - set(probe))[:8]}, "
+        pooler = {k for k in own if k.startswith("study_pooler.")}
+        missing = own - set(probe)
+        if set(probe) - own or missing not in (set(), pooler):
+            raise ValueError(f"The probe weights do not fit this probe: missing {sorted(missing)[:8]}, "
                              f"unexpected {sorted(set(probe) - own)[:8]}.")
         self.load_state_dict(probe, strict=False)
+        return bool(missing)
 
     def encode(self, encoder, clips, clip_indices=None, blocks=()):
         """Normalize `clips` [N, C, T, H, W] (in [0, 1]) and embed them in one encoder call."""

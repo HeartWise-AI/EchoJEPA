@@ -527,8 +527,9 @@ class WholeFrames:
 def load_region_weights(probe, region):
     """Load the weights `experiment.classifier.region` names into a `RegionStudyProbe`: the region
     decoder (the `region_decoder` entry of `decoder.checkpoint`) and, with `init_checkpoint`, the
-    rest of the probe (its `probe` entry), both strictly and with `weights_only=True`. Returns the
-    files' SHA-256 for the fingerprint."""
+    rest of the probe (its `probe` entry), both strictly and with `weights_only=True` (a `probe`
+    entry may lack the study pooler, see `RegionStudyProbe.load_weights`). Returns the files'
+    SHA-256 for the fingerprint."""
     paths = {"decoder_sha256": region["decoder"]["checkpoint"], "init_sha256": region.get("init_checkpoint")}
     states = {}
     for (name, path), entry in zip(paths.items(), ("region_decoder", "probe")):
@@ -536,10 +537,11 @@ def load_region_weights(probe, region):
             continue
         saved = load_probe_checkpoint(path)
         if not isinstance(saved, dict) or entry not in saved:
-            raise KeyError(f"{path} has no `{entry}` entry; convert the weights with "
-                           "data/convert_region_checkpoint.py.")
+            raise KeyError(f"{path} has no `{entry}` entry: a region probe's weights file holds `region_decoder` "
+                           "and, for `init_checkpoint`, `probe` (docs/study_multitask_probe.md).")
         states[entry] = saved[entry]
-    probe.load_weights(states["region_decoder"], states.get("probe"))
+    if probe.load_weights(states["region_decoder"], states.get("probe")):
+        logger.info(f"{paths['init_sha256']} has no study pooler: the probe's pooler starts from its initial values.")
     return {name: None if path is None else provenance.sha256(path) for name, path in paths.items()}
 
 

@@ -25,6 +25,7 @@
 # `region_decoder` and `probe` entries from a DeepCORO research bundle; give that file as
 # `model_kwargs.checkpoint`, `region.decoder.checkpoint` and (to continue the bundle's heads)
 # `region.init_checkpoint`. Leave `init_checkpoint` null to train new heads on that encoder.
+# A `probe` entry without a study pooler (a bundle trained before it) starts a new pooler.
 
 app: vjepa
 eval_name: study_multitask_frozen
