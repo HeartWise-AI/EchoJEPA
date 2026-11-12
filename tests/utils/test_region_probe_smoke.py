@@ -177,9 +177,7 @@ class TestRegionProbeSmoke(QuietLogs):
                 self.assertTrue(torch.equal(a[name], b[name]), name)
 
     def test_a_warm_start_reads_the_probe_entry_strictly(self):
-        first = self.config(os.path.join(self.tmp, "warm-source"), trainable_blocks=0)
-        with self.on_cpu():
-            probe.main(dict(first))
+        first = self.trained()
         trained = {k: v for k, v in self.load(first)["probes"][0].items() if not k.startswith("region_decoder.")}
         path = os.path.join(self.tmp, "init.pt")
         torch.save({"region_decoder": self.decoder_state, "probe": trained}, path)
@@ -234,6 +232,54 @@ class TestRegionProbeSmoke(QuietLogs):
         with mock.patch("src.utils.checkpoint_loader.time.sleep"):
             refused(pickle.UnpicklingError, "",
                     lambda e: e["classifier"]["region"]["decoder"].update(checkpoint=runs_code))
+
+    def test_clip_grad_bounds_the_joint_gradient_norm_of_probe_and_encoder(self):
+        cfg = self.config(os.path.join(self.tmp, "clipped"))
+        cfg["experiment"]["optimization"].update(clip_grad=1e-3, num_epochs=1)
+        clipped = []
+        clip = torch.nn.utils.clip_grad_norm_
+
+        def recorded(parameters, max_norm):
+            parameters = list(parameters)
+            before = clip(parameters, max_norm)
+            after = torch.stack([p.grad.norm() for p in parameters if p.grad is not None]).norm()
+            clipped.append((len(parameters), float(max_norm), float(before), float(after)))
+            return before
+
+        with self.on_cpu(), mock.patch.object(torch.nn.utils, "clip_grad_norm_", recorded):
+            probe.main(dict(cfg))
+        best = self.load(cfg)
+        self.assertEqual(len(clipped), 2)  # 4 training studies in batches of 2.
+        probe_parameters = sum(1 for k in best["probes"][0] if not k.startswith("region_decoder."))
+        for count, max_norm, before, after in clipped:
+            self.assertGreater(count, probe_parameters)  # the probe's and the encoder's top block's.
+            self.assertEqual(max_norm, 1e-3)
+            self.assertGreater(before, 1e-3)
+            self.assertLessEqual(after, 1e-3 * (1 + 1e-4))
+        self.assertEqual(best["fingerprint"]["settings"]["optimization"]["clip_grad"], 1e-3)
+        # Without the key the settings do not name it; a wrong value and a grid are refused.
+        self.assertNotIn("clip_grad", self.load(self.trained())["fingerprint"]["settings"]["optimization"])
+        for value in (0, -1.0, True, "1"):
+            other = self.config(os.path.join(self.tmp, "clip-refused"))
+            other["experiment"]["optimization"]["clip_grad"] = value
+            with self.on_cpu(), self.assertRaisesRegex(ValueError, "positive number or null"):
+                probe.main(other)
+        grid = self.config(os.path.join(self.tmp, "clip-grid"), trainable_blocks=0)
+        classifier = grid["experiment"]["classifier"]
+        for key in ("region", "query_mode", "task_groups", "attention_hidden"):
+            classifier.pop(key)
+        classifier.update(pooling_mode="mean")
+        grid["experiment"]["optimization"].update(clip_grad=1.0, multihead_kwargs=GRID)
+        with self.on_cpu(), self.assertRaisesRegex(ValueError, "clips one probe's step"):
+            probe.main(grid)
+
+    def trained(self):
+        """A finished frozen-encoder run of the region probe, trained once for the tests that read it."""
+        cfg = self.config(os.path.join(self.tmp, "frozen"), trainable_blocks=0)
+        if not os.path.exists(os.path.join(self.folder(cfg), "best.pt")):
+            with self.on_cpu():
+                probe.main(dict(cfg))
+        return cfg
 
     def test_whole_frames_are_resized_not_cropped_and_stay_in_unit_range(self):
         frames = [np.full((RES, 2 * RES, 3), 255, np.uint8) for _ in range(FRAMES)]

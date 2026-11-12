@@ -197,6 +197,15 @@ def main(args_eval, resume_preempt=False):
                          "gradients: give `multihead_kwargs` one setting.")
     if region and len(opt_kwargs) != 1:
         raise ValueError("Region pooling runs the encoder inside the probe: give `multihead_kwargs` one setting.")
+    # The largest gradient norm of a step, over the probe and the encoder's trainable blocks together
+    # (null: no clipping), as `optimization.clip_grad` of the V-JEPA 2.1 trainer.
+    clip_grad = args_opt.get("clip_grad")
+    if clip_grad is not None:
+        if isinstance(clip_grad, (bool, str)) or not float(clip_grad) > 0:
+            raise ValueError(f"optimization.clip_grad must be a positive number or null, got {clip_grad!r}.")
+        if len(opt_kwargs) != 1:
+            raise ValueError("`optimization.clip_grad` clips one probe's step: give `multihead_kwargs` one setting.")
+        clip_grad = float(clip_grad)
 
     try:
         mp.set_start_method("spawn")
@@ -324,7 +333,8 @@ def main(args_eval, resume_preempt=False):
                  "normalization": normalization, "min_videos": min_videos, **data_options},
         "evaluation": {"num_bags": num_eval_bags},
         "optimization": {"batch_size": batch_size, "num_epochs": num_epochs, "use_bfloat16": use_bfloat16,
-                         "multihead_kwargs": args_opt["multihead_kwargs"]},
+                         "multihead_kwargs": args_opt["multihead_kwargs"],
+                         **({} if clip_grad is None else {"clip_grad": clip_grad})},
         "selection": selection,
         "protocol": copy.deepcopy(PROTOCOL),
         "seed": seed,
@@ -401,7 +411,8 @@ def main(args_eval, resume_preempt=False):
         train_losses, train_head_losses = train_one_epoch(
             device=device, encoder=encoder, probes=probes, optimizers=optimizers, schedulers=schedulers,
             wd_schedulers=wd_schedulers, loader=train_loader, use_bfloat16=use_bfloat16, specs=specs,
-            normalization=normalization_targets, encoder_trainable=bool(trainable), world_size=world_size)
+            normalization=normalization_targets, encoder_trainable=bool(trainable), world_size=world_size,
+            clip_grad=clip_grad)
         val = [evaluate(prediction, specs, normalization_targets, selection_rule)
                for prediction in score_studies(dataset=val_dataset, probes=probes, **score_kwargs)]
         scores = np.asarray([v["score"] for v in val], dtype=float)
@@ -665,11 +676,13 @@ def encode(encoder, clips, clip_indices, device, use_bfloat16, grad=False):
 
 
 def train_one_epoch(device, encoder, probes, optimizers, schedulers, wd_schedulers, loader, use_bfloat16, specs,
-                    normalization, encoder_trainable=False, world_size=1):
+                    normalization, encoder_trainable=False, world_size=1, clip_grad=None):
     """One pass over the training studies for every probe (and the encoder's trainable blocks,
     with the encoder in training mode). Each head's loss is the mean over the labeled studies of
-    the global batch (the present targets are counted over every rank). Returns each probe's
-    mean loss and each probe's mean loss per head, averaged over the studies of every rank."""
+    the global batch (the present targets are counted over every rank). With `clip_grad`, the
+    gradients of every optimizer's parameters are scaled together to that norm at most. Returns
+    each probe's mean loss and each probe's mean loss per head, averaged over the studies of
+    every rank."""
     for p in probes:
         p.train()
     encoder.train(mode=encoder_trainable)
@@ -708,6 +721,9 @@ def train_one_epoch(device, encoder, probes, optimizers, schedulers, wd_schedule
         if not region:  # a region probe's gradients are already there (`region_backward`).
             for loss in batch_losses:
                 loss.backward()
+        if clip_grad is not None:
+            torch.nn.utils.clip_grad_norm_(
+                [p for optimizer in optimizers for group in optimizer.param_groups for p in group["params"]], clip_grad)
         for optimizer in optimizers:  # the probes', then the encoder's when it trains.
             optimizer.step()
             optimizer.zero_grad()
