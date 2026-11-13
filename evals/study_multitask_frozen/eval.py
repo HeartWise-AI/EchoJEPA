@@ -10,7 +10,9 @@ tokens and reads them with one head per target (`experiment.classifier.target_la
 probes train side by side on the same features, one per `optimization.multihead_kwargs`
 setting. Validation scores every study once with every probe after each epoch; `best.pt` keeps
 the epoch and probe with the best selection score. `--test_only` scores the test split once with
-that probe. `--val_only` rescores only validation. Protocol and outputs: `docs/study_multitask_probe.md`.
+that probe. `--val_only` rescores only validation; with `rescore: {out: <folder>}` it scores validation with other
+evaluation bags (`RESCORE_FIELDS` only) and writes to that folder, leaving the run's files untouched. Protocol and
+outputs: `docs/study_multitask_probe.md`.
 """
 
 import copy
@@ -68,6 +70,9 @@ PROTOCOL = {
     "evaluation": {"videos": "seeded bags using sampling_mode", "clip_positions": "fixed", "drop_last": False},
     "identifiers": "video, study, view and patient columns read as text; studies in text order",
 }
+# The fingerprint fields a `rescore` may change: how the evaluation bags are drawn, nothing the probe learned from.
+RESCORE_FIELDS = ("settings.data.sampling_mode", "settings.data.view_family_map", "settings.data.eval_seed",
+                  "settings.evaluation.num_bags")
 # Metrics a selection rule `<head>/<metric>` may name, per head task (as `head_metrics` reports
 # them), and the direction that is better.
 TASK_METRICS = {
@@ -84,6 +89,16 @@ def main(args_eval, resume_preempt=False):
     if test_only and val_only:
         raise ValueError("Choose either val_only or test_only.")
     scoring_only = test_only or val_only
+    # Rescore: the selected probe of a finished run, scored on validation with other evaluation bags, written
+    # to its own folder (the run's val_metrics.json, predictions and wandb run are left as they are).
+    rescore = args_eval.get("rescore")
+    rescore_out = None
+    if rescore is not None:
+        if not val_only:
+            raise ValueError("`rescore` needs --val_only: it scores validation only, never the test split.")
+        rescore_out = rescore.get("out") if isinstance(rescore, dict) else None
+        if not rescore_out or not os.path.isabs(rescore_out):
+            raise ValueError("`rescore.out` must be an absolute folder for the rescored outputs.")
     pretrain_folder = args_eval.get("folder")
     tag = args_eval.get("tag")
     num_workers = int(args_eval.get("num_workers", 8))
@@ -196,6 +211,12 @@ def main(args_eval, resume_preempt=False):
     folder = os.path.join(pretrain_folder, EVAL_NAME)
     if tag:
         folder = os.path.join(folder, tag)
+    if rescore_out is not None:
+        run_folder, out = os.path.realpath(folder), os.path.realpath(rescore_out)
+        if os.path.commonpath([run_folder, out]) == run_folder:
+            raise ValueError("`rescore.out` must be outside the run folder, so the run's own files stay as they are.")
+        if not os.path.isfile(os.path.join(folder, "best.pt")):
+            raise FileNotFoundError(f"No finished probe to rescore in {folder}.")
     os.makedirs(folder, exist_ok=True)
     latest_path = os.path.join(folder, "latest.pt")
     best_path = os.path.join(folder, "best.pt")
@@ -319,12 +340,13 @@ def main(args_eval, resume_preempt=False):
             save_run_record(folder, args_eval, run_info, fresh=start_epoch == 0)
 
     wandb_run, wandb_error = None, None
-    try:
-        wandb_run, _ = init_wandb(args_eval.get("meta") or {}, {**public_config(args_eval), "run_info": run_info},
-                                  rank, folder, resuming_training=start_epoch > 0 or scoring_only,
-                                  settings=PRIVATE_WANDB_SETTINGS)
-    except Exception as e:
-        wandb_error = e
+    if rescore_out is None:  # a rescore must not log into the run's wandb run
+        try:
+            wandb_run, _ = init_wandb(args_eval.get("meta") or {}, {**public_config(args_eval), "run_info": run_info},
+                                      rank, folder, resuming_training=start_epoch > 0 or scoring_only,
+                                      settings=PRIVATE_WANDB_SETTINGS)
+        except Exception as e:
+            wandb_error = e
     if any_rank_failed(wandb_error is not None, device=device):
         if wandb_error is not None:
             raise wandb_error
@@ -348,7 +370,7 @@ def main(args_eval, resume_preempt=False):
         run_test(folder=folder, probes=probes, probe_names=probe_names, val_dataset=val_dataset, trainable=bool(trainable),
                  test_dataset=test_dataset, num_epochs=num_epochs, fingerprint=fingerprint,
                  selection_rule=selection_rule, run_info=run_info, wandb_run=wandb_run, step=num_epochs * ipe,
-                 val_only=val_only, **score_kwargs)
+                 val_only=val_only, rescore_out=rescore_out, **score_kwargs)
         finish_wandb(wandb_run)
         return
 
@@ -1008,19 +1030,30 @@ def check_finished(folder, num_epochs):
 
 def run_test(folder, probes, probe_names, val_dataset, test_dataset, num_epochs, fingerprint, selection_rule, run_info,
              wandb_run, step, device, encoder, batch_size, num_workers, use_bfloat16, specs, normalization, rank,
-             world_size, trainable=False, val_only=False, num_bags=1):
+             world_size, trainable=False, val_only=False, num_bags=1, rescore_out=None):
     """Score validation and optionally the test with the probe and epoch chosen on validation (`best.pt`, with
     its fine-tuned encoder when the encoder trained), and write `test_metrics.json`,
     `test_predictions.csv` and `val_predictions.csv`. The prediction files list study ids, which
-    can identify patients: keep them where the data is."""
+    can identify patients: keep them where the data is. With `rescore_out` (validation only), the evaluation
+    bags may differ from training in `RESCORE_FIELDS`, and the outputs go to `rescore_out`, never overwritten."""
     check_finished(folder, num_epochs)
     if not val_only and os.path.exists(os.path.join(folder, "test_metrics.json")):
         raise RuntimeError("This probe has already been tested (`test_metrics.json` exists); repeat testing only if "
                            "the previous evaluation was invalid.")
+    if rescore_out is not None and not val_only:
+        raise ValueError("A rescore scores validation only.")
+    out_folder = folder if rescore_out is None else rescore_out
+    if rescore_out is not None and os.path.exists(os.path.join(out_folder, "val_metrics.json")):
+        raise RuntimeError(f"{out_folder} already holds a rescore (`val_metrics.json`): use another folder.")
     checkpoint_path = os.path.join(folder, "best.pt")
     checkpoint = load_probe_checkpoint(checkpoint_path)
-    provenance.check_fingerprint(checkpoint.get("fingerprint"), fingerprint, checkpoint_path,
-                                 ignore=("settings.world_size",))
+    allowed = ("settings.world_size",) + (RESCORE_FIELDS if rescore_out is not None else ())
+    provenance.check_fingerprint(checkpoint.get("fingerprint"), fingerprint, checkpoint_path, ignore=allowed)
+    rescored = None
+    if rescore_out is not None:
+        rescored = {"run_folder": folder, "allowed": list(RESCORE_FIELDS),
+                    "changed": provenance.differences(checkpoint.get("fingerprint"), fingerprint,
+                                                      ignore=("settings.world_size",))}
     probe = int(checkpoint["best_probe"])
     module = getattr(probes[probe], "module", probes[probe])
     module.load_state_dict({k.removeprefix("module."): v for k, v in checkpoint["probes"][probe].items()})
@@ -1042,8 +1075,9 @@ def run_test(folder, probes, probe_names, val_dataset, test_dataset, num_epochs,
         return None
     val = evaluate(val_scored, specs, normalization, selection_rule)
     test = None if val_only else evaluate(test_scored, specs, normalization, selection_rule)
+    os.makedirs(out_folder, exist_ok=True)
     prediction_table(val_scored, val_dataset, specs, normalization).to_csv(
-        os.path.join(folder, "val_predictions.csv"), index=False)
+        os.path.join(out_folder, "val_predictions.csv"), index=False)
     if not val_only:
         prediction_table(test_scored, test_dataset, specs, normalization).to_csv(
             os.path.join(folder, "test_predictions.csv"), index=False)
@@ -1057,14 +1091,16 @@ def run_test(folder, probes, probe_names, val_dataset, test_dataset, num_epochs,
         # How the probe was trained (from `best.pt`, with its GPU count), and how this scoring ran.
         "training_fingerprint": checkpoint.get("fingerprint"), "scoring_fingerprint": fingerprint,
     }
+    if rescored is not None:
+        result["rescore"] = rescored
     if not val_only:
         result["test"] = test
     prefix = "selected_val" if val_only else "test"
     filename = "val_metrics.json" if val_only else "test_metrics.json"
-    tmp = os.path.join(folder, filename + ".tmp")
+    tmp = os.path.join(out_folder, filename + ".tmp")
     with open(tmp, "w") as f:
         json.dump(result, f, indent=2)
-    os.replace(tmp, os.path.join(folder, filename))
+    os.replace(tmp, os.path.join(out_folder, filename))
 
     metrics_result = val if val_only else test
     scalars = {f"probe/{prefix}_epoch": result["epoch"], f"probe/{prefix}_probe": probe,

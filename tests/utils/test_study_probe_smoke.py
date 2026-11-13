@@ -358,6 +358,59 @@ class TestStudyProbeSmoke(QuietLogs):
             changed["experiment"][section][key] = value
             with self.on_cpu(), self.assertRaises((ValueError, RuntimeError)):
                 probe.main(dict(changed, val_only=True))
+        self.check_rescore(cfg, folder)
+
+    def check_rescore(self, cfg, folder):
+        """A rescore scores the selected probe with other evaluation bags into its own folder; the run's files stay."""
+        import copy
+        import hashlib
+
+        def digests():
+            return {name: hashlib.sha256(open(os.path.join(folder, name), "rb").read()).hexdigest()
+                    for name in sorted(os.listdir(folder)) if os.path.isfile(os.path.join(folder, name))}
+
+        before = digests()
+        # The same bags: the run's own validation predictions, reproduced.
+        same = os.path.join(self.tmp, "rescore-same")
+        with self.on_cpu():
+            probe.main(dict(cfg, val_only=True, rescore={"out": same}))
+        pd.testing.assert_frame_equal(pd.read_csv(os.path.join(same, "val_predictions.csv")),
+                                      pd.read_csv(os.path.join(folder, "val_predictions.csv")))
+        with open(os.path.join(same, "val_metrics.json")) as f:
+            self.assertEqual(json.load(f)["rescore"]["changed"], [])
+        # Other bags: one bag, random sampling; the changes are recorded.
+        for name, data, bags, expected in (
+                ("one-bag", {}, 1, ["settings.evaluation.num_bags"]),
+                ("random", {"sampling_mode": "random", "eval_seed": 0}, 2,
+                 ["settings.data.eval_seed", "settings.data.sampling_mode"])):
+            changed = copy.deepcopy(cfg)
+            changed["experiment"]["data"].update(data)
+            changed["experiment"]["evaluation"]["num_bags"] = bags
+            out = os.path.join(self.tmp, f"rescore-{name}")
+            with self.on_cpu():
+                probe.main(dict(changed, val_only=True, rescore={"out": out}))
+            with open(os.path.join(out, "val_metrics.json")) as f:
+                result = json.load(f)
+            self.assertTrue(np.isfinite(result["val"]["score"]))
+            self.assertEqual(result["val"].get("num_bags", 1), bags)  # recorded only for several bags
+            self.assertEqual(result["rescore"]["run_folder"], folder)
+            self.assertEqual(result["rescore"]["changed"], expected)
+            with self.on_cpu(), self.assertRaisesRegex(RuntimeError, "already holds a rescore"):
+                probe.main(dict(changed, val_only=True, rescore={"out": out}))
+        self.assertEqual(digests(), before)
+        # Anything the probe learned from is still checked; a rescore never scores the test split or
+        # writes into the run folder.
+        changed = copy.deepcopy(cfg)
+        changed["experiment"]["data"]["num_videos"] += 1
+        refused = ((changed, {"val_only": True, "rescore": {"out": os.path.join(self.tmp, "rescore-x")}}, ValueError),
+                   (cfg, {"test_only": True, "rescore": {"out": os.path.join(self.tmp, "rescore-y")}}, ValueError),
+                   (cfg, {"val_only": True, "rescore": {"out": os.path.join(folder, "inside")}}, ValueError),
+                   (cfg, {"val_only": True, "rescore": {"out": "relative"}}, ValueError))
+        for config, flags, error in refused:
+            with self.on_cpu(), self.assertRaises(error):
+                probe.main(dict(config, **flags))
+        self.assertFalse(os.path.exists(os.path.join(self.tmp, "rescore-x", "val_metrics.json")))
+        self.assertEqual(digests(), before)
 
     def test_flat_study_rope_trains_resumes_and_is_fingerprinted_only_when_on(self):
         cfg = self.config(os.path.join(self.tmp, "flat-rope"))
