@@ -11,7 +11,7 @@ probes train side by side on the same features, one per `optimization.multihead_
 setting. Validation scores every study once with every probe after each epoch; `best.pt` keeps
 the epoch and probe with the best selection score. `--test_only` scores the test split once with
 that probe. `--val_only` rescores only validation; with `rescore: {out: <folder>}` it scores validation with other
-evaluation bags (`RESCORE_FIELDS` only) and writes to that folder, leaving the run's files untouched. Protocol and
+evaluation bags (`RESCORE_FIELDS` only) and writes a new folder, leaving the run's files untouched. Protocol and
 outputs: `docs/study_multitask_probe.md`.
 """
 
@@ -71,8 +71,10 @@ PROTOCOL = {
     "identifiers": "video, study, view and patient columns read as text; studies in text order",
 }
 # The fingerprint fields a `rescore` may change: how the evaluation bags are drawn, nothing the probe learned from.
+# `shuffle_videos` only changes training reads (and the default mode), so a run trained with it off can be
+# rescored with random or view-balanced bags.
 RESCORE_FIELDS = ("settings.data.sampling_mode", "settings.data.view_family_map", "settings.data.eval_seed",
-                  "settings.evaluation.num_bags")
+                  "settings.evaluation.num_bags", "settings.data.shuffle_videos")
 # Metrics a selection rule `<head>/<metric>` may name, per head task (as `head_metrics` reports
 # them), and the direction that is better.
 TASK_METRICS = {
@@ -99,6 +101,8 @@ def main(args_eval, resume_preempt=False):
         rescore_out = rescore.get("out") if isinstance(rescore, dict) else None
         if not rescore_out or not os.path.isabs(rescore_out):
             raise ValueError("`rescore.out` must be an absolute folder for the rescored outputs.")
+        if os.path.lexists(rescore_out):
+            raise FileExistsError(f"`rescore.out` {rescore_out} already exists: a rescore writes a new folder.")
     pretrain_folder = args_eval.get("folder")
     tag = args_eval.get("tag")
     num_workers = int(args_eval.get("num_workers", 8))
@@ -1035,7 +1039,7 @@ def run_test(folder, probes, probe_names, val_dataset, test_dataset, num_epochs,
     its fine-tuned encoder when the encoder trained), and write `test_metrics.json`,
     `test_predictions.csv` and `val_predictions.csv`. The prediction files list study ids, which
     can identify patients: keep them where the data is. With `rescore_out` (validation only), the evaluation
-    bags may differ from training in `RESCORE_FIELDS`, and the outputs go to `rescore_out`, never overwritten."""
+    bags may differ from training in `RESCORE_FIELDS`, and the outputs go to `rescore_out`, a folder created here."""
     check_finished(folder, num_epochs)
     if not val_only and os.path.exists(os.path.join(folder, "test_metrics.json")):
         raise RuntimeError("This probe has already been tested (`test_metrics.json` exists); repeat testing only if "
@@ -1043,8 +1047,8 @@ def run_test(folder, probes, probe_names, val_dataset, test_dataset, num_epochs,
     if rescore_out is not None and not val_only:
         raise ValueError("A rescore scores validation only.")
     out_folder = folder if rescore_out is None else rescore_out
-    if rescore_out is not None and os.path.exists(os.path.join(out_folder, "val_metrics.json")):
-        raise RuntimeError(f"{out_folder} already holds a rescore (`val_metrics.json`): use another folder.")
+    if rescore_out is not None and os.path.lexists(rescore_out):
+        raise FileExistsError(f"`rescore.out` {rescore_out} already exists: a rescore writes a new folder.")
     checkpoint_path = os.path.join(folder, "best.pt")
     checkpoint = load_probe_checkpoint(checkpoint_path)
     allowed = ("settings.world_size",) + (RESCORE_FIELDS if rescore_out is not None else ())
@@ -1075,9 +1079,13 @@ def run_test(folder, probes, probe_names, val_dataset, test_dataset, num_epochs,
         return None
     val = evaluate(val_scored, specs, normalization, selection_rule)
     test = None if val_only else evaluate(test_scored, specs, normalization, selection_rule)
-    os.makedirs(out_folder, exist_ok=True)
-    prediction_table(val_scored, val_dataset, specs, normalization).to_csv(
-        os.path.join(out_folder, "val_predictions.csv"), index=False)
+    if rescore_out is not None:
+        # Created only now, so a failed rescore leaves nothing behind. mkdir fails if the folder appeared meanwhile
+        # (e.g. a second rescore to the same folder), and a new folder holds no file or link to write through.
+        os.makedirs(os.path.dirname(rescore_out), exist_ok=True)
+        os.mkdir(rescore_out)
+    with open(os.path.join(out_folder, "val_predictions.csv"), "w" if rescore_out is None else "x", newline="") as f:
+        prediction_table(val_scored, val_dataset, specs, normalization).to_csv(f, index=False)
     if not val_only:
         prediction_table(test_scored, test_dataset, specs, normalization).to_csv(
             os.path.join(folder, "test_predictions.csv"), index=False)
@@ -1098,7 +1106,7 @@ def run_test(folder, probes, probe_names, val_dataset, test_dataset, num_epochs,
     prefix = "selected_val" if val_only else "test"
     filename = "val_metrics.json" if val_only else "test_metrics.json"
     tmp = os.path.join(out_folder, filename + ".tmp")
-    with open(tmp, "w") as f:
+    with open(tmp, "w" if rescore_out is None else "x") as f:
         json.dump(result, f, indent=2)
     os.replace(tmp, os.path.join(out_folder, filename))
 
