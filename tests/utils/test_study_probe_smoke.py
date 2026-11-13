@@ -358,6 +358,124 @@ class TestStudyProbeSmoke(QuietLogs):
             changed["experiment"][section][key] = value
             with self.on_cpu(), self.assertRaises((ValueError, RuntimeError)):
                 probe.main(dict(changed, val_only=True))
+        self.check_rescore(cfg, folder)
+
+    def check_rescore(self, cfg, folder):
+        """A rescore scores the selected probe with other evaluation bags into its own folder; the run's files stay."""
+        import copy
+        import hashlib
+
+        def digests():
+            return {name: hashlib.sha256(open(os.path.join(folder, name), "rb").read()).hexdigest()
+                    for name in sorted(os.listdir(folder)) if os.path.isfile(os.path.join(folder, name))}
+
+        before = digests()
+        # The same bags: the run's own validation predictions, reproduced.
+        same = os.path.join(self.tmp, "rescore-same")
+        with self.on_cpu():
+            probe.main(dict(cfg, val_only=True, rescore={"out": same}))
+        pd.testing.assert_frame_equal(pd.read_csv(os.path.join(same, "val_predictions.csv")),
+                                      pd.read_csv(os.path.join(folder, "val_predictions.csv")))
+        with open(os.path.join(same, "val_metrics.json")) as f:
+            self.assertEqual(json.load(f)["rescore"]["changed"], [])
+        # Other bags, set in the rescore block only: one bag, random sampling, fixed bags. Validation is built
+        # with them (its studies are too small for the bags themselves to differ); training and the run record
+        # keep the run's settings; the changes are recorded.
+        built = []
+        real_dataset = probe.VideoStudyDataset
+
+        def spy(*args, **kwargs):
+            dataset = real_dataset(*args, **kwargs)
+            built.append((dataset.training, dataset.selection, dataset.eval_seed))
+            return dataset
+
+        with open(os.path.join(folder, "val_metrics.json")) as f:
+            own = json.load(f)
+        for name, bags, num_bags, expected, selection in (
+                ("one-bag", {"num_bags": 1}, 1, ["num_bags"], ("view_balanced", 13)),
+                ("random", {"sampling_mode": "random", "eval_seed": 0}, 2, ["eval_seed", "sampling_mode"],
+                 ("seeded_random", 0)),
+                ("fixed", {"sampling_mode": "fixed", "num_bags": 1}, 1, ["num_bags", "sampling_mode"], ("fixed", 13))):
+            out = os.path.join(self.tmp, f"rescore-{name}")
+            built.clear()
+            with self.on_cpu(), mock.patch.object(probe, "VideoStudyDataset", side_effect=spy):
+                probe.main(dict(cfg, val_only=True, rescore={"out": out, **bags}))
+            self.assertEqual({b[1:] for b in built if not b[0]}, {selection})
+            self.assertEqual({b[1:] for b in built if b[0]}, {("view_balanced", 13)})
+            with open(os.path.join(out, "val_metrics.json")) as f:
+                result = json.load(f)
+            self.assertTrue(np.isfinite(result["val"]["score"]))
+            self.assertEqual(result["val"].get("num_bags", 1), num_bags)  # recorded only for several bags
+            self.assertEqual(result["rescore"]["run_folder"], folder)
+            self.assertEqual(result["rescore"]["changed"], expected)
+            self.assertEqual(result["run_info"]["splits"]["train"], own["run_info"]["splits"]["train"])
+            self.assertEqual(result["training_fingerprint"], own["training_fingerprint"])
+            self.assertEqual(sorted(os.listdir(out)), ["val_metrics.json", "val_predictions.csv"])
+            with self.on_cpu(), self.assertRaisesRegex(FileExistsError, "already exists"):
+                probe.main(dict(cfg, val_only=True, rescore={"out": out, **bags}))
+        self.assertEqual(digests(), before)
+        # Anything the probe learned from is still checked; a rescore never scores the test split or
+        # writes into the run folder.
+        changed = copy.deepcopy(cfg)
+        changed["experiment"]["data"]["num_videos"] += 1
+        moved = copy.deepcopy(cfg)  # evaluation bags changed in the run's own settings, not in the rescore block
+        moved["experiment"]["data"]["sampling_mode"] = "random"
+        refused = ((changed, {"val_only": True, "rescore": {"out": os.path.join(self.tmp, "rescore-x")}}, ValueError),
+                   (moved, {"val_only": True, "rescore": {"out": os.path.join(self.tmp, "rescore-x")}}, ValueError),
+                   (cfg, {"val_only": True, "rescore": {"out": os.path.join(self.tmp, "rescore-x"),
+                                                        "num_videos": 2}}, ValueError),
+                   (cfg, {"val_only": True, "rescore": {"out": os.path.join(self.tmp, "rescore-x"),
+                                                        "sampling_mode": "fixed"}}, ValueError),
+                   (cfg, {"test_only": True, "rescore": {"out": os.path.join(self.tmp, "rescore-y")}}, ValueError),
+                   (cfg, {"val_only": True, "rescore": {"out": os.path.join(folder, "inside")}}, ValueError),
+                   (cfg, {"val_only": True, "rescore": {"out": "relative"}}, ValueError))
+        for config, flags, error in refused:
+            with self.on_cpu(), self.assertRaises(error):
+                probe.main(dict(config, **flags))
+        self.assertFalse(os.path.lexists(os.path.join(self.tmp, "rescore-x")))
+        # An existing folder is refused, even one without val_metrics.json (predictions or a link inside stay as
+        # they are); so is a folder that appears while the probe is scored, e.g. a second rescore to the same place.
+        taken = os.path.join(self.tmp, "rescore-taken")
+        os.makedirs(taken)
+        os.symlink(os.path.join(folder, "val_predictions.csv"), os.path.join(taken, "val_predictions.csv"))
+        with self.on_cpu(), self.assertRaisesRegex(FileExistsError, "already exists"):
+            probe.main(dict(cfg, val_only=True, rescore={"out": taken}))
+        late = os.path.join(self.tmp, "rescore-late")
+        real_evaluate = probe.evaluate
+
+        def appears(*args, **kwargs):
+            os.makedirs(late, exist_ok=True)
+            return real_evaluate(*args, **kwargs)
+
+        with self.on_cpu(), mock.patch.object(probe, "evaluate", side_effect=appears), \
+                self.assertRaises(FileExistsError):
+            probe.main(dict(cfg, val_only=True, rescore={"out": late}))
+        # A failed write leaves no folder and no partial files, so the same command can be rerun.
+        failed = os.path.join(self.tmp, "rescore-failed")
+        with self.on_cpu(), mock.patch.object(probe.os, "fdopen", side_effect=OSError("disk full")), \
+                self.assertRaisesRegex(OSError, "disk full"):
+            probe.main(dict(cfg, val_only=True, rescore={"out": failed}))
+        self.assertEqual([n for n in os.listdir(self.tmp) if n.startswith((".rescore", "rescore-failed"))], [])
+        with self.on_cpu():
+            probe.main(dict(cfg, val_only=True, rescore={"out": failed}))
+        self.assertTrue(os.path.isfile(os.path.join(failed, "val_metrics.json")))
+        self.assertEqual(os.listdir(late), [])
+        self.assertEqual(digests(), before)
+
+    def test_a_run_trained_with_fixed_bags_can_be_rescored_with_random_ones(self):
+        cfg = self.config(os.path.join(self.tmp, "fixed-bags"))
+        cfg["experiment"]["data"]["shuffle_videos"] = False
+        with self.on_cpu():
+            probe.main(dict(cfg))
+        out = os.path.join(self.tmp, "rescore-fixed-run")
+        with self.on_cpu():
+            probe.main(dict(cfg, val_only=True, rescore={"out": out, "sampling_mode": "random", "num_bags": 2}))
+        with open(os.path.join(out, "val_metrics.json")) as f:
+            result = json.load(f)
+        self.assertEqual(result["rescore"]["changed"], ["num_bags", "sampling_mode"])
+        self.assertEqual(result["val"]["num_bags"], 2)
+        self.assertEqual(result["run_info"]["splits"]["train"]["selection"], probe.SELECTION["fixed"])
+        self.assertEqual(result["run_info"]["splits"]["val"]["selection"], probe.SELECTION["seeded_random"])
 
     def test_flat_study_rope_trains_resumes_and_is_fingerprinted_only_when_on(self):
         cfg = self.config(os.path.join(self.tmp, "flat-rope"))
