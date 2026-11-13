@@ -29,8 +29,8 @@ class TestStudySweep(unittest.TestCase):
     def test_ablation_and_factorial_cover_each_factor_and_preserve_protocol(self):
         original = copy.deepcopy(self.base)
         runs = expand(self.base, self.spec)
-        self.assertEqual(len(runs), 24)
-        self.assertEqual(len(expand(self.base, self.spec, "factorial")), 54)
+        self.assertEqual(len(runs), 27)
+        self.assertEqual(len(expand(self.base, self.spec, "factorial")), 57)
         self.assertEqual(self.base, original)
         for config, entry in runs:
             self.assertEqual(config["experiment"]["evaluation"], {"selection": "weighted_loss", "num_bags": 3})
@@ -39,6 +39,14 @@ class TestStudySweep(unittest.TestCase):
             self.assertTrue(config["resume_checkpoint"])
         baseline = next(c for c, e in runs if e["variant"] == "baseline")
         self.assertEqual(baseline["experiment"]["classifier"]["query_mode"], "shared")
+        # The flat RoPE control is the baseline plus one key, after every earlier variant.
+        flat_rope = copy.deepcopy(next(c for c, e in runs if e["variant"] == "flat_rope" and e["seed"] == 0))
+        self.assertIs(flat_rope["experiment"]["classifier"].pop("study_use_rope"), True)
+        untagged = lambda config: {k: v for k, v in config.items() if k not in ("tag", "meta")}
+        self.assertEqual(untagged(flat_rope), untagged(baseline))
+        self.assertEqual([e["variant"] for _, e in runs][::3],
+                         ["baseline", "task_queries", "view_balanced", "view_conditioning", "hierarchical_rope", "all",
+                          "no_view", "hierarchy_no_rope", "flat_rope"])
         all_four = next(c for c, e in runs if e["variant"] == "all")
         self.assertEqual(all_four["experiment"]["classifier"]["query_mode"], "task")
         self.assertTrue(all_four["experiment"]["classifier"]["local_use_rope"])
@@ -58,7 +66,7 @@ class TestStudySweep(unittest.TestCase):
             args = dict(spec_path=ROOT / "configs/sweeps/study_probe.yaml", output=tmp / "configs",
                         checkpoint=checkpoint, data=data, folder=tmp / "results")
             manifest_path, count = generate(**args)
-            self.assertEqual(count, 24)
+            self.assertEqual(count, 27)
             self.assertEqual(generate(**args), (manifest_path, count))
             with mock.patch("tools.study_probe_sweep.subprocess.run") as run:
                 launch(manifest_path, ["cuda:0"], index=0, dry_run=True)
@@ -75,7 +83,7 @@ class TestStudySweep(unittest.TestCase):
                     "selected_on": "validation", "epoch": 2, "probe": 0,
                     "val": {"score": score, "failed": 0, "heads": {"ef": {"mae": score}}}}))
             summary = summarize(manifest_path, tmp / "summary")
-            self.assertEqual(len(summary["missing_run_indices"]), 22)
+            self.assertEqual(len(summary["missing_run_indices"]), 25)
             metric = summary["variants"]["task_queries"]["score"]
             self.assertEqual(metric["paired_delta_mean"], -0.5)
             self.assertEqual(metric["paired_delta_n"], 1)

@@ -289,6 +289,12 @@ positional encoding in place; all new trainable components belong to the probe.
 | 3. View conditioning | `classifier.use_view_embedding: true`, `view_dropout: 0.2` | Drop the whole view embedding for a video during training, consistently across its clips/tokens, without rescaling. Evaluation keeps it. Optional probability embeddings and acquisition-type embeddings are described below. |
 | 4. Local position and hierarchy | `classifier.pooling_mode: hierarchical`, `local_use_rope: true`, `local_depth: 1`, `local_num_queries: 4` | Each clip gets local self-attention with 3D time/row/column RoPE and multiple learned summaries. Study attention operates on those summaries with no clip-order positional encoding. Coordinates reset for every clip; final shared/task/group queries use ordinary cross-attention. |
 
+To test 3D RoPE without the hierarchy, `classifier.study_use_rope: true` (with `attentive`
+pooling) gives the study pooler's self-attention blocks RoPE: each patch token is placed by its
+frame, row and column within its own clip. Every clip of every video uses the same coordinates,
+so tokens of different clips are compared as if their grids overlaid, and no clip or video order
+is encoded. It needs `num_probe_blocks` >= 2 and is recorded in the fingerprint only when on.
+
 `num_probe_blocks` controls the study pooler's depth (self-attention blocks followed by one
 cross-attention readout). `local_depth` counts local self-attention blocks before the clip
 readout. For hierarchy, the patch grid is derived from `frames_per_clip / tubelet_size` and
@@ -324,9 +330,10 @@ the clip summaries before study attention.
 ## Sweep
 
 [`configs/sweeps/study_probe.yaml`](../configs/sweeps/study_probe.yaml) defines a controlled
-ablation: baseline, each of the four changes, all four together, a no-view control, and
-hierarchy without RoPE. Three seeds give **24 runs**. `--design factorial` expands every
-binary combination plus the two controls, giving **54 runs**. Each run retains the base
+ablation: baseline, each of the four changes, all four together, a no-view control,
+hierarchy without RoPE, and RoPE without hierarchy (`flat_rope`, last so the other variants
+keep their run indices). Three seeds give **27 runs**. `--design factorial` expands every
+binary combination plus the three controls, giving **57 runs**. Each run retains the base
 config's optimizer grid. All runs share the checkpoint, cohort, video budget, three seeded
 evaluation bags and `weighted_loss` selection. To target AS, change the selection in the
 sweep's `defaults` for all variants together. Choose the actual encoder and architecture

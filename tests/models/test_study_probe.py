@@ -208,6 +208,80 @@ class TestStudyAblations(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "self-attention"):
             self.model(local_depth=0)
 
+    def test_study_rope_places_tokens_within_their_clip_without_clip_or_video_order(self):
+        from src.models.utils.modules import RoPEAttention
+        model = self.model(pooling_mode="attentive", local_use_rope=False, study_use_rope=True).eval()
+        self.assertIsInstance(model.pooler.blocks[0].attn, RoPEAttention)
+        self.assertIsNone(model.clip_pooler)
+        # At initialization attention adds ~1e-2 to the residual stream, too little for position effects
+        # to clear the tolerances; weights of trained size make a wrong coordinate visible.
+        with torch.no_grad():
+            for p in model.parameters():
+                p.normal_(0, 0.3)
+        expected = model(self.tokens, self.mask, self.views)
+        videos = self.tokens.reshape(2, 3, 2, 8, 24)
+        for order in ([2, 0, 1], [1, 0, 2]):  # [1, 0, 2] also swaps the two real videos of study 0
+            actual = model(videos[:, order].flip(2).reshape_as(self.tokens), self.mask[:, order],
+                           self.views[:, order])
+            for head in expected:
+                torch.testing.assert_close(expected[head], actual[head], atol=1e-5, rtol=1e-5)
+        other = videos.clone()
+        other[~self.mask] = float("nan")
+        actual = model(other.reshape_as(self.tokens), self.mask, self.views)
+        for head in expected:
+            torch.testing.assert_close(expected[head], actual[head])
+        # The same spatial reordering in every clip changes what RoPE sees; plain attention cannot tell.
+        plain = self.model(pooling_mode="attentive", local_use_rope=False).eval()
+        plain.load_state_dict(model.state_dict())
+        moved = videos.flip(3).reshape_as(self.tokens)
+        a, b = model.pool(self.tokens, self.mask, self.views), model.pool(moved, self.mask, self.views)
+        self.assertGreater((a - b).abs().max().item(), 1e-2)
+        torch.testing.assert_close(plain.pool(self.tokens, self.mask, self.views),
+                                   plain.pool(moved, self.mask, self.views), atol=1e-5, rtol=1e-5)
+        self.assertGreater((a - plain.pool(self.tokens, self.mask, self.views)).abs().max().item(), 1e-2)
+
+    def test_study_rope_needs_flat_attentive_pooling_a_grid_and_whole_clips(self):
+        for pooling in ("hierarchical", "mean", "attention"):
+            with self.assertRaisesRegex(ValueError, "study_use_rope requires attentive"):
+                self.model(pooling_mode=pooling, query_mode="shared", local_use_rope=pooling == "hierarchical",
+                           study_use_rope=True)
+        with self.assertRaisesRegex(ValueError, "token_grid"):
+            self.model(pooling_mode="attentive", local_use_rope=False, study_use_rope=True, token_grid=None)
+        with self.assertRaisesRegex(ValueError, "self-attention"):
+            self.model(pooling_mode="attentive", local_use_rope=False, study_use_rope=True, depth=1)
+        model = self.model(pooling_mode="attentive", local_use_rope=False, study_use_rope=True,
+                           token_grid=(1, 2, 3), num_clips_per_video=1)
+        with self.assertRaisesRegex(ValueError, "whole clips"):
+            model(self.tokens, self.mask, self.views)
+
+    def test_study_rope_is_the_same_with_and_without_activation_checkpointing(self):
+        options = dict(pooling_mode="attentive", local_use_rope=False, study_use_rope=True)
+        checkpointed = self.model(**options).eval()
+        direct = self.model(**options, use_activation_checkpointing=False).eval()
+        direct.load_state_dict(checkpointed.state_dict())
+        torch.testing.assert_close(checkpointed.pool(self.tokens, self.mask, self.views),
+                                   direct.pool(self.tokens, self.mask, self.views))
+        model = self.model(**options)
+        with torch.autocast("cpu", dtype=torch.bfloat16):
+            outputs = model(self.tokens, self.mask, self.views)
+            loss = sum(value.float().square().mean() for value in outputs.values())
+        loss.backward()
+        self.assertTrue(torch.isfinite(loss))
+        self.assertTrue(all(p.grad is not None and torch.isfinite(p.grad).all() for p in model.parameters()))
+
+    def test_pooler_positions_of_one_clip_match_its_implicit_grid(self):
+        from src.models.attentive_pooler import AttentivePooler
+        torch.manual_seed(3)
+        pooler = AttentivePooler(embed_dim=24, num_heads=4, depth=2, use_rope=True, token_grid=(2, 2, 2)).eval()
+        clip = torch.randn(2, 8, 24)
+        torch.testing.assert_close(pooler(clip), pooler(clip, positions=torch.arange(8)))
+        torch.testing.assert_close(pooler(clip), pooler(clip, positions=torch.arange(8).expand(2, 8)))
+        with self.assertRaisesRegex(ValueError, "shape"):
+            pooler(clip, positions=torch.arange(7))
+        plain = AttentivePooler(embed_dim=24, num_heads=4, depth=2).eval()
+        with self.assertRaisesRegex(ValueError, "RoPE"):
+            plain(clip, positions=torch.arange(8))
+
     def test_local_rotations_preserve_norm_and_relative_positions(self):
         from src.models.utils.modules import rotate_queries_or_keys
         for dim in (2, 4, 8):

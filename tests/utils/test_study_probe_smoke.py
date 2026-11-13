@@ -358,3 +358,30 @@ class TestStudyProbeSmoke(QuietLogs):
             changed["experiment"][section][key] = value
             with self.on_cpu(), self.assertRaises((ValueError, RuntimeError)):
                 probe.main(dict(changed, val_only=True))
+
+    def test_flat_study_rope_trains_resumes_and_is_fingerprinted_only_when_on(self):
+        cfg = self.config(os.path.join(self.tmp, "flat-rope"))
+        cfg["experiment"]["classifier"].update(num_probe_blocks=2, study_use_rope=True)
+        with self.on_cpu():
+            with mock.patch.object(probe, "train_one_epoch", side_effect=stop_after(1, probe.train_one_epoch)), \
+                    self.assertRaises(Interrupted):
+                probe.main(cfg)
+            probe.main(cfg)
+            probe.main(dict(cfg, val_only=True))
+        with open(os.path.join(self.folder(cfg), "val_metrics.json")) as f:
+            result = json.load(f)
+        self.assertTrue(np.isfinite(result["val"]["score"]))
+        classifier = result["training_fingerprint"]["settings"]["classifier"]
+        self.assertIs(classifier["study_use_rope"], True)
+        self.assertEqual(classifier["token_grid"], [2, 2, 2])
+        # A probe trained with study RoPE is neither resumed nor scored without it.
+        import copy
+        changed = copy.deepcopy(cfg)
+        del changed["experiment"]["classifier"]["study_use_rope"]
+        with self.on_cpu(), self.assertRaises((ValueError, RuntimeError)):
+            probe.main(dict(changed, val_only=True))
+        # Off, the option leaves no key, so runs made before it existed keep their fingerprints.
+        for classifier in ({"pooling_mode": "attentive"}, {"pooling_mode": "attentive", "study_use_rope": False}):
+            options = probe.study_probe_options(classifier, cfg["experiment"]["data"], cfg["model_kwargs"])
+            self.assertNotIn("study_use_rope", options)
+            self.assertIsNone(options["token_grid"])
