@@ -10,9 +10,9 @@ tokens and reads them with one head per target (`experiment.classifier.target_la
 probes train side by side on the same features, one per `optimization.multihead_kwargs`
 setting. Validation scores every study once with every probe after each epoch; `best.pt` keeps
 the epoch and probe with the best selection score. `--test_only` scores the test split once with
-that probe. `--val_only` rescores only validation; with `rescore: {out: <folder>}` it scores validation with other
-evaluation bags (`RESCORE_FIELDS` only) and writes a new folder, leaving the run's files untouched. Protocol and
-outputs: `docs/study_multitask_probe.md`.
+that probe. `--val_only` rescores only validation; with `rescore: {out: <folder>, ...}` it scores validation with
+the evaluation bags the `rescore` block sets (`RESCORE_KEYS`) and writes a new folder, leaving the run's files
+untouched. Protocol and outputs: `docs/study_multitask_probe.md`.
 
 `pooling_mode: region` replaces the pooling by the two-pass `RegionStudyProbe` (`src/models/region_probe.py`):
 the probe calls the encoder itself, once on the study's whole views and once on crops of the regions
@@ -26,6 +26,8 @@ import math
 import os
 import pprint
 import random
+import shutil
+import tempfile
 
 import numpy as np
 import pandas as pd
@@ -77,11 +79,9 @@ PROTOCOL = {
     "evaluation": {"videos": "seeded bags using sampling_mode", "clip_positions": "fixed", "drop_last": False},
     "identifiers": "video, study, view and patient columns read as text; studies in text order",
 }
-# The fingerprint fields a `rescore` may change: how the evaluation bags are drawn, nothing the probe learned from.
-# `shuffle_videos` only changes training reads (and the default mode), so a run trained with it off can be
-# rescored with random or view-balanced bags.
-RESCORE_FIELDS = ("settings.data.sampling_mode", "settings.data.view_family_map", "settings.data.eval_seed",
-                  "settings.evaluation.num_bags", "settings.data.shuffle_videos")
+# What a `rescore` may set for the validation bags (`experiment.data.*` and `experiment.evaluation.num_bags` of
+# the run stay as trained): how the evaluation bags are drawn, nothing the probe learned from.
+RESCORE_KEYS = ("sampling_mode", "eval_seed", "view_family_map", "num_bags")
 # Metrics a selection rule `<head>/<metric>` may name, per head task (as `head_metrics` reports
 # them), and the direction that is better.
 TASK_METRICS = {
@@ -103,11 +103,17 @@ def main(args_eval, resume_preempt=False):
     # Rescore: the selected probe of a finished run, scored on validation with other evaluation bags, written
     # to its own folder (the run's val_metrics.json, predictions and wandb run are left as they are).
     rescore = args_eval.get("rescore")
-    rescore_out = None
+    rescore_out, rescore_bags = None, {}
     if rescore is not None:
         if not val_only:
             raise ValueError("`rescore` needs --val_only: it scores validation only, never the test split.")
-        rescore_out = rescore.get("out") if isinstance(rescore, dict) else None
+        if not isinstance(rescore, dict):
+            raise ValueError("`rescore` is a mapping: `out` and any of " + ", ".join(RESCORE_KEYS) + ".")
+        unknown = sorted(set(rescore) - {"out", *RESCORE_KEYS})
+        if unknown:
+            raise ValueError(f"`rescore` sets only the evaluation bags ({', '.join(RESCORE_KEYS)}), not {unknown}.")
+        rescore_out = rescore.get("out")
+        rescore_bags = {k: rescore[k] for k in RESCORE_KEYS if k in rescore}
         if not rescore_out or not os.path.isabs(rescore_out):
             raise ValueError("`rescore.out` must be an absolute folder for the rescored outputs.")
         if os.path.lexists(rescore_out):
@@ -199,6 +205,15 @@ def main(args_eval, resume_preempt=False):
     eval_mode = args_data.get("sampling_mode") or ("random" if shuffle_videos else "fixed")
     if num_eval_bags > 1 and eval_mode == "fixed":
         raise ValueError("evaluation.num_bags > 1 needs random or view_balanced sampling: fixed bags are identical.")
+    # The validation bags: the run's, or a rescore's. Training keeps the run's settings either way.
+    run_bags = {"sampling_mode": eval_mode, "eval_seed": int(args_data.get("eval_seed", 0)),
+                "view_family_map": args_data.get("view_family_map"), "num_bags": num_eval_bags}
+    val_bags = {**run_bags, **rescore_bags}
+    val_bags["num_bags"] = int(val_bags["num_bags"])
+    if val_bags["num_bags"] < 1:
+        raise ValueError("rescore.num_bags must be positive.")
+    if val_bags["num_bags"] > 1 and val_bags["sampling_mode"] == "fixed":
+        raise ValueError("rescore.num_bags > 1 needs random or view_balanced sampling: fixed bags are identical.")
 
     # -- OPTIMIZATION
     args_opt = args_exp["optimization"]
@@ -263,15 +278,24 @@ def main(args_eval, resume_preempt=False):
                             normalize=normalization or DEFAULT_NORMALIZATION)
 
     def make_dataset(split, training):
+        options, shuffle = data_options, shuffle_videos
+        if rescore_out is not None and not training:
+            # A rescore's validation bags. `shuffle_videos` only shapes training reads; it is set from the
+            # evaluation mode so that a run trained with it off can be rescored with random or view-balanced bags.
+            options = {**data_options, "sampling_mode": val_bags["sampling_mode"], "eval_seed": val_bags["eval_seed"]}
+            options.pop("view_family_map", None)
+            if val_bags["view_family_map"] is not None:
+                options["view_family_map"] = val_bags["view_family_map"]
+            shuffle = val_bags["sampling_mode"] != "fixed"
         return VideoStudyDataset(
             read_split(args_data, split), path_column=path_column, group_column=group_column,
             target_columns=list(specs), view_column=view_column, views=views, labels_map=labels_map,
-            num_videos=num_videos, shuffle_videos=shuffle_videos, training=training,
+            num_videos=num_videos, shuffle_videos=shuffle, training=training,
             frames_per_clip=frames_per_clip, frame_step=frame_step, duration=duration, fps=fps,
             num_clips_per_video=num_clips_per_video,
             transform=(WholeFrames(probe_options["source_resolution"]) if region
                        else make_transforms(training=training, **transform_kwargs)),
-            min_videos=min_videos, view_labels_map=view_labels_map, **data_options,
+            min_videos=min_videos, view_labels_map=view_labels_map, **options,
         )
 
     train_dataset = make_dataset("train", training=True)
@@ -401,7 +425,7 @@ def main(args_eval, resume_preempt=False):
 
     score_kwargs = dict(device=device, encoder=encoder_module, batch_size=batch_size, num_workers=num_workers,
                         use_bfloat16=use_bfloat16, specs=specs, normalization=normalization_targets, rank=rank,
-                        world_size=world_size, num_bags=num_eval_bags)
+                        world_size=world_size, num_bags=val_bags["num_bags"])
 
     if scoring_only:
         test_dataset = make_dataset("test", training=False) if test_only else None
@@ -417,7 +441,9 @@ def main(args_eval, resume_preempt=False):
         run_test(folder=folder, probes=probes, probe_names=probe_names, val_dataset=val_dataset, trainable=bool(trainable),
                  test_dataset=test_dataset, num_epochs=num_epochs, fingerprint=fingerprint,
                  selection_rule=selection_rule, run_info=run_info, wandb_run=wandb_run, step=num_epochs * ipe,
-                 val_only=val_only, rescore_out=rescore_out, **score_kwargs)
+                 val_only=val_only, rescore_out=rescore_out,
+                 rescore_bags=None if rescore_out is None else {"run": run_bags, "rescore": val_bags},
+                 **score_kwargs)
         finish_wandb(wandb_run)
         return
 
@@ -1158,32 +1184,56 @@ def check_finished(folder, num_epochs):
                            f"{latest.get('best_epoch')}: the folder does not hold the selected probe.")
 
 
+def publish_new_folder(path, files):
+    """Write `files` ({name: text}) as the new folder `path`, all or nothing. They are written into a private
+    temporary folder beside it, through that folder's descriptor and refusing links, and the folder is renamed
+    to `path` only once complete; on any error it is removed, so a failed attempt never blocks a retry.
+    Refuses a `path` that exists (a folder, file or link), also one that appeared meanwhile."""
+    parent = os.path.dirname(path)
+    os.makedirs(parent, exist_ok=True)
+    tmp = tempfile.mkdtemp(prefix=f".{os.path.basename(path)}.", suffix=".partial", dir=parent)
+    try:
+        directory = os.open(tmp, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            for name, text in files.items():
+                fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=directory)
+                with os.fdopen(fd, "w", newline="") as f:
+                    f.write(text)
+        finally:
+            os.close(directory)
+        if os.path.lexists(path):
+            raise FileExistsError(f"`rescore.out` {path} appeared while scoring: nothing written there.")
+        os.rename(tmp, path)  # fails on a non-empty folder or a non-folder that appeared since the check
+    except BaseException:
+        shutil.rmtree(tmp, ignore_errors=True)
+        raise
+
+
 def run_test(folder, probes, probe_names, val_dataset, test_dataset, num_epochs, fingerprint, selection_rule, run_info,
              wandb_run, step, device, encoder, batch_size, num_workers, use_bfloat16, specs, normalization, rank,
-             world_size, trainable=False, val_only=False, num_bags=1, rescore_out=None):
+             world_size, trainable=False, val_only=False, num_bags=1, rescore_out=None, rescore_bags=None):
     """Score validation and optionally the test with the probe and epoch chosen on validation (`best.pt`, with
     its fine-tuned encoder when the encoder trained), and write `test_metrics.json`,
     `test_predictions.csv` and `val_predictions.csv`. The prediction files list study ids, which
-    can identify patients: keep them where the data is. With `rescore_out` (validation only), the evaluation
-    bags may differ from training in `RESCORE_FIELDS`, and the outputs go to `rescore_out`, a folder created here."""
+    can identify patients: keep them where the data is. With `rescore_out` (validation only), validation was
+    built with other evaluation bags (`rescore_bags`: the run's and the rescore's), the run's own settings are
+    checked as usual, and the outputs go to the new folder `rescore_out`."""
     check_finished(folder, num_epochs)
     if not val_only and os.path.exists(os.path.join(folder, "test_metrics.json")):
         raise RuntimeError("This probe has already been tested (`test_metrics.json` exists); repeat testing only if "
                            "the previous evaluation was invalid.")
     if rescore_out is not None and not val_only:
         raise ValueError("A rescore scores validation only.")
-    out_folder = folder if rescore_out is None else rescore_out
     if rescore_out is not None and os.path.lexists(rescore_out):
         raise FileExistsError(f"`rescore.out` {rescore_out} already exists: a rescore writes a new folder.")
     checkpoint_path = os.path.join(folder, "best.pt")
     checkpoint = load_probe_checkpoint(checkpoint_path)
-    allowed = ("settings.world_size",) + (RESCORE_FIELDS if rescore_out is not None else ())
-    provenance.check_fingerprint(checkpoint.get("fingerprint"), fingerprint, checkpoint_path, ignore=allowed)
+    provenance.check_fingerprint(checkpoint.get("fingerprint"), fingerprint, checkpoint_path,
+                                 ignore=("settings.world_size",))
     rescored = None
     if rescore_out is not None:
-        rescored = {"run_folder": folder, "allowed": list(RESCORE_FIELDS),
-                    "changed": provenance.differences(checkpoint.get("fingerprint"), fingerprint,
-                                                      ignore=("settings.world_size",))}
+        rescored = {"run_folder": folder, "run_bags": rescore_bags["run"], "bags": rescore_bags["rescore"],
+                    "changed": sorted(k for k in RESCORE_KEYS if rescore_bags["run"][k] != rescore_bags["rescore"][k])}
     probe = int(checkpoint["best_probe"])
     module = getattr(probes[probe], "module", probes[probe])
     module.load_state_dict({k.removeprefix("module."): v for k, v in checkpoint["probes"][probe].items()})
@@ -1205,13 +1255,9 @@ def run_test(folder, probes, probe_names, val_dataset, test_dataset, num_epochs,
         return None
     val = evaluate(val_scored, specs, normalization, selection_rule)
     test = None if val_only else evaluate(test_scored, specs, normalization, selection_rule)
-    if rescore_out is not None:
-        # Created only now, so a failed rescore leaves nothing behind. mkdir fails if the folder appeared meanwhile
-        # (e.g. a second rescore to the same folder), and a new folder holds no file or link to write through.
-        os.makedirs(os.path.dirname(rescore_out), exist_ok=True)
-        os.mkdir(rescore_out)
-    with open(os.path.join(out_folder, "val_predictions.csv"), "w" if rescore_out is None else "x", newline="") as f:
-        prediction_table(val_scored, val_dataset, specs, normalization).to_csv(f, index=False)
+    val_table = prediction_table(val_scored, val_dataset, specs, normalization)
+    if rescore_out is None:
+        val_table.to_csv(os.path.join(folder, "val_predictions.csv"), index=False)
     if not val_only:
         prediction_table(test_scored, test_dataset, specs, normalization).to_csv(
             os.path.join(folder, "test_predictions.csv"), index=False)
@@ -1231,10 +1277,14 @@ def run_test(folder, probes, probe_names, val_dataset, test_dataset, num_epochs,
         result["test"] = test
     prefix = "selected_val" if val_only else "test"
     filename = "val_metrics.json" if val_only else "test_metrics.json"
-    tmp = os.path.join(out_folder, filename + ".tmp")
-    with open(tmp, "w" if rescore_out is None else "x") as f:
-        json.dump(result, f, indent=2)
-    os.replace(tmp, os.path.join(out_folder, filename))
+    if rescore_out is None:
+        tmp = os.path.join(folder, filename + ".tmp")
+        with open(tmp, "w") as f:
+            json.dump(result, f, indent=2)
+        os.replace(tmp, os.path.join(folder, filename))
+    else:
+        publish_new_folder(rescore_out, {"val_predictions.csv": val_table.to_csv(index=False),
+                                         filename: json.dumps(result, indent=2)})
 
     metrics_result = val if val_only else test
     scalars = {f"probe/{prefix}_epoch": result["epoch"], f"probe/{prefix}_probe": probe,
