@@ -98,6 +98,39 @@ class TestMergedCaptions(unittest.TestCase):
         self.assertEqual(row["caption"].count("segment shows"), 1)
         self.assertNotIn(merged.WALLS_NORMAL, row["caption"])
 
+    def test_hypertrophy_mass_and_remodelling_are_written_from_the_parser(self):
+        base = "Ventricule gauche non dilaté. Fonction systolique normale. "
+        row, _ = self.row("lv", {LV: base + "Hypertrophie ventriculaire gauche. Masse augmentée.", LVIDD: 4.8})
+        self.assertIn("LV hypertrophy is present.", row["caption"])
+        self.assertIn("LV mass is increased.", row["caption"])
+        self.assertEqual(self.sources(row)["lv_hypertrophy"], ("abnormal", "parser"))
+        self.assertEqual(row["normality"], "abnormal")
+        row, _ = self.row("lv", {LV: base + "Pas d'hypertrophie. Masse normale.", LVIDD: 4.8})
+        self.assertIn("No LV hypertrophy.", row["caption"])
+        self.assertIn("LV mass is normal.", row["caption"])
+        self.assertNotIn("is present", row["caption"])
+        row, _ = self.row("lv", {LV: base + "Remodelage concentrique.", LVIDD: 4.8})
+        self.assertIn("LV remodelling is present.", row["caption"])
+        row, _ = self.row("lv", {LV: base, LVIDD: 4.8, "IVS Diastole Thickness (2D)": 1.6,
+                                 "LVIW Diastolic Thickness (2D)": 1.6})
+        self.assertNotIn("hypertrophy", row["caption"])            # a measurement alone writes no sentence
+
+    def test_disagreeing_claims_write_no_extra_sentence(self):
+        facts = [{"source": "text", "attribute": "lv_mass", "finding": "state", "value": "normal"},
+                 {"source": "text", "attribute": "lv_mass", "finding": "state", "value": "abnormal"},
+                 {"source": "text", "attribute": "lv_wall_thickness", "finding": "hypertrophy", "value": "uncertain"},
+                 {"source": "structured", "attribute": "lv_geometry", "finding": "remodelling", "value": "abnormal"}]
+        self.assertEqual(merged.extra_sentences(facts, "lv"), {})
+        self.assertEqual(merged.extra_sentences(facts, "rv"), {})
+
+    def test_an_enlarged_left_atrium_is_written_as_dilated(self):
+        row, _ = self.row("la", {"Left atrial findings": "Volume indexé légèrement augmenté."})
+        if row is not None and "la_size" in self.sources(row):
+            self.assertEqual(row["caption"], "Left atrium is dilated.")
+            self.assertEqual(row["normality"], "abnormal")
+        else:
+            self.fail("an increased left atrial volume wrote no size sentence")
+
     def test_table_is_read_by_the_radar_dataset_columns(self):
         reports = pd.DataFrame([{"study_id": "S1", PERI: "Pas d'épanchement péricardique.",
                                  LV: "Ventricule gauche non dilaté.", LVIDD: 4.8, EF: 60.0},

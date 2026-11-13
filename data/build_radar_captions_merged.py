@@ -3,7 +3,7 @@
 """RADAR caption table, second version: English sentences from the column review, checked and completed by the parser.
 
 `build_radar_captions.py` keeps the report's own (French) text. This builder writes each (study, structure) caption
-as short English sentences, one per finding, from three sources, in this order:
+as short English sentences, one per finding, from four sources:
 
 1. The column review prefill (`tools/labelbox/column_review.py`, form v5, on the column review branch): its findings
    for the views of the study's clips that may show the structure, worded by its `finding_sentence`. A finding is
@@ -11,9 +11,13 @@ as short English sentences, one per finding, from three sources, in this order:
    the checks of `compare_column_prefill.py`, always with its strict rule for an LV function next to normal.
 2. The RADAR parser (`radar_normality.py`), where the prefill says nothing of a column and the parser decides: the
    column's normal sentence, or a plain abnormal one (`ABNORMAL_FILL`), since the parser keeps the side of a finding
-   and not its grade. A dilated chamber is written only when the parser named a dilatation. Nothing is filled for a
+   and not its grade. A dilated chamber is written only when the parser named a dilatation, except the left atrium
+   (`DILATED_IF_ABNORMAL`): its size is abnormal in these reports only as an increase. Nothing is filled for a
    device, a valve's motion, the wall thickness, the cusp count or an aorta segment on the abnormal side.
-3. The visual EF, for the LV function only, when the prefill says nothing: the grade of the EF's band in this lab
+3. The RADAR parser again, for what the form has no column for (`EXTRA_SENTENCES`): LV hypertrophy stated or denied,
+   LV remodelling, and the LV mass (normal or increased). Without them an LV caption says nothing of hypertrophy. A
+   sentence is written only when every text claim of that kind agrees and none is uncertain; measurements write none.
+4. The visual EF, for the LV function only, when the prefill says nothing: the grade of the EF's band in this lab
    (`configs/radar/prefill_check_limits_v0.yaml`), unless the EF is in a grey zone or the parser reads the text the
    other way. The EF number itself is not written.
 
@@ -68,6 +72,20 @@ ABNORMAL_FILL = {  # a parser-only abnormal finding: the column's value when it 
     ccp.WALL_COLUMN: WALLS_ABNORMAL,
 }
 DILATED_IF_NAMED = ("lv_size", "rv_size", "la_size", "ivc_size")    # filled as dilated only when the parser said so
+# A size the reports call abnormal only as an increase (`volume indexé légèrement augmenté`): dilated without the word.
+# Checked on the training split: every left atrium caption with an abnormal size state says `augmenté`, none smaller.
+DILATED_IF_ABNORMAL = ("la_size",)
+# Parser findings the form has no column for: structure -> (name, parser attribute, parser findings, {value: sentence}).
+# Unqualified hypertrophy is no wall thickness column value (`ccp.speaks_for_column`), so it is worded as itself. An
+# abnormal mass state is an increase in these reports (checked on the training split, as above).
+EXTRA_SENTENCES = {
+    "lv": (
+        ("lv_hypertrophy", "lv_wall_thickness", ("hypertrophy", "concentric_hypertrophy"),
+         {"abnormal": "LV hypertrophy is present.", "normal": "No LV hypertrophy."}),
+        ("lv_remodelling", "lv_geometry", ("remodelling",), {"abnormal": "LV remodelling is present."}),
+        ("lv_mass", "lv_mass", ("state",), {"normal": "LV mass is normal.", "abnormal": "LV mass is increased."}),
+    ),
+}
 
 
 def sentence(cr, spec, column, value):
@@ -77,6 +95,19 @@ def sentence(cr, spec, column, value):
 def normal_value(spec, column):
     """The column's normal value, or None when it has none (a device, a finding that is only ever present)."""
     return next((v for v in spec["fields"][column]["values"] if ccp.POLARITY[v] == "normal"), None)
+
+
+def extra_sentences(facts, name):
+    """{name: (sentence, side)} of the parser's text claims the form has no column for (`EXTRA_SENTENCES`). A kind
+    whose claims disagree, or hold an uncertain one, writes nothing."""
+    found = {}
+    for extra, attribute, findings, wording in EXTRA_SENTENCES.get(name, ()):
+        values = {f["value"] for f in facts if f["source"] == "text" and f["attribute"] == attribute
+                  and f.get("finding") in findings}
+        if len(values) == 1 and next(iter(values)) in wording:
+            side = next(iter(values))
+            found[extra] = (wording[side], side)
+    return found
 
 
 def segment_values(report, views, name, acquisition, spec, cr, cache):
@@ -101,11 +132,12 @@ def merged_row(study_id, structure, report, views, policy, spec, cr, limits, acq
     without_ef = {**report, policy.ef["column"]: None}
     row = brc.caption_row(study_id, structure, without_ef, policy)
     if row is None:
-        statuses, own, findings, flag = {}, {}, {}, "unknown"
+        statuses, own, findings, flag, facts = {}, {}, {}, "unknown", []
         silent = "removed" if brc.exclusion_row(study_id, structure, report) is not None else "empty"
     else:
         covered = {ccp.parser_attribute(c) for c in ccp.COLUMNS_OF.get(name, ())} - {None}
-        statuses, own, findings = ccp.parser_reading(json.loads(row["facts"]), covered | {"aorta_size"})
+        facts = json.loads(row["facts"])
+        statuses, own, findings = ccp.parser_reading(facts, covered | {"aorta_size"})
         silent, flag = "not_stated", row["normality"]
 
     kept, dropped = {}, []      # kept: column -> (sentences, side, value, source)
@@ -150,13 +182,18 @@ def merged_row(study_id, structure, report, views, policy, spec, cr, limits, acq
                 kept[column] = ([text], "normal", value, "parser")
         elif status == "abnormal":
             named = set(findings.get(attribute, ()))
-            fill = "dilated" if column in DILATED_IF_NAMED and "dilated" in named else ABNORMAL_FILL.get(column)
+            dilated = column in DILATED_IF_ABNORMAL or (column in DILATED_IF_NAMED and "dilated" in named)
+            fill = "dilated" if dilated else ABNORMAL_FILL.get(column)
             if fill is not None:
                 text = fill if fill.endswith(".") else sentence(cr, spec, column, fill)
                 kept[column] = ([text], "abnormal", fill if not fill.endswith(".") else "abnormal", "parser")
 
+    for extra, (text, side) in extra_sentences(facts, name).items():
+        kept[extra] = ([text], side, side, "parser")
+
     order = {c: i for i, c in enumerate(spec["fields"])}
-    columns = sorted(kept, key=lambda c: order.get(c, len(order)))      # the wall summary comes last
+    # The wall summary and the extra sentences come last.
+    columns = sorted(kept, key=lambda c: order.get(c, len(order)))
     texts = [text for column in columns for text in kept[column][0]]
     caption = " ".join(texts)
     if not rc.canonical_caption(caption):
