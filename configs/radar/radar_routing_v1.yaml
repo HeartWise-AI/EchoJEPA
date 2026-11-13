@@ -1,0 +1,179 @@
+# RADAR structure routing registry, version 1: version 0 plus Doppler stills.
+#
+# Everything of version 0 is unchanged (views, families, report columns). Hemo stays untrained here: it has no
+# contrastive caption and no query, and haemodynamics is learned by the measurement heads alone, from the TR, mitral
+# inflow and tissue Doppler stills (which a study's still stream reads whatever structure they feed). The registry
+# in which Hemo also trains contrastively, for the ablation, is radar_routing_v1_hemo.yaml.
+# Version 0 stays the default (`DEFAULT_ROUTING`); a run opts in with `data.routing`. Its sha256 is in every run's
+# fingerprint, so editing it would orphan every v0 checkpoint: make a new version instead.
+#
+# still_structs: a still's structure tag -> the structures it may feed. The tag comes from the sonographer's
+# measurement label read on the still (`data/build_still_manifest.py:still_tag`): it was labelled, so the routing is
+# strict. MV_INFLOW is an MV pulsed-wave still measured for E, A, E/A or DT (diastology); TDI an annular tissue
+# Doppler still (e'). A tag not listed here (or a still without a tag) feeds no structure.
+# finding_support (a structure's key): per Doppler finding of its report caption, the still tags that show it. A
+# Doppler clause is written into a bag's caption only when the bag holds a still that shows its finding: an LVOT
+# still feeds the aortic valve's embedding but does not show aortic stenosis, which is read on the AV still.
+# still_types: `<mode>_<tag>` names that get a still-type embedding; any other type shares the unknown row.
+#
+# Version 0 header follows.
+#
+# RADAR structure routing registry, version 0.
+#
+# For each cardiac structure: the view classes in which it may be visible (a clip of another view is never pooled
+# into its embedding), the report findings column that gives its caption, and whether v0 trains a query for it.
+#
+# Source: column review v3 (branch issue_21/column_review_v3, commit 5dec44b), `views[*].targets` inverted. Only
+# level-free targets are used, because the view classifier predicts no PSAX or subcostal level: generic PSAX is
+# therefore not a mitral view, and no view is a strict IVC view. Grouped v3 targets: lv = lv + ivs, aortic =
+# aortic + lvot, pulmonic = pulmonic + rvot + pulmonary_artery, aorta = aorta root, ascending, arch and descending.
+#
+# routing: strict = the source's level-free views; weak = a named override of the source, reported as exploratory.
+# train: false keeps a structure in the taxonomy without a query, so it never receives a prediction.
+# The interatrial septum is not in v0: adding it needs captions, routing, a trained query and validation.
+
+schema: radar-structure-routing
+version: 1
+
+view_classes:  # the view classifier's classes, in id order (app/radar/ontology.py VIEWS)
+  - A2C
+  - A2C_LV
+  - A2C_ZOOM
+  - A3C
+  - A3C_LV
+  - A3C_ZOOM
+  - A4C
+  - A4C_LV
+  - A4C_ZOOM
+  - A5C
+  - A5C_ZOOM
+  - PLAX
+  - PLAX_DEEP
+  - PLAX_ZOOM
+  - PSAX
+  - PSAX_AV
+  - RVINF
+  - SUBCOSTAL
+  - SUPRASTERNAL
+  - OTHER
+
+# Bag selection only (not routing): a view listed here counts as its family when a study's clips are balanced, so
+# near-duplicate views do not use up the clip budget. A view not listed is its own family. PSAX_AV stays apart from
+# PSAX on purpose: it is the pulmonic valve's only view, and grouped with PSAX it could lose its place in the bag.
+view_families:
+  A2C_LV: A2C
+  A2C_ZOOM: A2C
+  A3C_LV: A3C
+  A3C_ZOOM: A3C
+  A4C_LV: A4C
+  A4C_ZOOM: A4C
+  A5C_ZOOM: A5C
+  PLAX_DEEP: PLAX
+  PLAX_ZOOM: PLAX
+
+structures:
+  - name: lv
+    label: Left ventricle
+    report_column: Left ventricule findings
+    routing: strict
+    train: true
+    views: [A2C, A2C_LV, A2C_ZOOM, A3C, A3C_LV, A3C_ZOOM, A4C, A4C_LV, A4C_ZOOM, A5C, A5C_ZOOM,
+            PLAX, PLAX_DEEP, PLAX_ZOOM, PSAX]
+  - name: rv
+    label: Right ventricle
+    report_column: Right ventricule findings
+    routing: strict
+    train: true
+    views: [A4C, A4C_ZOOM, A5C, A5C_ZOOM, PLAX, PLAX_DEEP, PLAX_ZOOM, PSAX, PSAX_AV, RVINF]
+  - name: la
+    label: Left atrium
+    report_column: Left atrial findings
+    routing: strict
+    train: true
+    views: [A2C, A2C_ZOOM, A3C, A3C_ZOOM, A4C, A4C_ZOOM, A5C, A5C_ZOOM, PLAX, PLAX_DEEP, PLAX_ZOOM, PSAX_AV]
+  - name: ra
+    label: Right atrium
+    report_column: Right Atrial findings
+    routing: strict
+    train: false
+    note: Its report column is filled in too few reports to train a query in v0.
+    views: [A4C, A4C_ZOOM, A5C, A5C_ZOOM, PSAX_AV, RVINF]
+  - name: mitral
+    label: Mitral valve
+    report_column: Mitral valve findings
+    routing: strict
+    finding_support: {stenosis: [MV, MVA], regurgitation: [MR]}
+    train: true
+    views: [A2C, A2C_LV, A2C_ZOOM, A3C, A3C_LV, A3C_ZOOM, A4C, A4C_LV, A4C_ZOOM, A5C, A5C_ZOOM,
+            PLAX, PLAX_DEEP, PLAX_ZOOM]
+  - name: aortic
+    label: Aortic valve
+    report_column: Aortic valve findings
+    routing: strict
+    finding_support: {stenosis: [AV, AVA], regurgitation: [AR]}
+    train: true
+    views: [A3C, A3C_LV, A3C_ZOOM, A5C, A5C_ZOOM, PLAX, PLAX_DEEP, PLAX_ZOOM, PSAX_AV]
+  - name: tricuspid
+    label: Tricuspid valve
+    report_column: Tricuspid valve findings
+    routing: strict
+    finding_support: {stenosis: [TV], regurgitation: [TR]}
+    train: true
+    views: [A4C, A4C_LV, A4C_ZOOM, A5C, A5C_ZOOM, PSAX_AV, RVINF]
+  - name: pulmonic
+    label: Pulmonic valve
+    report_column: Pulmonary valve findings
+    routing: strict
+    finding_support: {stenosis: [PV], regurgitation: [PR]}
+    train: true
+    views: [PSAX_AV]
+  - name: aorta
+    label: Aorta
+    report_column: Aorta findings
+    routing: strict
+    train: true
+    views: [A3C, A3C_ZOOM, A5C, A5C_ZOOM, PLAX, PLAX_DEEP, PLAX_ZOOM, SUPRASTERNAL]
+  - name: ivc
+    label: Inferior vena cava
+    report_column: Inferior vena cava findings
+    routing: weak
+    train: true
+    note: >-
+      Override. The source shows the IVC only at the subcostal IVC level, which the classifier does not predict, so
+      every subcostal clip is routed to it. Results are exploratory.
+    views: [SUBCOSTAL]
+  - name: pericardium
+    label: Pericardium
+    report_column: Pericardium findings
+    routing: strict
+    train: true
+    views: [A2C, A2C_ZOOM, A3C, A3C_ZOOM, A4C, A4C_ZOOM, A5C, A5C_ZOOM, PLAX, PLAX_DEEP, PLAX_ZOOM, PSAX]
+  - name: hemo
+    label: Hemodynamics (RVSP, filling pressures)
+    report_column: null
+    routing: strict
+    train: false
+    note: >-
+      No single location and no B-mode input. Regression only: the measurement heads read its stills; no caption.
+      radar_routing_v1_hemo.yaml trains it contrastively (ablation).
+    views: []
+
+still_structs:
+  AV: [aortic]
+  LVOT: [aortic]
+  AVA: [aortic]
+  AR: [aortic]
+  MV: [mitral]
+  MVA: [mitral]
+  MR: [mitral]
+  MV_INFLOW: [mitral, hemo]
+  TR: [tricuspid, hemo]
+  TV: [tricuspid]
+  PV: [pulmonic]
+  PR: [pulmonic]
+  RVOT: [pulmonic]
+  DAO: [aorta]
+  TDI: [hemo]
+
+still_types: [cw_AV, cw_AR, cw_LVOT, cw_MV, cw_MR, cw_TR, cw_TV, cw_PV, cw_PR, pw_LVOT, pw_AV, pw_MV, pw_MV_INFLOW,
+              pw_TV, pw_PV, pw_RVOT, pw_DAO, tdi_TDI]

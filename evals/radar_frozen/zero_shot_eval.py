@@ -80,8 +80,10 @@ import yaml
 
 from evals.radar_frozen import zero_shot_metrics as zm
 from evals.radar_frozen.train import AMP_MODES, REPO, WORKER_START_METHODS, _device, _to, build_model
+from src.datasets.radar_stills import STILL_ITEM_KEYS, StillSource, same_encoder
 from src.datasets.radar_study_dataset import RadarStudyDataset, file_sha256, read_table
 from src.datasets.radar_token_cache import TokenCache
+from src.models.radar.model import STILL_KEYS
 from src.models.radar.routing import DEFAULT_ROUTING, load_routing
 from src.models.radar.zero_shot import (
     POOLINGS,
@@ -135,7 +137,8 @@ def load_model(config, checkpoint, routing, device):
 
 def check_not_trained_on(config, state, study_ids):
     """Refuse when an evaluated study is in the training split, or when that cannot be told. Returns the training
-    split's study ids."""
+    split's study ids: those of the clip table and, for a checkpoint trained with Doppler stills, those of its still
+    table too (a study may have trained through its stills alone)."""
     data = config["data"]
     if not os.path.exists(data["clips"]) or file_sha256(data["clips"]) != state["fingerprint"]["clips_sha256"]:
         raise ValueError("data.clips of the config is not the clip table the checkpoint trained on, so the evaluated "
@@ -144,12 +147,24 @@ def check_not_trained_on(config, state, study_ids):
     train = read_table(data["clips"])
     if "split" in train.columns:
         train = train[train.split.astype(str) == data.get("split", "train")]
-    overlap = set(train.study_id.astype(str)) & set(study_ids)
+    trained = set(train.study_id.astype(str))
+    if state["fingerprint"].get("stills"):
+        path = (data.get("stills") or {}).get("table")
+        if not path or not os.path.exists(path) or file_sha256(path) != state["fingerprint"]["stills"]["table_sha256"]:
+            raise ValueError("data.stills.table of the config is not the still table the checkpoint trained on, so "
+                             "the evaluated studies cannot be checked against the studies trained through their "
+                             "stills. Point the config at that table, or pass allow_training_studies to skip the "
+                             "check.")
+        stills = pd.read_csv(path, dtype=str, usecols=lambda c: c in ("study_id", "split"))
+        if "split" in stills.columns:
+            stills = stills[stills.split.astype(str) == data.get("split", "train")]
+        trained |= set(stills.study_id.astype(str))
+    overlap = trained & set(study_ids)
     if overlap:
         raise ValueError(f"{len(overlap)} of the {len(study_ids)} evaluated studies are in the training split: "
                          "their zero-shot predictions are not held out. Evaluate another split, or pass "
                          "allow_training_studies for a sanity check on training studies.")
-    return set(train.study_id.astype(str))
+    return trained
 
 
 def check_groups_not_trained_on(labels, group_column, study_ids, training_ids):
@@ -169,6 +184,9 @@ def check_groups_not_trained_on(labels, group_column, study_ids, training_ids):
 
 def collate_bags(items):
     batch = {key: torch.stack([item[key] for item in items]) for key in BAG_KEYS}
+    for key in STILL_ITEM_KEYS:         # the still stream, when the dataset has one
+        if key in items[0]:
+            batch[key] = torch.stack([item[key] for item in items])
     batch["study_id"] = [item["study_id"] for item in items]
     return batch
 
@@ -191,9 +209,12 @@ def embed_studies(model, dataset, device, amp="none", num_bags=3, batch_size=32,
         zs, has = [], []
         for batch in loader:
             batch = _to(batch, device)
+            extra = {key: batch.get(key) for key in STILL_KEYS} if "still_tokens" in batch else {}
+            if "demo" in batch and getattr(model.pooler, "demo_film", None) is not None:
+                extra["demo"] = batch["demo"]
             with torch.autocast(device_type=device.type, dtype=torch.bfloat16, enabled=amp == "bf16"):
                 _, z, has_clip = model.pooler(batch["tokens"], batch["clip_valid"], batch["eligible"],
-                                              batch["view_ids"], batch["acquisition_ids"])
+                                              batch["view_ids"], batch["acquisition_ids"], **extra)
             zs.append(z.float().cpu())
             has.append(has_clip.cpu())
         z_bags.append(torch.cat(zs))
@@ -337,13 +358,38 @@ def task_report(task, label, prediction, supported, groups, grades, threshold, s
     return {"coverage": coverage, "metrics": metric(y, p), "intervals": intervals}, youden
 
 
+def read_eval_stills(config, state, routing, model, path, split, cache_dir=None, demographics=None):
+    """The still source of the evaluated studies, read as in training: the config's still settings, the training
+    split's age statistics (from the checkpoint's fingerprint), no measurement target."""
+    section, m = config["data"]["stills"], config["model"]
+    table = pd.read_csv(path, dtype={"study_id": str, "still_id": str, "still_tag": str, "still_type": str})
+    if split is not None:
+        if "split" not in table.columns:
+            raise ValueError("split was given but the still table has no split column.")
+        table = table[table.split.astype(str) == split]
+    demographics = demographics or section.get("demographics")
+    if getattr(model.pooler, "demo_film", None) is not None and not demographics:
+        raise ValueError("The checkpoint's queries read demographics (model.stills.demo_film): pass demographics.")
+    demo = pd.read_csv(demographics, dtype={"study_id": str}) if demographics else None
+    cache = TokenCache(cache_dir or section["cache_dir"], token_grid=list(m["stills"]["token_grid"]),
+                       embed_dim=m["embed_dim"])
+    return StillSource(table, routing, cache, [s.name for s in routing.trained],
+                       num_stills=section.get("num_stills", 8), cond_columns=section.get("cond_columns", []),
+                       heatmap_column=section.get("heatmap_column"), demographics=demo,
+                       demo_stats=state["fingerprint"]["stills"].get("demo_stats"))
+
+
 def evaluate(config, checkpoint, clips, labels, out_dir, prompts=DEFAULT_PROMPTS, split=None, cache_dir=None,
              num_bags=3, eval_seed=0, num_clips=None, selection=None, pooling="mean_similarity", keep=0.2,
              thresholds=None, group_column=None, samples=1000, seed=0, batch_size=32, num_workers=0,
-             allow_training_studies=False, wandb=None):
+             allow_training_studies=False, wandb=None, stills=None, still_cache_dir=None, demographics=None,
+             clip_only=False):
     """Evaluate and write the outputs; returns the report written to `metrics.json`. `clips`, `labels`, `prompts`,
     `checkpoint`, `thresholds` are paths; `num_clips` and `selection` default to the training config's; `wandb` is
-    {wandb_project, wandb_entity, wandb_run_name} or None."""
+    {wandb_project, wandb_entity, wandb_run_name} or None. A checkpoint trained with Doppler stills is evaluated
+    with them: `stills` is the evaluated studies' still table (`split` applies to it too), `still_cache_dir` and
+    `demographics` default to the config's. `clip_only` evaluates such a checkpoint on clips alone, an ablation that
+    the report names; without either the evaluation is refused, or the still stream would be dropped silently."""
     check_outside_repo(out_dir, "out_dir")
     if pooling not in POOLINGS:
         raise ValueError(f"pooling must be one of {POOLINGS}, got {pooling!r}.")
@@ -362,6 +408,18 @@ def evaluate(config, checkpoint, clips, labels, out_dir, prompts=DEFAULT_PROMPTS
     if untrained:
         raise ValueError(f"Prompt tasks score structures that are not trained: {untrained}.")
 
+    trained_stills = state["fingerprint"].get("stills")
+    if stills and (not trained_stills or clip_only):
+        raise ValueError("stills were given, but the checkpoint trained without stills or clip_only is set.")
+    if trained_stills and not stills and not clip_only:
+        raise ValueError("The checkpoint trained with Doppler stills: pass stills (the evaluated studies' still "
+                         "table), or clip_only for an evaluation on clips alone.")
+    if clip_only and getattr(model.pooler, "demo_film", None) is not None:
+        raise ValueError("clip_only cannot evaluate a checkpoint whose queries read demographics "
+                         "(model.stills.demo_film): they come with the still source.")
+    still_source = (read_eval_stills(config, state, routing, model, stills, split, still_cache_dir, demographics)
+                    if stills else None)
+
     table = read_table(clips)
     if split is not None:
         if "split" not in table.columns:
@@ -370,11 +428,14 @@ def evaluate(config, checkpoint, clips, labels, out_dir, prompts=DEFAULT_PROMPTS
     if table.empty:
         raise ValueError("No clip to evaluate.")
     cache = TokenCache(cache_dir or data["cache_dir"], token_grid=m["token_grid"], embed_dim=m["embed_dim"])
+    if still_source is not None:
+        same_encoder(cache.meta, still_source.cache.meta)
     dataset = RadarStudyDataset(table, pd.DataFrame(columns=list(CAPTION_COLUMNS)), routing, cache,
                                 num_clips=num_clips or data.get("num_clips", 12),
                                 selection=selection or data.get("selection", "view_balanced"), training=False,
                                 eval_seed=eval_seed,
-                                acquisition_classes=data.get("acquisition_classes", ("bmode", "color_flow")))
+                                acquisition_classes=data.get("acquisition_classes", ("bmode", "color_flow")),
+                                stills=still_source)
     study_ids = [study for study, _ in dataset.studies]
     training_ids = None if allow_training_studies else check_not_trained_on(config, state, study_ids)
     label_table, unused_rows = read_labels(labels, tasks, study_ids, group_column)
@@ -401,6 +462,11 @@ def evaluate(config, checkpoint, clips, labels, out_dir, prompts=DEFAULT_PROMPTS
         "studies": len(study_ids), "label_rows_not_evaluated": unused_rows,
         "training_studies_checked_by_group": group_checked,
         "same_cache_as_training": cache.meta == trained_cache,
+        "clip_only": bool(clip_only),
+        "stills": None if still_source is None else {
+            "table_sha256": file_sha256(stills), "studies": len(still_source.studies),
+            "unrouted": still_source.unrouted,
+            "same_cache_as_training": still_source.cache.meta == trained_stills["cache_meta"]},
         "cache_provenance_differences": sorted(k for k in set(provenance) | set(trained_provenance)
                                                if provenance.get(k) != trained_provenance.get(k)),
         "bootstrap": {"samples": samples, "seed": seed, "level": 0.95,
@@ -509,6 +575,11 @@ def main(argv=None):
     parser.add_argument("--num_workers", type=int, default=0)
     parser.add_argument("--allow_training_studies", action="store_true",
                         help="evaluate studies of the training split (a sanity check, not a held-out result)")
+    parser.add_argument("--stills", help="still table of the evaluated studies (a checkpoint trained with stills)")
+    parser.add_argument("--still_cache_dir", help="token cache of the evaluated stills (default: the config's)")
+    parser.add_argument("--demographics", help="demographics of the evaluated studies (default: the config's)")
+    parser.add_argument("--clip_only", action="store_true",
+                        help="evaluate a checkpoint trained with stills on clips alone (an ablation)")
     parser.add_argument("--wandb_project")
     parser.add_argument("--wandb_entity")
     parser.add_argument("--wandb_run_name")
@@ -522,7 +593,9 @@ def main(argv=None):
                       num_clips=args.num_clips, selection=args.selection, pooling=args.pooling, keep=args.keep,
                       thresholds=args.thresholds, group_column=args.group_column, samples=args.samples,
                       seed=args.seed, batch_size=args.batch_size, num_workers=args.num_workers,
-                      allow_training_studies=args.allow_training_studies, wandb=wandb)
+                      allow_training_studies=args.allow_training_studies, wandb=wandb, stills=args.stills,
+                      still_cache_dir=args.still_cache_dir, demographics=args.demographics,
+                      clip_only=args.clip_only)
     print(json.dumps({name: {**task["coverage"], **task["metrics"]} for name, task in report["tasks"].items()}))
 
 
