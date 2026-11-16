@@ -47,21 +47,15 @@ def test_disagreeing_patient_sources_must_not_assign_repeat_study_to_training():
                              metadata_row("1.2.2", patient, "new")])
     splits = pd.DataFrame([dict(study_id="1.2.1", patient_id="WRONG-PATIENT", split="test")])
     stills = pd.DataFrame([dict(study_id="1.2.2", patient=patient)])
-    # Safe outcomes: refuse the identity conflict, or inherit the canonical
-    # patient's held-out assignment. A separate study-ID check cannot catch it.
-    try:
-        assigned, _ = manifest.assign_splits(stills, splits, metadata, "audit", (.8, .1, .1))
-    except (ValueError, SystemExit):
-        return
-    assert assigned.split.tolist() == ["test"]
+    with pytest.raises(SystemExit, match="patient_id that the metadata does not give them"):
+        manifest.assign_splits(stills, splits, metadata, "audit", (.8, .1, .1))
 
 
 def test_conflicting_patient_identity_in_one_folder_must_be_quarantined():
     metadata = pd.DataFrame([metadata_row("1.2.1", "PATIENT-A", "same"),
                              metadata_row("1.2.1", "PATIENT-B", "same")])
     stills = pd.DataFrame([dict(still_id="invented-still", dcm_path="/synthetic/same/still.dcm")])
-    try:
-        linked, _, _ = manifest.link_studies(stills, metadata, "audit")
-    except (ValueError, SystemExit):
-        return
+    linked, demographics, unlinked = manifest.link_studies(stills, metadata, "audit")
     assert linked.empty, "Ambiguous patient identity must not become an arbitrary patient split"
+    assert demographics.empty
+    assert unlinked == 1
