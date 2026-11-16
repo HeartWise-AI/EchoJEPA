@@ -1,7 +1,7 @@
 """CPU-only patient-identity contracts for PR #47, using invented identifiers.
 
-Strict xfails are unmet acceptance criteria, not evidence of a safe cohort. Run
-with --runxfail to see the failures. No clinical files are read.
+The identity counterexamples are regression tests for fixes now on main.
+No clinical files are read.
 """
 
 import sys
@@ -38,7 +38,6 @@ def test_existing_patient_in_two_splits_is_rejected():
                                splits, pd.DataFrame(), "audit", (.8, .1, .1))
 
 
-@pytest.mark.xfail(strict=True, reason="Split-table patient_id is not reconciled with metadata.mrn")
 def test_disagreeing_patient_sources_must_not_assign_repeat_study_to_training():
     # Select an invented patient that the hash would place in training. The
     # canonical metadata places this patient's earlier study in the test set.
@@ -57,7 +56,6 @@ def test_disagreeing_patient_sources_must_not_assign_repeat_study_to_training():
     assert assigned.split.tolist() == ["test"]
 
 
-@pytest.mark.xfail(strict=True, reason="Folder linking validates study UID but silently keeps the first MRN")
 def test_conflicting_patient_identity_in_one_folder_must_be_quarantined():
     metadata = pd.DataFrame([metadata_row("1.2.1", "PATIENT-A", "same"),
                              metadata_row("1.2.1", "PATIENT-B", "same")])

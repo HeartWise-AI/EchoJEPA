@@ -71,81 +71,48 @@ def label_value_fixture():
     return clean, marked
 
 
-def textured_pair(index):
-    """Identical unannotated spectra, differing only by application of a text box.
-
-    Omitting text deliberately isolates the intervention's footprint from OCR
-    and from differences in underlying physiology or image selection.
-    """
-    rng = np.random.default_rng(1000 + index)
-    gray = rng.integers(25, 141, (SIDE, SIDE), dtype=np.uint8)
-    image = np.repeat(gray[..., None], 3, axis=-1)
-    x, y = 30 + index % 4 * 12, 40 + index % 3 * 17
-    box = (x, y, x + 35 + index % 3 * 5, y + 16 + index % 2 * 5)
-    before, _ = prepared_gray(image)
-    after, report = prepared_gray(image, text_boxes=[box])
-    # Public box coordinates plus the documented default 4-pixel padding.
-    padded = (box[0] - 4, box[1] - 4, box[2] + 5, box[3] + 5)
-    return before, after, padded, report
-
-
 def collect_pixel_evidence():
-    """JSON-safe metrics plus a small panel built from actual preprocessed outputs."""
+    """Current-recipe observations, not historical m1/m2 pixel-equality claims."""
+    from src.datasets.still_preprocess import PREPROCESS_VERSION
+
     metrics = {"scope": "deterministic synthetic counterexamples only; no real-image rate estimates",
-               "device": "cpu", "output_size": SIDE}
+               "device": "cpu", "output_size": SIDE, "preprocess": PREPROCESS_VERSION}
     panels = []
     for name, intensity, tinted in (("white", 255, False), ("grey", 200, False),
-                                     ("tint_matched", 255, True)):
-        errors, mask_counts, unchanged, max_clean_delta, clean_recovery = [], [], [], [], []
+                                    ("tint_matched", 255, True)):
+        recovered, clean_recovered, windows = [], [], []
         for row in ROWS:
             clean, marked = caliper_fixture(row, intensity, tinted)
             kwargs = {"tint": (0, 0, 60)} if tinted else {}
             output, report = prepared_gray(marked, **kwargs)
             control, _ = prepared_gray(clean, **kwargs)
-            expected = marked.astype(np.float32).mean(axis=-1).round().astype(np.uint8)
-            errors.append(abs(estimate_row(output) - row))
-            mask_counts.append(report["masked_overlay_px"])
-            unchanged.append(bool(np.array_equal(output, expected)))
-            max_clean_delta.append(int(np.abs(output.astype(int) - control.astype(int)).max()))
-            clean_recovery.append(estimate_row(control) == row)
-        metrics[name] = {"n": len(ROWS), "row_mae_px": float(np.mean(errors)),
-                         "row_max_error_px": max(errors), "overlay_mask_px": mask_counts,
-                         "row_exact_recovery_fraction": float(np.mean(np.asarray(errors) == 0)),
-                         "clean_control_exact_recovery_fraction": float(np.mean(clean_recovery)),
-                         "unchanged_after_grayscale": all(unchanged),
-                         "max_delta_vs_clean_px": max(max_clean_delta)}
+            recovered.append(estimate_row(output) == row)
+            clean_recovered.append(estimate_row(control) == row)
+            windows.append(report["window"])
+        metrics[name] = {"n": len(ROWS), "row_exact_recovery_fraction": float(np.mean(recovered)),
+                         "clean_control_exact_recovery_fraction": float(np.mean(clean_recovered)),
+                         "windows": windows}
         panels.append((name, output))
 
-    clean, marked = label_value_fixture()
-    label_only, report = prepared_gray(marked, text_boxes=[LABEL_BOX])
-    complete, _ = prepared_gray(marked, text_boxes=[LABEL_BOX, VALUE_BOX])
-    # The value is separated from the label by substantially more than pad=4.
-    value_ink = (marked[..., 0] != clean[..., 0]) & (np.indices(clean.shape[:2])[1] >= VALUE_BOX[0])
-    metrics["label_value"] = {
-        "value_ink_px": int(value_ink.sum()),
-        "value_ink_surviving_label_only_px": int((label_only[value_ink] == marked[..., 0][value_ink]).sum()),
-        "value_bright_ink_surviving_label_only_px": int((label_only[value_ink] > 170).sum()),
-        "full_boxes_equal_clean": bool(np.array_equal(complete, clean[..., 0])),
-        "label_only_masked_text_px": report["masked_text_px"],
-    }
-    panels.extend((("label box only", label_only), ("label + value", complete)))
+    _, marked = label_value_fixture()
+    for name, boxes in (("label_only", [LABEL_BOX]), ("label_and_value", [LABEL_BOX, VALUE_BOX])):
+        try:
+            output, report = prepared_gray(marked, text_boxes=boxes)
+        except ValueError as exc:
+            if "No window" not in str(exc):
+                raise
+            metrics[name] = {"rejected_no_free_window": True}
+        else:
+            metrics[name] = {"rejected_no_free_window": False, "window": report["window"]}
+            panels.append((name, output))
 
-    correct, count, bbox_matches = 0, 0, 0
-    for index in range(16):
-        before, after, (x0, y0, x1, y1), _ = textured_pair(index)
-        # Fixed, unfitted rule applied to both members of each paired spectrum.
-        for expected, image in ((False, before), (True, after)):
-            predicted = has_flat_footprint(image)
-            correct += int(predicted == expected)
-            count += 1
-        ys, xs = np.nonzero(before != after)
-        bbox_matches += int((int(xs.min()), int(ys.min()), int(xs.max()) + 1, int(ys.max()) + 1)
-                            == (x0, y0, x1, y1))
-    metrics["box_footprint"] = {"paired_spectra": 16, "classified_images": count,
-                                "prespecified_rule_accuracy": correct / count,
-                                "paired_difference_box_bbox_exact": bbox_matches,
-                                "interpretation": "box application and box geometry remain detectable on these fixtures"}
-    panels.append(("textured box fill", after))
+    # Current recipe crops away panel columns rather than median-filling rectangles.
+    rng = np.random.default_rng(1000)
+    gray = rng.integers(25, 141, (SIDE, SIDE), dtype=np.uint8)
+    texture = np.repeat(gray[..., None], 3, axis=-1)
+    output, report = prepared_gray(texture, text_boxes=[(100, 40, 135, 56)])
+    metrics["textured_panel"] = {"flat_footprint": has_flat_footprint(output), "window": report["window"]}
+    panels.append(("panel excluded", output))
     return metrics, panels
 
 

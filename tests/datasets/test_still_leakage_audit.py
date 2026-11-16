@@ -18,93 +18,61 @@ from src.datasets.still_preprocess import overlay_mask
 from src.models.radar.routing import load_routing
 from tools.radar_still_leakage_audit import (
     LABEL_BOX, ROWS, VALUE_BOX, caliper_fixture, collect_pixel_evidence,
-    estimate_row, has_flat_footprint, label_value_fixture, prepared_gray, textured_pair,
+    estimate_row, has_flat_footprint, label_value_fixture, prepared_gray,
 )
 
 
 @pytest.mark.parametrize("intensity", [255, 200], ids=["white", "grey"])
-def test_achromatic_calipers_and_digits_survive_exactly(intensity):
+def test_achromatic_caliper_positions_survive_current_crop(intensity):
     for row in ROWS:
-        clean, marked = caliper_fixture(row, intensity)
+        _, marked = caliper_fixture(row, intensity)
         output, report = prepared_gray(marked)
         assert not overlay_mask(marked).any()
         assert report["masked_overlay_px"] == 0
-        assert np.array_equal(output, marked[..., 0])
-        assert np.array_equal(output[180:200, 155:220], marked[180:200, 155:220, 0])
-        assert not np.array_equal(output, clean[..., 0])
+        assert report["window"][1] - report["window"][0] == 56
         assert estimate_row(output) == row
 
 
-@pytest.mark.xfail(strict=True, reason="BLOCKER: grey/white measurement geometry reaches encoder input")
+@pytest.mark.xfail(strict=True, raises=AssertionError,
+                   reason="BLOCKER: grey/white measurement geometry reaches encoder input")
 @pytest.mark.parametrize("intensity", [255, 200], ids=["white", "grey"])
 def test_safety_achromatic_marker_rule_cannot_recover_programmed_rows(intensity):
     recovered = [estimate_row(prepared_gray(caliper_fixture(row, intensity)[1])[0]) == row for row in ROWS]
-    # Fixture-only design criterion, not a clinical or real-screen threshold.
-    assert np.mean(recovered) <= 0.6
+    assert np.mean(recovered) <= 0.6  # fixture-only criterion, not a clinical threshold
 
 
-def test_label_only_box_leaves_adjacent_numeric_value_but_complete_boxes_remove_it():
-    clean, marked = label_value_fixture()
-    label_only, _ = prepared_gray(marked, text_boxes=[LABEL_BOX])
-    complete, _ = prepared_gray(marked, text_boxes=[LABEL_BOX, VALUE_BOX])
-    ink = marked[..., 0] != clean[..., 0]
-    value_ink = ink & (np.indices(ink.shape)[1] >= VALUE_BOX[0])
-    assert value_ink.sum() > 20  # nonempty synthetic digit fixture
-    assert np.array_equal(label_only[value_ink], marked[..., 0][value_ink])
-    assert np.array_equal(complete, clean[..., 0])  # positive removal control
-    assert np.all(label_only[ink & ~value_ink] == 40)
+@pytest.mark.parametrize("boxes", [[LABEL_BOX], [LABEL_BOX, VALUE_BOX]])
+def test_panel_fixture_without_free_window_is_rejected(boxes):
+    _, marked = label_value_fixture()
+    with pytest.raises(ValueError, match="No window"):
+        prepared_gray(marked, text_boxes=boxes)
 
 
-@pytest.mark.xfail(strict=True, reason="BLOCKER: label-only boxes leave the numeric caption beyond pad=4")
-def test_safety_label_only_caption_box_removes_measurement_digits():
-    clean, marked = label_value_fixture()
-    assert np.array_equal(prepared_gray(marked, text_boxes=[LABEL_BOX])[0], clean[..., 0])
-
-
-def test_textured_box_fill_identifies_intervention_and_preserves_box_geometry():
+def test_current_crop_excludes_panel_instead_of_median_filling():
     metrics, _ = collect_pixel_evidence()
-    footprint = metrics["box_footprint"]
-    assert metrics["label_value"]["value_ink_surviving_label_only_px"] == metrics["label_value"]["value_ink_px"]
-    assert footprint["prespecified_rule_accuracy"] == 1.0
-    assert footprint["paired_difference_box_bbox_exact"] == footprint["paired_spectra"]
-    for index in range(16):
-        before, after, (x0, y0, x1, y1), report = textured_pair(index)
-        assert np.std(before[y0:y1, x0:x1]) > 20
-        assert np.std(after[y0:y1, x0:x1]) == 0
-        assert not has_flat_footprint(before)
-        assert has_flat_footprint(after)
-        outside = np.ones(before.shape, dtype=bool)
-        outside[y0:y1, x0:x1] = False
-        assert np.array_equal(before[outside], after[outside])
-        assert report["masked_text_px"] == (x1 - x0) * (y1 - y0)
+    assert metrics["label_only"]["rejected_no_free_window"]
+    assert metrics["label_and_value"]["rejected_no_free_window"]
+    first, last = metrics["textured_panel"]["window"]
+    assert last - first == 56
+    assert last <= 100 - 12
+    assert not metrics["textured_panel"]["flat_footprint"]
 
 
-@pytest.mark.xfail(strict=True, reason="BLOCKER: median-filled rectangles mark otherwise identical textured spectra")
-def test_safety_box_application_not_decodable_by_prespecified_footprint_rule():
-    metrics, _ = collect_pixel_evidence()
-    # Fixture-only design criterion, not a clinical or real-screen threshold.
-    assert metrics["box_footprint"]["prespecified_rule_accuracy"] <= 0.6
-
-
-def test_tint_matched_colored_caliper_bypasses_chroma_on_complete_fixture():
+def test_tint_matched_caliper_positions_survive_current_crop():
     for row in ROWS:
-        clean, marked = caliper_fixture(row, tint_matched=True)
-        assert overlay_mask(marked).any()  # positive chroma-detection control
+        _, marked = caliper_fixture(row, tint_matched=True)
+        assert overlay_mask(marked).any()
         assert not overlay_mask(marked, tint=(0, 0, 60)).any()
         output, report = prepared_gray(marked, tint=(0, 0, 60))
-        control, _ = prepared_gray(clean, tint=(0, 0, 60))
-        expected = marked.astype(np.float32).mean(axis=-1).round().astype(np.uint8)
         assert report["masked_overlay_px"] == 0
-        assert np.array_equal(output, expected)
-        assert not np.array_equal(output, control)
         assert estimate_row(output) == row
 
 
-@pytest.mark.xfail(strict=True, reason="BLOCKER: a colored caliper aligned with vendor tint is retained")
+@pytest.mark.xfail(strict=True, raises=AssertionError,
+                   reason="BLOCKER: a colored caliper aligned with vendor tint is retained")
 def test_safety_tint_matched_marker_rule_cannot_recover_programmed_rows():
     recovered = [estimate_row(prepared_gray(caliper_fixture(row, tint_matched=True)[1], tint=(0, 0, 60))[0]) == row
                  for row in ROWS]
-    # Fixture-only design criterion, not a clinical or real-screen threshold.
     assert np.mean(recovered) <= 0.6
 
 
@@ -138,20 +106,9 @@ def test_conditioning_rejects_target_name_and_y_prefix(column):
         conditioning_source([column])
 
 
-def test_conditioning_accepts_target_determining_alias_and_synthetic_row_proxy():
-    source = conditioning_source(["raw_maxpg", "n_rows"])
-    for study, target in zip("ABCD", (1.5, 2, 2.5, 3)):
-        item = source.item(study, random.Random(0))
-        maxpg, n_rows = item["still_cond"][0].tolist()
-        assert (maxpg / 4) ** 0.5 == target
-        assert n_rows / 100 == target
-        assert item["still_y_mask"][0, 0]
-
-
-@pytest.mark.xfail(strict=True, reason="BLOCKER: name-only guard accepts target-determining conditioning aliases")
 @pytest.mark.parametrize("column", ["raw_maxpg", "n_rows"])
-def test_safety_target_determining_conditioning_is_refused(column):
-    with pytest.raises(ValueError):
+def test_target_determining_conditioning_aliases_are_refused(column):
+    with pytest.raises(ValueError, match="not among the inputs known before a measurement"):
         conditioning_source([column])
 
 
@@ -200,17 +157,10 @@ def assembled_training_input(tmp_path, preprocess):
 
 
 @pytest.mark.parametrize("preprocess", [None, "unmasked"])
-def test_training_input_assembly_accepts_unaudited_preprocessing(tmp_path, preprocess):
-    batch = assembled_training_input(tmp_path, preprocess)
-    assert batch["still_valid"].tolist() == [[True]]
-    assert torch.equal(batch["still_tokens"], torch.full((1, 1, 1, 2), 7.0))
-
-
-@pytest.mark.xfail(strict=True, reason="PROPOSED AUDIT GATE ABSENT: loader accepts missing/unmasked preprocessing evidence")
-@pytest.mark.parametrize("preprocess", [None, "unmasked"])
-def test_proposed_gate_refuses_unaudited_training_input(tmp_path, preprocess):
-    with pytest.raises(ValueError):
+def test_training_input_assembly_rejects_unaudited_preprocessing(tmp_path, preprocess):
+    with pytest.raises(ValueError, match="preprocessing recipe"):
         assembled_training_input(tmp_path, preprocess)
+
 
 
 def test_pooler_cond_false_still_leaves_measurement_head_conditioning_active():

@@ -8,6 +8,26 @@ No governed images, patient tables, remote clinical storage, pretrained weights,
 
 For this audit, genuine inference means predicting from an acquisition before sonographer measurements, calipers and target report values are available, consistent with the proposed unmeasured-still evaluation. DICOM calibration and demographics available at that time are legitimate inputs; their contribution still needs baseline comparisons. Interpreting an already completed measurement is a different task and would need an explicit separate claim.
 
+## November 16 update against main
+
+The original findings below describe the pinned November 12 snapshot, not current `main`.
+After #47 and #46 merged, the executable audit was updated to recipe `m4`:
+
+- Panel columns are excluded by cropping; images without a sufficiently wide free window are rejected.
+  The historical full-image equality and median-fill footprint assertions no longer describe this recipe.
+- Conditioning now has an inference-input allowlist. `raw_maxpg` and `n_rows` are rejected.
+- Recorded token caches with missing or unaccepted preprocessing recipes are rejected by the still loader.
+  Recipe recognition is not an artifact-bound scientific qualification gate; empty/synthetic provenance
+  exemptions and real-image qualification still need separate scrutiny.
+- Conflicting split-table identities are rejected and ambiguous patient folders are quarantined.
+  The two former expected failures are now ordinary regression tests.
+- White, grey and tint-matched caliper positions remain recoverable on these synthetic fixtures.
+  These three cases remain strict expected failures. Neither passing audit CI nor a recipe name
+  establishes safety on governed images or authorizes training.
+
+Production behavior is unchanged by this audit update. The historical test counts and environment
+below belong to the original run; current results must be taken from CI or a fresh local execution.
+
 ## Findings that affect enablement
 
 ### 1. P1: Sanitization does not remove all answer-bearing geometry
