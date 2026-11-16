@@ -25,6 +25,10 @@ After #47 and #46 merged, the executable audit was updated to recipe `m4`:
   These three cases remain strict expected failures. Neither passing audit CI nor a recipe name
   establishes safety on governed images or authorizes training.
 
+Audit CI explicitly runs both pytest modules. Strict expected failures only accept assertion failures, so unrelated runtime/import errors cannot silently count as known leakage. An unexpected pass fails CI and requires reviewing the corresponding blocker. This job verifies the audit harness, **not** scientific qualification. The `--runxfail` command below remains red for the three current caliper counterexamples.
+
+The artifact-bound, fail-closed production qualification gate remains separate implementation work. This audit-only PR must not be used as that gate or as training approval.
+
 Production behavior is unchanged by this audit update. The historical test counts and environment
 below belong to the original run; current results must be taken from CI or a fresh local execution.
 

@@ -123,7 +123,7 @@ heads:                                      # optional
 | EchoNet heat-map bias | off (`model.stills.heatmap_bias: false`) |
 | EchoNet scalars | only if listed in `data.stills.cond_columns` |
 | Age/sex FiLM | heads: on when heads are on (`heads.demographics`); pooler: off (`model.stills.demo_film`) |
-| Measured value as an input | not possible: conditioning columns that are targets or `y_*` are refused |
+| Measured value as an input | target names, `y_*`, and columns outside `INFERENCE_INPUTS` are refused; allowed-column provenance still needs verification |
 
 ## Leakage controls
 
@@ -134,7 +134,7 @@ The measured value reaches the model in four ways. Each has a control:
    - Crop to the spectral region.
    - *Gap:* the still dataset stores label boxes, not value boxes; the value column's width is a rule (1.5 times the labels' width, at least 120 px). Value boxes from `still_meas.py` would make it exact.
 2. **Calipers and VTI traces.** Coloured marks are found by hue and their columns are kept out of the window, so the model reads an undrawn beat; inpainting a trace left its outline, then a smoothed band along the envelope. Achromatic marks (white or grey calipers and dotted traces, drawn by some systems) are not found: those systems are left out with `build_still_cache.py --vendors`.
-3. **Value as input.** Refused by `StillSource`. Some quantities determine each other: MaxPG = 4 Vmax² (true for ~100% of OCR pairs), and AVA comes from the VTIs. Never split such a group between input and target (`LEAK_GROUPS` in the manifest builder).
+3. **Value as input.** `StillSource` rejects target names, `y_*`, and columns outside its inference-input allowlist. This is a name-based guard, not proof of feature provenance: never put an OCR/report-derived value under an allowed calibration or EchoNet column name. Every supplied feature must be verified as available at the intended inference time. Some quantities determine each other: MaxPG = 4 Vmax² (true for ~100% of OCR pairs), and AVA comes from the VTIs. Never split such a group between input and target. `LEAK_GROUPS` in the manifest builder documents related quantities; it does not validate arbitrary feature lineage.
 4. **Shortcuts in alignment.** Age and sex correlate with findings such as calcified valves and E/A < 1. Demographic FiLM is off in the pooler; report a demographics-only baseline whenever it is turned on.
 
 **Audit before trusting results** (not in this PR):
