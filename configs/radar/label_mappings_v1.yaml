@@ -1,6 +1,6 @@
 # configs/radar/label_mappings_v1.yaml
 #
-# How the DeepECHO, EchoPrime and PanEcho label sets relate to `radar-caption-ontology-v1` (shared clinical
+# How the DeepECHO, EchoPrime and PanEcho label sets relate to `radar-caption-ontology-v2` (shared clinical
 # ontology). Every label of every source is listed (a unit test checks this against the vendored assets),
 # with one of these relations:
 #
@@ -23,13 +23,13 @@
 
 schema: radar-label-mappings
 version: 1
-ontology: radar-caption-ontology-v1
+ontology: radar-caption-ontology-v2
 
 sources:
   deepecho_views:
     kind: view
     description: DeepECHO view classifier classes (the archive's `predicted_class`). They are the ontology's views.
-    vocabulary: configs/radar/radar-caption-ontology-v1.yaml (views)
+    vocabulary: configs/radar/radar-caption-ontology-v2.yaml (views)
     labels:
       A2C: {relation: exact, views: [A2C]}
       A2C_LV: {relation: exact, views: [A2C_LV]}

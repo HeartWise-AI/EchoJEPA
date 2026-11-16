@@ -8,7 +8,7 @@ from unittest import mock
 
 from app.radar.ontology import VIEWS, load_ontology
 from tools.labelbox.column_review import (
-    FORM, ROOT, SPEC, allowed_columns, build_candidate, build_form, context_attachment,
+    FORM, ROOT, SPEC, _normalize, _text_value, allowed_columns, build_candidate, build_form, context_attachment,
     decode_annotations, encode_answers, finding_sentence, load_spec, prelabels, review_problems, score_review,
     validate_annotations, view_targets,
 )
@@ -57,9 +57,19 @@ class TestColumnPrefills(unittest.TestCase):
         return build_candidate(report if report is not None else self.report, view, modality,
                                global_key="synthetic-row", **kwargs)
 
-    def test_twenty_views_and_sixteen_segments(self):
+    def test_the_classes_their_refinements_and_sixteen_segments(self):
         spec = load_spec()
-        self.assertEqual(set(spec["views"]), set(VIEWS))
+        refinements = {view: route["refines"] for view, route in spec["views"].items() if "refines" in route}
+        self.assertEqual(refinements, {"PSAX_BASAL": "PSAX", "PSAX_MID": "PSAX", "PSAX_APICAL": "PSAX",
+                                       "PLAX_ZOOM_AV": "PLAX_ZOOM"})
+        self.assertEqual(set(spec["views"]) - set(refinements), set(VIEWS))
+        psax = spec["views"]["PSAX"]  # the class prefills only what every level claims.
+        for view in ("PSAX_BASAL", "PSAX_MID", "PSAX_APICAL"):
+            self.assertLessEqual(set(psax["targets"]), set(spec["views"][view]["targets"]), view)
+            self.assertLessEqual(set(psax["columns"]), set(spec["views"][view]["columns"]), view)
+        zoom, on_the_valve = spec["views"]["PLAX_ZOOM"], spec["views"]["PLAX_ZOOM_AV"]
+        self.assertLessEqual(set(on_the_valve["targets"]), set(zoom["targets"]))
+        self.assertLessEqual(set(on_the_valve["columns"]), set(zoom["columns"]))
         segments = [k for k in spec["fields"] if k.startswith("wall_")]
         self.assertEqual(len(segments), 16)
         self.assertFalse(any("cap" in k for k in segments))
@@ -71,7 +81,7 @@ class TestColumnPrefills(unittest.TestCase):
         self.assertEqual(selection["version"], 1)
         self.assertEqual(
             selection["clinical_ontology"],
-            "configs/radar/radar-caption-ontology-v1.yaml",
+            "configs/radar/radar-caption-ontology-v2.yaml",
         )
         self.assertEqual(selection["source_specification"], SPEC.relative_to(ROOT).as_posix())
         self.assertEqual(
@@ -88,7 +98,7 @@ class TestColumnPrefills(unittest.TestCase):
             c = self.candidate({**self.report, "Tricuspid valve findings": text})
             self.assertIn({"concept": "tricuspid_appearance", "value": "normal"},
                           [{k: col[k] for k in ("concept", "value")} for col in c["columns"]])
-            self.assertIn("The visible tricuspid valve has a normal appearance.", c["candidate_caption"])
+            self.assertIn("Tricuspid valve has a normal appearance.", c["candidate_caption"])
             self.assertFalse(any(x["concept"] == "tricuspid_motion" for x in c["columns"]))
 
     def test_missing_and_regurgitation_text_never_infer_normal_leaflets(self):
@@ -115,6 +125,56 @@ class TestColumnPrefills(unittest.TestCase):
         c = self.candidate({"Mitral valve findings": "Pas de sténose et insuffisance mitrale légère"}, modality="color_flow")
         self.assertFalse(any(x["concept"] == "mitral_regurgitant_jet" for x in c["columns"]))
 
+    def value_of(self, key, column, text, modality="bmode", view="A4C"):
+        found = [c["value"] for c in self.candidate({column: text}, view=view, modality=modality)["columns"] if c["concept"] == key]
+        return found[0] if found else None
+
+    def test_diastolic_dysfunction_is_not_a_reduced_systolic_function(self):
+        for text, value in [("Dysfonction diastolique légère", None), ("Mild diastolic dysfunction", None),
+                            ("Dysfonction diastolique de grade 1, fonction systolique normale", "normal"),
+                            ("Dysfonction diastolique légère et dysfonction systolique modérée", "moderately_reduced"),
+                            ("Fonction diastolique normale", None), ("Dysfonction légère du ventricule gauche", "mildly_reduced")]:
+            self.assertEqual(self.value_of("lv_function", "Left ventricule findings", text), value, text)
+
+    def test_a_negation_negates_only_the_finding_it_names(self):
+        for text, value in [("Sans dilatation ou HVG", "normal"), ("Sans hypertrophie ni dilatation", "normal"),
+                            ("Pas de HVG, VG dilaté", "dilated"), ("VG non dilaté mais dilatation apicale", None)]:
+            self.assertEqual(self.value_of("lv_size", "Left ventricule findings", text), value, text)
+        for text, value in [("Insuffisance mitrale modérée sans prolapsus", "demonstrated"),
+                            ("Insuffisance mitrale légère et aucune sténose", "demonstrated"),
+                            ("Pas d'insuffisance mitrale", "not_demonstrated"), ("No significant mitral regurgitation", "not_demonstrated"),
+                            ("Mitral regurgitation not seen", "not_demonstrated"), ("Insuffisance mitrale : aucune", "not_demonstrated")]:
+            self.assertEqual(self.value_of("mitral_regurgitant_jet", "Mitral valve findings", text, modality="color_flow"), value, text)
+        self.assertIsNone(self.value_of("mitral_regurgitant_jet", "Mitral valve findings", "Insuffisance mitrale modérée sans prolapsus"))
+        for text, value in [("Épanchement péricardique minime sans tamponnade", "present"), ("Pas d'épanchement péricardique", "not_demonstrated")]:
+            self.assertEqual(_text_value("pericardial_effusion", _normalize(text)), value, text)
+
+    def test_each_aortic_segment_takes_its_own_part_of_the_clause(self):
+        text = _normalize("Racine aortique dilatée, aorte ascendante normale")
+        self.assertEqual(_text_value("aorta_root_size", text), "dilated")
+        self.assertEqual(_text_value("aorta_ascending_size", text), "normal")
+        self.assertEqual(_text_value("aorta_root_size", _normalize("Racine aortique et aorte ascendante dilatées")), "dilated")
+
+    def test_abnormal_is_not_normal(self):
+        for key, text in [("aorta_root_size", "Racine aortique anormale"), ("aorta_ascending_size", "Abnormal ascending aorta"),
+                          ("mitral_appearance", "Feuillets anormaux"), ("mitral_appearance", "Leaflets abnormal"),
+                          ("mitral_appearance", "Abnormal leaflets"), ("aortic_appearance", "Cusps abnormal"),
+                          ("mitral_motion", "Mobilité anormale"), ("mitral_motion", "Abnormal leaflet motion"),
+                          ("mitral_motion", "Opening abnormal"), ("ivc_collapse", "Collapsus respiratoire anormal"),
+                          ("lv_function", "Systolic function abnormal"), ("lv_size", "Abnormal size")]:
+            self.assertIsNone(_text_value(key, _normalize(text)), text)
+        self.assertEqual(_text_value("aorta_root_size", _normalize("Racine aortique normale")), "normal")
+        self.assertEqual(_text_value("mitral_motion", _normalize("Mobilité normale")), "normal")
+
+    def test_normal_wordings_of_function_and_size(self):
+        for text, function, size in [("FEVG normale", "normal", None), ("FEVG estimée normale à 60 %", "normal", None),
+                                     ("De dimension, de masse et de fonction normales", "normal", "normal"),
+                                     ("Normal size and function", "normal", "normal"), ("VG de taille normale", None, "normal"),
+                                     ("FEVG 45 % (normale > 55 %)", None, None)]:
+            self.assertEqual(self.value_of("lv_function", "Left ventricule findings", text), function, text)
+            self.assertEqual(self.value_of("lv_size", "Left ventricule findings", text), size, text)
+        self.assertIsNone(_text_value("rv_function", _normalize("FEVG normale")))
+
     def test_actual_rv_codebook_and_conflict(self):
         self.assertEqual(self.candidate({"MHI VD fonction systolique": 0})["columns"][0]["value"], "normal")
         c = self.candidate({"MHI VD fonction systolique": 0, "Right ventricule findings": "Dysfonction sévère du ventricule droit"})
@@ -128,7 +188,7 @@ class TestColumnPrefills(unittest.TestCase):
         self.assertIn("lv_size", concepts(self.candidate()))
         # LV-focused: the LV and the view's valves, with LV function and wall motion but no chamber size.
         lv_focused = self.candidate(view="A4C_LV")
-        self.assertEqual(lv_focused["suggested_targets"], ["lv", "mitral", "tricuspid"])
+        self.assertEqual(lv_focused["suggested_targets"], ["lv", "mitral", "tricuspid", "ivs"])
         self.assertEqual(concepts(lv_focused), ["lv_function", "tricuspid_appearance", "wall_basal_inferoseptal"])
         # Zoomed: the base view's structures are prefilled, and every finding but chamber size can be.
         zoomed = self.candidate(view="A4C_ZOOM")
@@ -144,10 +204,10 @@ class TestColumnPrefills(unittest.TestCase):
         self.assertEqual(spec["views"]["A5C"]["targets"], a4c + ["aortic", "lvot", "aorta_root"])
         self.assertEqual(spec["views"]["PLAX"]["targets"], plax)
         self.assertEqual(spec["views"]["PLAX_DEEP"]["targets"], plax + ["aorta_descending"])
-        self.assertEqual(spec["views"]["PLAX_DEEP"]["columns"], ["pericardial_effusion"])
+        self.assertEqual(spec["views"]["PLAX_DEEP"]["columns"], spec["views"]["PLAX"]["columns"])
         self.assertEqual(set(spec["views"]["PSAX_AV"]["targets"]),
                          {"aortic", "rv", "rvot", "ra", "la", "tricuspid", "pulmonic", "pulmonary_artery", "ias"})
-        self.assertEqual(spec["views"]["A3C"]["targets"][-3:], ["lvot", "aorta_root", "pericardium"])
+        self.assertEqual(spec["views"]["A3C"]["targets"][-4:], ["lvot", "aorta_root", "pericardium", "ivs"])
         self.assertEqual(spec["views"]["A2C"]["targets"], ["lv", "la", "mitral", "pericardium"])
         for view, route in spec["views"].items():
             levels = route.get("levels", {})
@@ -157,19 +217,22 @@ class TestColumnPrefills(unittest.TestCase):
                 self.assertIn(spec["fields"][key]["target"], reachable, f"{view} {key}")
             if view.endswith(("_ZOOM", "_LV")):  # the whole chamber may not be in the image
                 self.assertFalse({"lv_size", "rv_size", "la_size", "ra_size"} & set(route["columns"]), view)
-                self.assertIn("lv_function", route["columns"], view)
+                if view != "PLAX_ZOOM":  # no LV there: the medical review's rule.
+                    self.assertIn("lv_function", route["columns"], view)
             if view.endswith("_ZOOM"):
-                self.assertEqual(route["targets"], spec["views"][view.removesuffix("_ZOOM")]["targets"], view)
+                not_judged = {"lv", "rv", "pericardium"} if view == "PLAX_ZOOM" else set()
+                base = spec["views"][view.removesuffix("_ZOOM")]["targets"]
+                self.assertEqual(route["targets"], [t for t in base if t not in not_judged], view)
 
     def test_the_structures_are_the_ontology_s(self):
         """One structure list: each form structure is an ontology structure whose visibility prior names exactly the
-        views that prefill it, the PSAX and subcostal levels included."""
+        views that prefill it, a refinement counted as its class and the subcostal levels included."""
         spec, ontology = load_spec(), load_ontology()
         links = spec["target_structures"]
         self.assertEqual(list(links), list(spec["targets"]))
         self.assertEqual(sorted(links.values()), sorted(ontology.structures))
         for target, structure in links.items():
-            views = {view for view, route in spec["views"].items()
+            views = {route.get("refines", view) for view, route in spec["views"].items()
                      if target in route["targets"] + [t for level in route.get("levels", {}).values()
                                                       for t in level["targets"]]}
             concept = ontology.concept(ontology.visibility_concept(structure))
@@ -178,7 +241,7 @@ class TestColumnPrefills(unittest.TestCase):
                                  set(concept.visible_in), target)
 
     def test_findings_of_structures_the_audit_added(self):
-        for view, key in [("PSAX_AV", "rv_size"), ("PSAX", "rv_size"), ("PLAX", "rv_size"), ("PSAX_AV", "la_size"),
+        for view, key in [("PSAX_AV", "rv_size"), ("PLAX", "rv_size"), ("PSAX_AV", "la_size"),
                           ("PSAX_AV", "ra_size"), ("A3C", "aorta_root_size"), ("A5C", "aorta_root_size"),
                           ("A5C", "tricuspid_appearance")]:
             self.assertIn(key, allowed_columns(view, "bmode"), f"{view} {key}")
@@ -186,9 +249,186 @@ class TestColumnPrefills(unittest.TestCase):
             self.assertTrue(set(view_targets(view, None)) - {load_spec()["fields"][k]["target"]
                                                              for k in allowed_columns(view, "bmode")})
         self.assertEqual(finding_sentence("aortic_regurgitant_jet", "demonstrated"),
-                         "An aortic regurgitant jet is demonstrated in this color acquisition.")
+                         "Aortic regurgitant jet is visible on color Doppler.")
         self.assertEqual(finding_sentence("mitral_regurgitant_jet", "demonstrated"),
-                         "A mitral regurgitant jet is demonstrated in this color acquisition.")
+                         "Mitral regurgitant jet is visible on color Doppler.")
+
+    def test_the_medical_review_s_view_rules(self):
+        spec = load_spec()
+        family = ("PSAX", "PSAX_BASAL", "PSAX_MID", "PSAX_APICAL")
+        for view in family:  # no chamber size in a short-axis clip.
+            self.assertFalse({"lv_size", "rv_size", "rv_function"} & set(spec["views"][view]["columns"]), view)
+            self.assertNotIn("rv", spec["views"][view]["targets"], view)
+        for view in ("PSAX", "PSAX_MID", "PSAX_APICAL"):
+            self.assertNotIn("lv_wall_thickness", spec["views"][view]["columns"], view)
+        self.assertIn("lv_wall_thickness", spec["views"]["PSAX_BASAL"]["columns"])
+        self.assertLessEqual({"rv", "rvot"}, set(spec["views"]["PSAX_AV"]["targets"]))  # this level keeps them.
+        self.assertIn("rv_size", spec["views"]["PSAX_AV"]["columns"])
+        for view in ("PLAX_ZOOM", "PLAX_ZOOM_AV"):
+            route = spec["views"][view]
+            self.assertFalse({"lv", "rv", "pericardium"} & set(route["targets"]), view)
+            judged = {spec["fields"][k]["target"] for k in route["columns"]}
+            self.assertFalse(judged & {"lv", "rv", "pericardium"}, view)
+        self.assertIn("lv_size", spec["views"]["PLAX"]["columns"])  # the unzoomed view keeps them.
+        self.assertIn("lv_function", spec["views"]["A4C_ZOOM"]["columns"])  # and so do the other zooms.
+
+    def test_wall_thickness_tells_the_septum_from_the_whole_wall(self):
+        septum = "Augmentation légère de l'épaisseur du septum"
+        posterior = "Augmentation légère de l'épaisseur de la paroi postérieure"
+        measured = {"LVIW Diastolic Thickness (2D)": 0.95}
+
+        cases = [(septum, measured, "septal_thickening"), (f"{septum} // {posterior}", measured, None),
+                 (posterior, measured, None), ("Épaississement des parois du VG", {}, "increased"),
+                 (septum, {}, "septal_thickening"), (septum, {"LVIW Diastolic Thickness (2D)": float("nan")}, "septal_thickening"),
+                 (septum, {"LVIW Diastolic Thickness (2D)": 0}, "septal_thickening"),
+                 ("Épaisseur pariétale normale", {}, "not_increased"),
+                 ("Pas d'épaississement des parois", {}, None),
+                 (f"Épaisseur pariétale normale // {septum}", measured, None),
+                 ("Présence d'un bourrelet septal mesurant 16 mm d'épaisseur, avec masse VG normale", {}, None),
+                 ("Épaississement des parois apicales", {}, None)]
+        for text, numbers, expected in cases:
+            report = {"Ventricular septum findings": text, **numbers}
+            got = {c["concept"]: c["value"] for c in self.candidate(report)["columns"]}.get("lv_wall_thickness")
+            self.assertEqual(got, expected, text)
+        report = {"Ventricular septum findings": septum, **measured}
+        for view, expected in [("PLAX", "septal_thickening"), ("A4C", "septal_thickening"), ("A5C_ZOOM", "septal_thickening"),
+                               ("PSAX_BASAL", "septal_thickening"), ("A2C", None), ("A2C_LV", None), ("A3C", "septal_thickening"),
+                               ("A3C_LV", "septal_thickening"), ("A4C_LV", "septal_thickening"), ("SUBCOSTAL", None)]:  # only where the septum is.
+            got = {c["concept"]: c["value"] for c in self.candidate(report, view=view)["columns"]}
+            self.assertEqual(got.get("lv_wall_thickness"), expected, view)
+        back = {"Ventricular septum findings": posterior}  # says nothing of the other walls: no measurement needed.
+        for view, expected in [("PLAX", "posterior_thickening"), ("PLAX_DEEP", "posterior_thickening"), ("A3C", "posterior_thickening"),
+                               ("A3C_LV", "posterior_thickening"), ("PSAX_BASAL", "posterior_thickening"), ("A4C", None),
+                               ("A2C", None), ("A5C", None)]:
+            got = {c["concept"]: c["value"] for c in self.candidate(back, view=view)["columns"]}
+            self.assertEqual(got.get("lv_wall_thickness"), expected, view)
+        both = {"Ventricular septum findings": f"{septum} // {posterior}", **measured}
+        self.assertEqual(concepts(self.candidate(both, view="A2C")), [])  # two named walls do not establish all walls.
+
+    def wall(self, text, measured=0.95, **columns):
+        report = {"Ventricular septum findings": text, "LVIW Diastolic Thickness (2D)": measured, **columns}
+        columns = self.candidate(report, view="PLAX")["columns"]
+        return {c["concept"]: c["value"] for c in columns}.get("lv_wall_thickness")
+
+    def test_normal_wall_thickness_takes_every_wall(self):
+        for text in ("Épaisseur pariétale normale", "Parois d'épaisseur normale", "Normal wall thickness",
+                     "Parois du VG d'épaisseur normale", "Épaisseur normale des parois ventriculaires gauches"):
+            self.assertEqual(self.wall(text), "not_increased", text)
+        for text in ("Épaisseur du septum à 12 mm avec fraction d'éjection normale",  # another "normale".
+                     "Épaisseur maximale de 15 mm et augmentation sévère de la masse, fonction normale",
+                     "Épaisseur des parois à la limite supérieure de la normale",  # borderline.
+                     "La paroi postérieure est d'épaisseur normale", "Septum d'épaisseur normale",  # one wall.
+                     "Parois d'épaisseur normale à la base mais 13 mm en moyen",
+                     "Autres parois d'épaisseur normale",
+                     "Hypertrophie concentrique légère avec parois d'épaisseur normale",
+                     "Paroi septale d'épaisseur normale, mais léger épaississement de la paroi latérale"):
+            self.assertIsNone(self.wall(text), text)
+
+    def test_a_later_normal_word_does_not_undo_a_thick_septum(self):
+        for text in ("Augmentation légère de l'épaisseur du septum, masse normale",
+                     "Augmentation modérée de l'épaisseur du septum, fraction d'éjection normale"):
+            self.assertEqual(self.wall(text), "septal_thickening", text)
+
+    def test_a_whole_wall_thickest_at_the_septum_is_not_the_septum_alone(self):
+        symmetric = "Augmentation symétrique de l'épaisseur pariétale jusqu'à 14 mm en antéro-septal"
+        self.assertEqual(self.wall(symmetric), "increased")
+        self.assertEqual(self.wall("Augmentation sévère et diffuse de l'épaisseur du septum"), "septal_thickening")
+        for text in ("Augmentation de l'épaisseur pariétale jusqu'à 14 mm en antéro-septal basal",
+                     "Augmentation asymétrique de l'épaisseur pariétale en antéro-septal basal",
+                     "Augmentation sévère de la masse du ventricule gauche avec épaisseur septale de 15 mm"):
+            self.assertIsNone(self.wall(text), text)
+        self.assertEqual(self.wall("Épaississement de la paroi septale"), "septal_thickening")  # one wall, named.
+
+    def test_a_negated_wall_statement_says_nothing(self):
+        for text in ("Sans augmentation de l'épaisseur des parois", "Pas d'augmentation de l'épaisseur du septum",
+                     "Absence d'épaississement des parois", "No increased wall thickness"):
+            self.assertIsNone(self.wall(text), text)
+
+    def test_concentric_hypertrophy_rules_out_normal_elsewhere(self):
+        septum = "Augmentation légère de l'épaisseur du septum"
+        for lv, expected in [("Hypertrophie ventriculaire gauche concentrique légère", "septal_thickening"),
+                             ("Augmentation légère de la masse du ventricule gauche (HVG concentrique)", "septal_thickening"),
+                             ("Pas d'hypertrophie concentrique", "septal_thickening"),
+                             ("Remodelage concentrique du ventricule gauche", "septal_thickening")]:
+            self.assertEqual(self.wall(septum, **{"Left ventricule findings": lv}), expected, lv)
+        hypertrophy = {"Left ventricule findings": "Hypertrophie concentrique"}
+        self.assertIsNone(self.wall("Épaisseur pariétale normale", **hypertrophy))
+        self.assertEqual(self.wall(f"{septum} // Augmentation légère de l'épaisseur de la paroi postérieure",
+                                   **hypertrophy), None)  # no whole-wall inference from two named walls.
+        self.assertEqual(self.wall("Augmentation légère de l'épaisseur de la paroi postérieure", **hypertrophy),
+                         "posterior_thickening")  # claims nothing of the other walls.
+
+    def test_each_valve_offers_the_devices_it_can_carry(self):
+        spec = load_spec()
+        values = {key: set(spec["fields"][key]["values"]) for key in spec["fields"] if key.endswith("_device")}
+        both = {"bioprosthesis", "mechanical_prosthesis"}
+        self.assertEqual(values["mitral_device"], both | {"edge_to_edge_clip", "annuloplasty_ring"})
+        self.assertEqual(values["tricuspid_device"], both | {"edge_to_edge_clip", "annuloplasty_ring"})
+        self.assertEqual(values["aortic_device"], both | {"annuloplasty_ring"})  # Yacoub, Ross: in real reports.
+        self.assertEqual(values["pulmonic_device"], both)
+        clip = {"Aortic valve findings": "MitraClip sur la valve aortique"}
+        self.assertEqual(self.candidate(clip, view="PLAX")["columns"], [])  # refused, not captioned.
+        self.assertTrue(self.candidate({"Mitral valve findings": "MitraClip en place"}, view="PLAX")["columns"])
+
+    def test_a_septal_bulge_is_its_own_finding(self):
+        def found(text, view="PLAX", **numbers):
+            columns = self.candidate({"Left ventricule findings": text, **numbers}, view=view)["columns"]
+            return {c["concept"]: c["value"] for c in columns}
+
+        bulge = "Présence d'un bourrelet septal basal non-obstructif mesurant 14 mm d'épaisseur"
+        self.assertEqual(found(bulge), {"septal_bulge": "present"})  # and no wall thickness.
+        for view in ("A4C", "A4C_LV", "A3C", "A3C_LV", "A3C_ZOOM", "A5C", "PLAX_DEEP", "PSAX_BASAL"):
+            self.assertEqual(found(bulge, view), {"septal_bulge": "present"}, view)
+        for view in ("A2C", "PSAX_MID", "PLAX_ZOOM"):
+            self.assertEqual(found(bulge, view), {}, view)
+        self.assertEqual(found("Bourrelet septal de 13 mm"), {"septal_bulge": "present"})
+        self.assertEqual(found("Pas d'hypertrophie ventriculaire gauche (bourrelet septal 13mm)"),
+                         {"septal_bulge": "present"})
+        for text in ("Pas de bourrelet septal", "Absence de bourrelet septal", "Bourrelet sous aortique de 14mm",
+                     "Pas d'hypertrophie ventriculaire gauche ni de bourrelet septal",
+                     "Sans hypertrophie ni bourrelet septal", "Il n'y a plus de bourrelet septal"):
+            self.assertEqual(found(text), {}, text)
+        both = found(f"{bulge} // Augmentation légère de l'épaisseur du septum",
+                     **{"LVIW Diastolic Thickness (2D)": 0.95})
+        self.assertEqual(both, {"lv_wall_thickness": "septal_thickening", "septal_bulge": "present"})
+
+    def test_every_finding_has_its_own_sentence(self):
+        spec = load_spec()
+        for key, field in spec["fields"].items():
+            for value in field["values"]:
+                sentence = finding_sentence(key, value, spec)
+                self.assertRegex(sentence, r"^[A-Z][^:]*\.$", key)  # no "label: value", the form's wording.
+                self.assertNotIn(field["label"].lower() + ":", sentence.lower(), key)
+                self.assertNotIn("_", sentence, key)
+                self.assertNotRegex(sentence, r"(?i)\bthe visible\b", key)
+        # The reviewer's own words.
+        self.assertEqual(finding_sentence("aortic_cusp_count", "three"), "Aortic valve has three cusps.")
+        self.assertEqual(finding_sentence("lv_wall_thickness", "increased"), "The visualized LV walls are thickened.")
+        self.assertEqual(finding_sentence("lv_wall_thickness", "septal_thickening"),
+                         "Septal thickening is present.")
+        self.assertEqual(finding_sentence("lv_wall_thickness", "posterior_thickening"), "Thickened LV posterior wall.")
+        self.assertEqual(finding_sentence("septal_bulge", "present"), "Focal basal septal thickening (septal bulge).")
+        self.assertEqual(finding_sentence("aorta_root_size", "normal"), "Aortic root size is not dilated.")
+        self.assertEqual(finding_sentence("wall_basal_inferolateral", "hypokinetic"),
+                         "Basal inferolateral segment shows hypokinesis.")
+        self.assertEqual(finding_sentence("pericardial_effusion", "not_demonstrated"), "No pericardial effusion is visualized in this clip.")
+        self.assertEqual(finding_sentence("lv_function", "normal"), "LV systolic function appears normal.")
+        self.assertEqual(finding_sentence("lv_wall_thickness", "not_increased"), "The visualized LV walls are not thickened.")
+        self.assertEqual(finding_sentence("pericardial_effusion", "present"), "Pericardial effusion is visualized in this clip.")
+        # A jet is what one color clip shows: its absence there is not the absence of regurgitation.
+        self.assertEqual(finding_sentence("mitral_regurgitant_jet", "not_demonstrated"),
+                         "No mitral regurgitant jet is seen on color Doppler.")
+        self.assertEqual(finding_sentence("aortic_device", "mechanical_prosthesis"),
+                         "Mechanical aortic valve prosthesis is present.")
+        self.assertEqual(finding_sentence("mitral_device", "bioprosthesis"), "Bioprosthetic mitral valve is present.")
+        self.assertEqual(finding_sentence("mitral_device", "edge_to_edge_clip"),
+                         "Mitral edge-to-edge clip is present.")
+        self.assertEqual(finding_sentence("mitral_motion", "prolapse"), "Mitral valve prolapse is present.")
+        self.assertEqual(finding_sentence("tricuspid_motion", "flail"), "Flail tricuspid leaflet is present.")
+        self.assertEqual(finding_sentence("mitral_motion", "tethered"), "Mitral leaflets show tethered motion.")
+        spec["fields"]["new_finding"] = {"label": "New finding", "values": {"yes": "Yes"}}
+        with self.assertRaises(ValueError):  # a column without a sentence, not a caption from its form labels.
+            finding_sentence("new_finding", "yes", spec)
 
     def test_cusp_count_and_prolapse_are_view_restricted(self):
         report = {"Aortic valve findings": "Valve aortique tricuspide", "Mitral valve findings": "Prolapsus mitral"}
@@ -204,19 +444,19 @@ class TestColumnPrefills(unittest.TestCase):
                   "Mitral valve findings": "Valve mitrale calcifiée"}
         walls = [col["value"] for col in self.candidate(report)["columns"] if col["concept"].startswith("wall_")]
         self.assertEqual(walls, ["akinetic_or_severely_hypokinetic", "normal_or_hyperkinetic"])
-        # The view classifier gives no PSAX level: only the structures of every level, and the reviewer states it.
+        # The classifier gives no PSAX level: only the structures of every level, and the reviewer states the view.
         psax = self.candidate(report, view="PSAX")
-        self.assertIsNone(psax["level"])
-        self.assertEqual(psax["suggested_targets"], ["lv", "rv", "ivs", "pericardium"])
+        self.assertEqual(psax["level"], "not_applicable")
+        self.assertEqual(psax["suggested_targets"], ["lv", "ivs", "pericardium"])
         self.assertEqual(psax["columns"], [])
-        self.assertNotIn("psax_level", decode_annotations(prelabels(psax)))
-        self.assertEqual(concepts(self.candidate(report, view="PSAX", level="mid")),
-                         ["mitral_appearance", "wall_mid_inferior"])
-        self.assertEqual(concepts(self.candidate(report, view="PSAX", level="basal_mitral")), ["mitral_appearance"])
-        self.assertEqual(self.candidate(report, view="PSAX", level="apical")["columns"], [])
-        self.assertEqual(self.candidate(report, view="PSAX", level="mid")["suggested_targets"][-2:],
+        self.assertNotIn("view", decode_annotations(prelabels(psax)))
+        self.assertEqual(decode_annotations(prelabels(self.candidate(report, view="PSAX_MID")))["view"], "PSAX_MID")
+        self.assertEqual(concepts(self.candidate(report, view="PSAX_MID")), ["wall_mid_inferior"])
+        self.assertEqual(concepts(self.candidate(report, view="PSAX_BASAL")), ["mitral_appearance"])
+        self.assertEqual(self.candidate(report, view="PSAX_APICAL")["columns"], [])
+        self.assertEqual(self.candidate(report, view="PSAX_MID")["suggested_targets"][-2:],
                          ["papillary_muscles", "chordae"])
-        for view, level in [("PSAX", "basal"), ("PSAX", "not_applicable"), ("A4C", "mid")]:
+        for view, level in [("PSAX", "mid"), ("PSAX_MID", "ivc"), ("A4C", "four_chamber")]:
             with self.assertRaises(ValueError):
                 self.candidate(report, view=view, level=level)
 
@@ -347,7 +587,7 @@ class TestColumnSubmissions(unittest.TestCase):
         def changed(records, **answers):
             out = copy.deepcopy(records)
             for name, answer in answers.items():
-                next(r for r in out if r["name"] == name)["answer"] = answer
+                next(r for r in walk(out) if r.get("name") == name and "answer" in r)["answer"] = answer
             return out
 
         self.assertEqual(review_problems(self.c, done), [])
@@ -361,7 +601,7 @@ class TestColumnSubmissions(unittest.TestCase):
         self.assertEqual(review_problems(self.c, unread), [])
         self.assertEqual(review_problems(self.c, changed(done, review_columns=[])),
                          ["A prefilled finding was unticked: mark it Incorrect and remove it instead"])
-        self.assertEqual(review_problems(self.c, changed(done, psax_level={"name": "mid"})), ["psax_level"])
+        self.assertEqual(review_problems(self.c, changed(done, subcostal_level={"name": "ivc"})), ["subcostal_level"])
 
     def test_a_ticked_finding_that_was_not_prefilled_is_an_addition(self):
         self.a.update(review_completed="yes", review_columns=[*self.a["review_columns"], "lv_size"],
@@ -370,33 +610,131 @@ class TestColumnSubmissions(unittest.TestCase):
         self.assertEqual(score["omissions"],
                          [{"concept": "lv_size", "value": "dilated", "origin": "reviewer_addition"}])
         self.assertEqual((score["pending"], score["original_count"]), ([], 2))
-        self.assertIn("The visible LV cavity is dilated.", score["caption"])
+        self.assertIn("LV cavity is dilated.", score["caption"])
         self.a["lv_size__status"] = "cannot_assess"
         self.assertEqual(self.score()["pending"], ["lv_size__status"])
         self.a.update(lv_size__status="yes", missing_information="yes", missing_columns=["lv_size"],
                       lv_size__missing_value="dilated", lv_size__missing_visible="yes")
         self.assertIn("missing_columns", self.score()["pending"])  # added twice
 
-    def test_the_level_fits_the_confirmed_view(self):
+    def test_a_psax_clip_s_view_states_its_level(self):
         psax = build_candidate({"Left ventricule findings": "Dysfonction légère du ventricule gauche"},
                                "PSAX", "bmode", global_key="synthetic-psax")
         answers = {**decode_annotations(prelabels(psax)), "review_completed": "yes"}
-        self.assertEqual(score_review(psax, answers, submitted=True)["pending"], ["psax_level"])
-        for level, pending in [("not_applicable", ["psax_level"]), ("unresolved", []), ("mid", [])]:
-            self.assertEqual(score_review(psax, {**answers, "psax_level": level}, submitted=True)["pending"], pending)
-        # The mitral valve is claimed at the mid level too; a level's structures come with it, unticked.
-        mid = {**answers, "psax_level": "mid", "missing_information": "yes",
+        self.assertNotIn("view", answers)
+        records = prelabels(psax) + [{"name": "review_completed", "answer": {"name": "yes"}}]
+        self.assertEqual(review_problems(psax, records), ["Required review classification missing"])
+        for view in ("PSAX", "PSAX_BASAL", "PSAX_MID", "PSAX_APICAL"):  # PSAX: the level cannot be told.
+            score = score_review(psax, {**answers, "view": view}, submitted=True)
+            self.assertEqual((score["pending"], score["view_correct"], score["routing"]), ([], True, True), view)
+            self.assertEqual((score["out_of_view"], score["support_rate"]), ([], 1.0), view)
+        at_the_valve = score_review(psax, {**answers, "view": "PSAX_AV"}, submitted=True)
+        self.assertEqual((at_the_valve["view_correct"], at_the_valve["routing"]), (False, False))  # no refinement.
+        # A fixed papillary-level clip cannot support mitral leaflet findings.
+        mid = {**answers, "view": "PSAX_MID", "missing_information": "yes",
                "missing_columns": ["mitral_motion", "wall_mid_anterior"],
                "mitral_motion__missing_value": "normal", "mitral_motion__missing_visible": "yes",
                "wall_mid_anterior__missing_value": "normal", "wall_mid_anterior__missing_visible": "yes"}
         score = score_review(psax, mid, submitted=True)
-        self.assertTrue(score["routing"])
-        self.assertIn("mitral leaflets show normal motion", score["caption"])
-        self.assertFalse(score_review(psax, {**mid, "psax_level": "apical"}, submitted=True)["routing"])
+        self.assertFalse(score["routing"])
+        self.assertIn("mitral_motion__not_in_view", score["pending"])
+        self.assertEqual(score["caption"], "")
+        apical = score_review(psax, {**mid, "view": "PSAX_APICAL"}, submitted=True)
+        self.assertEqual((apical["pending"], apical["routing"], apical["caption"]),
+                         (["mitral_motion__not_in_view", "wall_mid_anterior__not_in_view"], False, ""))
         self.assertNotIn("mitral", mid["visible_targets"])
-        # A view corrected away from PSAX has no level.
-        corrected = {**answers, "view": "PLAX", "psax_level": "apical"}
-        self.assertEqual(score_review(psax, corrected, submitted=True)["pending"], ["psax_level"])
+        # A value is judged in the view the reviewer chose, not the class the clip came with.
+        basal = {**answers, "view": "PSAX_BASAL", "missing_information": "yes",
+                 "missing_columns": ["lv_wall_thickness"], "lv_wall_thickness__missing_visible": "yes"}
+        for value, sentence in [("posterior_thickening", "Thickened LV posterior wall."),
+                                ("septal_thickening", "Septal thickening is present.")]:
+            score = score_review(psax, {**basal, "lv_wall_thickness__missing_value": value}, submitted=True)
+            self.assertEqual((score["pending"], score["routing"]), ([], True), value)
+            self.assertIn(sentence, score["caption"])
+        # A view that is not subcostal has no subtype.
+        corrected = {**answers, "view": "PLAX", "subcostal_level": "ivc"}
+        self.assertEqual(score_review(psax, corrected, submitted=True)["pending"], ["subcostal_level"])
+
+    def test_an_added_finding_the_view_does_not_carry_is_sent_back(self):
+        psax = build_candidate({"Left ventricule findings": "Dysfonction légère du ventricule gauche"},
+                               "PSAX", "bmode", global_key="synthetic-psax")
+        answers = {**decode_annotations(prelabels(psax)), "review_completed": "yes"}
+        wall = {"lv_wall_thickness__missing_value": "increased", "lv_wall_thickness__missing_visible": "yes",
+                "missing_information": "yes", "missing_columns": ["lv_wall_thickness"]}
+        carried = score_review(psax, {**answers, **wall, "view": "PSAX_BASAL"}, submitted=True)
+        self.assertEqual(carried["pending"], [])
+        self.assertIn("The visualized LV walls are thickened.", carried["caption"])
+        ticked = {"review_columns": [*answers["review_columns"], "lv_wall_thickness"],
+                  "lv_wall_thickness__value": "increased", "lv_wall_thickness__status": "yes"}
+        structure = {**wall, "view": "PSAX_BASAL", "visible_targets": ["ivs", "pericardium"]}  # the LV is unticked.
+        for sent_back in ({**wall, "view": "PSAX_APICAL"}, {**ticked, "view": "PSAX_APICAL"}, structure):
+            score = score_review(psax, {**answers, **sent_back}, submitted=True)
+            self.assertIn("lv_wall_thickness__not_in_view", score["pending"])
+            self.assertEqual(score["caption"], "")
+        self.assertEqual(score_review(psax, {**answers, "view": "PSAX_APICAL"}, submitted=True)["pending"], [])
+
+    def test_a_claim_on_an_unticked_structure_goes_back_to_the_reviewer(self):
+        clip = build_candidate({"Left ventricule findings": "Dysfonction légère du ventricule gauche",
+                                "Pericardium findings": "Pas d'épanchement péricardique"},
+                               "A4C", "bmode", global_key="synthetic-row")
+        self.assertEqual(concepts(clip), ["lv_function", "pericardial_effusion"])
+        answers = {**decode_annotations(prelabels(clip)), "review_completed": "yes"}
+        no_lv = {"visible_targets": [t for t in answers["visible_targets"] if t != "lv"]}
+        incorrect = {"lv_function__status": "no", "lv_function__error": "not_visible"}
+        removed = {**incorrect, "lv_function__correction": "remove"}
+
+        def score(*changes):
+            merged = dict(answers)
+            for change in changes:
+                merged.update(change)
+            return score_review(clip, merged, submitted=True, spec=load_spec())
+
+        both = "LV systolic function appears mildly reduced. No pericardial effusion is visualized in this clip."
+        kept = score()  # ticked, supported.
+        self.assertEqual((kept["pending"], kept["caption"], kept["warnings"]), ([], both, []))
+        self.assertEqual((score(removed)["pending"], score(removed)["caption"]), ([], "No pericardial effusion is visualized in this clip."))
+        left = score(no_lv)  # unticked, supported: neither answer is changed for the reviewer.
+        self.assertEqual((left["pending"], left["caption"]), (["lv_function__structure_unticked"], ""))
+        self.assertIn("lv_function", [c["concept"] for c in left["supported"]])
+        warning = ('LV is marked as not visible, but "LV function" is still claimed. Mark the finding Incorrect and '
+                   'remove the claim, or tick the structure again.')
+        self.assertEqual(left["warnings"], [warning])
+        resolved = score(no_lv, removed)  # unticked, incorrect.
+        self.assertEqual((resolved["pending"], resolved["warnings"]), ([], []))
+        self.assertEqual(resolved["caption"], "No pericardial effusion is visualized in this clip.")
+        # A corrected value needs the structure too.
+        value = score(no_lv, incorrect, {"lv_function__correction": "moderately_reduced"})
+        self.assertEqual(value["pending"], ["lv_function__structure_unticked"])
+        unsure = score(no_lv, {"lv_function__status": "cannot_assess", "lv_function__limitation": "target_outside"})
+        self.assertEqual(unsure["pending"], [])
+        corrected = score({"view": "PLAX_ZOOM"})  # nothing unticked: a corrected view is not this conflict.
+        self.assertEqual((corrected["pending"], corrected["caption"]), ([], ""))
+
+    def test_narrowing_a_zoom_to_the_aortic_valve_leaves_out_what_it_does_not_claim(self):
+        report = {"Left ventricule findings": "Dysfonction modérée du ventricule gauche",  # no LV in a zoomed PLAX.
+                  "Mitral valve findings": "Valve mitrale calcifiée",
+                  "Aortic valve findings": "Valve aortique calcifiée",
+                  "Aorta findings": "Pas de dilatation de l'aorte au niveau des sinus de Valsalva"}
+        zoom = build_candidate(report, "PLAX_ZOOM", "bmode", global_key="synthetic-zoom")
+        self.assertEqual(concepts(zoom), ["mitral_appearance", "aortic_appearance", "aorta_root_size"])
+        answers = {**decode_annotations(prelabels(zoom)), "review_completed": "yes"}
+        self.assertEqual(answers["view"], "PLAX_ZOOM")
+        self.assertEqual(score_review(zoom, answers, submitted=True)["out_of_view"], [])
+        narrowed = {**answers, "view": "PLAX_ZOOM_AV"}
+        score = score_review(zoom, narrowed, submitted=True)
+        self.assertEqual((score["pending"], score["view_correct"], score["routing"]), ([], True, True))
+        self.assertEqual([c["concept"] for c in score["out_of_view"]], ["mitral_appearance"])
+        self.assertEqual((score["original_count"], score["resolved_count"], score["support_rate"]), (2, 2, 1.0))
+        self.assertEqual(score["caption"], "Aortic valve appears calcified. Aortic root size is not dilated.")
+        # Unticking a finding the view leaves out changes nothing; unticking one it claims is still refused.
+        kept = [key for key in narrowed["review_columns"] if key != "mitral_appearance"]
+        self.assertEqual(score_review(zoom, {**narrowed, "review_columns": kept}, submitted=True)["caption"],
+                         score["caption"])
+        with self.assertRaises(ValueError):
+            score_review(zoom, {**narrowed, "review_columns": ["mitral_appearance"]}, submitted=True)
+        # A view the class does not refine is a wrong view, whatever it claims.
+        wrong = score_review(zoom, {**answers, "view": "PSAX_AV"}, submitted=True)
+        self.assertEqual((wrong["out_of_view"], wrong["view_correct"], wrong["routing"]), ([], False, False))
 
     def test_encode_answers_inverts_decoding(self):
         records = prelabels(self.c) + [{"name": "review_completed", "answer": {"name": "yes"}}]
@@ -425,11 +763,11 @@ class TestColumnSubmissions(unittest.TestCase):
         self.assertNotIn("comments", decode_annotations(prelabels(self.c)))
         self.assertNotIn("view_ok", decode_annotations(prelabels(self.c)))
         self.assertNotIn("modality_ok", decode_annotations(prelabels(self.c)))
-        labels = {q["name"]: q["instructions"] for q in build_form()["classifications"]}
+        labels = {q["name"]: q["instructions"] for q in walk(build_form()) if "instructions" in q}
         self.assertEqual(labels["view"], "View (prefilled - correct if needed)")
         self.assertEqual(labels["modality"], "Acquisition mode (prefilled - correct if needed)")
         wrong = copy.deepcopy(p)
-        next(r for r in wrong if r["name"] == "review_columns")["answer"][0]["classifications"][0]["name"] = "view"
+        next(r for r in walk(wrong) if r.get("name") == "review_columns")["answer"][0]["classifications"][0]["name"] = "view"
         with self.assertRaises(ValueError):
             validate_annotations(wrong, build_form())
 
@@ -444,7 +782,7 @@ class TestColumnSubmissions(unittest.TestCase):
         self.assertNotIn("review_completed", decode_annotations(prelabels(self.c)))
         attachment = context_attachment(self.c)
         self.assertEqual(attachment["attachment_type"], "RAW_TEXT")
-        self.assertEqual(attachment["attachment_name"], "DeepECHO review v3 - original proposals")
+        self.assertEqual(attachment["attachment_name"], "DeepECHO review v5 - original proposals")
         self.assertTrue(attachment["attachment_name"].isascii())
         self.assertIn("tricuspid_appearance", attachment["attachment_value"])
         with self.assertRaises(ValueError):
@@ -474,12 +812,13 @@ class TestColumnSubmissions(unittest.TestCase):
         self.assertTrue(score_review(subcostal, answers, submitted=True)["caption"])
         unticked = {**answers, "visible_targets": [t for t in answers["visible_targets"] if t != "rv"]}
         self.assertFalse(score_review(subcostal, unticked, submitted=True)["routing"])
-        ivc = {**answers, "psax_level": "ivc", "rv_size__status": "no", "rv_size__error": "wrong_view",
+        ivc = {**answers, "subcostal_level": "ivc", "rv_size__status": "no", "rv_size__error": "wrong_view",
                "rv_size__correction": "remove", "missing_information": "yes", "missing_columns": ["ivc_size"],
-               "ivc_size__missing_value": "dilated", "ivc_size__missing_visible": "yes"}
+               "ivc_size__missing_value": "dilated", "ivc_size__missing_visible": "yes",
+               "visible_targets": ["ivc", "hepatic_veins"]}
         score = score_review(subcostal, ivc, submitted=True)
         self.assertEqual((score["pending"], score["routing"]), ([], True))
-        self.assertEqual(score["caption"], "IVC size: dilated in this input.")
+        self.assertEqual(score["caption"], "IVC is dilated.")
 
     @unittest.skipUnless(importlib.util.find_spec("labelbox"), "Labelbox SDK optional")
     def test_sdk_form_roundtrip(self):
@@ -492,7 +831,7 @@ class TestImport(unittest.TestCase):
     def setUp(self):
         import labelbox as lb
         self.candidates = [build_candidate({"Tricuspid valve findings": "Normal"}, "A4C", "bmode", global_key="synthetic-import")]
-        self.assertEqual(ONTOLOGY_NAME, "DeepECHO column review v3")
+        self.assertEqual(ONTOLOGY_NAME, "DeepECHO column review v5")
         self.ontology = SimpleNamespace(name=ONTOLOGY_NAME, uid="ontology", media_type=lb.MediaType.Video,
                                         normalized=as_stored(build_form(), ONTOLOGY_NAME))
         self.row = SimpleNamespace(media_attributes={"frameCount": 24}, _attachments=[])
@@ -535,7 +874,7 @@ class TestImport(unittest.TestCase):
 
     def batch_name(self):
         payloads = [p for c in self.candidates for p in prelabels(c)]
-        return "deepecho-v3-" + hashlib.sha256(json.dumps(payloads, sort_keys=True).encode()).hexdigest()[:16]
+        return "deepecho-v5-" + hashlib.sha256(json.dumps(payloads, sort_keys=True).encode()).hexdigest()[:16]
 
     def test_a_failed_import_of_named_predictions_is_superseded(self):
         # The run before schema ids: its batch and context are in, its job (same prelabels, by name) failed.
@@ -574,14 +913,15 @@ class TestImport(unittest.TestCase):
         self.assertFalse([node for node in walk(job.predictions) if "name" in node])
         ids = {node["schemaId"] for node in walk(job.predictions) if "schemaId" in node}
         self.assertIn("id:/uninterpretable", ids)
-        self.assertIn("id:/review_columns/tricuspid_appearance/tricuspid_appearance__status/yes", ids)
+        self.assertIn("id:/uninterpretable/no/review_columns/tricuspid_appearance/tricuspid_appearance__status/yes", ids)
         self.assertNotIn("id:/review_completed", ids)
         self.assertEqual({p["dataRow"]["globalKey"] for p in job.predictions}, {"synthetic-import"})
 
     def test_names_the_ontology_lacks_are_refused(self):
         classifications = as_stored(build_form(), "x")["classifications"]
         records = prelabels(self.candidates[0])
-        self.assertEqual(with_schema_ids([dict(records[0], name="visible_targets", answer=[])], classifications), [])
+        nested = classifications[0]["options"][0]["options"]
+        self.assertEqual(with_schema_ids([dict(records[0], name="visible_targets", answer=[])], nested), [])
         with self.assertRaises(ValueError):
             with_schema_ids([dict(records[0], name="not_a_question")], classifications)
         with self.assertRaises(ValueError):

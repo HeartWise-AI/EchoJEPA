@@ -83,14 +83,14 @@ class TestPrivacy(unittest.TestCase):
             self.assertTrue(RULES[rule].search(text), rule)
 
     def test_rules_allow_ontology_content(self):
-        allowed = ("`mitral_regurgitation`", "A4C_ZOOM, PLAX_DEEP, PSAX_AV", "radar-caption-ontology-v1",
+        allowed = ("`mitral_regurgitation`", "A4C_ZOOM, PLAX_DEEP, PSAX_AV", "radar-caption-ontology-v2",
                    "sha256: " + "0123456789abcdef" * 4, "labelbox 7.12.0", "configs/radar/labelbox/x.json",
                    "$HOME/.venvs/echojepa-labelbox", "https://github.com/HeartWise-AI/EchoJEPA/issues/21",
                    "user.email=test@example.invalid", "tokenizer: local snapshot only",
                    "Coupe apicale 4 cavités (A4C), Doppler couleur. Insuffisance mitrale : modérée.")
         for text in allowed:
             self.assertEqual(findings("docs/radar/example.md", text), [], text)
-        self.assertTrue(findings("docs/radar/ontology_v1.md", "date: 2026-10-20"))
+        self.assertTrue(findings("docs/radar/ontology_v2.md", "date: 2026-10-20"))
 
 
 if __name__ == "__main__":

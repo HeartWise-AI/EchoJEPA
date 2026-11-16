@@ -20,7 +20,7 @@ from typing import Any, Mapping
 import yaml
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-DEFAULT_ONTOLOGY_PATH = os.path.join(REPO_ROOT, "configs", "radar", "radar-caption-ontology-v1.yaml")
+DEFAULT_ONTOLOGY_PATH = os.path.join(REPO_ROOT, "configs", "radar", "radar-caption-ontology-v2.yaml")
 
 ONTOLOGY_SCHEMA = "radar-caption-ontology"
 # These constants define the view classifier's classes and acquisition index's categories. Duplicated in the YAML so

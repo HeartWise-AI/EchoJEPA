@@ -1,4 +1,4 @@
-"""Apply the v3 ontology and prelabels to an explicitly selected video project.
+"""Apply the column review ontology and prelabels to an explicitly selected video project.
 
 Existing data rows only. No asset upload, ground-truth import, invitations, or
 provisioning. Dry run is the default; API credentials stay in the environment.

@@ -1,4 +1,4 @@
-"""Generate and synchronize the tables of `docs/radar/ontology_v1.md` from the ontology and label-mapping YAML files:
+"""Generate and synchronize the tables of `docs/radar/ontology_v2.md` from the ontology and label-mapping YAML files:
 the taxonomies, findings and label mappings. The reviewer instructions are generated from the review forms by
 `tools.labelbox.instructions`.
 
@@ -20,7 +20,7 @@ from app.radar.label_mappings import RELATIONS, UNSPECIFIED, Entry, LabelMapping
 from app.radar.ontology import REPO_ROOT, VIEWS, Concept, Ontology, load_ontology
 
 DOCS_DIR = os.path.join(REPO_ROOT, "docs", "radar")
-DEFAULT_DOC_PATH = os.path.join(DOCS_DIR, "ontology_v1.md")
+DEFAULT_DOC_PATH = os.path.join(DOCS_DIR, "ontology_v2.md")
 # Identify important pieces between `<!-- BEGIN GENERATED: <name> -->` and `<!-- END GENERATED: <name> -->`.
 _BLOCK = re.compile(
     r"(<!-- BEGIN GENERATED: (?P<name>[a-z_]+) -->\n)(?P<body>.*?)(<!-- END GENERATED: (?P=name) -->)", re.S
@@ -102,7 +102,7 @@ def render_structures(ontology: Ontology) -> str:
         findings = [cid for cid in ontology.concepts_of_structure(sid) if cid != visibility]
         rows.append([
             f"`{sid}`", s.category, s.labels["en"], s.labels["fr"], f"`{visibility}`" if visibility else "none",
-            prior_text(ontology, ontology.concept(visibility)) if visibility else "no prior in v1",
+            prior_text(ontology, ontology.concept(visibility)) if visibility else "no prior in v2",
             _code(findings),
         ])
     return _table(["Structure", "Category", "English", "French", "Visibility concept",

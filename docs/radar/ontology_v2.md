@@ -1,16 +1,16 @@
-# RADAR caption ontology v1 (`radar-caption-ontology-v1`)
+# RADAR caption ontology v2 (`radar-caption-ontology-v2`)
 
 The ontology is the shared vocabulary for one echo clip: its view, its acquisition mode, the cardiac structures it may
 show and the findings it may support, and how DeepECHO, EchoPrime and PanEcho labels relate to them. The pilot reviews
-clips in two Labelbox forms that use its view classes (see [Review forms](#review-forms)): column review v3 for clips
-of a classified view and view/type review v1 for `OTHER` clips. The
-[reviewer instructions](labeling_instructions_v1.md) and the [pilot metrics](pilot_metrics_v1.md) cover both forms.
+clips in two Labelbox forms that use its view classes (see [Review forms](#review-forms)): column review v5 for clips
+of a classified view and view/type review v2 for `OTHER` clips. The
+[reviewer instructions](labeling_instructions_v1.md) and the [pilot metrics](pilot_metrics_v2.md) cover both forms.
 
-**Versions.** v1 denotes the ontology package version, while each form is versioned separately: column review v3 and
-view/type review v1. This document defines the ontology; the [reviewer instructions](labeling_instructions_v1.md)
+**Versions.** v2 is the ontology's version, while each form is versioned separately: column review v5 and
+view/type review v2. The instructions, metrics and label mappings keep their `_v1` file names. This document defines the ontology; the [reviewer instructions](labeling_instructions_v1.md)
 define how captions and form answers are reviewed.
 
-The sources of truth are [`configs/radar/radar-caption-ontology-v1.yaml`](../../configs/radar/radar-caption-ontology-v1.yaml)
+The sources of truth are [`configs/radar/radar-caption-ontology-v2.yaml`](../../configs/radar/radar-caption-ontology-v2.yaml)
 and [`configs/radar/label_mappings_v1.yaml`](../../configs/radar/label_mappings_v1.yaml). The tables below are
 generated from them:
 
@@ -56,6 +56,12 @@ These priors define concepts, but the routes in the
 determine which structures each view prefills and which columns apply to each clip, based on view, level,
 acquisition mode and the structures the reviewer confirms.
 
+The column form's wall-thickness values map to `lv_wall_thickening_distribution`, with aligned view and modality
+priors. Its `whole_wall` value describes only the walls actually visualized. A color clip supports this observation
+only when its underlying grayscale wall boundaries remain assessable. The concept's broad prior does not override
+the form's value-specific restrictions, such as excluding septal claims from A2C or requiring an explicitly visible
+septum. The mapping never supplies an LVH diagnosis or severity grade.
+
 ## Views
 
 The view taxonomy is the list of classes of the DeepECHO view classifier (the archive's `predicted_class`). `OTHER`
@@ -89,7 +95,7 @@ no structure or finding.
 
 The descriptions are those of the standard echo views. Where the classifier's training labels put the boundary
 between neighbouring classes (for example `A4C_LV` and `A4C_ZOOM`) is listed under
-[Clinical choices in v1](#clinical-choices-in-v1).
+[Clinical choices in v2](#clinical-choices-in-v2).
 
 ## Acquisition modes
 
@@ -111,17 +117,17 @@ view classes do not separate grayscale from color clips.
 
 Every concept names the structures it is about. A structure has at most one visibility concept; the views where the
 structure may be seen are that concept's prior. Every structure below has one, and its prior lists exactly the views
-whose column review prefills the structure, the PSAX and subcostal levels included: a unit test keeps the two lists
-the same.
+whose column review prefills the structure, a view that refines a class counted as that class and the subcostal
+subtypes included: a unit test keeps the two lists the same.
 
 <!-- BEGIN GENERATED: structures -->
 | Structure | Category | English | French | Visibility concept | May be visible in (views, acquisitions) | Findings |
 |---|---|---|---|---|---|---|
-| `left_ventricle` | chamber | Left ventricle | Ventricule gauche | `lv_visible` | `apical_4c`, `apical_5c`, `apical_2c`, `apical_3c`, `parasternal_long`, `parasternal_short`, `subcostal` (bmode, color_flow) | `lv_systolic_function`, `lv_ejection_fraction`, `lv_size`, `lv_wall_thickness`, `lv_regional_wall_motion`, `lv_diastolic_function`, `lv_global_longitudinal_strain`, `mechanical_circulatory_support` |
-| `right_ventricle` | chamber | Right ventricle | Ventricule droit | `rv_visible` | `apical_5c`, `parasternal_long`, `parasternal_short`, `parasternal_short_av`, `rv_inflow`, `subcostal`, `A4C`, `A4C_ZOOM` (bmode, color_flow) | `rv_systolic_function`, `rv_size`, `tapse`, `rv_systolic_pressure`, `pacing_lead` |
+| `left_ventricle` | chamber | Left ventricle | Ventricule gauche | `lv_visible` | `apical_4c`, `apical_5c`, `apical_2c`, `apical_3c`, `parasternal_short`, `subcostal`, `PLAX`, `PLAX_DEEP` (bmode, color_flow) | `lv_systolic_function`, `lv_ejection_fraction`, `lv_size`, `lv_wall_thickness`, `lv_wall_thickening_distribution`, `lv_regional_wall_motion`, `lv_diastolic_function`, `lv_global_longitudinal_strain`, `mechanical_circulatory_support` |
+| `right_ventricle` | chamber | Right ventricle | Ventricule droit | `rv_visible` | `apical_5c`, `parasternal_short_av`, `rv_inflow`, `subcostal`, `A4C`, `A4C_ZOOM`, `PLAX`, `PLAX_DEEP` (bmode, color_flow) | `rv_systolic_function`, `rv_size`, `tapse`, `rv_systolic_pressure`, `pacing_lead` |
 | `left_atrium` | chamber | Left atrium | Oreillette gauche | `la_visible` | `apical_5c`, `parasternal_long`, `parasternal_short_av`, `subcostal`, `A2C`, `A2C_ZOOM`, `A3C`, `A3C_ZOOM`, `A4C`, `A4C_ZOOM` (bmode, color_flow) | `la_size`, `elevated_la_pressure` |
 | `right_atrium` | chamber | Right atrium | Oreillette droite | `ra_visible` | `apical_5c`, `parasternal_short_av`, `rv_inflow`, `subcostal`, `A4C`, `A4C_ZOOM` (bmode, color_flow) | `ra_pressure`, `ra_size`, `pacing_lead` |
-| `interventricular_septum` | septum | Interventricular septum | Septum interventriculaire | `ivs_visible` | `apical_5c`, `parasternal_long`, `parasternal_short`, `subcostal`, `A4C`, `A4C_ZOOM` (bmode, color_flow) |  |
+| `interventricular_septum` | septum | Interventricular septum | Septum interventriculaire | `ivs_visible` | `apical_4c`, `apical_5c`, `apical_3c`, `parasternal_long`, `parasternal_short`, `subcostal` (bmode, color_flow) | `lv_wall_thickening_distribution`, `septal_bulge` |
 | `interatrial_septum` | septum | Interatrial septum | Septum interauriculaire | `interatrial_septum_visible` | `apical_5c`, `parasternal_short_av`, `subcostal`, `A4C`, `A4C_ZOOM` (bmode, color_flow) | `atrial_septal_hypertrophy` |
 | `mitral_valve` | valve | Mitral valve | Valve mitrale | `mitral_valve_visible` | `apical_4c`, `apical_5c`, `apical_2c`, `apical_3c`, `parasternal_long`, `parasternal_short`, `subcostal` (bmode, color_flow) | `mitral_regurgitation`, `mitral_stenosis`, `mitral_annular_calcification`, `mitral_valve_device` |
 | `aortic_valve` | valve | Aortic valve | Valve aortique | `aortic_valve_visible` | `apical_5c`, `apical_3c`, `parasternal_long`, `parasternal_short_av` (bmode, color_flow) | `aortic_regurgitation`, `aortic_stenosis`, `aortic_valve_peak_velocity`, `bicuspid_aortic_valve`, `aortic_valve_prosthesis` |
@@ -136,7 +142,7 @@ the same.
 | `ascending_aorta` | great_vessel | Ascending aorta | Aorte ascendante | `ascending_aorta_visible` | `parasternal_long` (bmode, color_flow) |  |
 | `aortic_arch` | great_vessel | Aortic arch | Crosse aortique | `aortic_arch_visible` | `suprasternal` (bmode, color_flow) |  |
 | `descending_aorta` | great_vessel | Descending aorta | Aorte descendante | `descending_aorta_visible` | `PLAX_DEEP` (bmode, color_flow) |  |
-| `pericardium` | pericardium | Pericardium | Péricarde | `pericardium_visible` | `apical_5c`, `parasternal_long`, `parasternal_short`, `subcostal`, `A2C`, `A2C_ZOOM`, `A3C`, `A3C_ZOOM`, `A4C`, `A4C_ZOOM` (bmode, color_flow) | `pericardial_effusion` |
+| `pericardium` | pericardium | Pericardium | Péricarde | `pericardium_visible` | `apical_5c`, `parasternal_short`, `subcostal`, `A2C`, `A2C_ZOOM`, `A3C`, `A3C_ZOOM`, `A4C`, `A4C_ZOOM`, `PLAX`, `PLAX_DEEP` (bmode, color_flow) | `pericardial_effusion` |
 | `inferior_vena_cava` | systemic_vein | Inferior vena cava | Veine cave inférieure | `ivc_visible` | `subcostal` (bmode, color_flow, mmode) | `ivc_dilation`, `ivc_collapse` |
 | `hepatic_veins` | systemic_vein | Hepatic veins | Veines hépatiques | `hepatic_veins_visible` | `subcostal` (bmode, color_flow) |  |
 <!-- END GENERATED: structures -->
@@ -146,16 +152,18 @@ the same.
 <!-- BEGIN GENERATED: findings -->
 | Finding | English | French | Structures | Value | Evidence | Modalities | Prior (views, acquisitions) | Needs views from | Notes |
 |---|---|---|---|---|---|---|---|---|---|
-| `lv_systolic_function` | Left ventricular systolic function | Fonction systolique ventriculaire gauche | `left_ventricle` | scale `systolic_function` | visual | bmode | `apical_4c`, `apical_2c`, `apical_3c`, `parasternal_long`, `parasternal_short`, `subcostal` (bmode) |  |  |
+| `lv_systolic_function` | Left ventricular systolic function | Fonction systolique ventriculaire gauche | `left_ventricle` | scale `systolic_function` | visual | bmode | `apical_4c`, `apical_2c`, `apical_3c`, `parasternal_short`, `subcostal`, `PLAX`, `PLAX_DEEP` (bmode) |  |  |
 | `lv_ejection_fraction` | LV ejection fraction (visual estimate) | Fraction d'éjection VG (estimation visuelle) | `left_ventricle` | %, 5 to 90 | visual | bmode | `apical_4c`, `apical_2c` (bmode) | `apical_4c`, `apical_2c` | A visual estimate integrates apical 4- and 2-chamber views; one clip supports it only partly. |
-| `lv_size` | Left ventricular size | Taille du ventricule gauche | `left_ventricle` | scale `dilation` | visual | bmode | `apical_4c`, `apical_2c`, `parasternal_long`, `parasternal_short` (bmode) |  |  |
-| `lv_wall_thickness` | Left ventricular hypertrophy | Hypertrophie ventriculaire gauche | `left_ventricle` | scale `hypertrophy` | visual | bmode | `apical_4c`, `parasternal_long`, `parasternal_short` (bmode) |  |  |
+| `lv_size` | Left ventricular size | Taille du ventricule gauche | `left_ventricle` | scale `dilation` | visual | bmode | `apical_4c`, `apical_2c`, `PLAX`, `PLAX_DEEP` (bmode) |  |  |
+| `lv_wall_thickness` | Left ventricular hypertrophy | Hypertrophie ventriculaire gauche | `left_ventricle` | scale `hypertrophy` | visual | bmode | `apical_4c`, `parasternal_short`, `PLAX`, `PLAX_DEEP` (bmode) |  | Report-level LVH diagnosis and grade; not populated from the column form's visual thickness or distribution. LV mass and geometry require their own clinical assessment. |
+| `lv_wall_thickening_distribution` | Distribution of LV wall thickening | Répartition de l'épaississement pariétal du VG | `left_ventricle`, `interventricular_septum` | `not_increased`, `septal_thickening`, `posterior_wall_thickening`, `whole_wall` | visual | bmode, color_flow | `apical_4c`, `apical_5c`, `apical_2c`, `apical_3c`, `parasternal_short`, `subcostal`, `PLAX`, `PLAX_DEEP` (bmode, color_flow) |  | Visual thickening and distribution only, restricted to the walls actually seen. Regional categories are nonexclusive and say nothing about unobserved walls; whole_wall means the visualized walls, not a study-wide diagnosis. Color clips require assessable underlying grayscale wall boundaries. The form additionally requires region-specific views and confirmed visible structures. This is not the separate LVH diagnosis or grade. |
+| `septal_bulge` | Basal septal bulge | Bourrelet septal basal | `interventricular_septum` | yes / no | visual | bmode | `apical_5c`, `apical_3c`, `parasternal_short`, `A4C`, `A4C_LV`, `PLAX`, `PLAX_DEEP` (bmode) |  | Focal basal septal prominence relative to adjacent mid septum with adequate end-diastolic visualization. Uncertain morphology remains unassessable. No etiology, HCM, LVOT obstruction or global LVH diagnosis or exclusion follows from this finding alone. |
 | `lv_regional_wall_motion` | LV regional wall motion (worst segment) | Cinétique segmentaire du VG (segment le plus atteint) | `left_ventricle` | scale `wall_motion` | visual | bmode | `apical_4c`, `apical_2c`, `apical_3c`, `parasternal_short` (bmode) | `apical_4c`, `apical_2c`, `apical_3c` | The 17 segments are seen across apical 4-, 2- and 3-chamber views; a single clip covers some segments. |
 | `lv_diastolic_function` | LV diastolic function | Fonction diastolique du VG | `left_ventricle` | scale `diastolic_function` | measurement | spectral_doppler | `apical_4c` (spectral_doppler) |  | Graded from mitral inflow and tissue Doppler; spectral Doppler stills are not in the video corpus. |
 | `lvot_obstruction` | LV outflow tract obstruction | Obstruction de la chambre de chasse du VG | `left_ventricular_outflow_tract` | yes / no | measurement | spectral_doppler | `apical_5c`, `apical_3c` (spectral_doppler) |  |  |
 | `lv_global_longitudinal_strain` | LV global longitudinal strain | Strain longitudinal global du VG | `left_ventricle` | %, -40 to 0 | measurement | bmode | `apical_4c`, `apical_2c`, `apical_3c` (bmode) | `apical_4c`, `apical_2c`, `apical_3c` |  |
-| `rv_systolic_function` | Right ventricular systolic function | Fonction systolique ventriculaire droite | `right_ventricle` | scale `systolic_function` | visual | bmode | `apical_4c`, `parasternal_short`, `rv_inflow`, `subcostal` (bmode) |  |  |
-| `rv_size` | Right ventricular size | Taille du ventricule droit | `right_ventricle` | scale `dilation` | visual | bmode | `apical_4c`, `parasternal_long`, `parasternal_short`, `subcostal` (bmode) |  |  |
+| `rv_systolic_function` | Right ventricular systolic function | Fonction systolique ventriculaire droite | `right_ventricle` | scale `systolic_function` | visual | bmode | `apical_4c`, `rv_inflow`, `subcostal` (bmode) |  |  |
+| `rv_size` | Right ventricular size | Taille du ventricule droit | `right_ventricle` | scale `dilation` | visual | bmode | `apical_4c`, `subcostal`, `PLAX`, `PLAX_DEEP` (bmode) |  |  |
 | `tapse` | TAPSE | TAPSE | `right_ventricle` | mm, 3 to 50 | measurement | mmode | `apical_4c` (mmode) |  |  |
 | `rv_systolic_pressure` | Right ventricular systolic pressure | Pression systolique ventriculaire droite | `right_ventricle` | mmHg, 10 to 150 | measurement | spectral_doppler | `apical_4c`, `parasternal_short_av`, `rv_inflow`, `subcostal` (spectral_doppler) |  | CW Doppler of the TR jet plus estimated RA pressure; never inferred from a color loop. |
 | `tr_peak_velocity` | TR peak velocity | Vitesse maximale de l'insuffisance tricuspide | `tricuspid_valve` | m/s, 0.5 to 7 | measurement | spectral_doppler | `apical_4c`, `parasternal_short_av`, `rv_inflow`, `subcostal` (spectral_doppler) |  |  |
@@ -179,9 +187,9 @@ the same.
 | `pulmonic_regurgitation` | Pulmonic regurgitation | Insuffisance pulmonaire | `pulmonic_valve` | scale `regurgitation` | visual | color_flow | `parasternal_short_av`, `subcostal` (color_flow) |  |  |
 | `ivc_dilation` | Inferior vena cava dilation | Dilatation de la veine cave inférieure | `inferior_vena_cava` | yes / no | visual | bmode, mmode | `subcostal` (bmode, mmode) |  |  |
 | `ivc_collapse` | IVC inspiratory collapse | Collapsus inspiratoire de la VCI | `inferior_vena_cava` | `normal`, `reduced` | visual | bmode, mmode | `subcostal` (bmode, mmode) |  |  |
-| `pericardial_effusion` | Pericardial effusion | Épanchement péricardique | `pericardium` | scale `effusion` | visual | bmode | `apical_4c`, `apical_2c`, `parasternal_long`, `parasternal_short`, `subcostal` (bmode) |  |  |
-| `pacing_lead` | Intracardiac pacing lead | Sonde de stimulation intracardiaque | `right_atrium`, `right_ventricle` | yes / no | visual | bmode | `apical_4c`, `parasternal_short`, `rv_inflow`, `subcostal` (bmode) |  |  |
-| `mechanical_circulatory_support` | Mechanical circulatory support | Assistance circulatoire mécanique | `left_ventricle` | `none`, `microaxial_pump`, `lvad` | visual | bmode, color_flow | `apical_4c`, `apical_5c`, `apical_3c`, `parasternal_long` (bmode, color_flow) |  |  |
+| `pericardial_effusion` | Pericardial effusion | Épanchement péricardique | `pericardium` | scale `effusion` | visual | bmode | `apical_4c`, `apical_2c`, `parasternal_short`, `subcostal`, `PLAX`, `PLAX_DEEP` (bmode) |  |  |
+| `pacing_lead` | Intracardiac pacing lead | Sonde de stimulation intracardiaque | `right_atrium`, `right_ventricle` | yes / no | visual | bmode | `apical_4c`, `rv_inflow`, `subcostal` (bmode) |  |  |
+| `mechanical_circulatory_support` | Mechanical circulatory support | Assistance circulatoire mécanique | `left_ventricle` | `none`, `microaxial_pump`, `lvad` | visual | bmode, color_flow | `apical_4c`, `apical_5c`, `apical_3c`, `PLAX`, `PLAX_DEEP` (bmode, color_flow) |  |  |
 | `elevated_la_pressure` | Elevated LV filling pressure | Pressions de remplissage du VG élevées | `left_atrium` | yes / no | measurement | spectral_doppler | `apical_4c` (spectral_doppler) |  |  |
 <!-- END GENERATED: findings -->
 
@@ -235,19 +243,22 @@ part of this contract: a caption reviewed on the whole clip may not hold for a c
 
 Every valid video of a pilot study is reviewed in one of two Labelbox forms, each in its own project:
 
-- **column review v3**, for clips of a classified view in B-mode or color Doppler: its
+- **column review v5**, for clips of a classified view in B-mode or color Doppler: its
   specification is [`configs/radar/deepecho_video_clip_annotation_specification.json`](../../configs/radar/deepecho_video_clip_annotation_specification.json) and its form
   [`configs/radar/labelbox/deepecho_video_clip_annotation_ontology.json`](../../configs/radar/labelbox/deepecho_video_clip_annotation_ontology.json)
   (`python -m tools.labelbox.column_review --check` fails when the form no longer matches the specification);
-- **view/type review v1**, for clips the view classifier labels `OTHER` or does not
-  classify: its form is [`configs/radar/labelbox/view_type_review_v1.json`](../../configs/radar/labelbox/view_type_review_v1.json)
+- **view/type review v2**, for clips the view classifier labels `OTHER` or does not
+  classify: its form is [`configs/radar/labelbox/view_type_review_v2.json`](../../configs/radar/labelbox/view_type_review_v2.json)
   (`python -m tools.labelbox.view_type_review --check`).
 
-Both use the 20 view classes of this ontology, and their unit tests check each form against the Labelbox SDK. The
+Both use the 20 view classes of this ontology and four finer views that reviewers state: `PSAX_BASAL`, `PSAX_MID` and
+`PSAX_APICAL` refine `PSAX`, `PLAX_ZOOM_AV` refines `PLAX_ZOOM`. A refinement is not a class of this ontology: `PSAX`
+and `PLAX_ZOOM` already cover those clips, and the classifier cannot output them yet. Their unit tests check each form
+against the Labelbox SDK. The
 [reviewer instructions](labeling_instructions_v1.md#the-caption) explain what the column-review captions claim.
 
 The columns are named for the DeepECHO report fields they are prefilled from. They are not mapped one by one to the
-concepts of this ontology: the [label mappings](#how-deepecho-echoprime-and-panecho-labels-relate-to-v1) relate
+concepts of this ontology: the [label mappings](#how-deepecho-echoprime-and-panecho-labels-relate-to-v2) relate
 DeepECHO, EchoPrime and PanEcho labels to the concepts, not to the columns.
 
 The [reviewer instructions](labeling_instructions_v1.md) explain every answer of both forms in English with worked
@@ -255,7 +266,7 @@ synthetic examples. Their form tables and examples are generated from the forms 
 [`configs/radar/review_examples_v1.yaml`](../../configs/radar/review_examples_v1.yaml), and every example is scored as
 a review (`python -m tools.labelbox.instructions --check`).
 
-## How DeepECHO, EchoPrime and PanEcho labels relate to v1
+## How DeepECHO, EchoPrime and PanEcho labels relate to v2
 
 [`configs/radar/label_mappings_v1.yaml`](../../configs/radar/label_mappings_v1.yaml) lists every label of each
 source, and every class of each classification task; a unit test checks the lists against the files vendored in this
@@ -267,7 +278,7 @@ repository. Each label has one relation:
 | `grouped` | Same concept, coarser labels: a view class covers several views, or a task class covers several values (PanEcho's `Moderate\|Severe`). A prediction never becomes one precise value; values no class covers are listed as "no class". |
 | `transformed` | Same quantity after the stated conversion (for example PanEcho's TR peak gradient in mmHg to a velocity in m/s). |
 | `related` | Informative about the listed concepts, but not the same quantity or definition, or too uncertain to imply a value: every EchoPrime binary task is a phrase match that may be negated ("No evidence of severe mitral regurgitation" is positive). No value is ever derived from it. |
-| `unmapped` | No v1 concept; the structures it is about and the reason are given. |
+| `unmapped` | No v2 concept; the structures it is about and the reason are given. |
 
 The mappings describe what each label means for a caption. They are not used to write captions: candidate captions
 are built from the ICM report fields listed in the ontology.
@@ -284,7 +295,7 @@ are built from the ICM report fields listed in the ontology.
 ### DeepECHO views
 
 <!-- BEGIN GENERATED: mapping_deepecho_views -->
-DeepECHO view classifier classes (the archive's `predicted_class`). They are the ontology's views. Source: `configs/radar/radar-caption-ontology-v1.yaml (views)`.
+DeepECHO view classifier classes (the archive's `predicted_class`). They are the ontology's views. Source: `configs/radar/radar-caption-ontology-v2.yaml (views)`.
 
 Every class maps exactly to the view of the same name: `A2C`, `A2C_LV`, `A2C_ZOOM`, `A3C`, `A3C_LV`, `A3C_ZOOM`, `A4C`, `A4C_LV`, `A4C_ZOOM`, `A5C`, `A5C_ZOOM`, `PLAX`, `PLAX_DEEP`, `PLAX_ZOOM`, `PSAX`, `PSAX_AV`, `RVINF`, `SUBCOSTAL`, `SUPRASTERNAL`, `OTHER`.
 <!-- END GENERATED: mapping_deepecho_views -->
@@ -392,15 +403,31 @@ PanEcho's study-level tasks, with their class names. A `|` inside a class name j
 | `AORoot` | related | cm | related to `aortic_root_dilation` |  |
 <!-- END GENERATED: mapping_panecho_tasks -->
 
-## Clinical choices in v1
+## Changes from v1
+
+v1 was used in the first clinical pilot, so its medical review's changes make a new version. Reviewers judged that a
+zoomed PLAX clip does not show the LV, the RV or the pericardium well enough to label, that the RV is not labelled at the
+PSAX levels, and that chamber size is not judged there: `PLAX_ZOOM` leaves the priors of `lv_visible`, `rv_visible`,
+`pericardium_visible`, `lv_systolic_function`, `lv_size`, `lv_wall_thickness`, `rv_size`, `pericardial_effusion` and
+`mechanical_circulatory_support`, and `PSAX` those of `rv_visible`, `rv_systolic_function`, `lv_size`, `rv_size` and
+`pacing_lead`.
+
+Visual wall thickening and its distribution are distinct from an LVH diagnosis or grade. The form explicitly maps
+its wall-thickness values to `lv_wall_thickening_distribution`; the canonical `lv_wall_thickness` remains a
+report-level LVH diagnosis/grade and is never populated from this form column. Regional categories are nonexclusive
+and never imply normality elsewhere. `septal_bulge` is focal basal prominence relative to the adjacent mid septum;
+it does not establish or exclude an etiology, HCM, obstruction or global LVH. No concept was removed, and no structure or view
+was added or removed: the PSAX levels and `PLAX_ZOOM_AV` are answers of the review form that refine a view class, not
+view classes.
+
+## Clinical choices in v2
 
 These choices of the ontology rest most on clinical judgment and should be reviewed together with the Labelbox forms,
 reviewer instructions and pilot metrics. Material changes require a new version and renewed clinical review.
 
 1. **View class boundaries.** The descriptions are written to match how the DeepECHO classes were labelled, in
    particular the `_LV` and `_ZOOM` variants and `SUBCOSTAL`, which groups the subcostal four-chamber and IVC views.
-2. **LV outflow tract.** v1 has no visibility concept for it (no `lvot_visible`); it appears only in
-   `lvot_obstruction`, a measurement.
+2. **LV outflow tract.** Its visibility is `lvot_visible`; its only finding is `lvot_obstruction`, a measurement.
 3. **Priors.** Each structure's and finding's prior (views and acquisition modes), listed in full in the tables above.
 4. **Measurement concepts.** Which concepts are marked `measurement`, because watching a clip cannot confirm them, and
    which are judged visually.
@@ -410,3 +437,14 @@ reviewer instructions and pilot metrics. Material changes require a new version 
    binary task kept as only related, because its phrases also match negated, possible or borderline mentions.
 6. **Field of view.** Reviewers judge findings on the whole de-identified clip, which is also the whole model input
    (resized, never cropped). The pilot's error rates therefore count caption errors, not crop effects.
+
+## Column review v5 safety revision
+
+The proposed v2 ontology now uses form v5. Its candidate version and nested form are incompatible with v4: regenerate
+candidates and prelabels, install the matching form in an empty or new approved project, and keep old exports
+separate. Do not reinterpret old septum-only labels as evidence that other walls were normal.
+
+The form asks clinical questions only for interpretable clips. New structures after view refinement require an
+explicit visibility answer. PSAX_MID excludes mitral leaflet, device and jet findings. A3C and A4C_LV now include
+septal visibility, with findings still subject to adequate visualization. Report negation and uncertainty are
+checked conservatively; uncertain statements produce no definite prefill. Report silence remains unknown.
