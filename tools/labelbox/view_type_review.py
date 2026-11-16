@@ -1,4 +1,6 @@
-"""The view and type review: a second Labelbox dataset that relabels clips the view classifier calls `OTHER`.
+"""The view and type review: a second Labelbox dataset that relabels clips the view classifier calls `OTHER`. Its
+views include the finer ones of the column review (PSAX levels, PLAX zoomed on the aortic valve), but the pilot selection
+sends it only `OTHER` and unclassified clips: clips of those classes have no route here yet.
 
 Still clips, clips with visible measurements and single-frame objects are removed before upload (issue #22), so every
 item is a video. A reviewer says what kind of item it is and whether identifying text is visible; only an echo cine
@@ -27,8 +29,8 @@ from app.radar.ontology import REPO_ROOT, UNCLASSIFIED_VIEW, VIEWS, load_ontolog
 from tools.labelbox.column_review import load_spec as load_column_spec
 from tools.labelbox.review_ontology import _classification, _option
 
-FORM_NAME = "DeepECHO view and type review v1"
-FORM_PATH = os.path.join(REPO_ROOT, "configs", "radar", "labelbox", "view_type_review_v1.json")
+FORM_NAME = "DeepECHO view and type review v2"
+FORM_PATH = os.path.join(REPO_ROOT, "configs", "radar", "labelbox", "view_type_review_v2.json")
 
 CINE_LOOP = "cine_loop"
 INPUT_TYPES = {
@@ -52,8 +54,12 @@ class Question:
 
 
 def view_choices() -> dict[str, str]:
-    views = load_ontology().views
-    choices = {v: f"{v}: {views[v].labels['en']}" for v in VIEWS}
+    """The ontology's classes, each followed by the views of the column review that refine it (PSAX_MID after PSAX)."""
+    views, routes = load_ontology().views, load_column_spec()["views"]
+    choices = {}
+    for v in VIEWS:
+        choices[v] = routes.get(v, {}).get("label") or f"{v}: {views[v].labels['en']}"
+        choices.update({r: route["label"] for r, route in routes.items() if route.get("refines") == v})
     choices[UNCLASSIFIED_VIEW] = f"{UNCLASSIFIED_VIEW}: off-axis or non-standard echo view"
     choices[CANNOT_TELL] = "Cannot tell the view"
     return choices

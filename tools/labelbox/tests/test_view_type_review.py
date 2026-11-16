@@ -37,7 +37,12 @@ class TestForm(unittest.TestCase):
         nested = {q["name"]: q for q in options["cine_loop"]["options"]}
         self.assertEqual(list(nested), ["view", "modality"])
         self.assertTrue(all(not o["options"] for value, o in options.items() if value != "cine_loop"))
-        self.assertEqual([o["value"] for o in nested["view"]["options"]], list(VIEWS) + [vt.CANNOT_TELL])
+        views = [o["value"] for o in nested["view"]["options"]]
+        self.assertEqual([v for v in views if v in VIEWS], list(VIEWS))
+        self.assertEqual(views[views.index("PSAX"):views.index("PSAX_AV")],
+                         ["PSAX", "PSAX_BASAL", "PSAX_MID", "PSAX_APICAL"])
+        self.assertEqual(views[views.index("PLAX_ZOOM") + 1], "PLAX_ZOOM_AV")
+        self.assertEqual((len(views), views[-1]), (len(VIEWS) + 5, vt.CANNOT_TELL))
         self.assertEqual([o["value"] for o in nested["modality"]["options"]], list(load_spec()["modalities"]))
         self.assertTrue(all(q["required"] and "scope" not in q for q in nested.values()))
 

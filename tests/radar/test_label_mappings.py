@@ -157,7 +157,7 @@ class TestValidator(unittest.TestCase):
         def label(d, source, name):
             return d["sources"][source]["labels"][name]
 
-        self.refused(lambda d: d.update(ontology="radar-caption-ontology-v2"), "is not the loaded ontology")
+        self.refused(lambda d: d.update(ontology="radar-caption-ontology-v3"), "is not the loaded ontology")
         self.refused(lambda d: label(d, "panecho_tasks", "MVRegurgitation").update(relation="exact"),
                      "an exact mapping gives each class one value")
         self.refused(lambda d: label(d, "panecho_tasks", "MVRegurgitation").pop("unassigned"),

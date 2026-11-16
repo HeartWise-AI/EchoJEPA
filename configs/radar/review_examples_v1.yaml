@@ -10,7 +10,7 @@
 # each example is a valid review under its form's own checks, and the rebuilt caption shown is the scorer's.
 
 schema: radar-review-examples
-ontology: radar-caption-ontology-v1
+ontology: radar-caption-ontology-v2
 
 column_review:
   - id: supported
@@ -104,15 +104,15 @@ column_review:
     modality: bmode
     columns: {lv_function: normal}
     changes:
-      psax_level: mid
+      view: PSAX_MID
       missing_information: "yes"
       missing_columns: [wall_mid_anterior]
       wall_mid_anterior__missing_value: hypokinetic
       wall_mid_anterior__missing_visible: "yes"
     why: >-
-      A PSAX clip has no prefilled level: the papillary muscles show the mid level, so choose it. Its mid wall
-      segments can be claimed only at that level, so the hypokinetic segment is added as missing once the level is
-      set.
+      A PSAX clip opens with no view, because the view classifier does not give its level: the papillary muscles
+      show the mid level, so choose PSAX_MID. Its mid wall segments can be claimed only at that level, so the
+      hypokinetic segment is added as missing once the view is set.
 
   - id: wrong_view
     title: Wrong view

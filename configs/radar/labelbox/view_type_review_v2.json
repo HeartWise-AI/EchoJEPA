@@ -120,8 +120,36 @@
                 {
                   "schemaNodeId": null,
                   "featureSchemaId": null,
-                  "label": "PSAX: Parasternal short-axis view",
+                  "label": "PLAX_ZOOM_AV (zoomed on the aortic valve)",
+                  "value": "PLAX_ZOOM_AV",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "PSAX (cannot tell the level)",
                   "value": "PSAX",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "PSAX_BASAL (mitral level)",
+                  "value": "PSAX_BASAL",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "PSAX_MID (papillary level)",
+                  "value": "PSAX_MID",
+                  "options": []
+                },
+                {
+                  "schemaNodeId": null,
+                  "featureSchemaId": null,
+                  "label": "PSAX_APICAL",
+                  "value": "PSAX_APICAL",
                   "options": []
                 },
                 {
