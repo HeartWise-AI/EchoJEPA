@@ -73,6 +73,15 @@ false = A0, true = A1 and the base of A2/A3), use_normal,
 use_abnormal_teacher, release_gate, min_pairs, init_temperature, temperature_bounds, teacher_momentum}; optimization
 {epochs, global_batch, lr, text_lr, min_lr, weight_decay, warmup_fraction, seed, amp (none or bf16), num_workers,
 worker_start_method}; meta {wandb_project, wandb_entity, wandb_run_name}; device (auto, cpu or cuda).
+
+Doppler stills (optional; a config without these sections trains exactly as v0): data.stills {table (the split's
+`stills.csv`), cache_dir (the stills' token cache), demographics (optional), num_stills, cond_columns,
+heatmap_column}; model.stills {token_grid (e.g. [1, 14, 14]), cond (default true: the pooler reads cond_columns),
+heatmap_bias, demo_film}; heads {targets, weight, target_weights, demographics, hidden_dim, cond_columns (the
+head's side inputs among data.stills.cond_columns; default all), visual (false: side inputs only)} for the per-still
+measurement regression (`src/models/radar/heads.py`). They need a routing registry with still routing
+(`configs/radar/radar_routing_v1.yaml`). A step contributes when a structure or a measurement target does. See
+docs/radar/RADAR_stills_integration.md.
 """
 
 import argparse
@@ -86,6 +95,7 @@ import statistics
 import sys
 from functools import partial
 
+import pandas as pd
 import torch
 import torch.distributed as dist
 import yaml
@@ -99,8 +109,10 @@ from src.datasets.radar_study_dataset import (
     file_sha256,
     read_table,
 )
+from src.datasets.radar_stills import DEMO_DIM, StillSource, same_encoder
 from src.datasets.radar_token_cache import TokenCache
 from src.datasets.study_bags import choose_bag
+from src.models.radar.heads import StillMeasurementHeads
 from src.models.radar.loss import StructureContrastiveLoss
 from src.models.radar.model import RadarModel
 from src.models.radar.routing import DEFAULT_ROUTING, load_routing
@@ -139,7 +151,8 @@ def code_files():
     modules = {__name__, RadarStudyDataset.__module__, choose_bag.__module__, TokenCache.__module__,
                StructureContrastiveLoss.__module__,
                RadarModel.__module__, load_routing.__module__, step_schedule.__module__, StructurePooler.__module__,
-               build_text_encoder.__module__, check_optimizer_coverage.__module__, "src.utils.distributed",
+               build_text_encoder.__module__, check_optimizer_coverage.__module__, StillSource.__module__,
+               StillMeasurementHeads.__module__, "src.datasets.still_preprocess", "src.utils.distributed",
                "src.models.utils.modules", "src.models.utils.pos_embs"}
     return sorted(os.path.relpath(os.path.abspath(sys.modules[m].__file__), REPO) for m in modules)
 
@@ -154,11 +167,13 @@ def code_digest():
     return h.hexdigest()
 
 
-def fingerprint(config, routing, cache, n_studies, normality_digest=None, bags=None, caption_digest=None):
+def fingerprint(config, routing, cache, n_studies, normality_digest=None, bags=None, caption_digest=None,
+                stills=None):
     """What defines the run: the config without run-control keys and data paths, and the contents behind them.
     `normality_digest`: the approved policy behind the flags of A2 and A3. `bags`: {split: `bag_record`}, the same
     in the matched baseline's run when both read the same clips. `caption_digest`: the rules the caption table was
-    built with, recorded in every arm, approved or not."""
+    built with, recorded in every arm, approved or not. `stills`: the still stream's record (absent without stills,
+    so a v0 config keeps its v0 fingerprint)."""
     semantic = copy.deepcopy(config)
     for section, keys in RUN_CONTROL.items():
         for key in keys:
@@ -178,6 +193,12 @@ def fingerprint(config, routing, cache, n_studies, normality_digest=None, bags=N
         "normality_policy_digest": normality_digest,
         "bags": bags,
     }
+    if stills is not None:
+        still_paths = data.get("stills", {})
+        record["stills"] = {**stills, "table_sha256": file_sha256(still_paths.pop("table")),
+                            "cache_meta": TokenCache(still_paths.pop("cache_dir")).meta,
+                            "demographics_sha256": (file_sha256(still_paths.pop("demographics"))
+                                                    if still_paths.get("demographics") else None)}
     data.pop("cache_dir", None)
     data.pop("routing", None)
     data.pop("normality_policy", None)
@@ -245,19 +266,66 @@ def build_model(config, routing):
                          "true is A1 (identity plus exact-caption targets) and the base of A2 and A3. A default "
                          "would turn a config that forgot it into the other arm.")
     trained = [s.name for s in routing.trained]
+    still_model, heads_config = m.get("stills"), config.get("heads")
+    still_data = config["data"].get("stills")
+    if bool(still_model) != bool(still_data) or (heads_config and not still_data):
+        raise ValueError("data.stills and model.stills go together, and heads need them.")
+    if still_model and not routing.still_tags:
+        raise ValueError("Stills need a routing registry with still_structs (configs/radar/radar_routing_v1.yaml).")
+    cond_dim = len(still_data.get("cond_columns", [])) if still_data else 0
+    still_kwargs = {}
+    if still_model:
+        still_kwargs = {"still_token_grid": tuple(still_model["token_grid"]),
+                        "num_still_types": len(routing.still_types),
+                        "still_cond_dim": cond_dim if still_model.get("cond", True) else 0,
+                        "still_heatmap_bias": bool(still_model.get("heatmap_bias", False)),
+                        "demo_dim": DEMO_DIM if still_model.get("demo_film", False) else 0}
     pooler = StructurePooler(
         embed_dim=m["embed_dim"], num_structures=len(trained), token_grid=tuple(m["token_grid"]),
         num_view_classes=len(routing.view_classes),
         num_acquisition_classes=len(config["data"].get("acquisition_classes", ("bmode", "color_flow"))),
         depth=m.get("depth", 2), num_heads=m.get("num_heads", 12), mlp_ratio=m.get("mlp_ratio", 4.0),
-        proj_dim=m.get("proj_dim", 256), use_activation_checkpointing=m.get("activation_checkpointing", False))
+        proj_dim=m.get("proj_dim", 256), use_activation_checkpointing=m.get("activation_checkpointing", False),
+        **still_kwargs)
+    heads, head_index = None, None
+    if heads_config:
+        stream_columns = list(still_data.get("cond_columns", []))
+        head_columns = list(heads_config.get("cond_columns", stream_columns))
+        unknown = [c for c in head_columns if c not in stream_columns]
+        if unknown:
+            raise ValueError(f"heads.cond_columns {unknown} are not in data.stills.cond_columns: the still stream "
+                             "reads the conditioning columns, the heads choose among them.")
+        head_index = [stream_columns.index(c) for c in head_columns]
+        heads = StillMeasurementHeads(m["embed_dim"], heads_config["targets"], still_cond_dim=len(head_columns),
+                                      demo_dim=DEMO_DIM if heads_config.get("demographics", True) else 0,
+                                      hidden_dim=heads_config.get("hidden_dim", 256),
+                                      use_visual=heads_config.get("visual", True))
     text_encoder, tokenizer = build_text_encoder(t, m.get("proj_dim", 256))
     loss = StructureContrastiveLoss(
         trained, use_exact=lc["use_exact"], use_normal=lc.get("use_normal", False),
         use_abnormal_teacher=lc.get("use_abnormal_teacher", False), release_gate=lc.get("release_gate", False),
         min_pairs=lc.get("min_pairs", 2), init_temperature=lc.get("init_temperature", 0.07),
         temperature_bounds=tuple(lc.get("temperature_bounds", (0.001, 0.5))))
-    return RadarModel(pooler, text_encoder, loss), tokenizer
+    if heads is None:
+        return RadarModel(pooler, text_encoder, loss), tokenizer
+    return RadarModel(pooler, text_encoder, loss, heads, heads_config.get("weight", 1.0),
+                      heads_config.get("target_weights"), head_index), tokenizer
+
+
+def read_stills(section, routing, split, heads=None, scaler=None, demo_stats=None):
+    """The still source of one split from `data.stills` (see the module docstring). The targets' scaler and the age
+    statistics are fitted on the split given here unless passed (evaluation passes the training split's)."""
+    table = pd.read_csv(section["table"], dtype={"study_id": str, "still_id": str, "still_tag": str,
+                                                 "still_type": str})
+    if "split" in table.columns:
+        table = table[table.split.astype(str) == split]
+    demographics = (pd.read_csv(section["demographics"], dtype={"study_id": str})
+                    if section.get("demographics") else None)
+    cache = TokenCache(section["cache_dir"])
+    return StillSource(table, routing, cache, [s.name for s in routing.trained],
+                       num_stills=section.get("num_stills", 8), cond_columns=section.get("cond_columns", []),
+                       target_columns=(heads or {}).get("targets", []), scaler=scaler,
+                       heatmap_column=section.get("heatmap_column"), demographics=demographics, demo_stats=demo_stats)
 
 
 def param_groups(model, opt):
@@ -311,6 +379,8 @@ def train_step(wrapped, model, teacher, batch, optimizer, amp):
         loss, stats, _ = wrapped(batch, teacher)
     loss.backward()
     contributed = any(s["loss"] is not None for s in stats.values())
+    if model.last_measurement is not None:
+        contributed = contributed or any(s["n"] > 0 for s in model.last_measurement.values())
     if contributed:
         optimizer.step()
         model.loss.clamp_temperature_()
@@ -402,15 +472,18 @@ def train(config, out_dir, resume=True, stop_after_epoch=None, allow_code_change
     normality_digest = check_normality_approved(captions, config.get("loss", {}), data.get("normality_policy"))
     captions, lengths = fit_captions(captions, build_tokenizer(config["text"]),
                                      config["text"].get("max_overlength_fraction", 0.01))
+    stills = read_stills(data["stills"], routing, split, config.get("heads")) if data.get("stills") else None
+    if stills is not None:
+        same_encoder(cache.meta, stills.cache.meta)
     dataset = RadarStudyDataset(clips, captions, routing, cache, num_clips=data.get("num_clips", 12),
                                 selection=data.get("selection", "view_balanced"), training=True, seed=seed,
                                 acquisition_classes=data.get("acquisition_classes", ("bmode", "color_flow")),
-                                normal_fraction=data.get("normal_fraction", 1.0))
+                                normal_fraction=data.get("normal_fraction", 1.0), stills=stills)
     global_batch = int(opt["global_batch"])
     sampler = StudyBatchSampler(len(dataset), global_batch, rank, world_size, seed)
     schedule = step_schedule(len(dataset), global_batch, opt["epochs"], opt.get("warmup_fraction", 0.05))
     record = fingerprint(config, routing, cache, len(dataset), normality_digest, {split: dataset.bag_record()},
-                         build.get("policy_digest"))
+                         build.get("policy_digest"), stills.record() if stills is not None else None)
     code = code_digest()
 
     model, tokenizer = build_model(config, routing)
@@ -495,6 +568,8 @@ def train(config, out_dir, resume=True, stop_after_epoch=None, allow_code_change
                         "structures": {n: {"rows": s["rows"], "skipped": s["skipped"],
                                            "exact_pairs": s["exact_pairs"], "normal_pairs": s["normal_pairs"]}
                                        for n, s in stats.items()}}
+                if model.last_measurement is not None:
+                    line["measurement"] = model.last_measurement
                 with open(os.path.join(out_dir, "log.jsonl"), "a") as f:
                     f.write(json.dumps(line) + "\n")
                 log_scalars(wandb_run, {"train/loss": loss, "train/temperature": line["temperature"],
