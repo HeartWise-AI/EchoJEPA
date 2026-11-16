@@ -39,9 +39,7 @@ def expand(base, spec, design="ablation"):
         raise ValueError("The base config must use study_multitask_frozen.")
     if base.get("test_only") or base.get("val_only"):
         raise ValueError("A sweep base must be a training config.")
-    factors = spec["factors"]
-    if not factors:
-        raise ValueError("The sweep needs at least one factor.")
+    factors = spec["factors"]     # `factors: {}` is one configuration: the baseline, once per seed
     names = list(factors)
     if design == "ablation":
         combinations = [()] + [(n,) for n in names] + [tuple(names)]
