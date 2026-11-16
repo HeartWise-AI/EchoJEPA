@@ -123,6 +123,16 @@ class TestMergedCaptions(unittest.TestCase):
         self.assertEqual(merged.extra_sentences(facts, "lv"), {})
         self.assertEqual(merged.extra_sentences(facts, "rv"), {})
 
+    def test_the_right_atrial_pressure_is_written_from_the_parser(self):
+        claim = {"source": "text", "attribute": "ivc_pressure", "finding": "state"}
+        self.assertEqual(merged.extra_sentences([{**claim, "value": "abnormal"}], "ivc"),
+                         {"ra_pressure": ("Estimated right atrial pressure is elevated.", "abnormal")})
+        self.assertEqual(merged.extra_sentences([{**claim, "value": "normal"}], "ivc"),
+                         {"ra_pressure": ("Estimated right atrial pressure is normal.", "normal")})
+        self.assertEqual(merged.extra_sentences([{**claim, "value": "normal"}, {**claim, "value": "abnormal"}],
+                                                "ivc"), {})
+        self.assertEqual(merged.extra_sentences([{**claim, "value": "abnormal"}], "lv"), {})
+
     def test_an_enlarged_left_atrium_is_written_as_dilated(self):
         row, _ = self.row("la", {"Left atrial findings": "Volume indexé légèrement augmenté."})
         if row is not None and "la_size" in self.sources(row):

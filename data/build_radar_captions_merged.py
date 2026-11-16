@@ -15,7 +15,8 @@ as short English sentences, one per finding, from four sources:
    (`DILATED_IF_ABNORMAL`): its size is abnormal in these reports only as an increase. Nothing is filled for a
    device, a valve's motion, the wall thickness, the cusp count or an aorta segment on the abnormal side.
 3. The RADAR parser again, for what the form has no column for (`EXTRA_SENTENCES`): LV hypertrophy stated or denied,
-   LV remodelling, and the LV mass (normal or increased). Without them an LV caption says nothing of hypertrophy. A
+   LV remodelling, the LV mass (normal or increased), and the right atrial pressure worded with the vena cava (normal
+   or elevated). Without them an LV caption says nothing of hypertrophy, and an IVC caption nothing of the pressure. A
    sentence is written only when every text claim of that kind agrees and none is uncertain; measurements write none.
 4. The visual EF, for the LV function only, when the prefill says nothing: the grade of the EF's band in this lab
    (`configs/radar/prefill_check_limits_v0.yaml`), unless the EF is in a grey zone or the parser reads the text the
@@ -84,6 +85,12 @@ EXTRA_SENTENCES = {
          {"abnormal": "LV hypertrophy is present.", "normal": "No LV hypertrophy."}),
         ("lv_remodelling", "lv_geometry", ("remodelling",), {"abnormal": "LV remodelling is present."}),
         ("lv_mass", "lv_mass", ("state",), {"normal": "LV mass is normal.", "abnormal": "LV mass is increased."}),
+    ),
+    # The right atrial pressure the report words next to the vena cava. Abnormal is elevated: on the training split
+    # every study with such a statement has a recorded pressure of 8 mmHg or more.
+    "ivc": (
+        ("ra_pressure", "ivc_pressure", ("state",), {"normal": "Estimated right atrial pressure is normal.",
+                                                     "abnormal": "Estimated right atrial pressure is elevated."}),
     ),
 }
 
