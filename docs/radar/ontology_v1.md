@@ -2,11 +2,11 @@
 
 The ontology is the shared vocabulary for one echo clip: its view, its acquisition mode, the cardiac structures it may
 show and the findings it may support, and how DeepECHO, EchoPrime and PanEcho labels relate to them. The pilot reviews
-clips in two Labelbox forms that use its view classes (see [Review forms](#review-forms)): column review v2 for clips
+clips in two Labelbox forms that use its view classes (see [Review forms](#review-forms)): column review v3 for clips
 of a classified view and view/type review v1 for `OTHER` clips. The
 [reviewer instructions](labeling_instructions_v1.md) and the [pilot metrics](pilot_metrics_v1.md) cover both forms.
 
-**Versions.** v1 denotes the ontology package version, while each form is versioned separately: column review v2 and
+**Versions.** v1 denotes the ontology package version, while each form is versioned separately: column review v3 and
 view/type review v1. This document defines the ontology; the [reviewer instructions](labeling_instructions_v1.md)
 define how captions and form answers are reviewed.
 
@@ -53,7 +53,8 @@ reported disease says nothing about what one clip shows.
 
 These priors define concepts, but the routes in the
 [`deepecho_video_clip_annotation_specification.json`](../../configs/radar/deepecho_video_clip_annotation_specification.json)
-determine which columns apply to each clip based on view, acquisition mode and covered target.
+determine which structures each view prefills and which columns apply to each clip, based on view, level,
+acquisition mode and the structures the reviewer confirms.
 
 ## Views
 
@@ -109,24 +110,35 @@ view classes do not separate grayscale from color clips.
 ## Cardiac structures
 
 Every concept names the structures it is about. A structure has at most one visibility concept; the views where the
-structure may be seen are that concept's prior.
+structure may be seen are that concept's prior. Every structure below has one, and its prior lists exactly the views
+whose column review prefills the structure, the PSAX and subcostal levels included: a unit test keeps the two lists
+the same.
 
 <!-- BEGIN GENERATED: structures -->
 | Structure | Category | English | French | Visibility concept | May be visible in (views, acquisitions) | Findings |
 |---|---|---|---|---|---|---|
 | `left_ventricle` | chamber | Left ventricle | Ventricule gauche | `lv_visible` | `apical_4c`, `apical_5c`, `apical_2c`, `apical_3c`, `parasternal_long`, `parasternal_short`, `subcostal` (bmode, color_flow) | `lv_systolic_function`, `lv_ejection_fraction`, `lv_size`, `lv_wall_thickness`, `lv_regional_wall_motion`, `lv_diastolic_function`, `lv_global_longitudinal_strain`, `mechanical_circulatory_support` |
-| `right_ventricle` | chamber | Right ventricle | Ventricule droit | `rv_visible` | `apical_4c`, `apical_5c`, `parasternal_long`, `parasternal_short`, `parasternal_short_av`, `rv_inflow`, `subcostal` (bmode, color_flow) | `rv_systolic_function`, `rv_size`, `tapse`, `rv_systolic_pressure`, `pacing_lead` |
-| `left_atrium` | chamber | Left atrium | Oreillette gauche | `la_visible` | `apical_4c`, `apical_5c`, `apical_2c`, `apical_3c`, `parasternal_long`, `parasternal_short_av`, `subcostal` (bmode, color_flow) | `la_size`, `elevated_la_pressure` |
-| `right_atrium` | chamber | Right atrium | Oreillette droite | `ra_visible` | `apical_4c`, `apical_5c`, `parasternal_short_av`, `rv_inflow`, `subcostal` (bmode, color_flow) | `ra_pressure`, `ra_size`, `pacing_lead` |
-| `interatrial_septum` | septum | Interatrial septum | Septum interauriculaire | `interatrial_septum_visible` | `apical_4c`, `parasternal_short_av`, `subcostal` (bmode, color_flow) | `atrial_septal_hypertrophy` |
-| `mitral_valve` | valve | Mitral valve | Valve mitrale | `mitral_valve_visible` | `apical_4c`, `apical_5c`, `apical_2c`, `apical_3c`, `parasternal_long`, `parasternal_short` (bmode, color_flow) | `mitral_regurgitation`, `mitral_stenosis`, `mitral_annular_calcification`, `mitral_valve_device` |
+| `right_ventricle` | chamber | Right ventricle | Ventricule droit | `rv_visible` | `apical_5c`, `parasternal_long`, `parasternal_short`, `parasternal_short_av`, `rv_inflow`, `subcostal`, `A4C`, `A4C_ZOOM` (bmode, color_flow) | `rv_systolic_function`, `rv_size`, `tapse`, `rv_systolic_pressure`, `pacing_lead` |
+| `left_atrium` | chamber | Left atrium | Oreillette gauche | `la_visible` | `apical_5c`, `parasternal_long`, `parasternal_short_av`, `subcostal`, `A2C`, `A2C_ZOOM`, `A3C`, `A3C_ZOOM`, `A4C`, `A4C_ZOOM` (bmode, color_flow) | `la_size`, `elevated_la_pressure` |
+| `right_atrium` | chamber | Right atrium | Oreillette droite | `ra_visible` | `apical_5c`, `parasternal_short_av`, `rv_inflow`, `subcostal`, `A4C`, `A4C_ZOOM` (bmode, color_flow) | `ra_pressure`, `ra_size`, `pacing_lead` |
+| `interventricular_septum` | septum | Interventricular septum | Septum interventriculaire | `ivs_visible` | `apical_5c`, `parasternal_long`, `parasternal_short`, `subcostal`, `A4C`, `A4C_ZOOM` (bmode, color_flow) |  |
+| `interatrial_septum` | septum | Interatrial septum | Septum interauriculaire | `interatrial_septum_visible` | `apical_5c`, `parasternal_short_av`, `subcostal`, `A4C`, `A4C_ZOOM` (bmode, color_flow) | `atrial_septal_hypertrophy` |
+| `mitral_valve` | valve | Mitral valve | Valve mitrale | `mitral_valve_visible` | `apical_4c`, `apical_5c`, `apical_2c`, `apical_3c`, `parasternal_long`, `parasternal_short`, `subcostal` (bmode, color_flow) | `mitral_regurgitation`, `mitral_stenosis`, `mitral_annular_calcification`, `mitral_valve_device` |
 | `aortic_valve` | valve | Aortic valve | Valve aortique | `aortic_valve_visible` | `apical_5c`, `apical_3c`, `parasternal_long`, `parasternal_short_av` (bmode, color_flow) | `aortic_regurgitation`, `aortic_stenosis`, `aortic_valve_peak_velocity`, `bicuspid_aortic_valve`, `aortic_valve_prosthesis` |
 | `tricuspid_valve` | valve | Tricuspid valve | Valve tricuspide | `tricuspid_valve_visible` | `apical_4c`, `apical_5c`, `parasternal_short_av`, `rv_inflow`, `subcostal` (bmode, color_flow) | `tr_peak_velocity`, `tricuspid_regurgitation`, `tricuspid_regurgitation_ero`, `tricuspid_stenosis` |
-| `pulmonic_valve` | valve | Pulmonic valve | Valve pulmonaire | `pulmonic_valve_visible` | `parasternal_short_av`, `subcostal` (bmode, color_flow) | `pulmonic_regurgitation` |
-| `left_ventricular_outflow_tract` | outflow_tract | Left ventricular outflow tract | Chambre de chasse du ventricule gauche | none | no prior in v1 | `lvot_obstruction` |
-| `aortic_root` | great_vessel | Aortic root | Racine aortique | `aortic_root_visible` | `apical_5c`, `apical_3c`, `parasternal_long`, `parasternal_short_av`, `suprasternal` (bmode, color_flow) | `aortic_root_dilation` |
-| `pericardium` | pericardium | Pericardium | Péricarde | `pericardium_visible` | `apical_4c`, `apical_2c`, `apical_3c`, `parasternal_long`, `parasternal_short`, `subcostal` (bmode) | `pericardial_effusion` |
+| `pulmonic_valve` | valve | Pulmonic valve | Valve pulmonaire | `pulmonic_valve_visible` | `parasternal_short_av` (bmode, color_flow) | `pulmonic_regurgitation` |
+| `papillary_muscles` | subvalvular_apparatus | Papillary muscles | Muscles papillaires | `papillary_muscles_visible` | `parasternal_short` (bmode, color_flow) |  |
+| `chordae_tendineae` | subvalvular_apparatus | Chordae tendineae | Cordages tendineux | `chordae_visible` | `parasternal_short` (bmode, color_flow) |  |
+| `left_ventricular_outflow_tract` | outflow_tract | Left ventricular outflow tract | Chambre de chasse du ventricule gauche | `lvot_visible` | `apical_5c`, `parasternal_long`, `A3C`, `A3C_ZOOM` (bmode, color_flow) | `lvot_obstruction` |
+| `right_ventricular_outflow_tract` | outflow_tract | Right ventricular outflow tract | Chambre de chasse du ventricule droit | `rvot_visible` | `parasternal_short_av` (bmode, color_flow) |  |
+| `aortic_root` | great_vessel | Aortic root | Racine aortique | `aortic_root_visible` | `apical_5c`, `parasternal_long`, `A3C`, `A3C_ZOOM` (bmode, color_flow) | `aortic_root_dilation` |
+| `pulmonary_artery` | great_vessel | Pulmonary artery | Artère pulmonaire | `pulmonary_artery_visible` | `parasternal_short_av` (bmode, color_flow) |  |
+| `ascending_aorta` | great_vessel | Ascending aorta | Aorte ascendante | `ascending_aorta_visible` | `parasternal_long` (bmode, color_flow) |  |
+| `aortic_arch` | great_vessel | Aortic arch | Crosse aortique | `aortic_arch_visible` | `suprasternal` (bmode, color_flow) |  |
+| `descending_aorta` | great_vessel | Descending aorta | Aorte descendante | `descending_aorta_visible` | `PLAX_DEEP` (bmode, color_flow) |  |
+| `pericardium` | pericardium | Pericardium | Péricarde | `pericardium_visible` | `apical_5c`, `parasternal_long`, `parasternal_short`, `subcostal`, `A2C`, `A2C_ZOOM`, `A3C`, `A3C_ZOOM`, `A4C`, `A4C_ZOOM` (bmode, color_flow) | `pericardial_effusion` |
 | `inferior_vena_cava` | systemic_vein | Inferior vena cava | Veine cave inférieure | `ivc_visible` | `subcostal` (bmode, color_flow, mmode) | `ivc_dilation`, `ivc_collapse` |
+| `hepatic_veins` | systemic_vein | Hepatic veins | Veines hépatiques | `hepatic_veins_visible` | `subcostal` (bmode, color_flow) |  |
 <!-- END GENERATED: structures -->
 
 ## Findings
@@ -223,7 +235,7 @@ part of this contract: a caption reviewed on the whole clip may not hold for a c
 
 Every valid video of a pilot study is reviewed in one of two Labelbox forms, each in its own project:
 
-- **column review v2**, for clips of a classified view in B-mode or color Doppler: its
+- **column review v3**, for clips of a classified view in B-mode or color Doppler: its
   specification is [`configs/radar/deepecho_video_clip_annotation_specification.json`](../../configs/radar/deepecho_video_clip_annotation_specification.json) and its form
   [`configs/radar/labelbox/deepecho_video_clip_annotation_ontology.json`](../../configs/radar/labelbox/deepecho_video_clip_annotation_ontology.json)
   (`python -m tools.labelbox.column_review --check` fails when the form no longer matches the specification);

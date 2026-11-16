@@ -58,3 +58,7 @@ controls:
   hierarchy_no_rope:
     experiment.classifier.pooling_mode: hierarchical
     experiment.classifier.local_use_rope: false
+  # 3D RoPE without the hierarchy: the baseline's study self-attention, each token placed within
+  # its own clip. Last, so the earlier variants keep their run indices.
+  flat_rope:
+    experiment.classifier.study_use_rope: true

@@ -13,6 +13,9 @@
 # Evidence and caption generation:
 #   - `potentially_visible_in`: a relevance prior based on view and acquisition category, not proof that a
 #     concept is visible. Candidate captions require reviewer validation.
+#   - The prior of a structure_visibility concept names exactly the views whose column review prefills that
+#     structure (`views` of deepecho_video_clip_annotation_specification.json, PSAX and subcostal levels included,
+#     linked by its `target_structures`). A unit test keeps the two lists the same: change both together.
 #   - `required_modality`: acquisition categories capable of providing evidence; any one listed category
 #     is sufficient.
 #   - `evidence: measurement`: values requiring calipers, tracing, or spectral measurements that cannot
@@ -220,19 +223,31 @@ structures:
   right_ventricle: {category: chamber, labels: {fr: Ventricule droit, en: Right ventricle}}
   left_atrium: {category: chamber, labels: {fr: Oreillette gauche, en: Left atrium}}
   right_atrium: {category: chamber, labels: {fr: Oreillette droite, en: Right atrium}}
+  interventricular_septum: {category: septum, labels: {fr: Septum interventriculaire, en: Interventricular septum}}
   interatrial_septum: {category: septum, labels: {fr: Septum interauriculaire, en: Interatrial septum}}
   mitral_valve: {category: valve, labels: {fr: Valve mitrale, en: Mitral valve}}
   aortic_valve: {category: valve, labels: {fr: Valve aortique, en: Aortic valve}}
   tricuspid_valve: {category: valve, labels: {fr: Valve tricuspide, en: Tricuspid valve}}
   pulmonic_valve: {category: valve, labels: {fr: Valve pulmonaire, en: Pulmonic valve}}
+  papillary_muscles: {category: subvalvular_apparatus, labels: {fr: Muscles papillaires, en: Papillary muscles}}
+  chordae_tendineae: {category: subvalvular_apparatus, labels: {fr: Cordages tendineux, en: Chordae tendineae}}
   left_ventricular_outflow_tract:
     category: outflow_tract
     labels: {fr: Chambre de chasse du ventricule gauche, en: Left ventricular outflow tract}
+  right_ventricular_outflow_tract:
+    category: outflow_tract
+    labels: {fr: Chambre de chasse du ventricule droit, en: Right ventricular outflow tract}
   aortic_root: {category: great_vessel, labels: {fr: Racine aortique, en: Aortic root}}
+  pulmonary_artery: {category: great_vessel, labels: {fr: Artère pulmonaire, en: Pulmonary artery}}
+  ascending_aorta: {category: great_vessel, labels: {fr: Aorte ascendante, en: Ascending aorta}}
+  aortic_arch: {category: great_vessel, labels: {fr: Crosse aortique, en: Aortic arch}}
+  descending_aorta: {category: great_vessel, labels: {fr: Aorte descendante, en: Descending aorta}}
   pericardium: {category: pericardium, labels: {fr: Péricarde, en: Pericardium}}
   inferior_vena_cava: {category: systemic_vein, labels: {fr: Veine cave inférieure, en: Inferior vena cava}}
+  hepatic_veins: {category: systemic_vein, labels: {fr: Veines hépatiques, en: Hepatic veins}}
 
-structure_categories: [chamber, septum, valve, outflow_tract, great_vessel, pericardium, systemic_vein]
+structure_categories: [chamber, septum, valve, subvalvular_apparatus, outflow_tract, great_vessel, pericardium,
+                       systemic_vein]
 
 acquisition_labels:
   fr: {bmode: mode B, color_flow: Doppler couleur, spectral_doppler: Doppler spectral, mmode: mode M,
@@ -370,7 +385,7 @@ concepts:
     evidence: visual
     required_modality: [bmode, color_flow]
     potentially_visible_in:
-      - views: [apical_4c, apical_2c, apical_3c, apical_5c, parasternal_long, parasternal_short, SUBCOSTAL]
+      - views: [apical_4c, apical_5c, apical_2c, apical_3c, parasternal_long, parasternal_short, SUBCOSTAL]
         acquisitions: [bmode, color_flow]
     notes: Visibility only. Says nothing about LV size or function.
 
@@ -382,7 +397,7 @@ concepts:
     evidence: visual
     required_modality: [bmode, color_flow]
     potentially_visible_in:
-      - views: [apical_4c, apical_5c, parasternal_long, parasternal_short, PSAX_AV, RVINF, SUBCOSTAL]
+      - views: [A4C, A4C_ZOOM, apical_5c, parasternal_long, parasternal_short, PSAX_AV, RVINF, SUBCOSTAL]
         acquisitions: [bmode, color_flow]
 
   - id: la_visible
@@ -393,7 +408,7 @@ concepts:
     evidence: visual
     required_modality: [bmode, color_flow]
     potentially_visible_in:
-      - views: [apical_4c, apical_2c, apical_3c, apical_5c, parasternal_long, PSAX_AV, SUBCOSTAL]
+      - views: [A4C, A4C_ZOOM, apical_5c, A2C, A2C_ZOOM, A3C, A3C_ZOOM, parasternal_long, PSAX_AV, SUBCOSTAL]
         acquisitions: [bmode, color_flow]
 
   - id: ra_visible
@@ -404,7 +419,7 @@ concepts:
     evidence: visual
     required_modality: [bmode, color_flow]
     potentially_visible_in:
-      - views: [apical_4c, apical_5c, PSAX_AV, RVINF, SUBCOSTAL]
+      - views: [A4C, A4C_ZOOM, apical_5c, PSAX_AV, RVINF, SUBCOSTAL]
         acquisitions: [bmode, color_flow]
 
   - id: mitral_valve_visible
@@ -415,7 +430,7 @@ concepts:
     evidence: visual
     required_modality: [bmode, color_flow]
     potentially_visible_in:
-      - views: [apical_4c, apical_2c, apical_3c, apical_5c, parasternal_long, parasternal_short]
+      - views: [apical_4c, apical_5c, apical_2c, apical_3c, parasternal_long, parasternal_short, SUBCOSTAL]
         acquisitions: [bmode, color_flow]
     notes: Visibility only; distinct from mitral_regurgitation, mitral_stenosis and mitral_valve_device.
 
@@ -449,7 +464,7 @@ concepts:
     evidence: visual
     required_modality: [bmode, color_flow]
     potentially_visible_in:
-      - views: [PSAX_AV, SUBCOSTAL]
+      - views: [PSAX_AV]
         acquisitions: [bmode, color_flow]
 
   - id: aortic_root_visible
@@ -460,7 +475,7 @@ concepts:
     evidence: visual
     required_modality: [bmode, color_flow]
     potentially_visible_in:
-      - views: [parasternal_long, apical_5c, apical_3c, PSAX_AV, SUPRASTERNAL]
+      - views: [apical_5c, A3C, A3C_ZOOM, parasternal_long]
         acquisitions: [bmode, color_flow]
 
   - id: interatrial_septum_visible
@@ -471,7 +486,7 @@ concepts:
     evidence: visual
     required_modality: [bmode, color_flow]
     potentially_visible_in:
-      - views: [apical_4c, PSAX_AV, SUBCOSTAL]
+      - views: [A4C, A4C_ZOOM, apical_5c, PSAX_AV, SUBCOSTAL]
         acquisitions: [bmode, color_flow]
 
   - id: pericardium_visible
@@ -480,10 +495,10 @@ concepts:
     kind: structure_visibility
     value: {type: boolean}
     evidence: visual
-    required_modality: [bmode]
+    required_modality: [bmode, color_flow]
     potentially_visible_in:
-      - views: [apical_4c, apical_2c, apical_3c, parasternal_long, parasternal_short, SUBCOSTAL]
-        acquisitions: [bmode]
+      - views: [A4C, A4C_ZOOM, apical_5c, A2C, A2C_ZOOM, A3C, A3C_ZOOM, parasternal_long, parasternal_short, SUBCOSTAL]
+        acquisitions: [bmode, color_flow]
 
   - id: ivc_visible
     labels: {fr: Veine cave inférieure visible, en: Inferior vena cava visible}
@@ -495,6 +510,121 @@ concepts:
     potentially_visible_in:
       - views: [SUBCOSTAL]
         acquisitions: [bmode, color_flow, mmode]
+
+  - id: ivs_visible
+    labels: {fr: Septum interventriculaire visible, en: Interventricular septum visible}
+    structures: [interventricular_septum]
+    kind: structure_visibility
+    value: {type: boolean}
+    evidence: visual
+    required_modality: [bmode, color_flow]
+    potentially_visible_in:
+      - views: [A4C, A4C_ZOOM, apical_5c, parasternal_long, parasternal_short, SUBCOSTAL]
+        acquisitions: [bmode, color_flow]
+
+  - id: lvot_visible
+    labels: {fr: Chambre de chasse du ventricule gauche visible, en: Left ventricular outflow tract visible}
+    structures: [left_ventricular_outflow_tract]
+    kind: structure_visibility
+    value: {type: boolean}
+    evidence: visual
+    required_modality: [bmode, color_flow]
+    potentially_visible_in:
+      - views: [apical_5c, A3C, A3C_ZOOM, parasternal_long]
+        acquisitions: [bmode, color_flow]
+    notes: Visibility only; distinct from lvot_obstruction.
+
+  - id: rvot_visible
+    labels: {fr: Chambre de chasse du ventricule droit visible, en: Right ventricular outflow tract visible}
+    structures: [right_ventricular_outflow_tract]
+    kind: structure_visibility
+    value: {type: boolean}
+    evidence: visual
+    required_modality: [bmode, color_flow]
+    potentially_visible_in:
+      - views: [PSAX_AV]
+        acquisitions: [bmode, color_flow]
+
+  - id: pulmonary_artery_visible
+    labels: {fr: Artère pulmonaire proximale visible, en: Proximal pulmonary artery visible}
+    structures: [pulmonary_artery]
+    kind: structure_visibility
+    value: {type: boolean}
+    evidence: visual
+    required_modality: [bmode, color_flow]
+    potentially_visible_in:
+      - views: [PSAX_AV]
+        acquisitions: [bmode, color_flow]
+
+  - id: papillary_muscles_visible
+    labels: {fr: Muscles papillaires visibles, en: Papillary muscles visible}
+    structures: [papillary_muscles]
+    kind: structure_visibility
+    value: {type: boolean}
+    evidence: visual
+    required_modality: [bmode, color_flow]
+    potentially_visible_in:
+      - views: [parasternal_short]
+        acquisitions: [bmode, color_flow]
+    notes: In a PSAX clip, at the mid (papillary) level only.
+
+  - id: chordae_visible
+    labels: {fr: Cordages tendineux visibles, en: Chordae tendineae visible}
+    structures: [chordae_tendineae]
+    kind: structure_visibility
+    value: {type: boolean}
+    evidence: visual
+    required_modality: [bmode, color_flow]
+    potentially_visible_in:
+      - views: [parasternal_short]
+        acquisitions: [bmode, color_flow]
+    notes: In a PSAX clip, at the mid (papillary) level only.
+
+  - id: ascending_aorta_visible
+    labels: {fr: Aorte ascendante visible, en: Ascending aorta visible}
+    structures: [ascending_aorta]
+    kind: structure_visibility
+    value: {type: boolean}
+    evidence: visual
+    required_modality: [bmode, color_flow]
+    potentially_visible_in:
+      - views: [parasternal_long]
+        acquisitions: [bmode, color_flow]
+
+  - id: aortic_arch_visible
+    labels: {fr: Crosse aortique visible, en: Aortic arch visible}
+    structures: [aortic_arch]
+    kind: structure_visibility
+    value: {type: boolean}
+    evidence: visual
+    required_modality: [bmode, color_flow]
+    potentially_visible_in:
+      - views: [SUPRASTERNAL]
+        acquisitions: [bmode, color_flow]
+
+  - id: descending_aorta_visible
+    labels: {fr: Aorte descendante visible, en: Descending aorta visible}
+    structures: [descending_aorta]
+    kind: structure_visibility
+    value: {type: boolean}
+    evidence: visual
+    required_modality: [bmode, color_flow]
+    potentially_visible_in:
+      - views: [PLAX_DEEP]
+        acquisitions: [bmode, color_flow]
+    notes: Behind the left atrium in a deep parasternal long-axis clip; never labelled aortic root.
+
+  - id: hepatic_veins_visible
+    labels: {fr: Veines hépatiques visibles, en: Hepatic veins visible}
+    structures: [hepatic_veins]
+    kind: structure_visibility
+    value: {type: boolean}
+    evidence: visual
+    required_modality: [bmode, color_flow]
+    potentially_visible_in:
+      - views: [SUBCOSTAL]
+        acquisitions: [bmode, color_flow]
+    notes: In a subcostal IVC sweep only.
 
   # ------------------------------------------------------------------ left ventricle
   - id: lv_systolic_function

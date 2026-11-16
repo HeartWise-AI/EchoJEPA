@@ -1,7 +1,7 @@
 {
   "schema": "radar-review-selection",
   "version": 1,
-  "name": "DeepECHO column review v2",
+  "name": "DeepECHO column review v3",
   "status": "proposed_labelbox_ontology",
   "clinical_ontology": "configs/radar/radar-caption-ontology-v1.yaml",
   "source_specification": "configs/radar/deepecho_video_clip_annotation_specification.json",
