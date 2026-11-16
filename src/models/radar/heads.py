@@ -14,6 +14,12 @@ and quantities that determine each other (MaxPG = 4 Vmax^2, AVA from the VTIs) m
 target. The burned-in box and the calipers also show the value in the pixels: the stills are masked before encoding
 (`src/datasets/still_preprocess.py`) and the leak audit in `docs/radar/RADAR_stills_integration.md` applies.
 
+What a head may read is set per run, so that three experiments share one code path (`heads` in the config):
+the still's tokens with its velocity scale only (how much the frozen tokens hold: the primary result); the tokens
+with an outside model's prediction and the demographics (a performance experiment); and the side inputs alone
+(`visual: false`: what is predictable without the image). `cond_columns` of `heads` chooses the head's side inputs
+among the still stream's conditioning columns.
+
 `measurement_loss` is the weighted sum over targets of the Huber loss averaged over the present targets of the global
 batch: each rank divides its sum by the global count (all-reduced) times the world size, so after DDP averages the
 gradients they equal the single-process gradient. A target absent from the whole batch contributes zero but stays in
@@ -81,11 +87,14 @@ class DemographicFiLM(nn.Module):
 class StillMeasurementHeads(nn.Module):
     """One prediction per (still, target) from the still's frozen tokens [B, K, Ls, D]."""
 
-    def __init__(self, embed_dim, targets, still_cond_dim=0, demo_dim=0, hidden_dim=256):
+    def __init__(self, embed_dim, targets, still_cond_dim=0, demo_dim=0, hidden_dim=256, use_visual=True):
         super().__init__()
         if not targets:
             raise ValueError("StillMeasurementHeads needs at least one target.")
+        if not use_visual and not (still_cond_dim or demo_dim):
+            raise ValueError("Heads without the still's tokens need side inputs (conditioning or demographics).")
         self.targets = list(targets)
+        self.use_visual = bool(use_visual)
         self.norm = nn.LayerNorm(embed_dim)
         self.query = nn.Parameter(torch.zeros(hidden_dim))
         nn.init.trunc_normal_(self.query, std=0.02)
@@ -100,6 +109,10 @@ class StillMeasurementHeads(nn.Module):
         x = self.norm(still_tokens)
         logits = self.key(x) @ self.query / math.sqrt(self.query.numel())        # [B, K, Ls]
         pooled = (logits.softmax(dim=-1)[..., None] * self.value(x)).sum(dim=-2)  # [B, K, H]
+        if not self.use_visual:
+            # The side-inputs-only baseline: the same head with the image taken away. The tokens are multiplied by
+            # zero, not skipped, so every parameter stays in the graph (DDP) and the optimizer covers them all.
+            pooled = pooled * 0.0
         if self.cond is not None:
             if still_cond is None:
                 raise ValueError("still_cond is required with still_cond_dim.")

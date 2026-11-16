@@ -13,7 +13,10 @@ Three prompt modes, as in the prompt files of the two reference papers:
 - `regression` (EchoCLIP, Methods): a template with a `<#>` slot is filled with every value of a range, the prompts are
   encoded, the values are ranked by similarity, and the median of the best `keep` fraction (0.2 in EchoCLIP) is the
   estimate (`regression_estimate`). EchoCLIP does this per frame and then pools; here one study embedding per
-  structure is scored.
+  structure is scored. A regression task may instead list whole prompts with one `values` entry each and no slot:
+  EchoCLIP-R's "sampled prompts", real captions of training studies whose label is the value (up to ten per value
+  there), because short single-phrase prompts were out of distribution for an encoder trained on whole reports.
+  `evals/radar_frozen/mine_prompts.py` writes such a file.
 
 `PromptTask` reads one task of a prompt file (`configs/radar/prompts_v0.yaml`). `held_out` prompts (EchoCLIP's
 `testers`) are never used to choose settings, only to report. `target` names the column of a study-level label table
@@ -42,7 +45,7 @@ class PromptTask:
     mode: str
     structure: str
     label_sources: tuple
-    values: tuple = ()               # categorical: grade of each prompt; regression: unused
+    values: tuple = ()               # categorical: grade of each prompt; regression: value of each sampled prompt
     value_range: tuple = ()          # regression: inclusive integer range filling SLOT
     held_out: tuple = ()
     negative_sources: tuple = field(default=())   # binary: the negative prompt set
@@ -72,7 +75,16 @@ def load_prompt_tasks(path):
             values = tuple(spec.get("values") or ())
             if len(values) != len(sources):
                 raise ValueError(f"{name}: values must have one entry per label source.")
-        if mode == "regression":
+        if mode == "regression" and spec.get("values") is not None:
+            values = tuple(spec["values"])
+            if len(values) != len(sources) or any(isinstance(v, bool) or not isinstance(v, (int, float))
+                                                  for v in values):
+                raise ValueError(f"{name}: values must hold one number per sampled prompt.")
+            if any(SLOT in s for s in sources):
+                raise ValueError(f"{name}: a prompt with the {SLOT} slot has no single value; give a range instead.")
+            if len(set(values)) < 2:
+                raise ValueError(f"{name}: sampled regression prompts need at least two distinct values.")
+        elif mode == "regression":
             value_range = tuple(spec.get("range") or ())
             if len(value_range) != 2 or value_range[0] >= value_range[1]:
                 raise ValueError(f"{name}: a regression task needs range [low, high] with low < high.")

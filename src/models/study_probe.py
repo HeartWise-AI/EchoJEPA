@@ -9,7 +9,8 @@ slots (a study with fewer videos than slots) are masked out of the pooling.
 Pooling modes (`pooling_mode`):
 
 - `attentive`: the V-JEPA attentive probe (`AttentivePooler`) over the tokens of every clip of
-  every video, with the padded slots' tokens masked out of the attention;
+  every video, with the padded slots' tokens masked out of the attention; with `study_use_rope`,
+  its self-attention blocks get 3D RoPE from each token's place within its own clip;
 - `hierarchical`: attention within each clip, optionally with 3D RoPE, followed by learned
   clip summaries and study attention without positional encoding across clips;
 - `mean`: each video's tokens are averaged, then the videos are averaged;
@@ -26,6 +27,8 @@ Each head is `regression` (one output, Huber/MSE/L1 loss on z-scored targets), `
 logit, BCE) or `classification` (`num_classes` logits, cross-entropy). A missing target (NaN)
 takes the study out of that head's loss and metrics.
 """
+
+import math
 
 import torch
 import torch.nn as nn
@@ -108,7 +111,7 @@ class StudyProbe(nn.Module):
                  dropout=0.0, use_activation_checkpointing=True, num_view_classes=0,
                  query_mode="shared", task_groups=None, view_dropout=0.0, num_acquisition_classes=0,
                  local_depth=1, local_num_queries=4, local_use_rope=False, token_grid=None,
-                 num_clips_per_video=1):
+                 num_clips_per_video=1, study_use_rope=False):
         super().__init__()
         if pooling_mode not in POOLING_MODES:
             raise ValueError(f"`pooling_mode` is one of {POOLING_MODES}, not {pooling_mode!r}.")
@@ -138,6 +141,11 @@ class StudyProbe(nn.Module):
             raise ValueError("num_clips_per_video must be positive.")
         if local_use_rope and pooling_mode != "hierarchical":
             raise ValueError("local_use_rope requires hierarchical pooling; study slots have no spatial coordinates.")
+        if study_use_rope and pooling_mode != "attentive":
+            raise ValueError("study_use_rope requires attentive pooling: only its study attention sees patch tokens.")
+        if study_use_rope and token_grid is None:
+            raise ValueError("study_use_rope needs the token_grid (T, H, W) of one clip.")
+        self.study_use_rope = bool(study_use_rope)
         # One learned embedding per view class, added to every token of a video of that view, plus
         # one for a padded slot (index `num_view_classes`), as DeepCORO_CLIP's view embeddings.
         self.num_view_classes = int(num_view_classes)
@@ -161,7 +169,9 @@ class StudyProbe(nn.Module):
         if pooling_mode in ("attentive", "hierarchical"):
             self.pooler = AttentivePooler(num_queries=len(self.query_names), embed_dim=embed_dim,
                                           num_heads=num_heads, depth=depth,
-                                          use_activation_checkpointing=use_activation_checkpointing)
+                                          use_activation_checkpointing=use_activation_checkpointing,
+                                          use_rope=self.study_use_rope,
+                                          token_grid=token_grid if self.study_use_rope else None)
             self.norm = nn.Identity()
         else:
             self.pooler = GatedAttention(embed_dim, attention_hidden, dropout) if pooling_mode == "attention" else None
@@ -221,7 +231,15 @@ class StudyProbe(nn.Module):
             ~video_mask[:, :, None, None], 0).reshape(B, N * per_video, D)
         if self.pooling_mode in ("attentive", "hierarchical"):
             key_padding_mask = (~video_mask).repeat_interleave(per_video, dim=1)  # True = ignore
-            pooled = self.pooler(tokens, key_padding_mask=key_padding_mask)
+            positions = None
+            if self.study_use_rope:
+                # Each token is placed by its (frame, row, column) within its own clip: every clip of
+                # every video uses the same coordinates, and no clip or video index is encoded.
+                clip_tokens = math.prod(self.pooler.token_grid)
+                if per_video % clip_tokens:
+                    raise ValueError(f"{per_video} tokens per video are not whole clips of {clip_tokens} tokens.")
+                positions = torch.arange(N * per_video, device=tokens.device) % clip_tokens
+            pooled = self.pooler(tokens, key_padding_mask=key_padding_mask, positions=positions)
             return pooled.squeeze(1) if self.query_mode == "shared" else pooled
         videos = tokens.reshape(B, N, per_video, D).mean(dim=2)  # [B, N, D]
         mask = video_mask.to(videos.dtype).unsqueeze(-1)

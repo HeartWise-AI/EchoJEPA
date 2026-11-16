@@ -34,7 +34,7 @@ class TestShippedOntology(unittest.TestCase):
     def test_version_size_and_kinds(self):
         self.assertEqual(self.o.tag, "radar-caption-ontology-v1")
         self.assertEqual(os.path.basename(DEFAULT_ONTOLOGY_PATH), f"{self.o.tag}.yaml")
-        self.assertTrue(40 <= len(self.o.concepts) <= 50, len(self.o.concepts))
+        self.assertTrue(50 <= len(self.o.concepts) <= 65, len(self.o.concepts))
         kinds = {c.kind for c in self.o.concepts.values()}
         self.assertEqual(kinds, {"structure_visibility", "finding"})
         self.assertEqual(len(self.o.sha256), 64)
@@ -59,7 +59,9 @@ class TestShippedOntology(unittest.TestCase):
         used = {s for c in self.o.concepts.values() for s in c.structures}
         self.assertEqual(used, set(self.o.structures))  # every structure is used, every use is declared
         self.assertEqual(self.o.visibility_concept("mitral_valve"), "mitral_valve_visible")
-        self.assertIsNone(self.o.visibility_concept("left_ventricular_outflow_tract"))
+        self.assertEqual(self.o.visibility_concept("left_ventricular_outflow_tract"), "lvot_visible")
+        for s in self.o.structures:  # every structure is one the column review asks about
+            self.assertIsNotNone(self.o.visibility_concept(s), s)
         self.assertEqual(self.o.concept("pacing_lead").structures, ("right_atrium", "right_ventricle"))
         self.assertIn("mitral_regurgitation", self.o.concepts_of_structure("mitral_valve"))
 

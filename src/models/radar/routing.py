@@ -50,6 +50,32 @@ class Structure:
     train: bool
     note: str = ""
     caption_source: str = "report"
+    # a structured caption's fields and the still tags each rests on, in registry order: ((field, (tag, ...)), ...)
+    caption_evidence: tuple = ()
+    # a report caption's Doppler findings and the still tags that show each: ((finding, (tag, ...)), ...)
+    finding_support: tuple = ()
+
+    def supported_fields(self, tags) -> tuple[str, ...]:
+        """The caption fields whose every still tag is among `tags` (the tags of the stills in a bag)."""
+        tags = set(tags)
+        return tuple(name for name, needed in self.caption_evidence if set(needed) <= tags)
+
+
+    def supported_findings(self, tags) -> tuple[str, ...]:
+        """The Doppler findings that at least one of `tags` (the tags of the stills in a bag) shows."""
+        tags = set(tags)
+        return tuple(name for name, showing in self.finding_support if set(showing) & tags)
+
+
+def finding_scope(base, findings) -> str:
+    """The caption scope of a report caption (`base`: full or doppler) whose Doppler clauses state only
+    `findings`: `full:<finding>+<finding>`, sorted."""
+    return f"{base}:" + "+".join(sorted(findings))
+
+
+def evidence_scope(fields) -> str:
+    """The caption scope of a structured caption that states exactly `fields`: `ev:<field>+<field>`, sorted."""
+    return "ev:" + "+".join(sorted(fields))
 
 
 @dataclass(frozen=True)
@@ -199,6 +225,25 @@ def _problems(raw) -> list[str]:
         source = s.get("caption_source", "report")
         if source not in CAPTION_SOURCES:
             problems.append(f"{where}: caption_source must be one of {CAPTION_SOURCES}")
+        evidence = s.get("caption_evidence")
+        if evidence is not None:
+            feeding = {tag for tag, targets in still_structs.items() if s.get("name") in (targets or [])} \
+                if isinstance(still_structs, dict) else set()
+            if source != "structured" or not isinstance(evidence, dict) or not evidence:
+                problems.append(f"{where}: caption_evidence is a nonempty mapping, for caption_source: structured")
+            elif any(not isinstance(tags, list) or not tags or set(tags) - feeding for tags in evidence.values()):
+                problems.append(f"{where}: each caption_evidence field needs still tags that feed the structure")
+        elif source == "structured" and s.get("train") is True:
+            problems.append(f"{where}: a trained structured caption needs caption_evidence (which stills support "
+                            "each field)")
+        support = s.get("finding_support")
+        if support is not None:
+            feeding = {tag for tag, targets in still_structs.items() if s.get("name") in (targets or [])} \
+                if isinstance(still_structs, dict) else set()
+            if source != "report" or not isinstance(support, dict) or not support:
+                problems.append(f"{where}: finding_support is a nonempty mapping, for caption_source: report")
+            elif any(not isinstance(tags, list) or not tags or set(tags) - feeding for tags in support.values()):
+                problems.append(f"{where}: each finding_support finding needs still tags that feed the structure")
         has_input = bool(own) or s.get("name") in fed_by_stills
         has_caption = bool(s.get("report_column")) or source == "structured"
         if s.get("train") is True and (not has_input or not has_caption):
@@ -218,7 +263,9 @@ def load_routing(path: str = DEFAULT_ROUTING) -> Routing:
     structures = tuple(
         Structure(name=s["name"], label=s.get("label", s["name"]), report_column=s.get("report_column"),
                   views=tuple(s["views"]), routing=s["routing"], train=s["train"], note=s.get("note", ""),
-                  caption_source=s.get("caption_source", "report"))
+                  caption_source=s.get("caption_source", "report"),
+                  caption_evidence=tuple((str(k), tuple(v)) for k, v in (s.get("caption_evidence") or {}).items()),
+                  finding_support=tuple((str(k), tuple(v)) for k, v in (s.get("finding_support") or {}).items()))
         for s in raw["structures"]
     )
     return Routing(version=raw["version"], sha256=hashlib.sha256(data).hexdigest(),

@@ -1,6 +1,6 @@
 {
   "schema": "deepecho-column-review",
-  "version": 2,
+  "version": 3,
   "fields": {
     "lv_function": {
       "label": "LV function",
@@ -962,11 +962,12 @@
         "rv",
         "la",
         "ra",
+        "ivs",
+        "ias",
         "mitral",
         "tricuspid",
         "pericardium"
       ],
-      "conditional_targets": [],
       "wall_sources": {
         "basal_inferoseptal": "WMS Basal Inferoseptal",
         "mid_inferoseptal": "WMS 4C Mid Inferoseptal",
@@ -980,13 +981,7 @@
     "A4C_LV": {
       "columns": [
         "lv_function",
-        "lv_size",
         "lv_wall_thickness",
-        "rv_function",
-        "rv_size",
-        "la_size",
-        "ra_size",
-        "pericardial_effusion",
         "mitral_appearance",
         "mitral_motion",
         "mitral_device",
@@ -1004,20 +999,8 @@
       ],
       "targets": [
         "lv",
-        "rv",
-        "la",
-        "ra",
         "mitral",
-        "tricuspid",
-        "pericardium"
-      ],
-      "conditional_targets": [
-        "rv",
-        "la",
-        "ra",
-        "mitral",
-        "tricuspid",
-        "pericardium"
+        "tricuspid"
       ],
       "wall_sources": {
         "basal_inferoseptal": "WMS Basal Inferoseptal",
@@ -1027,7 +1010,7 @@
         "mid_anterolateral": "WMS 4C Mid Anterolateral",
         "apical_lateral": "WMS 4C Apical Lateral"
       },
-      "note": "LV focus does not establish right-heart visibility."
+      "note": "LV-focused: the LV and this view's valves are prefilled. LV function, valve findings and wall motion are claimed, never chamber size."
     },
     "A2C": {
       "columns": [
@@ -1053,7 +1036,6 @@
         "mitral",
         "pericardium"
       ],
-      "conditional_targets": [],
       "wall_sources": {
         "basal_inferior": "WMS 2C Basal Inferior",
         "mid_inferior": "WMS 2C Mid Inferior",
@@ -1067,10 +1049,7 @@
     "A2C_LV": {
       "columns": [
         "lv_function",
-        "lv_size",
         "lv_wall_thickness",
-        "la_size",
-        "pericardial_effusion",
         "mitral_appearance",
         "mitral_motion",
         "mitral_device",
@@ -1084,14 +1063,7 @@
       ],
       "targets": [
         "lv",
-        "la",
-        "mitral",
-        "pericardium"
-      ],
-      "conditional_targets": [
-        "la",
-        "mitral",
-        "pericardium"
+        "mitral"
       ],
       "wall_sources": {
         "basal_inferior": "WMS 2C Basal Inferior",
@@ -1101,7 +1073,7 @@
         "mid_anterior": "WMS 2C Mid Anterior",
         "apical_anterior": "WMS 2C Apical Anterior"
       },
-      "note": ""
+      "note": "LV-focused: the LV and this view's valves are prefilled. LV function, valve findings and wall motion are claimed, never chamber size."
     },
     "A3C": {
       "columns": [
@@ -1118,6 +1090,7 @@
         "aortic_motion",
         "aortic_device",
         "aortic_regurgitant_jet",
+        "aorta_root_size",
         "wall_apical_septal",
         "wall_apical_lateral",
         "wall_basal_inferolateral",
@@ -1130,9 +1103,10 @@
         "la",
         "mitral",
         "aortic",
+        "lvot",
+        "aorta_root",
         "pericardium"
       ],
-      "conditional_targets": [],
       "wall_sources": {
         "basal_inferolateral": "WMS LAX Basal Inferolateral",
         "mid_inferolateral": "WMS LAX Mid Inferolateral",
@@ -1144,10 +1118,7 @@
     "A3C_LV": {
       "columns": [
         "lv_function",
-        "lv_size",
         "lv_wall_thickness",
-        "la_size",
-        "pericardial_effusion",
         "mitral_appearance",
         "mitral_motion",
         "mitral_device",
@@ -1165,16 +1136,8 @@
       ],
       "targets": [
         "lv",
-        "la",
         "mitral",
-        "aortic",
-        "pericardium"
-      ],
-      "conditional_targets": [
-        "la",
-        "mitral",
-        "aortic",
-        "pericardium"
+        "aortic"
       ],
       "wall_sources": {
         "basal_inferolateral": "WMS LAX Basal Inferolateral",
@@ -1182,14 +1145,17 @@
         "basal_anteroseptal": "WMS LAX Basal Anteroseptal",
         "mid_anteroseptal": "WMS LAX Mid Anteroseptal"
       },
-      "note": ""
+      "note": "LV-focused: the LV and this view's valves are prefilled. LV function, valve findings and wall motion are claimed, never chamber size."
     },
     "A5C": {
       "columns": [
         "lv_function",
         "lv_size",
         "lv_wall_thickness",
+        "rv_function",
+        "rv_size",
         "la_size",
+        "ra_size",
         "pericardial_effusion",
         "mitral_appearance",
         "mitral_motion",
@@ -1198,24 +1164,36 @@
         "aortic_appearance",
         "aortic_motion",
         "aortic_device",
-        "aortic_regurgitant_jet"
+        "aortic_regurgitant_jet",
+        "tricuspid_appearance",
+        "tricuspid_motion",
+        "tricuspid_device",
+        "tricuspid_regurgitant_jet",
+        "aorta_root_size"
       ],
       "targets": [
         "lv",
+        "rv",
         "la",
+        "ra",
+        "ivs",
+        "ias",
         "mitral",
+        "tricuspid",
+        "pericardium",
         "aortic",
-        "pericardium"
+        "lvot",
+        "aorta_root"
       ],
-      "conditional_targets": [],
       "wall_sources": {},
-      "note": "Requires actual valve/color-box coverage; no gradient or stenosis grade in a B-mode loop."
+      "note": "The A4C structures plus the LVOT, aortic valve and aortic root. Requires actual valve/color-box coverage; no gradient or stenosis grade in a B-mode loop."
     },
     "PLAX": {
       "columns": [
         "lv_function",
         "lv_size",
         "lv_wall_thickness",
+        "rv_size",
         "la_size",
         "pericardial_effusion",
         "mitral_appearance",
@@ -1235,14 +1213,16 @@
       ],
       "targets": [
         "lv",
+        "rv",
         "la",
+        "ivs",
         "mitral",
         "aortic",
+        "lvot",
         "aorta_root",
         "aorta_ascending",
         "pericardium"
       ],
-      "conditional_targets": [],
       "wall_sources": {
         "basal_inferolateral": "WMS LAX Basal Inferolateral",
         "mid_inferolateral": "WMS LAX Mid Inferolateral",
@@ -1256,17 +1236,27 @@
         "pericardial_effusion"
       ],
       "targets": [
-        "pericardium"
+        "lv",
+        "rv",
+        "la",
+        "ivs",
+        "mitral",
+        "aortic",
+        "lvot",
+        "aorta_root",
+        "aorta_ascending",
+        "pericardium",
+        "aorta_descending"
       ],
-      "conditional_targets": [],
       "wall_sources": {},
-      "note": "Pericardial versus pleural fluid requires landmark assessment; descending aorta must not be labeled aortic root."
+      "note": "The PLAX structures plus the descending aorta; only pericardial effusion is claimed. Pericardial versus pleural fluid requires landmark assessment; descending aorta must not be labeled aortic root."
     },
     "PSAX": {
       "columns": [
         "lv_function",
         "lv_size",
         "lv_wall_thickness",
+        "rv_size",
         "pericardial_effusion",
         "mitral_appearance",
         "mitral_motion",
@@ -1281,14 +1271,37 @@
       ],
       "targets": [
         "lv",
-        "mitral",
+        "rv",
+        "ivs",
         "pericardium"
       ],
-      "conditional_targets": [
-        "lv",
-        "mitral",
-        "pericardium"
-      ],
+      "levels": {
+        "basal_mitral": {
+          "targets": [
+            "mitral"
+          ],
+          "columns": []
+        },
+        "mid": {
+          "targets": [
+            "mitral",
+            "papillary_muscles",
+            "chordae"
+          ],
+          "columns": [
+            "wall_mid_inferoseptal",
+            "wall_mid_anterolateral",
+            "wall_mid_inferior",
+            "wall_mid_anterior",
+            "wall_mid_inferolateral",
+            "wall_mid_anteroseptal"
+          ]
+        },
+        "apical": {
+          "targets": [],
+          "columns": []
+        }
+      },
       "wall_sources": {
         "mid_anterior": "WMS SAX Anterior",
         "mid_anterolateral": "WMS SAX Anterolateral",
@@ -1297,10 +1310,13 @@
         "mid_inferoseptal": "WMS SAX Inferoseptal",
         "mid_anteroseptal": "WMS SAX Anteroseptal"
       },
-      "note": "Class lacks slice level; do not infer valve findings from PSAX without localization."
+      "note": "The view classifier gives no PSAX level, so only structures seen at every level are prefilled and the reviewer states the level. The mitral valve is claimed at the basal/mitral and mid levels; papillary muscles, chordae and the mid wall segments at the mid level. A clip at the aortic valve level is PSAX_AV."
     },
     "PSAX_AV": {
       "columns": [
+        "rv_size",
+        "la_size",
+        "ra_size",
         "aortic_appearance",
         "aortic_motion",
         "aortic_device",
@@ -1317,15 +1333,17 @@
       ],
       "targets": [
         "aortic",
+        "rv",
+        "rvot",
+        "ra",
+        "la",
         "tricuspid",
-        "pulmonic"
-      ],
-      "conditional_targets": [
-        "tricuspid",
-        "pulmonic"
+        "pulmonic",
+        "pulmonary_artery",
+        "ias"
       ],
       "wall_sources": {},
-      "note": "Valve/jet must be identified; aortic morphology is preferred en-face when systolic opening is captured."
+      "note": "Valve/jet must be identified; aortic morphology is preferred en-face when systolic opening is captured. The pulmonic valve, proximal pulmonary artery and interatrial septum are prefilled too: untick them when they are not visible."
     },
     "RVINF": {
       "columns": [
@@ -1342,7 +1360,6 @@
         "ra",
         "tricuspid"
       ],
-      "conditional_targets": [],
       "wall_sources": {},
       "note": "Focused inflow view is not a complete RV quantification study."
     },
@@ -1367,28 +1384,33 @@
         "tricuspid_device",
         "tricuspid_regurgitant_jet"
       ],
-      "targets": [
-        "lv",
-        "rv",
-        "la",
-        "ra",
-        "mitral",
-        "tricuspid",
-        "pericardium",
-        "ivc"
-      ],
-      "conditional_targets": [
-        "lv",
-        "rv",
-        "la",
-        "ra",
-        "mitral",
-        "tricuspid",
-        "pericardium",
-        "ivc"
-      ],
+      "targets": [],
+      "levels": {
+        "four_chamber": {
+          "targets": [
+            "lv",
+            "rv",
+            "la",
+            "ra",
+            "ivs",
+            "ias",
+            "mitral",
+            "tricuspid",
+            "pericardium"
+          ],
+          "columns": []
+        },
+        "ivc": {
+          "targets": [
+            "ivc",
+            "hepatic_veins"
+          ],
+          "columns": []
+        }
+      },
+      "default_level": "four_chamber",
       "wall_sources": {},
-      "note": "Reviewer must identify subtype first: four-chamber uses chamber/pericardial claims; IVC-focused uses IVC claims. Never include both from class alone."
+      "note": "The four-chamber subtype is prefilled; the reviewer switches an IVC sweep to the IVC subtype. IVC and chamber findings never mix."
     },
     "SUPRASTERNAL": {
       "columns": [
@@ -1397,16 +1419,13 @@
       "targets": [
         "aorta_arch"
       ],
-      "conditional_targets": [],
       "wall_sources": {},
       "note": "Arch observations only; spectral obstruction/velocity labels remain separate."
     },
     "A2C_ZOOM": {
       "columns": [
         "lv_function",
-        "lv_size",
         "lv_wall_thickness",
-        "la_size",
         "pericardial_effusion",
         "mitral_appearance",
         "mitral_motion",
@@ -1425,12 +1444,6 @@
         "mitral",
         "pericardium"
       ],
-      "conditional_targets": [
-        "lv",
-        "la",
-        "mitral",
-        "pericardium"
-      ],
       "wall_sources": {
         "basal_inferior": "WMS 2C Basal Inferior",
         "mid_inferior": "WMS 2C Mid Inferior",
@@ -1439,14 +1452,12 @@
         "mid_anterior": "WMS 2C Mid Anterior",
         "apical_anterior": "WMS 2C Apical Anterior"
       },
-      "note": "Target confirmation is mandatory before using any route. Keep only the structure actually visible; do not inherit all base-view anatomy."
+      "note": "Zoomed: the base view's structures are prefilled; untick any outside the zoom (a tick means visible, even partly). Valve, root and chamber function findings are claimed, never chamber size."
     },
     "A3C_ZOOM": {
       "columns": [
         "lv_function",
-        "lv_size",
         "lv_wall_thickness",
-        "la_size",
         "pericardial_effusion",
         "mitral_appearance",
         "mitral_motion",
@@ -1456,6 +1467,7 @@
         "aortic_motion",
         "aortic_device",
         "aortic_regurgitant_jet",
+        "aorta_root_size",
         "wall_apical_septal",
         "wall_apical_lateral",
         "wall_basal_inferolateral",
@@ -1468,13 +1480,8 @@
         "la",
         "mitral",
         "aortic",
-        "pericardium"
-      ],
-      "conditional_targets": [
-        "lv",
-        "la",
-        "mitral",
-        "aortic",
+        "lvot",
+        "aorta_root",
         "pericardium"
       ],
       "wall_sources": {
@@ -1483,17 +1490,13 @@
         "basal_anteroseptal": "WMS LAX Basal Anteroseptal",
         "mid_anteroseptal": "WMS LAX Mid Anteroseptal"
       },
-      "note": "Target confirmation is mandatory before using any route. Keep only the structure actually visible; do not inherit all base-view anatomy."
+      "note": "Zoomed: the base view's structures are prefilled; untick any outside the zoom (a tick means visible, even partly). Valve, root and chamber function findings are claimed, never chamber size."
     },
     "A4C_ZOOM": {
       "columns": [
         "lv_function",
-        "lv_size",
         "lv_wall_thickness",
         "rv_function",
-        "rv_size",
-        "la_size",
-        "ra_size",
         "pericardial_effusion",
         "mitral_appearance",
         "mitral_motion",
@@ -1515,15 +1518,8 @@
         "rv",
         "la",
         "ra",
-        "mitral",
-        "tricuspid",
-        "pericardium"
-      ],
-      "conditional_targets": [
-        "lv",
-        "rv",
-        "la",
-        "ra",
+        "ivs",
+        "ias",
         "mitral",
         "tricuspid",
         "pericardium"
@@ -1536,14 +1532,13 @@
         "mid_anterolateral": "WMS 4C Mid Anterolateral",
         "apical_lateral": "WMS 4C Apical Lateral"
       },
-      "note": "Target confirmation is mandatory before using any route. Keep only the structure actually visible; do not inherit all base-view anatomy."
+      "note": "Zoomed: the base view's structures are prefilled; untick any outside the zoom (a tick means visible, even partly). Valve, root and chamber function findings are claimed, never chamber size."
     },
     "A5C_ZOOM": {
       "columns": [
         "lv_function",
-        "lv_size",
         "lv_wall_thickness",
-        "la_size",
+        "rv_function",
         "pericardial_effusion",
         "mitral_appearance",
         "mitral_motion",
@@ -1552,31 +1547,34 @@
         "aortic_appearance",
         "aortic_motion",
         "aortic_device",
-        "aortic_regurgitant_jet"
+        "aortic_regurgitant_jet",
+        "tricuspid_appearance",
+        "tricuspid_motion",
+        "tricuspid_device",
+        "tricuspid_regurgitant_jet",
+        "aorta_root_size"
       ],
       "targets": [
         "lv",
+        "rv",
         "la",
+        "ra",
+        "ivs",
+        "ias",
         "mitral",
+        "tricuspid",
+        "pericardium",
         "aortic",
-        "pericardium"
-      ],
-      "conditional_targets": [
-        "lv",
-        "la",
-        "mitral",
-        "aortic",
-        "pericardium"
+        "lvot",
+        "aorta_root"
       ],
       "wall_sources": {},
-      "note": "Target confirmation is mandatory before using any route. Keep only the structure actually visible; do not inherit all base-view anatomy."
+      "note": "Zoomed: the base view's structures are prefilled; untick any outside the zoom (a tick means visible, even partly). Valve, root and chamber function findings are claimed, never chamber size."
     },
     "PLAX_ZOOM": {
       "columns": [
         "lv_function",
-        "lv_size",
         "lv_wall_thickness",
-        "la_size",
         "pericardial_effusion",
         "mitral_appearance",
         "mitral_motion",
@@ -1595,18 +1593,12 @@
       ],
       "targets": [
         "lv",
+        "rv",
         "la",
+        "ivs",
         "mitral",
         "aortic",
-        "aorta_root",
-        "aorta_ascending",
-        "pericardium"
-      ],
-      "conditional_targets": [
-        "lv",
-        "la",
-        "mitral",
-        "aortic",
+        "lvot",
         "aorta_root",
         "aorta_ascending",
         "pericardium"
@@ -1617,12 +1609,11 @@
         "basal_anteroseptal": "WMS LAX Basal Anteroseptal",
         "mid_anteroseptal": "WMS LAX Mid Anteroseptal"
       },
-      "note": "Target confirmation is mandatory before using any route. Keep only the structure actually visible; do not inherit all base-view anatomy."
+      "note": "Zoomed: the base view's structures are prefilled; untick any outside the zoom (a tick means visible, even partly). Valve, root and chamber function findings are claimed, never chamber size."
     },
     "OTHER": {
       "columns": [],
       "targets": [],
-      "conditional_targets": [],
       "wall_sources": {},
       "note": "No automatic report-to-local-caption routing. Reclassify or use separately flagged weak study supervision."
     }
@@ -1677,15 +1668,57 @@
     "rv": "RV",
     "la": "LA",
     "ra": "RA",
-    "mitral": "Mitral",
-    "tricuspid": "Tricuspid",
+    "ivs": "Interventricular septum",
+    "ias": "Interatrial septum",
+    "mitral": "Mitral valve",
+    "tricuspid": "Tricuspid valve",
+    "aortic": "Aortic valve",
+    "pulmonic": "Pulmonic valve",
+    "papillary_muscles": "Papillary muscles",
+    "chordae": "Chordae",
+    "lvot": "LVOT",
+    "rvot": "RVOT",
+    "pulmonary_artery": "Proximal pulmonary artery",
+    "aorta_root": "Aortic root",
+    "aorta_ascending": "Ascending aorta",
+    "aorta_arch": "Aortic arch",
+    "aorta_descending": "Descending aorta",
     "pericardium": "Pericardium",
-    "aortic": "Aortic",
-    "aorta_root": "Aorta root",
-    "aorta_ascending": "Aorta ascending",
-    "pulmonic": "Pulmonic",
     "ivc": "IVC",
-    "aorta_arch": "Aorta arch"
+    "hepatic_veins": "Hepatic veins"
+  },
+  "target_structures": {
+    "lv": "left_ventricle",
+    "rv": "right_ventricle",
+    "la": "left_atrium",
+    "ra": "right_atrium",
+    "ivs": "interventricular_septum",
+    "ias": "interatrial_septum",
+    "mitral": "mitral_valve",
+    "tricuspid": "tricuspid_valve",
+    "aortic": "aortic_valve",
+    "pulmonic": "pulmonic_valve",
+    "papillary_muscles": "papillary_muscles",
+    "chordae": "chordae_tendineae",
+    "lvot": "left_ventricular_outflow_tract",
+    "rvot": "right_ventricular_outflow_tract",
+    "pulmonary_artery": "pulmonary_artery",
+    "aorta_root": "aortic_root",
+    "aorta_ascending": "ascending_aorta",
+    "aorta_arch": "aortic_arch",
+    "aorta_descending": "descending_aorta",
+    "pericardium": "pericardium",
+    "ivc": "inferior_vena_cava",
+    "hepatic_veins": "hepatic_veins"
+  },
+  "levels": {
+    "not_applicable": "Not applicable (not PSAX or subcostal)",
+    "unresolved": "Cannot tell the level",
+    "basal_mitral": "PSAX basal / mitral level",
+    "mid": "PSAX mid / papillary level",
+    "apical": "PSAX apical level",
+    "four_chamber": "Subcostal four-chamber",
+    "ivc": "Subcostal IVC / hepatic veins"
   },
   "wms_scale": {
     "1": "normal_or_hyperkinetic",
@@ -1694,8 +1727,8 @@
     "4": "dyskinetic",
     "5": "aneurysmal"
   },
-  "prefill_policy": "Explicit report values only, view/modality/target routed; suggestions are MAL drafts. No review_completed prelabel, no missing-to-normal inference, no automatic ground truth.",
-  "scoring_policy": "Score immutable original columns; corrections and confirmed omissions are separate. Cannot assess is not an error or a negative. An uninterpretable clip is scored on nothing else and gets no caption. Exact report numbers remain context. Submitted review and exact input provenance gate release.",
+  "prefill_policy": "Explicit report values only, routed by view, mode, structures and level. Each view prefills its structures for the reviewer to confirm or untick (a tick means visible, even partly); a structure is never added by the reviewer. Suggestions are MAL drafts. No review_completed prelabel, no missing-to-normal inference, no automatic ground truth.",
+  "scoring_policy": "Score immutable original columns; corrections and confirmed omissions are separate, and a finding ticked among the prefilled findings without being prefilled counts as a confirmed omission. Cannot assess is not an error or a negative. An uninterpretable clip is scored on nothing else and gets no caption. A PSAX or subcostal clip needs its level, and any other view has none. Exact report numbers remain context. Submitted review and exact input provenance gate release.",
   "sources": [
     "https://www.asecho.org/wp-content/uploads/2016/02/2015_ChamberQuantificationREV.pdf",
     "https://www.asecho.org/wp-content/uploads/2025/09/PIIS0894731725002925.pdf",
