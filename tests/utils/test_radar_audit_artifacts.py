@@ -1,6 +1,7 @@
 """Audit artifacts must form a complete run and never overwrite existing outputs."""
 
 import json
+import hashlib
 import tempfile
 import unittest
 from pathlib import Path
@@ -41,3 +42,12 @@ class TestAuditArtifacts(unittest.TestCase):
                 audit.publish_evidence(out, {"run": 2}, self.panels)
         self.assertEqual(list(out.iterdir()), [previous])
         self.assertEqual(json.loads((previous / "synthetic_metrics.json").read_text()), {"run": 1})
+
+    def test_provenance_records_environment_and_binds_output_bytes(self):
+        run = audit.publish_evidence(self.root / "out", {"fixture": True}, self.panels)
+        provenance = json.loads((run / "provenance.json").read_text())
+        self.assertIn("torch", provenance["packages"])
+        self.assertIsNone(provenance["test_results"])
+        self.assertEqual(set(provenance["source_sha256"]), {"audit_tool", "preprocessing"})
+        for name, digest in provenance["artifact_sha256"].items():
+            self.assertEqual(hashlib.sha256((run / name).read_bytes()).hexdigest(), digest)

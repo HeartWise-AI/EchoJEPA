@@ -7,6 +7,9 @@ Run from the checkout with ``python -m tools.radar_still_leakage_audit --out DIR
 """
 
 import argparse
+import hashlib
+import importlib.metadata
+import platform
 import json
 import os
 import tempfile
@@ -137,6 +140,20 @@ def publish_evidence(root, metrics, panels):
         staging = Path(staging)
         (staging / "synthetic_metrics.json").write_text(json.dumps(metrics, indent=2) + "\n", encoding="utf-8")
         write_panel(staging / "synthetic_panel.png", panels)
+        from src.datasets import still_preprocess
+        sources = {"audit_tool": Path(__file__), "preprocessing": Path(still_preprocess.__file__)}
+        provenance = {
+            "scope": "synthetic observations only; not training qualification",
+            "python": platform.python_version(),
+            "packages": {name: importlib.metadata.version(name) for name in ("numpy", "torch", "pandas")},
+            "opencv": cv2.__version__,
+            "source_sha256": {name: hashlib.sha256(path.read_bytes()).hexdigest() for name, path in sources.items()},
+            "artifact_sha256": {name: hashlib.sha256((staging / name).read_bytes()).hexdigest()
+                                for name in ("synthetic_metrics.json", "synthetic_panel.png")},
+            "test_results": None,
+            "test_results_note": "This command does not run tests; use the separately recorded CI or pytest result.",
+        }
+        (staging / "provenance.json").write_text(json.dumps(provenance, indent=2) + "\n", encoding="utf-8")
         destination = root / ("run-" + uuid.uuid4().hex)
         os.rename(staging, destination)
     return destination
