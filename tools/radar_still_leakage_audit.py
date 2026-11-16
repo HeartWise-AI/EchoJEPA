@@ -8,6 +8,9 @@ Run from the checkout with ``python -m tools.radar_still_leakage_audit --out DIR
 
 import argparse
 import json
+import os
+import tempfile
+import uuid
 from pathlib import Path
 
 import cv2
@@ -126,15 +129,26 @@ def write_panel(path, panels):
         raise OSError(f"Could not write {path}")
 
 
+def publish_evidence(root, metrics, panels):
+    """Publish a complete run from a private staging directory; never reuse artifact paths."""
+    root = Path(root)
+    root.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix=".audit-", dir=root) as staging:
+        staging = Path(staging)
+        (staging / "synthetic_metrics.json").write_text(json.dumps(metrics, indent=2) + "\n", encoding="utf-8")
+        write_panel(staging / "synthetic_panel.png", panels)
+        destination = root / ("run-" + uuid.uuid4().hex)
+        os.rename(staging, destination)
+    return destination
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--out", type=Path, required=True)
+    parser.add_argument("--out", type=Path, required=True, help="Parent directory for a new immutable run directory")
     args = parser.parse_args()
-    args.out.mkdir(parents=True, exist_ok=True)
     metrics, panels = collect_pixel_evidence()
-    (args.out / "synthetic_metrics.json").write_text(json.dumps(metrics, indent=2) + "\n")
-    write_panel(args.out / "synthetic_panel.png", panels)
-    print(json.dumps(metrics, indent=2))
+    destination = publish_evidence(args.out, metrics, panels)
+    print(json.dumps({"output": str(destination), "metrics": metrics}, indent=2))
 
 
 if __name__ == "__main__":
