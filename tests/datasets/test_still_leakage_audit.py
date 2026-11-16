@@ -185,3 +185,39 @@ def test_pooler_cond_false_still_leaves_measurement_head_conditioning_active():
             zero = model.heads(tokens, torch.zeros(1, 1, 2))
             changed = model.heads(tokens, torch.tensor([[[16.0, 200.0]]]))
         assert not torch.allclose(zero, changed, atol=1e-5)
+
+
+@pytest.mark.parametrize("preprocess", [None, "unmasked", "accepted"])
+def test_training_entrypoint_checks_cache_recipe_before_model_construction(tmp_path, preprocess):
+    from unittest import mock
+
+    from evals.radar_frozen import train as radar_train
+    from src.datasets.radar_token_cache import TokenCacheWriter
+    from src.datasets.still_preprocess import PREPROCESS_VERSION
+    from tests.models.radar_synthetic import DIM, make_synthetic, synthetic_config
+
+    paths = make_synthetic(str(tmp_path / "data"))
+    provenance = {"source": "invented audit fixture"}  # deliberately not exempt synthetic/empty provenance
+    if preprocess is not None:
+        provenance["preprocess"] = PREPROCESS_VERSION if preprocess == "accepted" else preprocess
+    cache_dir = str(tmp_path / "stills-cache")
+    writer = TokenCacheWriter(cache_dir, (1, 1, 1), DIM, provenance=provenance)
+    writer.add("still", torch.zeros(1, DIM))
+    writer.close()
+    table = tmp_path / "stills.csv"
+    pd.DataFrame({"study_id": ["S00"], "still_id": ["still"], "still_tag": ["AV"],
+                  "still_type": ["cw_AV"], "split": ["train"]}).to_csv(table, index=False)
+    config = synthetic_config(paths)
+    config["data"]["stills"] = {"table": str(table), "cache_dir": cache_dir, "num_stills": 1}
+    config["model"]["stills"] = {"token_grid": [1, 1, 1], "cond": False}
+    # Stop at model construction: the actual training entry point and data checks run,
+    # but no model or optimizer is created. The accepted-recipe control proves reachability.
+    with mock.patch.object(radar_train, "build_model", side_effect=RuntimeError("model construction reached")) as build:
+        if preprocess == "accepted":
+            with pytest.raises(RuntimeError, match="model construction reached"):
+                radar_train.train(config, str(tmp_path / "run"), resume=False)
+            build.assert_called_once()
+        else:
+            with pytest.raises(ValueError, match="preprocessing recipe"):
+                radar_train.train(config, str(tmp_path / "run"), resume=False)
+            build.assert_not_called()
