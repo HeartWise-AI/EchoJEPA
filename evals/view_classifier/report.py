@@ -16,6 +16,11 @@ every class, with bootstrap intervals, and the accuracy weighted to the archive'
 confusion matrices, paired differences between runs, the current classifier's precision on the pool by confidence for
 the pseudo-labelled classes, and the throughput with the archive's cost. `report.md` and `report.html` gather them.
 
+Every finished run folder `<runs>/arm_*/pseudo_*/oof_predictions.csv` is scored, so arms added later (e.g. `arm_a_v2`,
+`arm_a_linear`) appear next to the first ones; each run is scored on its own, so adding one leaves the others'
+numbers unchanged (the bootstrap seeds do not depend on which runs exist). `report.notes` (a list of strings in the
+config) is printed under the summary table.
+
     python -m evals.view_classifier.report --config CONFIG
 """
 
@@ -271,6 +276,9 @@ def write(cfg):
           "over clips (one clip per patient). `old` granularity: 23 classes collapsed to the current 20. "
           "`old_kept`: clips whose human label is one of the current classes. The review form was prefilled with "
           "the current classifier's view: its agreement may be inflated.", "", markdown(table), ""]
+    notes = cfg["report"].get("notes") or []
+    if notes:
+        md += [f"- {n}" for n in notes] + [""]
     if len(pairs):
         md += ["## Paired differences (new granularity, all clips)", "", markdown(pairs), ""]
     md += ["## Current classifier: precision on the pool for the pseudo-labelled classes", "",
@@ -285,7 +293,7 @@ def write(cfg):
         f.write("\n".join(md))
 
     parts = ["<h1>View classifier comparison</h1>", f"<p>{len(labels)} labelled clips.</p>",
-             summary_html(table)]
+             summary_html(table)] + [f"<p>{html.escape(str(n))}</p>" for n in notes]
     for (arm, pseudo, subset, gran), conf in confusions.items():
         if subset == "all":
             parts.append(f"<h2>{html.escape(arm)} pseudo {pseudo}, {gran} classes</h2>{_heat(conf)}")

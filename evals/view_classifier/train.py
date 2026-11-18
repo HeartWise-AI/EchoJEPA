@@ -11,8 +11,17 @@ labelled clip and predicts nothing: the model to deploy.
 
 An arm (`Arm`) supplies the data (a tensor in memory and the row of each clip), a model builder, its parameter groups,
 and `prepare`, which turns a batch on the device into model input (with augmentation when training). Losses are
-weighted per clip: pseudo-labels by `pseudo_weight`, and classes by `class_weighting` (`none`, or `inv_sqrt`: one over
-the square root of the class's count in the inner training set, scaled to mean one).
+weighted per clip: pseudo-labels by `pseudo_weight`, and classes by `class_weighting` (`none`; `inv_sqrt`: one over
+the square root of the class's count in the inner training set, scaled to mean one; `inv`: one over the count, so every
+class weighs the same in total). Options, all off by default (the first runs used none of them):
+- `class_weight_counts: weighted` counts a pseudo-labelled clip as `pseudo_weight` clips (default `raw`: one each),
+  so a class's weight no longer shrinks because pseudo-labels inflate its count;
+- `class_count_floor`: a class counts as at least this many clips (default 1), so `inv` does not give a class with
+  one or two labels the weight of a large class;
+- an arm's `cv` section overrides these and `pseudo_weight` for that arm (`arm_cv`), never the folds or the inner split;
+- in a setting (`fixed` or `grid`): `label_smoothing` of the training loss (default 0; the selection loss is the plain
+  cross-entropy), and `patience`: stop when the inner-validation loss has not improved for that many epochs (default:
+  never).
 
 A finished fold (its `done.json`) is skipped on a rerun. Nothing written names a patient: rows are clip ids, which the
 caller keeps outside the repository.
@@ -45,15 +54,51 @@ class Arm:
     prepare: Callable                        # (batch on device, training, torch.Generator) -> model input
 
 
-def class_weights(y, n_classes, mode):
+def class_weights(y, n_classes, mode, sample_weight=None, floor=1.0):
+    """Weight of each class: `none`, `inv_sqrt` or `inv` of its count (summed `sample_weight` when given, at least
+    `floor`), scaled to mean one over the classes present; 0 for an absent class."""
     if mode == "none":
         return np.ones(n_classes)
-    if mode != "inv_sqrt":
+    if mode not in ("inv_sqrt", "inv"):
         raise ValueError(f"Unknown class_weighting {mode!r}.")
-    counts = np.bincount(np.asarray(y, dtype=int), minlength=n_classes).astype(float)
-    w = np.where(counts > 0, 1.0 / np.sqrt(np.maximum(counts, 1)), 0.0)
-    present = counts > 0
+    y = np.asarray(y, dtype=int)
+    present = np.bincount(y, minlength=n_classes) > 0
+    counts = np.bincount(y, weights=None if sample_weight is None else np.asarray(sample_weight, dtype=float),
+                         minlength=n_classes).astype(float)
+    base = np.maximum(counts, max(1.0, float(floor)))
+    w = np.where(present, 1.0 / (np.sqrt(base) if mode == "inv_sqrt" else base), 0.0)
     return w / w[present].mean()
+
+
+FROZEN_CV_KEYS = ("k", "seed", "inner_fraction")
+
+
+def arm_cv(cv, overrides=None):
+    """The run's `cv` settings with an arm's overrides (weighting only: the folds and the inner split are shared)."""
+    overrides = dict(overrides or {})
+    frozen = [k for k in FROZEN_CV_KEYS if k in overrides and overrides[k] != cv.get(k)]
+    if frozen:
+        raise ValueError(f"An arm may not change the shared folds or inner split ({frozen}).")
+    return {**cv, **overrides}
+
+
+def weighting_record(cfg):
+    """The loss-weighting settings in force (for selection.json)."""
+    return {"class_weighting": cfg.get("class_weighting", "none"), "pseudo_weight": float(cfg.get("pseudo_weight", 1.0)),
+            "class_weight_counts": cfg.get("class_weight_counts", "raw"),
+            "class_count_floor": float(cfg.get("class_count_floor", 1))}
+
+
+def clip_weights(train, n_classes, cfg):
+    """Loss weight of each inner-training clip: its class's weight times `pseudo_weight` for a pseudo-label."""
+    source = np.where(train.source == "pseudo", float(cfg.get("pseudo_weight", 1.0)), 1.0)
+    counts = cfg.get("class_weight_counts", "raw")
+    if counts not in ("raw", "weighted"):
+        raise ValueError(f"Unknown class_weight_counts {counts!r}.")
+    cw = class_weights(train.y, n_classes, cfg.get("class_weighting", "none"),
+                       sample_weight=source if counts == "weighted" else None,
+                       floor=float(cfg.get("class_count_floor", 1)))
+    return cw[train.y.to_numpy()] * source
 
 
 def learning_rate(base, step, total, warmup):
@@ -103,6 +148,8 @@ def fit(arm, train_rows, train_y, train_w, val_rows, val_y, hp, device, seed=0):
     rows = torch.tensor(np.asarray(train_rows, dtype=np.int64))
     y_all = torch.tensor(np.asarray(train_y, dtype=np.int64))
     w_all = torch.tensor(np.asarray(train_w, dtype=np.float32))
+    smoothing = float(hp.get("label_smoothing", 0.0))
+    patience = int(hp.get("patience") or 0)
     best, best_epoch, best_loss, history, step = None, -1, float("inf"), [], 0
     for epoch in range(epochs):
         model.train()
@@ -114,7 +161,11 @@ def fit(arm, train_rows, train_y, train_w, val_rows, val_y, hp, device, seed=0):
             y, w = y_all[idx].to(device), w_all[idx].to(device)
             with torch.autocast(device.type, dtype=torch.bfloat16, enabled=device.type == "cuda"):
                 logits = model(x)
-            loss = (F.cross_entropy(logits.float(), y, reduction="none") * w).sum() / w.sum().clamp_min(1e-8)
+            if smoothing:
+                ce = F.cross_entropy(logits.float(), y, reduction="none", label_smoothing=smoothing)
+            else:
+                ce = F.cross_entropy(logits.float(), y, reduction="none")
+            loss = (ce * w).sum() / w.sum().clamp_min(1e-8)
             optimizer.zero_grad(set_to_none=True)
             loss.backward()
             if hp.get("grad_clip"):
@@ -129,6 +180,8 @@ def fit(arm, train_rows, train_y, train_w, val_rows, val_y, hp, device, seed=0):
         if val_loss < best_loss:
             best_loss, best_epoch = val_loss, epoch + 1
             best = {k: v.detach().to("cpu", copy=True) for k, v in model.state_dict().items()}
+        if patience and epoch + 1 - best_epoch >= patience:
+            break
     del model, optimizer
     return best, best_epoch, history
 
@@ -157,8 +210,7 @@ def run_fold(arm, labels, pseudo, fold, grid, cfg, classes, out_dir, device):
     missing = [c for c in pd.concat([train, val, test]).clip_id if c not in arm.row]
     if missing:
         raise ValueError(f"{len(missing)} clips of fold {fold} have no input (not cached or unreadable).")
-    cw = class_weights(train.y, len(classes), cfg.get("class_weighting", "none"))
-    weights = cw[train.y.to_numpy()] * np.where(train.source == "pseudo", float(cfg.get("pseudo_weight", 1.0)), 1.0)
+    weights = clip_weights(train, len(classes), cfg)
     rows = lambda t: [arm.row[c] for c in t.clip_id]
     started, results, best = time.time(), [], None
     for h, hp in enumerate(grid):
@@ -184,7 +236,7 @@ def run_fold(arm, labels, pseudo, fold, grid, cfg, classes, out_dir, device):
     record = {"arm": arm.name, "fold": fold, "chosen_setting": chosen, "chosen_hp": grid[chosen],
               "n_train_human": int((train.source == "human").sum()), "n_train_pseudo": int((train.source == "pseudo").sum()),
               "n_val": len(val), "n_test": len(test), "seconds": time.time() - started, "settings": results,
-              "device": str(device)}
+              "device": str(device), "weighting": weighting_record(cfg)}
     with open(os.path.join(folder, "selection.json"), "w") as f:
         json.dump(record, f, indent=1)
     with open(os.path.join(folder, "done.json"), "w") as f:
