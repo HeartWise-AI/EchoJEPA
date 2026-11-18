@@ -165,6 +165,11 @@ class TestRadarTraining(unittest.TestCase):
         self.assertIsNone(epochs[0]["structures"]["pulmonic"]["median_normal_pairs"])
         self.assertGreaterEqual(epochs[0]["structures"]["lv"]["contributing_steps"], 1)
         self.assertEqual(epochs[0]["structures"]["pulmonic"]["contributing_steps"], 0)
+        self.assertEqual(epochs[0]["structures"]["pulmonic"]["use_fraction"], 0.0)
+        for entry in epochs[0]["structures"].values():     # each step is used or skipped for one logged reason
+            self.assertEqual(entry["steps"], s["schedule"]["steps_per_epoch"])
+            self.assertEqual(entry["contributing_steps"] + sum(entry[f"skipped_{r}"] for r in radar_train.SKIP_REASONS),
+                             entry["steps"])
 
     def test_teacher_differs_from_student(self):
         model, teacher = self.straight["model"], self.straight["teacher"]
