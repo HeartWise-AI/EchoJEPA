@@ -70,8 +70,10 @@ Config: data {cache_dir, clips, captions, split, routing, normality_policy, num_
 normal_fraction (share of normal captions a training epoch keeps, drawn per epoch, default 1)}
 (another view family map means another registry through `routing`; the old `view_families` key is refused);
 model {token_grid, embed_dim, depth, num_heads, mlp_ratio, proj_dim, activation_checkpointing};
-text {backbone, max_length, max_overlength_fraction, ...: see `build_text_encoder`}; loss {use_exact (required:
-false = A0, true = A1 and the base of A2/A3), use_normal,
+text {backbone, max_length, max_overlength_fraction, ...: see `build_text_encoder`; frozen (default false), pooling,
+layer, template, dtype, head, head_hidden_dim, input_norm: a frozen backbone with cached caption features and a
+trained head, `src/models/radar/frozen_text.py`, its features kept under data.text_cache_dir}; loss {use_exact
+(required: false = A0, true = A1 and the base of A2/A3), use_normal,
 use_abnormal_teacher, release_gate, min_pairs, init_temperature, temperature_bounds, teacher_momentum}; optimization
 {epochs, global_batch, lr, text_lr, min_lr, weight_decay, warmup_fraction, seed, amp (none or bf16), num_workers,
 worker_start_method}; meta {wandb_project, wandb_entity, wandb_run_name}; device (auto, cpu or cuda).
@@ -115,6 +117,7 @@ from src.datasets.radar_study_dataset import (
 from src.datasets.radar_stills import DEMO_DIM, StillSource, same_encoder
 from src.datasets.radar_token_cache import TokenCache
 from src.datasets.study_bags import choose_bag
+from src.models.radar.frozen_text import frozen_feature_key
 from src.models.radar.heads import StillMeasurementHeads
 from src.models.radar.loss import StructureContrastiveLoss
 from src.models.radar.model import RadarModel
@@ -155,7 +158,8 @@ def code_files():
                StructureContrastiveLoss.__module__,
                RadarModel.__module__, load_routing.__module__, step_schedule.__module__, StructurePooler.__module__,
                build_text_encoder.__module__, check_optimizer_coverage.__module__, StillSource.__module__,
-               StillMeasurementHeads.__module__, "src.datasets.still_preprocess", "src.utils.distributed",
+               StillMeasurementHeads.__module__, frozen_feature_key.__module__, "src.datasets.still_preprocess",
+               "src.utils.distributed",
                "src.models.utils.modules", "src.models.utils.pos_embs"}
     return sorted(os.path.relpath(os.path.abspath(sys.modules[m].__file__), REPO) for m in modules)
 
@@ -171,12 +175,14 @@ def code_digest():
 
 
 def fingerprint(config, routing, cache, n_studies, normality_digest=None, bags=None, caption_digest=None,
-                stills=None):
+                stills=None, text_features=None):
     """What defines the run: the config without run-control keys and data paths, and the contents behind them.
     `normality_digest`: the approved policy behind the flags of A2 and A3. `bags`: {split: `bag_record`}, the same
     in the matched baseline's run when both read the same clips. `caption_digest`: the rules the caption table was
     built with, recorded in every arm, approved or not. `stills`: the still stream's record (absent without stills,
-    so a v0 config keeps its v0 fingerprint)."""
+    so a v0 config keeps its v0 fingerprint). `text_features`: the feature key of a frozen caption encoder
+    (`frozen_feature_key`; absent for a trained encoder, whose fingerprint is unchanged), which says what the
+    cached features were computed from; `data.text_cache_dir`, where they are kept, is left out."""
     semantic = copy.deepcopy(config)
     for section, keys in RUN_CONTROL.items():
         for key in keys:
@@ -202,6 +208,9 @@ def fingerprint(config, routing, cache, n_studies, normality_digest=None, bags=N
                             "cache_meta": TokenCache(still_paths.pop("cache_dir")).meta,
                             "demographics_sha256": (file_sha256(still_paths.pop("demographics"))
                                                     if still_paths.get("demographics") else None)}
+    if text_features is not None:
+        record["text_features"] = text_features
+    data.pop("text_cache_dir", None)
     data.pop("cache_dir", None)
     data.pop("routing", None)
     data.pop("normality_policy", None)
@@ -303,7 +312,7 @@ def build_model(config, routing):
                                       demo_dim=DEMO_DIM if heads_config.get("demographics", True) else 0,
                                       hidden_dim=heads_config.get("hidden_dim", 256),
                                       use_visual=heads_config.get("visual", True))
-    text_encoder, tokenizer = build_text_encoder(t, m.get("proj_dim", 256))
+    text_encoder, tokenizer = build_text_encoder(t, m.get("proj_dim", 256), config["data"].get("text_cache_dir"))
     loss = StructureContrastiveLoss(
         trained, use_exact=lc["use_exact"], use_normal=lc.get("use_normal", False),
         use_abnormal_teacher=lc.get("use_abnormal_teacher", False), release_gate=lc.get("release_gate", False),
@@ -391,6 +400,21 @@ def structure_summary(contributing, skips, steps):
                      "median_normal_pairs": statistics.median(p for _, _, p in used) if used else None,
                      **{f"skipped_{reason}": int(reasons.get(reason, 0)) for reason in SKIP_REASONS}}
     return out
+
+
+def prepare_caption_features(tokenizer, captions, device, rank, world_size):
+    """Frozen caption encoder: encode every distinct training caption once (and the empty caption of structures
+    without one), then seal the store, so no step ever runs the text model. Rank 0 encodes first and writes the
+    cache file; the other ranks then read it (or encode for themselves without `data.text_cache_dir`)."""
+    texts = sorted(set(captions["caption"])) + [""]
+    if rank == 0:
+        tokenizer.prepare(texts, device)
+    if world_size > 1:
+        dist.barrier()
+        if rank != 0:
+            tokenizer.prepare(texts, device)
+    tokenizer.seal()
+    tokenizer.release_backbone()
 
 
 def _to(batch, device):
@@ -507,11 +531,14 @@ def train(config, out_dir, resume=True, stop_after_epoch=None, allow_code_change
     sampler = StudyBatchSampler(len(dataset), global_batch, rank, world_size, seed)
     schedule = step_schedule(len(dataset), global_batch, opt["epochs"], opt.get("warmup_fraction", 0.05))
     record = fingerprint(config, routing, cache, len(dataset), normality_digest, {split: dataset.bag_record()},
-                         build.get("policy_digest"), stills.record() if stills is not None else None)
+                         build.get("policy_digest"), stills.record() if stills is not None else None,
+                         frozen_feature_key(config["text"], data.get("text_cache_dir")))
     code = code_digest()
 
     model, tokenizer = build_model(config, routing)
     model.to(device)
+    if config["text"].get("frozen"):
+        prepare_caption_features(tokenizer, captions, device, rank, world_size)
     optimizer = torch.optim.AdamW(param_groups(model, opt), lr=opt["lr"])
     check_optimizer_coverage(model, optimizer)
     wrapped = model

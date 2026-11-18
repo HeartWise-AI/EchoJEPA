@@ -12,11 +12,11 @@ Three prompt modes, as in the prompt files of the two reference papers:
   prediction being the argmax or the expectation of the grade values (`categorical_probabilities`).
 - `regression` (EchoCLIP, Methods): a template with a `<#>` slot is filled with every value of a range, the prompts are
   encoded, the values are ranked by similarity, and the median of the best `keep` fraction (0.2 in EchoCLIP) is the
-  estimate (`regression_estimate`). EchoCLIP does this per frame and then pools; here one study embedding per
-  structure is scored. A regression task may instead list whole prompts with one `values` entry each and no slot:
-  EchoCLIP-R's "sampled prompts", real captions of training studies whose label is the value (up to ten per value
-  there), because short single-phrase prompts were out of distribution for an encoder trained on whole reports.
-  `evals/radar_frozen/mine_prompts.py` writes such a file.
+  estimate (`regression_estimate`; `top_k` keeps a fixed number of prompts instead, e.g. 1 or 5). EchoCLIP does this
+  per frame and then pools; here one study embedding per structure is scored. A regression task may instead list whole
+  prompts with one `values` entry each and no slot: EchoCLIP-R's "sampled prompts", real captions of training studies
+  whose label is the value (up to ten per value there), because short single-phrase prompts were out of distribution
+  for an encoder trained on whole reports. `evals/radar_frozen/mine_prompts.py` writes such a file.
 
 `PromptTask` reads one task of a prompt file (`configs/radar/prompts_v0.yaml`). `held_out` prompts (EchoCLIP's
 `testers`) are never used to choose settings, only to report. `target` names the column of a study-level label table
@@ -152,16 +152,28 @@ def categorical_probabilities(z, grade_sets, temperature):
     return F.softmax(z.float() @ centres.T / float(temperature), dim=-1)
 
 
-def regression_estimate(z, prompt_embeddings, values, keep=0.2):
-    """Value estimate [N]: the median of the `keep` fraction of values whose prompts are most similar to each row.
-
-    prompt_embeddings [M, P] and values [M] come from `regression_prompts` (a value may appear once per template)."""
+def regression_count(prompts, keep=0.2, top_k=None):
+    """How many of the `prompts` best-ranked prompts the regression read-out keeps: `top_k` when given (a fixed
+    count, e.g. 1 for the single most similar prompt), otherwise the `keep` fraction, rounded, at least one."""
+    if top_k is not None:
+        if isinstance(top_k, bool) or not isinstance(top_k, int) or not 1 <= top_k <= prompts:
+            raise ValueError(f"top_k must be an integer in [1, {prompts}], got {top_k!r}.")
+        return top_k
     if not 0.0 < keep <= 1.0:
         raise ValueError("keep must be in (0, 1].")
+    return max(1, int(round(keep * prompts)))
+
+
+def regression_estimate(z, prompt_embeddings, values, keep=0.2, top_k=None):
+    """Value estimate [N]: the median of the values of the prompts most similar to each row, keeping the `keep`
+    fraction of the prompts, or the `top_k` best when given (`regression_count`). An even count takes the lower of
+    the two middle values (`torch.median`).
+
+    prompt_embeddings [M, P] and values [M] come from `regression_prompts` (a value may appear once per template)."""
     values = torch.as_tensor(values, dtype=torch.float32)
     if prompt_embeddings.shape[0] != values.shape[0]:
         raise ValueError("One value per prompt embedding.")
+    top = regression_count(values.shape[0], keep, top_k)
     sims = z.float() @ prompt_embeddings.float().T                      # [N, M]
-    top = max(1, int(round(keep * values.shape[0])))
     best = sims.topk(top, dim=-1).indices                              # [N, top]
     return values[best].median(dim=-1).values

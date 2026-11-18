@@ -327,6 +327,21 @@ class TestZeroShotEval(unittest.TestCase):
                 self.assertEqual(len(bag["selected"]), ef["top_k"])
                 self.assertAlmostEqual(bag["value"], float(torch.tensor(bag["selected_values"]).median()), places=5)
 
+    def test_top_k_changes_only_the_regression_read_out_and_is_reported(self):
+        self.assertIsNone(self.report["top_k"])                              # default: the keep fraction
+        report = self.run_eval("top1", top_k=1, dump_studies=["V03"])
+        self.assertEqual(report["top_k"], 1)
+        frame = pd.read_csv(os.path.join(self.root, "top1", "predictions.csv"), dtype={"study_id": str})
+        for name in PROMPTS:
+            if name != "ef":
+                pd.testing.assert_frame_equal(self.rows(name, frame), self.rows(name))
+        ef = strict_json(os.path.join(self.root, "top1", "explain_V03.json"))["tasks"]["ef"]
+        self.assertEqual(ef["top_k"], 1)
+        self.assertIn("top_k=1", ef["rule"])
+        best = [bag["selected_values"][0] for bag in ef["bags"]]
+        self.assertTrue(all(len(bag["selected"]) == 1 for bag in ef["bags"]))
+        self.assertAlmostEqual(self.rows("ef", frame).loc["V03"].prediction, np.mean(best), places=5)
+
     def test_the_run_is_reproducible_and_pooling_and_seed_change_what_they_should(self):
         again = self.run_eval("again")
         self.assertEqual(again, self.report)

@@ -17,6 +17,7 @@ from src.models.radar.zero_shot import (
     encode_prompts,
     load_prompt_tasks,
     pool,
+    regression_count,
     regression_estimate,
     regression_prompts,
 )
@@ -134,6 +135,20 @@ class TestScorers(unittest.TestCase):
             regression_estimate(z, prompts, values[:-1])
         with self.assertRaises(ValueError):
             regression_estimate(z, prompts, values, keep=0.0)
+
+    def test_regression_top_k_keeps_a_fixed_number_of_prompts_instead_of_the_fraction(self):
+        values = list(range(10))
+        prompts = torch.eye(10)                                      # prompt v is axis v
+        z = F.normalize(torch.tensor([[0.6, 0, 0, 0, 0, 0, 0.7, 0.5, 1.0, 0.8]]), dim=-1)  # ranked 8, 9, 6, 0, 7
+        self.assertEqual(regression_estimate(z, prompts, values, top_k=1).item(), 8.0)      # the number one
+        self.assertEqual(regression_estimate(z, prompts, values, top_k=5).item(), 7.0)      # median of 8, 9, 6, 0, 7
+        # top_k replaces keep; without it the default fraction (0.2 of 10: values 8, 9) is unchanged
+        self.assertEqual(regression_estimate(z, prompts, values, keep=0.5, top_k=1).item(), 8.0)
+        self.assertEqual(regression_estimate(z, prompts, values).item(), 8.0)
+        self.assertEqual((regression_count(440), regression_count(440, top_k=5)), (88, 5))
+        for bad in (0, 11, 2.0, True):
+            with self.subTest(top_k=bad), self.assertRaisesRegex(ValueError, "top_k"):
+                regression_estimate(z, prompts, values, top_k=bad)
 
     def test_regression_with_several_templates_repeats_each_value(self):
         pairs = regression_prompts(["a <#>", "b <#>"], 0, 3)

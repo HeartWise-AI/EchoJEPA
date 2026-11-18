@@ -95,6 +95,7 @@ from src.models.radar.zero_shot import (
     categorical_probabilities,
     encode_prompts,
     load_prompt_tasks,
+    regression_count,
     regression_estimate,
     regression_prompts,
 )
@@ -250,10 +251,11 @@ def encode_task(task, text_encoder, tokenizer):
             "sets": [encode([p for p, v in zip(task.label_sources, task.values) if v == g]) for g in grades]}
 
 
-def score_task(task, z, encoded, temperature, pooling="mean_similarity", keep=0.2):
-    """One bag's predictions for z [N, P]: [N] (binary probability, regression estimate) or [N, G] (grades)."""
+def score_task(task, z, encoded, temperature, pooling="mean_similarity", keep=0.2, top_k=None):
+    """One bag's predictions for z [N, P]: [N] (binary probability, regression estimate) or [N, G] (grades).
+    `top_k`, when given, keeps that many best-ranked regression prompts instead of the `keep` fraction."""
     if task.mode == "regression":
-        return regression_estimate(z, encoded["prompts"], encoded["values"], keep=keep)
+        return regression_estimate(z, encoded["prompts"], encoded["values"], keep=keep, top_k=top_k)
     if task.mode == "binary":
         return binary_probability(z, encoded["positive"], encoded["negative"], temperature, pooling=pooling)
     return categorical_probabilities(z, encoded["sets"], temperature)
@@ -386,7 +388,7 @@ def read_eval_stills(config, state, routing, model, path, split, cache_dir=None,
 
 def evaluate(config, checkpoint, clips, labels, out_dir, prompts=DEFAULT_PROMPTS, split=None, cache_dir=None,
              num_bags=3, eval_seed=0, num_clips=None, selection=None, pooling="mean_similarity", keep=0.2,
-             thresholds=None, group_column=None, samples=1000, seed=0, batch_size=32, num_workers=0,
+             top_k=None, thresholds=None, group_column=None, samples=1000, seed=0, batch_size=32, num_workers=0,
              allow_training_studies=False, wandb=None, stills=None, still_cache_dir=None, demographics=None,
              clip_only=False, dump_studies=()):
     """Evaluate and write the outputs; returns the report written to `metrics.json`. `clips`, `labels`, `prompts`,
@@ -395,7 +397,8 @@ def evaluate(config, checkpoint, clips, labels, out_dir, prompts=DEFAULT_PROMPTS
     with them: `stills` is the evaluated studies' still table (`split` applies to it too), `still_cache_dir` and
     `demographics` default to the config's. `clip_only` evaluates such a checkpoint on clips alone, an ablation that
     the report names; without either the evaluation is refused, or the still stream would be dropped silently.
-    `dump_studies`: study ids whose `explain_<study_id>.json` is written (`explain_task`)."""
+    `dump_studies`: study ids whose `explain_<study_id>.json` is written (`explain_task`). `top_k` (regression):
+    keep that many best-ranked prompts instead of the `keep` fraction."""
     check_outside_repo(out_dir, "out_dir")
     dump_studies = [str(s) for s in (dump_studies or ())]
     if pooling not in POOLINGS:
@@ -464,7 +467,8 @@ def evaluate(config, checkpoint, clips, labels, out_dir, prompts=DEFAULT_PROMPTS
     report = {
         **source,
         "checkpoint_fingerprint": state["fingerprint"]["sha256"], "checkpoint_epoch": state["epoch"],
-        "checkpoint_step": state["step"], "temperature": temperature, "keep": keep, "num_bags": num_bags,
+        "checkpoint_step": state["step"], "temperature": temperature, "keep": keep, "top_k": top_k,
+        "num_bags": num_bags,
         "bags": dataset.bag_record(), "training_studies_allowed": bool(allow_training_studies),
         "studies": len(study_ids), "label_rows_not_evaluated": unused_rows,
         "training_studies_checked_by_group": group_checked,
@@ -484,13 +488,13 @@ def evaluate(config, checkpoint, clips, labels, out_dir, prompts=DEFAULT_PROMPTS
     if missing_dump:
         raise ValueError(f"dump_study names {len(missing_dump)} studies that are not evaluated here.")
     explain = {study: explain_header(dataset, study_ids.index(study), num_bags, structures, has_clip, temperature,
-                                     pooling, keep)
+                                     pooling, keep, top_k)
                for study in dump_studies}
     rows, youden = [], {}
     for name, task in tasks.items():
         s = structures.index(task.structure)
         encoded = encode_task(task, model.text, tokenizer)
-        per_bag = torch.stack([score_task(task, z[b, :, s], encoded, temperature, pooling, keep)
+        per_bag = torch.stack([score_task(task, z[b, :, s], encoded, temperature, pooling, keep, top_k)
                                for b in range(num_bags)])
         pooled, bags = pool_bags(per_bag, has_clip[:, :, s])
         supported = bags > 0
@@ -514,7 +518,8 @@ def evaluate(config, checkpoint, clips, labels, out_dir, prompts=DEFAULT_PROMPTS
         for study, record in explain.items():
             i = study_ids.index(study)
             record["tasks"][name] = explain_task(task, z[:, i, s], has_clip[:, i, s], encoded, temperature, pooling,
-                                                 keep, per_bag[:, i], pooled[i], prediction[i], label[i])
+                                                 keep, per_bag[:, i], pooled[i], prediction[i], label[i],
+                                                 top_k=top_k)
 
     report["summary"] = summary(report["tasks"])
     os.makedirs(out_dir, exist_ok=True)
@@ -532,7 +537,7 @@ def evaluate(config, checkpoint, clips, labels, out_dir, prompts=DEFAULT_PROMPTS
     return report
 
 
-def explain_header(dataset, index, num_bags, structures, has_clip, temperature, pooling, keep):
+def explain_header(dataset, index, num_bags, structures, has_clip, temperature, pooling, keep, top_k=None):
     """The study part of an explain record: per evaluation bag the clips read (id, which is the file path, view,
     acquisition) and which structures the bag lets read a clip. Restores the dataset's bag index."""
     study_id, clips = dataset.studies[index]
@@ -549,14 +554,15 @@ def explain_header(dataset, index, num_bags, structures, has_clip, temperature, 
     finally:
         dataset.eval_bag_index = previous
     return {"study_id": study_id, "synthetic": False, "temperature": temperature, "pooling": pooling, "keep": keep,
-            "num_bags": num_bags, "bags": bags, "tasks": {}}
+            "top_k": top_k, "num_bags": num_bags, "bags": bags, "tasks": {}}
 
 
 def _sims(z, embeddings):
     return (z.float() @ embeddings.float().T).tolist()
 
 
-def explain_task(task, z, supported, encoded, temperature, pooling, keep, per_bag, pooled, prediction, label):
+def explain_task(task, z, supported, encoded, temperature, pooling, keep, per_bag, pooled, prediction, label,
+                 top_k=None):
     """Everything that produced one task's prediction for one study. z [bags, P]: the study's structure embedding
     in each bag; per_bag [bags] or [bags, G]: the scorer's output per bag (as in `evaluate`)."""
     out = {"mode": task.mode, "structure": task.structure, "target": task.target,
@@ -566,10 +572,11 @@ def explain_task(task, z, supported, encoded, temperature, pooling, keep, per_ba
         values = [float(v) for v in encoded["values"]]
         texts = (list(task.label_sources) if task.values
                  else [p for _, p in regression_prompts(task.label_sources, *task.value_range)])
-        top = max(1, round(keep * len(values)))
+        top = regression_count(len(values), keep, top_k)
+        kept = f"keep={keep}" if top_k is None else f"top_k={top_k}"
         out.update(prompts=texts, values=values, keep=keep, top_k=top,
                    rule=f"value = median of the values of the top {top} of {len(values)} prompts by cosine "
-                        f"similarity (keep={keep}); study value = mean over the supporting bags")
+                        f"similarity ({kept}); study value = mean over the supporting bags")
         for b in range(z.shape[0]):
             sims = torch.as_tensor(_sims(z[b:b + 1], encoded["prompts"])[0])
             best = sims.topk(top).indices.tolist()
@@ -669,6 +676,8 @@ def main(argv=None):
     parser.add_argument("--selection", help="bag selection (default: the config's)")
     parser.add_argument("--pooling", default="mean_similarity", choices=POOLINGS)
     parser.add_argument("--keep", type=float, default=0.2, help="regression: fraction of best-ranked values kept")
+    parser.add_argument("--top_k", type=int,
+                        help="regression: keep this many best-ranked prompts instead of the --keep fraction")
     parser.add_argument("--thresholds", help="thresholds.json of a run on a tuning split")
     parser.add_argument("--group_column", help="label-table column to resample by (for example the patient)")
     parser.add_argument("--samples", type=int, default=1000, help="bootstrap resamples")
@@ -695,8 +704,8 @@ def main(argv=None):
     report = evaluate(config, args.checkpoint, args.clips, args.labels, args.out_dir, prompts=args.prompts,
                       split=args.split, cache_dir=args.cache_dir, num_bags=args.num_bags, eval_seed=args.eval_seed,
                       num_clips=args.num_clips, selection=args.selection, pooling=args.pooling, keep=args.keep,
-                      thresholds=args.thresholds, group_column=args.group_column, samples=args.samples,
-                      seed=args.seed, batch_size=args.batch_size, num_workers=args.num_workers,
+                      top_k=args.top_k, thresholds=args.thresholds, group_column=args.group_column,
+                      samples=args.samples, seed=args.seed, batch_size=args.batch_size, num_workers=args.num_workers,
                       allow_training_studies=args.allow_training_studies, wandb=wandb, stills=args.stills,
                       still_cache_dir=args.still_cache_dir, demographics=args.demographics,
                       clip_only=args.clip_only, dump_studies=args.dump_study)
