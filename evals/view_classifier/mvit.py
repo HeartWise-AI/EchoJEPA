@@ -15,9 +15,12 @@ the unchanged model on the labelling pool in both orders and measures agreement 
 by the same weights: the order to use, and a check that this input is close to the one the archive was scored with.
 
 The input is selectable in the arm's `data` section (the defaults are the input above, which the first runs used):
-- `preprocessing`: `centre_zoom` (default: centre square, `zoom` cut from each side, bicubic) or `full_squash` (the
-  whole frame resized to `resolution` x `resolution`, bicubic, nothing cut, aspect not kept; `zoom` is ignored). Of the
-  inputs `preprocess_variants` compared, `full_squash` reproduced the archive's predictions best.
+- `preprocessing`: `centre_zoom` (default: centre square, `zoom` cut from each side, bicubic), `full_squash` (the
+  whole frame resized to `resolution` x `resolution`, bicubic without antialiasing, nothing cut, aspect not kept; `zoom`
+  is ignored) or `full_squash_aa` (the same whole-frame squash, bilinear WITH antialiasing: `preprocess_variants`'
+  `squash_bilinear_aa` itself, so with `frame_read: echoprime` the input is byte for byte its `full_squash_bilinear_aa`
+  variant). Of the 16 preparations `preprocess_variants` compared over two rounds, `full_squash_bilinear_aa` in RGB
+  reproduced the archive's predictions best (essentially exactly); `full_squash` was the best of the first round.
 - `frame_read`: `cache` (default: the token cache's read, `frames_per_clip` frames spread over the first
   `frames_per_clip * frame_step`, a short clip padded with black frames) or `echoprime` (frames 0, step, 2 step, ...
   of the first `frames_per_clip * frame_step` that exist; a short clip's missing frames are zero after normalisation,
@@ -129,7 +132,16 @@ def full_squash(buffer, size=224):
     return x.round().clamp(0, 255).to(torch.uint8).permute(1, 0, 2, 3).contiguous()
 
 
-PREPROCESSING = ("centre_zoom", "full_squash")
+def full_squash_aa(buffer, size=224):
+    """uint8 [T, H, W, 3] (array or tensor) -> uint8 tensor [3, T, size, size]: the whole frame resized to size x size,
+    bilinear with antialiasing (aspect not kept, nothing cut). It calls `preprocess_variants.squash_bilinear_aa`, the
+    function that made the `full_squash_bilinear_aa` variant, so the pixels are the ones that variant scored."""
+    from evals.view_classifier.preprocess_variants import squash_bilinear_aa   # (that module imports this one)
+    x = squash_bilinear_aa(np.asarray(buffer), size)
+    return torch.as_tensor(x).permute(3, 0, 1, 2).contiguous()
+
+
+PREPROCESSING = ("centre_zoom", "full_squash", "full_squash_aa")
 FRAME_READS = ("cache", "echoprime")
 
 
@@ -151,6 +163,8 @@ def spatial(buffer, size=224, zoom=0.1, preprocessing="centre_zoom"):
         return crop_and_scale(buffer, size, zoom)
     if preprocessing == "full_squash":
         return full_squash(buffer, size)
+    if preprocessing == "full_squash_aa":
+        return full_squash_aa(buffer, size)
     raise ValueError(f"Unknown preprocessing {preprocessing!r}.")
 
 
@@ -185,7 +199,10 @@ def model_input(x, channel_order="rgb", zero_padding=False):
 
 def random_crop(x, scale_min, generator):
     """Training augmentation on [B, 3, T, H, W]: a random square crop of side in [scale_min, 1] of the frame, at a
-    random place, resized back. The same crop for every frame of a clip; no flip (it would change the view)."""
+    random place, resized back. The same crop for every frame of a clip; no flip (it would change the view).
+    It acts on the model input (`make_arm`'s `prepare`: after the preprocessing, normalisation and zeroing of padding
+    frames), whatever the preprocessing: a zoom of 1 to 1/scale_min of the 224 x 224 input (bilinear upsampling, so
+    antialiasing does not apply); padding frames, all 0, stay 0. Evaluation never crops."""
     if scale_min >= 1.0:
         return x
     b, c, t, h, w = x.shape

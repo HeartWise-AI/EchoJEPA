@@ -7,7 +7,13 @@ Each clip is read as the study probe reads it at evaluation: the first `frames_p
 `data.spatial: full_squash` the centre crop is dropped instead: every frame is resized to `resolution` x `resolution`
 (the same bilinear resize, aspect not kept), so the whole frame is encoded, as in the 224 x 224 squashed videos
 EchoJEPA was pretrained on; the default `resize_centre_crop` keeps the short side's central 224/256 and less of the
-long side. The setting is recorded in the provenance (`transform: eval_full_squash`). The encoder
+long side. The setting is recorded in the provenance (`transform: eval_full_squash`).
+`data.resize` (only with `full_squash`) picks that resize: `bilinear` (default, the tokens of every earlier cache:
+the repository's `video_transforms.Resize`, which on decoded frames is `cv2.resize` with INTER_LINEAR, NOT antialiased,
+so a 636 x 434 or 1016 x 708 frame aliases at 224 x 224), `bicubic_aa` or `bilinear_aa` (`torch.nn.functional.
+interpolate` with antialiasing on the uint8 frames, rounded back to uint8). `bicubic_aa` is the closest to the videos
+EchoJEPA was pretrained on, which ffmpeg's `scale=224:224` made (bicubic, filtered when downscaling). A non-default
+resize is recorded in the transform name (`eval_full_squash_bicubic_aa`). The encoder
 is the probe's (`evals.video_classification_frozen.models.init_module`), run without gradients. One clip gives
 `prod(token_grid)` tokens, stored by `src.datasets.radar_token_cache`.
 
@@ -27,7 +33,7 @@ Two stages, so that several GPUs can share the work and an interrupted run loses
 `<out>` must be outside the repository: clip ids are file paths. Nothing printed names a clip or a study.
 
 Config (YAML): encoder {checkpoint, module_name, pretrain_kwargs, wrapper_kwargs}; data {frames_per_clip, frame_step,
-resolution, normalization, spatial}; cache {token_grid, embed_dim, dtype, use_bfloat16}. `--checkpoint` overrides
+resolution, normalization, spatial, resize}; cache {token_grid, embed_dim, dtype, use_bfloat16}. `--checkpoint` overrides
 encoder.checkpoint.
 
 Usage (one process per GPU, then once):
@@ -56,14 +62,23 @@ DEFAULT_NORMALIZATION = ((0.485, 0.456, 0.406), (0.229, 0.224, 0.225))
 EXCLUDE_COLUMNS = ("avi_path", "video_path", "clip_id")
 CACHE_VERSION = 1    # raise when a change here alters the tokens a given config writes
 SPATIAL = {"resize_centre_crop": "eval", "full_squash": "eval_full_squash"}   # data.spatial -> provenance transform
+RESIZES = ("bilinear", "bicubic_aa", "bilinear_aa")     # data.resize (full_squash only); bilinear = earlier caches
 
 
 def spatial_transform(data):
-    """The provenance name of `data.spatial` (default `resize_centre_crop`, the probe's eval transform)."""
+    """The provenance name of `data.spatial` (default `resize_centre_crop`, the probe's eval transform) and, when not
+    the default, of `data.resize` (`eval_full_squash_bicubic_aa`)."""
     spatial = data.get("spatial", "resize_centre_crop")
     if spatial not in SPATIAL:
         raise ValueError(f"Unknown data.spatial {spatial!r} (one of {sorted(SPATIAL)}).")
-    return SPATIAL[spatial]
+    resize = data.get("resize", "bilinear")
+    if resize not in RESIZES:
+        raise ValueError(f"Unknown data.resize {resize!r} (one of {RESIZES}).")
+    if resize == "bilinear":
+        return SPATIAL[spatial]
+    if spatial != "full_squash":
+        raise ValueError("data.resize applies only to data.spatial: full_squash.")
+    return f"{SPATIAL[spatial]}_{resize}"
 
 
 def chunk_of(clip_id, chunks):
@@ -132,7 +147,7 @@ class ClipReader(torch.utils.data.Dataset):
         normalization = data.get("normalization") or DEFAULT_NORMALIZATION
         self.squash = spatial_transform(data) != "eval"     # (an attribute, not a closure: workers pickle the reader)
         if self.squash:
-            self.transform = full_squash_transform(resolution, normalization)
+            self.transform = full_squash_transform(resolution, normalization, data.get("resize", "bilinear"))
         else:
             self.transform = make_transforms(training=False, crop_size=resolution, num_views_per_clip=1,
                                              normalize=normalization)
@@ -148,13 +163,37 @@ class ClipReader(torch.utils.data.Dataset):
         return i, clip if self.squash else clip[0], torch.as_tensor(np.asarray(indices[0], dtype=np.int64))
 
 
-def full_squash_transform(resolution, normalization):
-    """The probe's eval transform without its centre crop: each frame resized to resolution x resolution with the same
-    bilinear resize, then to a [C, T, H, W] tensor in [0, 1] and normalised."""
+class AntialiasedResize:
+    """uint8 frames [T, H, W, 3] -> list of uint8 [size, size, 3]: `torch.nn.functional.interpolate` with antialiasing
+    (`mode` bicubic or bilinear), rounded and clipped back to uint8 as a video file stores its frames. A drop-in for
+    `video_transforms.Resize` before `ClipToTensor` (which gets a list of frames from either)."""
+
+    def __init__(self, size, mode):
+        if mode not in ("bicubic", "bilinear"):
+            raise ValueError(f"Unknown antialiased resize mode {mode!r}.")
+        self.size, self.mode = int(size), mode
+
+    def __call__(self, clip):
+        x = torch.as_tensor(np.ascontiguousarray(np.asarray(clip))).permute(0, 3, 1, 2).float()
+        x = torch.nn.functional.interpolate(x, size=(self.size, self.size), mode=self.mode, align_corners=False,
+                                            antialias=True)
+        return list(x.round().clamp(0, 255).to(torch.uint8).permute(0, 2, 3, 1).numpy())
+
+
+def full_squash_transform(resolution, normalization, resize="bilinear"):
+    """The probe's eval transform without its centre crop: each frame resized to resolution x resolution (`resize`:
+    `bilinear` = the probe's own resize, cv2 INTER_LINEAR on decoded frames, no antialiasing; `bicubic_aa` /
+    `bilinear_aa` = `AntialiasedResize`), then to a [C, T, H, W] tensor in [0, 1] and normalised."""
     import src.datasets.utils.video.transforms as video_transforms
     import src.datasets.utils.video.volume_transforms as volume_transforms
+    if resize == "bilinear":
+        resizer = video_transforms.Resize((resolution, resolution), interpolation="bilinear")
+    elif resize in ("bicubic_aa", "bilinear_aa"):
+        resizer = AntialiasedResize(resolution, resize.removesuffix("_aa"))
+    else:
+        raise ValueError(f"Unknown data.resize {resize!r} (one of {RESIZES}).")
     return video_transforms.Compose([
-        video_transforms.Resize((resolution, resolution), interpolation="bilinear"),
+        resizer,
         volume_transforms.ClipToTensor(),
         video_transforms.Normalize(mean=normalization[0], std=normalization[1]),
     ])

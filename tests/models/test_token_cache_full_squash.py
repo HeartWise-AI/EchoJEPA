@@ -89,6 +89,54 @@ class TestSpatial(unittest.TestCase):
                                                    "resolution", "transform"])          # the keys caches already hold
         config["data"]["spatial"] = "full_squash"
         self.assertEqual(btc.provenance(config, args, 1, 0)["data"]["transform"], "eval_full_squash")
+        config["data"]["resize"] = "bilinear"
+        self.assertEqual(btc.provenance(config, args, 1, 0)["data"]["transform"], "eval_full_squash")
+        config["data"]["resize"] = "bicubic_aa"
+        aa = btc.provenance(config, args, 1, 0)
+        self.assertEqual(aa["data"]["transform"], "eval_full_squash_bicubic_aa")
+        self.assertEqual(sorted(aa["data"]), sorted(default["data"]))                   # no new key
+        self.assertEqual(btc.spatial_transform({"spatial": "full_squash", "resize": "bilinear_aa"}),
+                         "eval_full_squash_bilinear_aa")
+        with self.assertRaises(ValueError):
+            btc.spatial_transform({"spatial": "full_squash", "resize": "area"})
+        with self.assertRaises(ValueError):                                              # crop path: resize not offered
+            btc.spatial_transform({"resize": "bicubic_aa"})
+        self.assertEqual(btc.spatial_transform({"resize": "bilinear"}), "eval")
+
+    def test_default_squash_resize_is_cv2_linear_without_antialiasing(self):
+        """The default full_squash resize (every existing whole-frame cache) is cv2 INTER_LINEAR: on a frame of
+        1-pixel stripes downscaled 2.8x it aliases (stripes survive), where the antialiased resizes average them."""
+        import cv2
+        frame = np.zeros((1, 434, 636, 3), dtype=np.uint8)
+        frame[:, :, 1::2] = 255
+        default = np.asarray(btc.full_squash_transform(224, IMAGENET).transforms[0](frame))
+        self.assertTrue(np.array_equal(default[0], cv2.resize(frame[0], (224, 224), interpolation=cv2.INTER_LINEAR)))
+        self.assertGreater(float(default.std()), 50)
+        for resize in ("bicubic_aa", "bilinear_aa"):
+            out = np.asarray(btc.full_squash_transform(224, IMAGENET, resize).transforms[0](frame))
+            self.assertEqual((out.shape, out.dtype), ((1, 224, 224, 3), np.uint8))
+            self.assertLess(float(out.std()), 10)
+            self.assertLess(abs(float(out.mean()) - 127.5), 3)
+
+    def test_antialiased_squash_reader(self):
+        """`resize: bicubic_aa`: the whole frame, F.interpolate(bicubic, antialias) on the uint8 frames, rounded, then
+        [0, 1] and normalised; padding frames stay black; the reader pickles (spawn workers)."""
+        from src.datasets.video_study_dataset import make_clip_loader
+        reader = btc.ClipReader([self.video], {**self.data, "spatial": "full_squash", "resize": "bicubic_aa"})
+        _, clip, indices = reader[0]
+        self.assertEqual(tuple(clip.shape), (3, 16, 64, 64))
+        buffer, _ = make_clip_loader(16, 2, random_clip_sampling=False).loadvideo_decord(self.video, 16)
+        x = torch.as_tensor(np.asarray(buffer[:16])).permute(0, 3, 1, 2).float()
+        x = torch.nn.functional.interpolate(x, size=(64, 64), mode="bicubic", align_corners=False, antialias=True)
+        ref = x.round().clamp(0, 255).permute(1, 0, 2, 3) / 255
+        mean, std = (torch.tensor(v).view(3, 1, 1, 1) for v in IMAGENET)
+        torch.testing.assert_close(clip, (ref - mean) / std, atol=1e-5, rtol=1e-5)
+        _, plain, _ = btc.ClipReader([self.video], {**self.data, "spatial": "full_squash"})[0]
+        self.assertFalse(torch.equal(clip, plain))
+        self.assertEqual(len(indices), 16)
+        pickle.dumps(reader)
+        with self.assertRaises(ValueError):
+            btc.AntialiasedResize(64, "area")
 
 
 if __name__ == "__main__":
