@@ -53,7 +53,11 @@ Outputs in `out_dir`, which must be outside the repository because `predictions.
 - `metrics.json`: per task the coverage, the metrics and their intervals, a `summary` (the binary tasks' mean AUROC,
   plain and weighted by scored studies), and what the run read (checksums of the
   checkpoint, clip table, label table and prompt file, the bag record, the temperature, the pooling);
-- `thresholds.json`.
+- `thresholds.json`;
+- with `--dump_study <study_id>` (repeatable), `explain_<study_id>.json` per named study: per bag the clip ids (file
+  paths) and views read, and per task every prompt with its cosine similarity and logit (similarity / temperature),
+  the prompts the rule selected, each bag's value and the pooled prediction beside the label
+  (`explain_task`). `tools/radar/render_zero_shot_video.py` renders it as a short video.
 
 The evaluation cache may be another cache than the training one (another split), written by the same frozen encoder:
 the provenance keys on which the two caches differ are listed in `metrics.json` (`cache_provenance_differences`),
@@ -94,6 +98,7 @@ from src.models.radar.zero_shot import (
     regression_estimate,
     regression_prompts,
 )
+from src.models.radar.zero_shot import pool as zero_shot_pool
 from src.utils.wandb_logging import PRIVATE_WANDB_SETTINGS, finish_wandb, init_wandb, log_scalars
 
 DEFAULT_PROMPTS = os.path.join(REPO, "configs", "radar", "prompts_v0.yaml")
@@ -383,14 +388,16 @@ def evaluate(config, checkpoint, clips, labels, out_dir, prompts=DEFAULT_PROMPTS
              num_bags=3, eval_seed=0, num_clips=None, selection=None, pooling="mean_similarity", keep=0.2,
              thresholds=None, group_column=None, samples=1000, seed=0, batch_size=32, num_workers=0,
              allow_training_studies=False, wandb=None, stills=None, still_cache_dir=None, demographics=None,
-             clip_only=False):
+             clip_only=False, dump_studies=()):
     """Evaluate and write the outputs; returns the report written to `metrics.json`. `clips`, `labels`, `prompts`,
     `checkpoint`, `thresholds` are paths; `num_clips` and `selection` default to the training config's; `wandb` is
     {wandb_project, wandb_entity, wandb_run_name} or None. A checkpoint trained with Doppler stills is evaluated
     with them: `stills` is the evaluated studies' still table (`split` applies to it too), `still_cache_dir` and
     `demographics` default to the config's. `clip_only` evaluates such a checkpoint on clips alone, an ablation that
-    the report names; without either the evaluation is refused, or the still stream would be dropped silently."""
+    the report names; without either the evaluation is refused, or the still stream would be dropped silently.
+    `dump_studies`: study ids whose `explain_<study_id>.json` is written (`explain_task`)."""
     check_outside_repo(out_dir, "out_dir")
+    dump_studies = [str(s) for s in (dump_studies or ())]
     if pooling not in POOLINGS:
         raise ValueError(f"pooling must be one of {POOLINGS}, got {pooling!r}.")
     if num_bags < 1:
@@ -473,6 +480,12 @@ def evaluate(config, checkpoint, clips, labels, out_dir, prompts=DEFAULT_PROMPTS
                       "resampled": group_column if group_column else "study_id"},
         "tasks": {},
     }
+    missing_dump = sorted(set(dump_studies) - set(study_ids))
+    if missing_dump:
+        raise ValueError(f"dump_study names {len(missing_dump)} studies that are not evaluated here.")
+    explain = {study: explain_header(dataset, study_ids.index(study), num_bags, structures, has_clip, temperature,
+                                     pooling, keep)
+               for study in dump_studies}
     rows, youden = [], {}
     for name, task in tasks.items():
         s = structures.index(task.structure)
@@ -498,6 +511,10 @@ def evaluate(config, checkpoint, clips, labels, out_dir, prompts=DEFAULT_PROMPTS
         frame["probabilities"] = ([json.dumps([round(float(x), 6) for x in row]) if ok else ""
                                    for row, ok in zip(pooled, supported)] if task.mode == "categorical" else "")
         rows.append(frame)
+        for study, record in explain.items():
+            i = study_ids.index(study)
+            record["tasks"][name] = explain_task(task, z[:, i, s], has_clip[:, i, s], encoded, temperature, pooling,
+                                                 keep, per_bag[:, i], pooled[i], prediction[i], label[i])
 
     report["summary"] = summary(report["tasks"])
     os.makedirs(out_dir, exist_ok=True)
@@ -508,8 +525,93 @@ def evaluate(config, checkpoint, clips, labels, out_dir, prompts=DEFAULT_PROMPTS
     with open(os.path.join(out_dir, "thresholds.json"), "w", encoding="utf-8") as f:
         json.dump({"source": source, "thresholds": {k: v for k, v in youden.items()
                                                     if tasks[k].mode == "binary"}}, f, indent=2, sort_keys=True)
+    for study, record in explain.items():
+        with open(os.path.join(out_dir, f"explain_{study}.json"), "w", encoding="utf-8") as f:
+            json.dump(_json(record), f, indent=2, ensure_ascii=False, allow_nan=False)
     log_report(report, wandb, out_dir)
     return report
+
+
+def explain_header(dataset, index, num_bags, structures, has_clip, temperature, pooling, keep):
+    """The study part of an explain record: per evaluation bag the clips read (id, which is the file path, view,
+    acquisition) and which structures the bag lets read a clip. Restores the dataset's bag index."""
+    study_id, clips = dataset.studies[index]
+    info = {clip: (view, acquisition) for clip, view, acquisition in clips}
+    previous, bags = dataset.eval_bag_index, []
+    try:
+        for b in range(num_bags):
+            dataset.eval_bag_index = b
+            chosen = dataset[index]["clip_ids"]
+            bags.append({"bag": b,
+                         "clips": [{"clip_id": c, "view": info[c][0], "acquisition": info[c][1]} for c in chosen],
+                         "structures_supported": [name for k, name in enumerate(structures)
+                                                  if bool(has_clip[b, index, k])]})
+    finally:
+        dataset.eval_bag_index = previous
+    return {"study_id": study_id, "synthetic": False, "temperature": temperature, "pooling": pooling, "keep": keep,
+            "num_bags": num_bags, "bags": bags, "tasks": {}}
+
+
+def _sims(z, embeddings):
+    return (z.float() @ embeddings.float().T).tolist()
+
+
+def explain_task(task, z, supported, encoded, temperature, pooling, keep, per_bag, pooled, prediction, label):
+    """Everything that produced one task's prediction for one study. z [bags, P]: the study's structure embedding
+    in each bag; per_bag [bags] or [bags, G]: the scorer's output per bag (as in `evaluate`)."""
+    out = {"mode": task.mode, "structure": task.structure, "target": task.target,
+           "label": label, "prediction": prediction, "per_bag_output": per_bag.double().tolist(),
+           "bags_supported": [bool(x) for x in supported], "bags": []}
+    if task.mode == "regression":
+        values = [float(v) for v in encoded["values"]]
+        texts = (list(task.label_sources) if task.values
+                 else [p for _, p in regression_prompts(task.label_sources, *task.value_range)])
+        top = max(1, round(keep * len(values)))
+        out.update(prompts=texts, values=values, keep=keep, top_k=top,
+                   rule=f"value = median of the values of the top {top} of {len(values)} prompts by cosine "
+                        f"similarity (keep={keep}); study value = mean over the supporting bags")
+        for b in range(z.shape[0]):
+            sims = torch.as_tensor(_sims(z[b:b + 1], encoded["prompts"])[0])
+            best = sims.topk(top).indices.tolist()
+            out["bags"].append({"similarities": sims.tolist(), "logits": (sims / temperature).tolist(),
+                                "selected": best, "selected_values": [values[j] for j in best],
+                                "value": float(per_bag[b])})
+    elif task.mode == "binary":
+        texts = list(task.label_sources) + list(task.negative_sources)
+        sides = ["positive"] * len(task.label_sources) + ["negative"] * len(task.negative_sources)
+        out.update(prompts=texts, sides=sides,
+                   rule=f"P(finding) = softmax over (negative, positive) of the set scores / T (T={temperature:.4g},"
+                        f" set score = {pooling}); study probability = mean over the supporting bags")
+        for b in range(z.shape[0]):
+            sims = _sims(z[b:b + 1], torch.cat([encoded["positive"], encoded["negative"]]))[0]
+            pos, neg = sims[:len(task.label_sources)], sims[len(task.label_sources):]
+            if pooling == "mean_similarity":
+                s_pos, s_neg = float(np.mean(pos)), float(np.mean(neg))
+            else:
+                s_pos = float(z[b].float() @ zero_shot_pool(encoded["positive"]))
+                s_neg = float(z[b].float() @ zero_shot_pool(encoded["negative"]))
+            out["bags"].append({"similarities": sims, "logits": [x / temperature for x in sims],
+                                "set_scores": {"positive": s_pos, "negative": s_neg},
+                                "selected": "positive" if s_pos > s_neg else "negative",
+                                "value": float(per_bag[b])})
+    else:
+        grades = [float(g) for g in encoded["grades"]]
+        out.update(prompts=list(task.label_sources), prompt_grades=[float(v) for v in task.values], grades=grades,
+                   rule=f"grade probabilities = softmax over grades of similarity to each grade's mean prompt "
+                        f"embedding / T (T={temperature:.4g}); study = mean over the supporting bags, then argmax")
+        everything = torch.cat(encoded["sets"])
+        order = [i for g in grades for i, v in enumerate(task.values) if float(v) == g]
+        for b in range(z.shape[0]):
+            per_prompt = _sims(z[b:b + 1], everything)[0]
+            sims = [0.0] * len(per_prompt)
+            for k, i in enumerate(order):
+                sims[i] = per_prompt[k]
+            centres = [float(z[b].float() @ zero_shot_pool(g)) for g in encoded["sets"]]
+            out["bags"].append({"similarities": sims, "logits": [x / temperature for x in sims],
+                                "grade_scores": centres, "selected": grades[int(np.argmax(centres))],
+                                "probabilities": per_bag[b].double().tolist()})
+        out["pooled_probabilities"] = np.asarray(pooled, dtype=float).tolist()
+    return out
 
 
 def summary(tasks):
@@ -580,6 +682,8 @@ def main(argv=None):
     parser.add_argument("--demographics", help="demographics of the evaluated studies (default: the config's)")
     parser.add_argument("--clip_only", action="store_true",
                         help="evaluate a checkpoint trained with stills on clips alone (an ablation)")
+    parser.add_argument("--dump_study", action="append", default=[], metavar="STUDY_ID",
+                        help="write explain_<STUDY_ID>.json (clips, prompts, scores, selection, value); repeatable")
     parser.add_argument("--wandb_project")
     parser.add_argument("--wandb_entity")
     parser.add_argument("--wandb_run_name")
@@ -595,7 +699,7 @@ def main(argv=None):
                       seed=args.seed, batch_size=args.batch_size, num_workers=args.num_workers,
                       allow_training_studies=args.allow_training_studies, wandb=wandb, stills=args.stills,
                       still_cache_dir=args.still_cache_dir, demographics=args.demographics,
-                      clip_only=args.clip_only)
+                      clip_only=args.clip_only, dump_studies=args.dump_study)
     print(json.dumps({name: {**task["coverage"], **task["metrics"]} for name, task in report["tasks"].items()}))
 
 
