@@ -213,6 +213,165 @@ class TestLinkAndSplit(unittest.TestCase):
         self.assertEqual((counts["temporal_stills"], counts["temporal_stills_left_out_trained_patients"]), (2, 1))
 
 
+class TestV11Quantities(unittest.TestCase):
+
+    def test_mitral_inflow_and_mva_by_pht_are_targets(self):
+        rows = pd.DataFrame([meas_row("i", "d2", "MV", "E", 0.8, "m/s", mode="PW_TDI"),
+                             meas_row("i", "d2", "MV", "A", 60.0, "cm/s", mode="PW_TDI"),
+                             meas_row("i", "d2", "MV", "E/A", 1.33, None, mode="PW_TDI"),
+                             meas_row("i", "d2", "MV", "E/A", 25.0, None, mode="PW_TDI"),          # out of range
+                             meas_row("s", "d2", "MV", "PHT", 180.0, "ms"),
+                             meas_row("s", "d2", "MVA", "(PHT)", 1.2, "cm²"),
+                             meas_row("s", "d2", "MVA", "(VTI)", 1.1, "cm2")])                     # not a target
+        stills, dropped = bsm.aggregate_stills(rows)
+        i = stills.set_index("png_path").loc["/stills/d2/i.png"]
+        self.assertEqual(i.still_tag, "MV_INFLOW")
+        self.assertAlmostEqual(i.y_MV_E, 0.8)
+        self.assertAlmostEqual(i.y_MV_A, 0.6)
+        self.assertAlmostEqual(i.y_MV_EA, 1.33)
+        self.assertEqual(dropped["out_of_range"], 1)
+        s = stills.set_index("png_path").loc["/stills/d2/s.png"]
+        self.assertAlmostEqual(s.y_MVA_PHT, 1.2)
+        self.assertAlmostEqual(s.y_MV_PHT, 180.0)
+        for column in ("y_MV_EA", "y_MVA_PHT"):
+            self.assertIn(column, bsm.TARGET_COLUMNS)
+            self.assertNotIn("/", column)
+        self.assertEqual(bsm.target_of("MV", "E/A"), ("MV_EA", "ratio"))
+        self.assertIsNone(bsm.target_of("TV", "E/A"))
+        self.assertIn("EA", next(g for g in bsm.LEAK_GROUPS if "E" in g))
+
+    def test_tissue_doppler_is_never_a_target(self):
+        rows = pd.DataFrame([meas_row("t", "d2", "MV", "E'", 0.09, "m/s", mode="PW_TDI"),
+                             meas_row("t", "d2", "MV", "E", 0.8, "m/s", mode="PW_TDI"),
+                             meas_row("t", "d2", "TV", "S'", 0.12, "m/s", mode="PW_TDI"),
+                             meas_row("u", "d2", "MV", "E/E'", 9.0, None, mode="PW_TDI"),
+                             meas_row("u", "d2", "MV", "E", 0.7, "m/s", mode="PW_TDI")])
+        stills, dropped = bsm.aggregate_stills(rows)
+        t = stills.set_index("png_path").loc["/stills/d2/t.png"]
+        self.assertEqual((t.still_tag, t.still_type), ("TDI", "tdi_TDI"))           # still routed
+        self.assertFalse(any(c.startswith("y_") and pd.notna(t[c]) for c in stills.columns))
+        self.assertEqual(json.loads(t.signed_values), {})
+        self.assertEqual(dropped["tdi_excluded"], 1)                                # the MV E read on the TDI still
+        u = stills.set_index("png_path").loc["/stills/d2/u.png"]
+        self.assertAlmostEqual(u.y_MV_E, 0.7)
+        self.assertNotIn("MV_E/E'", json.loads(u.signed_values))
+        self.assertIsNone(bsm.target_of("MV", "E'"))
+
+    def test_workers_give_the_same_table(self):
+        rows = pd.concat([meas_table()] * 1, ignore_index=True)
+        many = pd.DataFrame([meas_row(f"p{i}", f"d{i % 7}", "AV", "VMAX", 2.0 + (i % 5) / 10, "m/s")
+                             for i in range(2500)])
+        rows = pd.concat([rows, many], ignore_index=True)
+        one, d1 = bsm.aggregate_stills(rows)
+        three, d3 = bsm.aggregate_stills(rows, workers=3)
+        pd.testing.assert_frame_equal(one.reset_index(drop=True), three.reset_index(drop=True))
+        self.assertEqual(d1, d3)
+
+
+def fake_headers(table):
+    """A `read_header` over made-up headers: {dcm_path: header}."""
+    def read(path):
+        if path not in table:
+            raise OSError("unreadable")
+        return table[path]
+    return read
+
+
+def header(uid, patient, sex="F", birth="19700101", date="20250301", weight="70", size="1.70"):
+    return {"StudyInstanceUID": uid, "PatientID": patient, "PatientSex": sex, "PatientBirthDate": birth,
+            "StudyDate": date, "PatientWeight": weight, "PatientSize": size}
+
+
+class TestYearsOutsideTheMetadata(unittest.TestCase):
+    """2025 is not in the video metadata: its stills link through their own DICOM headers, and a temporal year that
+    does not link stops the build instead of leaving an empty temporal test."""
+
+    def late_rows(self):
+        return pd.DataFrame([{**meas_row("x", "Q001/2.25.1", "AV", "VMAX", 3.0, "m/s"), "year": 2025},
+                             {**meas_row("y", "Q001/2.25.1", "TR", "VMAX", 2.8, "m/s"), "year": 2025},
+                             {**meas_row("z", "P002/2.25.2", "AV", "VMAX", 2.0, "m/s"), "year": 2025},
+                             {**meas_row("w", "Q003/2.25.3", "AV", "VMAX", 2.0, "m/s"), "year": 2025},
+                             {**meas_row("v", "Q003/2.25.3", "AV", "VMAX", 2.1, "m/s"), "year": 2025}])
+
+    def headers(self):
+        return {"/dicom/Q001/2.25.1/x.dcm": header("2.25.1", "Q001"),
+                "/dicom/P002/2.25.2/z.dcm": header("2.25.2", "0P002", sex="M", birth="19800101"),
+                "/dicom/Q003/2.25.3/v.dcm": header("2.25.3", "Q004")}         # header disagrees with the folder
+
+    def test_header_metadata_links_and_keeps_the_ambiguity_rules(self):
+        rows = pd.concat([meas_table(), self.late_rows()], ignore_index=True)
+        stills, _ = bsm.aggregate_stills(rows)
+        meta = metadata_table()
+        missing = stills.dcm_path[~bsm.study_folder(stills.dcm_path).isin(set(bsm.study_folder(meta.dcm_path)))]
+        extra, counts = bsm.header_metadata(missing, read=fake_headers(self.headers()))
+        self.assertEqual(counts, {"folders": 3, "unreadable": 0, "layout_mismatch": 1})     # one file per folder
+        self.assertEqual(list(extra.columns), [*bsm.METADATA_COLUMNS, "link_source"])
+        both = pd.concat([meta.assign(link_source="metadata"), extra], ignore_index=True)
+        linked, demo, unlinked = bsm.link_studies(stills, both, "salt")
+        by_png = linked.set_index("png_path")
+        self.assertEqual(by_png.loc["/stills/Q001/2.25.1/x.png", "study_id"], "2.25.1")
+        self.assertEqual(by_png.loc["/stills/Q001/2.25.1/x.png", "link_source"], "dicom_header")
+        self.assertEqual(by_png.loc["/stills/d1/a.png", "link_source"], "metadata")
+        self.assertNotIn("/stills/Q003/2.25.3/w.png", by_png.index)          # header disagrees: left out
+        self.assertEqual(unlinked, 3)                                # d5 (two studies) and n3's two stills
+        d = demo.set_index("study_id")
+        self.assertAlmostEqual(d.loc["2.25.2", "age_years"], 45.2, places=1)
+        self.assertAlmostEqual(d.loc["2.25.1", "bsa_m2"], 1.82, places=2)
+        rates = bsm.link_rates(stills, linked, set(bsm.study_folder(meta.dcm_path)))
+        self.assertEqual(rates["2025"]["rate_metadata_only"], 0.0)
+        self.assertEqual((rates["2025"]["linked"], rates["2025"]["stills"]), (3, 5))
+        self.assertEqual(rates["2025"]["via_dicom_header"], 3)
+        # The 2025 study of a patient seen earlier (P002) shares that patient's split.
+        splits = pd.DataFrame({"study_id": ["1.2.3.2"], "split": ["train"]})
+        out, _ = bsm.assign_splits(linked, splits, both, "salt", (0.8, 0.1, 0.1), [2025])
+        self.assertNotIn("/stills/P002/2.25.2/z.png", set(out.png_path))      # trained patient: not in the temporal test
+
+    def test_unreadable_header_is_counted_not_named(self):
+        extra, counts = bsm.header_metadata(["/dicom/P9/n9/a.dcm"], read=fake_headers({}))
+        self.assertEqual((len(extra), counts["unreadable"]), (0, 1))
+
+    def test_a_temporal_year_that_does_not_link_stops_the_build(self):
+        rates = {"2025": {"stills": 10, "linked": 0, "rate": 0.0}, "2024": {"stills": 5, "linked": 5, "rate": 1.0}}
+        with self.assertRaisesRegex(SystemExit, "2025.*0 of 10"):
+            bsm.check_temporal_links(rates, [2025], 0.5)
+        with self.assertRaisesRegex(SystemExit, "no stills"):
+            bsm.check_temporal_links(rates, [2026], 0.5)
+        bsm.check_temporal_links(rates, [2024], 0.5)
+        bsm.check_temporal_links({"2025": {"stills": 10, "linked": 6, "rate": 0.6}}, [2025], 0.5)
+
+    def test_end_to_end_with_and_without_the_fallback(self):
+        root = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, root, True)
+        meas, meta = os.path.join(root, "meas.parquet"), os.path.join(root, "meta.parquet")
+        splits, salt_file = os.path.join(root, "studies.csv"), os.path.join(root, "salt.txt")
+        pd.concat([meas_table(), self.late_rows()], ignore_index=True).to_parquet(meas)
+        metadata_table().to_parquet(meta)
+        pd.DataFrame({"study_id": ["1.2.3.1"], "split": ["train"]}).to_csv(splits, index=False)
+        with open(salt_file, "w") as f:
+            f.write("k" * 40 + "\n")
+        base = ["--meas", meas, "--metadata", meta, "--splits", splits, "--salt-file", salt_file,
+                "--temporal-test-years", "2025"]
+        with self.assertRaisesRegex(SystemExit, "Temporal test year 2025"):
+            bsm.main(base + ["--no-header-fallback", "--out-dir", os.path.join(root, "a")])
+        self.assertFalse(os.path.exists(os.path.join(root, "a", "stills.csv")))
+        original = bsm.read_header
+        bsm.read_header = fake_headers(self.headers())
+        try:
+            bsm.main(base + ["--out-dir", os.path.join(root, "b")])
+        finally:
+            bsm.read_header = original
+        info = json.load(open(os.path.join(root, "b", "build_info.json")))
+        self.assertEqual(info["link_rate_by_year"]["2025"]["linked"], 3)
+        self.assertEqual(info["header_fallback"], {"folders": 3, "unreadable": 0, "layout_mismatch": 1})
+        stills = pd.read_csv(os.path.join(root, "b", "stills.csv"), dtype=str)
+        self.assertGreater((stills.split == bsm.TEMPORAL_SPLIT).sum(), 0)
+        # Paths hold the patient folder by design (the table stays on the NAS); no other column holds an id.
+        text = stills.drop(columns=["png_path", "dcm_path"]).to_csv(index=False)
+        text += open(os.path.join(root, "b", "demographics.csv")).read()
+        for secret in ("Q001", "Q003", "P002", "19700101", "19800101"):
+            self.assertNotIn(secret, text)
+
+
 class TestSalt(unittest.TestCase):
 
     def test_no_default_and_never_in_the_repository(self):

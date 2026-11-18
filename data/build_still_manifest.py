@@ -8,16 +8,27 @@ Each still gets:
 - `still_id`: a hash of its SOPInstanceUID and PNG path (the token cache key; never a path or a UID in clear; the
   path is in the hash because the archive holds a few SOPInstanceUIDs shared by two DICOM files);
 - `study_id`: the PACS StudyInstanceUID of RADAR's clip and caption tables. The still dataset's own
-  `StudyInstanceUID` is the extractor's and never matches it, so the study is found through the DICOM study folder:
+  `StudyInstanceUID` column is the extractor's and does not always match it (about 1.5% of the 2024 stills differ,
+  while the still's DICOM header and its study folder agree), so the study is found through the DICOM study folder:
   `dirname(dcm_path)` is the folder of the same study's videos in the video metadata (`--metadata`, the
   `master_metadata.parquet` of the video pipeline), whose `study_uid` is RADAR's `study_id`. A folder with two
-  `study_uid`s is ambiguous and left out;
+  `study_uid`s is ambiguous and left out. The video metadata does not cover every year (2025, the temporal test
+  year, is not in it): the stills of a folder it does not hold are linked through their own DICOM headers instead
+  (`header_metadata`: StudyInstanceUID, PatientID, sex, birth and study dates, weight and height, the fields the
+  video metadata takes from the same headers), unless `--no-header-fallback`. One file per folder is read, and its
+  header must agree with the archive layout `<patient id>/<study uid>/` or the folder is left out. `build_info.json` gives the link rate per year
+  (`link_rate_by_year`, with the share the video metadata alone would link), and a year of
+  `--temporal-test-years` that links fewer than `--min-temporal-link-rate` of its stills stops the build: an empty
+  temporal test is never written silently;
 - `still_tag`: the structure tag of the routing registry's `still_structs` (`still_tag`): the label's structure,
   with MV pulsed-wave stills measured for E, A, E/A or DT as `MV_INFLOW` and annular e'/a'/s' stills as `TDI`;
-  `still_type` = `<mode>_<tag>` (`cw_AV`, `pw_LVOT`, `tdi_TDI`...);
+  `still_type` = `<mode>_<tag>` (`cw_AV`, `pw_LVOT`, `tdi_TDI`...). Tissue Doppler measurements are never targets
+  (decision of the RADAR meeting): a `TDI` still keeps its tag, for routing, and gets no target, and a tissue
+  quantity (e', a', s', E/e') is never read as one (counted as `tdi_excluded`);
 - the crop and its velocity scale (`spec_x0..spec_y1`, `v_top_ms`, `v_bot_ms`) and the label boxes (`text_boxes`,
   JSON), which `src/datasets/still_preprocess.py` masks;
-- wide targets `y_<STRUCT>_<QUANTITY>` in fixed units (m/s, cm, mmHg, ms), each the mean over the still's beats,
+- wide targets `y_<STRUCT>_<QUANTITY>` in fixed units (m/s, cm, mmHg, ms; E/A as a ratio `y_MV_EA`, the mitral
+  area by pressure half-time `MVA (PHT)` in cm2 as `y_MVA_PHT`), each the mean over the still's beats,
   after unit normalisation; a value outside `RANGES` is dropped (counted in `build_info.json`). A negative value is
   not a target unless its quantity is named in `--magnitude` (then its absolute value is); `signed_values` (JSON)
   keeps every value as read, sign included, and `build_info.json` counts the negatives by quantity and vendor
@@ -36,9 +47,10 @@ known). `patient_hash` (salted hash of the patient key) replaces the patient id 
 
 Example:
     python data/build_still_manifest.py \\
-        --meas <still_measurements>/meas_2024.parquet <still_measurements>/meas_2023.parquet \\
+        --meas <still_measurements>/meas_<year>_dicom.parquet ... \\
         --metadata <preprocessing_results>/master_metadata.parquet \\
-        --splits <manifests>/studies.csv --out-dir <stills_dir>
+        --splits <manifests>/studies.csv --salt-file <private salt> --temporal-test-years 2025 \\
+        --workers 32 --out-dir <stills_dir>
 
 The tables hold image paths with patient folders: keep them outside the repository (enforced) and on the NAS.
 """
@@ -73,6 +85,7 @@ STRUCT_TAGS = {"AV": "AV", "AS": "AV", "LVOT": "LVOT", "AVA": "AVA", "AVAI": "AV
                "PR": "PR", "RVOT": "RVOT", "DAO": "DAO", "AAO": "DAO"}
 DIASTOLIC = {"E", "A", "E/A", "DT"}
 TISSUE = {"E'", "A'", "S'"}
+TISSUE_QUANTITIES = TISSUE | {"E/E'", "EM", "AM", "SM"}      # never targets (tissue Doppler excluded)
 MODES = {"CW": "cw", "PW_TDI": "pw", "MMODE": "mm"}
 
 # Targets: (structure tag of the row, quantity) -> unit family. Velocities in m/s, VTI in cm, gradients in mmHg,
@@ -80,10 +93,20 @@ MODES = {"CW": "cw", "PW_TDI": "pw", "MMODE": "mm"}
 QUANTITY_UNITS = {"VMAX": "velocity", "VMEAN": "velocity", "E": "velocity", "A": "velocity", "VTI": "length",
                   "MAXPG": "pressure", "MEANPG": "pressure", "PHT": "time", "DT": "time"}
 TARGET_STRUCTS = ("AV", "LVOT", "MV", "TR", "TV", "PV", "PR", "AR")
-RANGES = {"velocity": (0.1, 7.0), "length": (2.0, 200.0), "pressure": (0.0, 200.0), "time": (20.0, 2000.0)}
-TARGET_COLUMNS = tuple(f"y_{s}_{q}" for s in TARGET_STRUCTS for q in QUANTITY_UNITS)
-# Quantities that determine each other: never one as an input and another as a target (MaxPG = 4 Vmax^2).
-LEAK_GROUPS = ({"VMAX", "MAXPG"}, {"VTI", "VMEAN", "MEANPG"}, {"E", "A", "DT", "PHT"})
+# Targets read on one structure only (still dataset v1.1, mitral inflow labels): (struct, quantity as read) ->
+# (target name, unit family). The name has no "/" or "()" so that `y_<STRUCT>_<QUANTITY>` splits on its last "_".
+STRUCT_TARGETS = {("MV", "E/A"): ("MV_EA", "ratio"), ("MVA", "(PHT)"): ("MVA_PHT", "area")}
+RANGES = {"velocity": (0.1, 7.0), "length": (2.0, 200.0), "pressure": (0.0, 200.0), "time": (20.0, 2000.0),
+          "ratio": (0.1, 10.0), "area": (0.1, 10.0)}
+TARGET_COLUMNS = (*(f"y_{s}_{q}" for s in TARGET_STRUCTS for q in QUANTITY_UNITS),
+                  *(f"y_{name}" for name, _ in STRUCT_TARGETS.values()))
+# Quantities that determine each other: never one as an input and another as a target (MaxPG = 4 Vmax^2;
+# E/A from E and A; MVA by PHT = 220 / PHT).
+LEAK_GROUPS = ({"VMAX", "MAXPG"}, {"VTI", "VMEAN", "MEANPG"}, {"E", "A", "EA", "DT", "PHT"})
+HEADER_TAGS = ("StudyInstanceUID", "PatientID", "PatientSex", "PatientBirthDate", "StudyDate", "PatientWeight",
+               "PatientSize")
+METADATA_COLUMNS = ("study_uid", "dcm_path", "mrn", "sex", "birthdate", "date", "patient_weight_kg",
+                    "patient_height_m")
 
 STILL_COLUMNS = ("still_id", "study_id", "patient_hash", "split", "png_path", "dcm_path", "year", "manufacturer",
                  "rows", "cols", "mode", "struct_raw", "still_tag", "still_type", "n_rows", "spec_x0", "spec_y0",
@@ -107,7 +130,9 @@ def to_unit(value, unit, family):
     factors = {"velocity": {"m/s": 1.0, "cm/s": 0.01, "mm/s": 0.001},
                "length": {"cm": 1.0, "mm": 0.1, "": 1.0},
                "pressure": {"mmhg": 1.0, "": 1.0},
-               "time": {"ms": 1.0, "s": 1000.0, "": 1.0}}[family]
+               "time": {"ms": 1.0, "s": 1000.0, "": 1.0},
+               "ratio": {"": 1.0},
+               "area": {"cm2": 1.0, "mm2": 0.01, "": 1.0}}[family]
     return value * factors[unit] if unit in factors else np.nan
 
 
@@ -132,6 +157,18 @@ def still_type(mode, tag):
     return "tdi_TDI" if tag == "TDI" else f"{MODES.get(mode, 'other')}_{tag}"
 
 
+def target_of(struct, quantity):
+    """(target name without `y_`, unit family) of a measurement row, or None when the row is no target. Tissue
+    Doppler quantities never are."""
+    if quantity in TISSUE_QUANTITIES or "'" in quantity:
+        return None
+    if (struct, quantity) in STRUCT_TARGETS:
+        return STRUCT_TARGETS[(struct, quantity)]
+    if struct in TARGET_STRUCTS and quantity in QUANTITY_UNITS:
+        return f"{struct}_{quantity}", QUANTITY_UNITS[quantity]
+    return None
+
+
 def targets_of(rows, magnitude=()):
     """({target column: mean value over the still's beats}, {target name: signed values as read}, counts).
 
@@ -144,14 +181,17 @@ def targets_of(rows, magnitude=()):
     values, signed = {}, {}
     counts = {"out_of_range": 0, "negative_dropped": 0, "sign_flipped": 0, "mixed_sign": 0}
     for row in rows.itertuples():
-        family = QUANTITY_UNITS.get(row.quantity)
-        if family is None or row.struct not in TARGET_STRUCTS:
+        target = target_of(row.struct, row.quantity)
+        if target is None:
             continue
-        value = to_unit(float(row.value), row.unit, family)
+        name, family = target
+        try:
+            value = to_unit(float(row.value), row.unit, family)
+        except (TypeError, ValueError):
+            value = np.nan
         if not np.isfinite(value):
             counts["out_of_range"] += 1
             continue
-        name = f"{row.struct}_{row.quantity}"
         signed.setdefault(name, []).append(round(float(value), 6))
         values.setdefault(name, []).append((value, row.quantity, family))
     out = {}
@@ -176,7 +216,8 @@ def targets_of(rows, magnitude=()):
 def negative_values(meas):
     """{"<struct>_<quantity>|<manufacturer>": [negative values, all values]} of the target rows: what to read before
     choosing `--magnitude`. Counts from 1 to 4 are written as "<5"."""
-    rows = meas[meas.struct.isin(TARGET_STRUCTS) & meas.quantity.isin(list(QUANTITY_UNITS))]
+    is_target = [target_of(s, q) is not None for s, q in zip(meas.struct, meas.quantity)]
+    rows = meas[np.asarray(is_target, dtype=bool)]
     value = pd.to_numeric(rows.value, errors="coerce")
     vendor = rows["Manufacturer"].fillna("unknown").astype(str) if "Manufacturer" in rows.columns else "unknown"
     key = rows.struct + "_" + rows.quantity + "|" + vendor
@@ -189,16 +230,17 @@ def normalize_meas(meas):
                        quantity=meas.quantity.fillna("").astype(str).str.upper())
 
 
-def aggregate_stills(meas, magnitude=()):
-    """One row per still (png_path) of the measurement table, with its tag, calibration, boxes, targets and the
-    signed values the targets came from (`signed_values`, JSON); also the summed counts of `targets_of`."""
+def _aggregate_part(args):
+    meas, magnitude = args
     rows, dropped = [], Counter()
-    meas = normalize_meas(meas)
     for png, group in meas.groupby("png_path", sort=True):
         first = group.iloc[0]
         tag = still_tag(group.struct, group.quantity, first["mode"])
         targets, signed, lost = targets_of(group, magnitude)
         dropped.update(lost)
+        if tag == "TDI":                                   # tissue Doppler: routed, never a target
+            dropped["tdi_excluded"] += sum(len(v) for v in signed.values())
+            targets, signed = {}, {}
         top, bottom = velocity_scale(first.spec_y0, first.spec_y1, first.spec_ref_y0, first.spec_dy)
         boxes = sorted({(int(r.x0), int(r.y0), int(r.x1), int(r.y1)) for r in group.itertuples()})
         rows.append({"still_id": blake(f"{first.get('SOPInstanceUID')}\0{png}"), "png_path": png,
@@ -209,6 +251,31 @@ def aggregate_stills(meas, magnitude=()):
                      **{c: first[c] for c in ("spec_x0", "spec_y0", "spec_x1", "spec_y1", "spec_dy", "spec_ref_y0")},
                      "v_top_ms": top, "v_bot_ms": bottom, "text_boxes": json.dumps(boxes),
                      "signed_values": json.dumps(signed, sort_keys=True), **targets})
+    return rows, dropped
+
+
+def aggregate_stills(meas, magnitude=(), workers=1):
+    """One row per still (png_path) of the measurement table, with its tag, calibration, boxes, targets and the
+    signed values the targets came from (`signed_values`, JSON); also the summed counts of `targets_of` and
+    `tdi_excluded`. `workers` > 1 aggregates contiguous ranges of stills in that many processes (same result)."""
+    meas = normalize_meas(meas).sort_values("png_path", kind="stable").reset_index(drop=True)
+    pngs = meas.png_path.to_numpy()
+    parts = max(1, min(int(workers), len(meas) // 1000 or 1))
+    edges = [0]
+    for k in range(1, parts):                         # cut between stills, never inside one
+        edges.append(int(np.searchsorted(pngs, pngs[len(pngs) * k // parts], side="left")))
+    edges = sorted(set(edges + [len(meas)]))
+    chunks = [(meas.iloc[a:b], magnitude) for a, b in zip(edges[:-1], edges[1:]) if b > a]
+    if len(chunks) > 1:
+        import multiprocessing
+        with multiprocessing.get_context("fork").Pool(len(chunks)) as pool:
+            results = pool.map(_aggregate_part, chunks)
+    else:
+        results = [_aggregate_part(c) for c in chunks]
+    rows, dropped = [], Counter()
+    for part_rows, part_dropped in results:
+        rows.extend(part_rows)
+        dropped.update(part_dropped)
     table = pd.DataFrame(rows)
     if table.still_id.duplicated().any():
         raise SystemExit("Two stills have the same still id.")
@@ -239,8 +306,10 @@ def link_studies(stills, metadata, salt):
                 & ~meta.folder.isin(two_in_folder[two_in_folder > 1].index)
                 & ~meta.study_id.isin(two_in_study[two_in_study > 1].index)]
     meta = meta.drop(columns=["patient"]).drop_duplicates("folder")
+    if "link_source" not in meta.columns:
+        meta["link_source"] = "metadata"
     linked = stills.assign(folder=study_folder(stills.dcm_path)).merge(
-        meta[["folder", "study_id", "mrn"]], on="folder", how="inner")
+        meta[["folder", "study_id", "mrn", "link_source"]], on="folder", how="inner")
     linked["patient"] = patient_key(linked.pop("mrn"))
     linked = linked.dropna(subset=["patient", "study_id"])
     linked["patient_hash"] = [blake(p, salt) for p in linked.patient]
@@ -255,6 +324,94 @@ def link_studies(stills, metadata, salt):
     patients = linked.drop_duplicates("study_id").set_index("study_id").patient_hash
     demo["patient_hash"] = demo.study_id.map(patients)
     return linked.drop(columns=["folder"]), demo[list(DEMOGRAPHIC_COLUMNS)], len(stills) - len(linked)
+
+
+def read_header(path):
+    """The `HEADER_TAGS` of a DICOM file as text (None when absent), without its pixels."""
+    import pydicom
+    ds = pydicom.dcmread(path, stop_before_pixels=True, specific_tags=list(HEADER_TAGS))
+    out = {}
+    for tag in HEADER_TAGS:
+        value = ds.get(tag)
+        out[tag] = str(value).strip() if value is not None and str(value).strip() else None
+    return out
+
+
+def _read_header_safe(path, read=None):
+    try:
+        return (read or read_header)(path)
+    except Exception:                         # the message could name the file: only the failure is counted
+        return None
+
+
+def header_metadata(dcm_paths, workers=1, read=None):
+    """(metadata rows in the `--metadata` columns, counts) from the stills' own DICOM headers: the source of a study
+    the video metadata does not hold. Nothing is written to disk.
+
+    One file per study folder is read (the first by path): the archive is laid out `<patient id>/<study uid>/`, and
+    the header must agree with that layout (StudyInstanceUID = the folder's name, PatientID = its parent's name, up
+    to leading zeros), as the video metadata does for 99.9996% of its rows. A folder whose header disagrees is left
+    out (`layout_mismatch`), so a folder that could hold another patient's or study's files never links. Counts:
+    `folders`, `unreadable`, `layout_mismatch`."""
+    folders = pd.DataFrame({"path": sorted(set(str(p) for p in dcm_paths))})
+    folders["folder"] = study_folder(folders.path).to_numpy()
+    paths = folders.drop_duplicates("folder").path.tolist()
+    if workers > 1 and len(paths) > 1 and read is None:
+        import multiprocessing
+        with multiprocessing.get_context("fork").Pool(int(workers)) as pool:
+            headers = pool.map(_read_header_safe, paths, chunksize=16)
+    else:
+        headers = [_read_header_safe(p, read) for p in paths]
+    rows, counts = [], {"folders": len(paths), "unreadable": 0, "layout_mismatch": 0}
+    for path, h in zip(paths, headers):
+        if h is None:
+            counts["unreadable"] += 1
+            continue
+        parts = path.split("/")
+        study_dir, patient_dir = (parts[-2], parts[-3]) if len(parts) >= 3 else ("", "")
+        if (h.get("StudyInstanceUID") or "") != study_dir or \
+                (h.get("PatientID") or "").lstrip("0") != patient_dir.lstrip("0") or not patient_dir.lstrip("0"):
+            counts["layout_mismatch"] += 1
+            continue
+        rows.append({"study_uid": h.get("StudyInstanceUID"), "dcm_path": path, "mrn": h.get("PatientID"),
+                     "sex": h.get("PatientSex"), "birthdate": h.get("PatientBirthDate"), "date": h.get("StudyDate"),
+                     "patient_weight_kg": pd.to_numeric(h.get("PatientWeight"), errors="coerce"),
+                     "patient_height_m": pd.to_numeric(h.get("PatientSize"), errors="coerce")})
+    table = pd.DataFrame(rows, columns=list(METADATA_COLUMNS))
+    return table.assign(link_source="dicom_header"), counts
+
+
+def link_rates(stills, linked, metadata_folders):
+    """{year: {stills, linked, rate, rate_metadata_only, via_metadata, via_dicom_header}}: how many of each year's
+    stills got a study, and the share the video metadata alone would have linked (folder present in it)."""
+    years = pd.to_numeric(stills.year, errors="coerce").fillna(-1).astype(int)
+    in_meta = study_folder(stills.dcm_path).isin(metadata_folders).to_numpy()
+    linked_years = pd.to_numeric(linked.year, errors="coerce").fillna(-1).astype(int)
+    source = linked.get("link_source", pd.Series("metadata", index=linked.index))
+    out = {}
+    for year in sorted(set(years)):
+        total = int((years == year).sum())
+        mine = linked_years == year
+        n = int(mine.sum())
+        out[str(year)] = {"stills": total, "linked": n, "rate": round(n / total, 4) if total else 0.0,
+                          "rate_metadata_only": round(float(in_meta[(years == year).to_numpy()].mean()), 4)
+                          if total else 0.0,
+                          "via_metadata": int((mine & (source == "metadata")).sum()),
+                          "via_dicom_header": int((mine & (source == "dicom_header")).sum())}
+    return out
+
+
+def check_temporal_links(rates, temporal_years, minimum):
+    """Stops the build when a temporal test year has no stills or links fewer than `minimum` of them: the temporal
+    test set must never be empty or thinned out silently."""
+    for year in temporal_years:
+        r = rates.get(str(int(year)))
+        if r is None or r["stills"] == 0:
+            raise SystemExit(f"Temporal test year {year} has no stills in --meas.")
+        if r["rate"] < minimum:
+            raise SystemExit(f"Temporal test year {year}: only {r['linked']} of {r['stills']} stills "
+                             f"({r['rate']:.1%}) link to a study, below --min-temporal-link-rate {minimum:.0%}. "
+                             "The study metadata does not cover this year (see link_rate_by_year).")
 
 
 def read_salt(salt_file=None, environ=os.environ):
@@ -412,6 +569,11 @@ def parse_args(argv=None):
                         "value. Choose after reading `negative_values` of a first build; default none.")
     p.add_argument("--temporal-test-years", nargs="*", type=int, default=[],
                    help=f"Years whose stills form the separate `{TEMPORAL_SPLIT}` split and never train.")
+    p.add_argument("--no-header-fallback", action="store_true",
+                   help="Link only through --metadata (no DICOM header reads for folders it does not hold).")
+    p.add_argument("--min-temporal-link-rate", type=float, default=0.5,
+                   help="Stop when a --temporal-test-years year links fewer than this share of its stills.")
+    p.add_argument("--workers", type=int, default=1, help="Processes for aggregating stills and reading headers.")
     p.add_argument("--out-dir", required=True, help="Output folder; must be outside this repository.")
     return p.parse_args(argv)
 
@@ -424,10 +586,19 @@ def main(argv=None):
     salt = read_salt(args.salt_file)
     os.makedirs(args.out_dir, exist_ok=True)
     meas = read_meas(args.meas)
-    columns = ["study_uid", "dcm_path", "mrn", "sex", "birthdate", "date", "patient_weight_kg", "patient_height_m"]
-    metadata = pd.read_parquet(args.metadata, columns=columns)
-    stills, dropped = aggregate_stills(meas, set(args.magnitude))
+    metadata = pd.read_parquet(args.metadata, columns=list(METADATA_COLUMNS))
+    stills, dropped = aggregate_stills(meas, set(args.magnitude), args.workers)
+    metadata_folders = set(study_folder(metadata.dcm_path).dropna())
+    header_counts = {"folders": 0, "unreadable": 0, "layout_mismatch": 0}
+    if not args.no_header_fallback:
+        missing = stills.dcm_path[~study_folder(stills.dcm_path).isin(metadata_folders).to_numpy()]
+        if len(missing):
+            extra, header_counts = header_metadata(missing, args.workers)
+            metadata = pd.concat([metadata.assign(link_source="metadata"), extra], ignore_index=True)
+    all_stills = stills
     stills, demo, unlinked = link_studies(stills, metadata, salt)
+    rates = link_rates(all_stills, stills, metadata_folders)
+    check_temporal_links(rates, args.temporal_test_years, args.min_temporal_link_rate)
     splits = pd.read_csv(args.splits, dtype=str)
     if not {"study_id", "split"} <= set(splits.columns):
         raise SystemExit("--splits needs study_id and split columns.")
@@ -444,7 +615,8 @@ def main(argv=None):
     stills.to_csv(path, index=False)
     demo.sort_values("study_id").to_csv(demo_path, index=False)
     info = {"mapping_version": MAPPING_VERSION, "stills": len(stills), "studies": int(stills.study_id.nunique()),
-            "unlinked_stills": int(unlinked), "values": dropped, "magnitude": sorted(args.magnitude),
+            "unlinked_stills": int(unlinked), "link_rate_by_year": rates, "header_fallback": header_counts,
+            "values": dropped, "magnitude": sorted(args.magnitude),
             "negative_values": negative_values(normalize_meas(meas)), "salt_check": salt_check(salt),
             "fractions": list(args.fractions), **split_counts,
             "per_split": {k: int(v) for k, v in stills.split.value_counts().items()},
