@@ -14,6 +14,11 @@ question, to retrain the view classifier on the PSAX levels and PLAX_ZOOM_AV and
 
 Then `tools.labelbox.pilot_upload --folder DIR/upload`, which goes to the view relabelling project.
 
+A later batch of the same project: a new DIR, `draw --quotas QUOTAS.json` (the clips per predicted view) with the
+earlier batches' `shortlist_clips.csv` among the `--exclude-patients` lists, and `prepare --batch-number N --shuffle`.
+The batch number names the batch and its prefill import in Labelbox apart from the earlier ones; `--shuffle` mixes the
+views, so that a batch reviewed in part covers every view.
+
 `draw` takes train-split clips of imaging modes (B-mode and color Doppler), never a still, a listed patient or a listed
 clip, and at most one clip per patient. It draws more than the set needs, because the screen removes some. `prepare`
 keeps only what the calibrated screen keeps, leaves out GE 3D and multi-panel image codes as the pilot does, checks the
@@ -55,6 +60,20 @@ def quotas(classes, upsampled=UPSAMPLED, others=OTHER_CLASSES_TOTAL):
     rest = sorted(set(classes) - set(upsampled))
     share, extra = divmod(others, len(rest))
     return {**upsampled, **{view: share + (i < extra) for i, view in enumerate(rest)}}
+
+
+def quotas_from(path, classes, inputs):
+    """How many clips each class gets, from a JSON object {view: clips} (`--quotas`). A view the manifest lacks, or a
+    count that is not a whole number, stops the run; a class left out or given 0 gets none."""
+    listed = inputs.json(path)
+    if not isinstance(listed, dict) or not listed:
+        raise SystemExit("--quotas must hold a JSON object of {view: clips}.")
+    unknown = sorted(set(listed) - set(classes))
+    if unknown:
+        raise SystemExit(f"--quotas names views the manifest has no clips of: {unknown}.")
+    if any(isinstance(n, bool) or not isinstance(n, int) or n < 0 for n in listed.values()):
+        raise SystemExit("--quotas gives each view a whole number of clips, 0 or more.")
+    return {view: n for view, n in listed.items() if n > 0}
 
 
 def path_tail(paths, parts=3):
@@ -133,7 +152,8 @@ def draw(args):
     every = inputs.parquet(args.videos, columns=columns)
     clips = eligible_clips(every, rp.excluded_patients(args.exclude_patients, inputs),
                            excluded_clips(args.exclude_clips, inputs))
-    target = quotas(clips.view.unique())
+    target = (quotas(clips.view.unique()) if args.quotas is None
+              else quotas_from(args.quotas, clips.view.unique(), inputs))
     wanted = {view: max(round(n * args.oversample), args.min_draw) for view, n in target.items()}
     drawn = draw_clips(clips, wanted, args.seed)
     short = {v: int((drawn.view == v).sum()) for v, n in target.items() if (drawn.view == v).sum() < n}
@@ -150,7 +170,8 @@ def draw(args):
               "seed": args.seed, "quotas": target, "drawn": {k: int(n) for k, n in drawn.view.value_counts().items()},
               "reference_clips": int(len(reference)), "manifest_commit": built_at,
               "inputs": {os.path.abspath(p): inputs.digest(p)
-                         for p in (args.videos, *args.exclude_patients, *args.exclude_clips)},
+                         for p in (args.videos, *args.exclude_patients, *args.exclude_clips,
+                                   *([args.quotas] if args.quotas else []))},
               "outputs": rp.file_hashes(*outputs)}
     _write_private(os.path.join(args.out_dir, RECORD), json.dumps(record, indent=2) + "\n")
     print(f"[draw] {len(drawn)} clips to screen for a set of {sum(target.values())}, in {len(target)} classes; "
@@ -170,7 +191,7 @@ def pick_clips(clips, target):
 
 
 def prepare(args):
-    from tools.labelbox.pilot_upload import CLIPS, ITEMS, UploadError, read_plan, sha256
+    from tools.labelbox.pilot_upload import BATCH_FILE, CLIPS, ITEMS, UploadError, read_plan, sha256
     from tools.labelbox.view_review import FORM_NAME
     from tools.labelbox.workflow_test import ENCODE, CopyError, _private_dir, _write_private as write_private, encode
 
@@ -189,6 +210,8 @@ def prepare(args):
     flags = flags[["video_path", "decision", "decision_reasons", "pixel_mode", *rp.MEDIA_COLUMNS]]
     screened = rp.resolve_modes(rp.screened_clips(clips, flags))
     picked = pick_clips(screened, record["quotas"])
+    if args.shuffle:  # with the draw's seed: the order, like the clips, is reproducible.
+        picked = picked.sample(frac=1.0, random_state=record["seed"])
     changed = clip_screen.changed_media(picked, os.path.join(args.out_dir, MEDIA_LOG))
     if changed:
         raise SystemExit(f"{len(changed)} picked clips no longer hold the video or DICOM regions the screen read: "
@@ -219,6 +242,8 @@ def prepare(args):
     write_private(os.path.join(items, "view_type_items.csv"), "global_key\n")
     write_private(os.path.join(items, "view_items.csv"), pd.DataFrame(views).to_csv(index=False))
     write_private(os.path.join(items, "global_keys.csv"), pd.DataFrame(rows).to_csv(index=False))
+    if args.batch_number is not None:
+        write_private(os.path.join(items, BATCH_FILE), json.dumps({"batch": args.batch_number}) + "\n")
     try:
         read_plan(args.out)
     except UploadError as exc:
@@ -228,6 +253,7 @@ def prepare(args):
     inputs.check(picked_path)
     write_private(os.path.join(out, PREPARE_RECORD), json.dumps({
         "created_utc": _now(), "code_commit": git_commit(), "form": FORM_NAME, "encode": ENCODE, "clips": len(rows),
+        "batch_number": args.batch_number, "shuffled": bool(args.shuffle),
         "views": {k: int(n) for k, n in picked.view.value_counts().items()},
         "modes": {k: int(n) for k, n in picked.acq_category.fillna("unknown").value_counts().items()},
         "vendors": {k: int(n) for k, n in picked.vendor.fillna("unknown").value_counts().items()},
@@ -258,12 +284,20 @@ def main(argv=None):
     d.add_argument("--oversample", type=float, default=2.0, help="clips drawn per clip of the set")
     d.add_argument("--min-draw", type=int, default=50, help="clips drawn at least for each class")
     d.add_argument("--reference-per-layout", type=int, default=50)
+    d.add_argument("--quotas", help="a JSON object {view: clips} in place of the first batch's 400 PSAX, 200 "
+                                    "PLAX_ZOOM and 400 spread over the other classes")
     p = sub.add_parser("prepare", help="the upload folder of the clips the screen keeps")
     p.add_argument("--out-dir", required=True, help="the folder of `draw`")
     p.add_argument("--flags", required=True, help="clip_screen.py flag output")
     p.add_argument("--out", required=True, help="a new folder outside the repository")
     p.add_argument("--ffmpeg", help="ffmpeg to use; default: imageio_ffmpeg's")
+    p.add_argument("--batch-number", type=int, help="a later batch of the project (2, 3, ...): names its batch and "
+                                                    "its prefill import in Labelbox")
+    p.add_argument("--shuffle", action="store_true", help="mix the views in the batch, in an order set by the "
+                                                          "draw's seed")
     args = parser.parse_args(argv)
+    if args.command == "prepare" and args.batch_number is not None and args.batch_number < 2:
+        parser.error("--batch-number is 2 or more: the first batch has none")
     if args.command == "draw":
         draw(args)
     else:

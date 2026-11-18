@@ -49,6 +49,30 @@ class TestQuotas(unittest.TestCase):
             vl.quotas([c for c in CLASSES if c != "PLAX_ZOOM"])
 
 
+class TestQuotasFile(unittest.TestCase):
+    def read(self, listed):
+        with tempfile.TemporaryDirectory() as folder:
+            path = os.path.join(folder, "quotas.json")
+            Path(path).write_text(json.dumps(listed))
+            return vl.quotas_from(path, CLASSES, vl.clip_screen.Inputs(vl.__file__))
+
+    def test_a_later_batch_gives_its_own_quotas_and_leaves_out_zeros(self):
+        self.assertEqual(self.read({"PSAX": 400, "SUBCOSTAL": 100, "A2C": 0}), {"PSAX": 400, "SUBCOSTAL": 100})
+
+    def test_a_view_the_manifest_lacks_stops(self):
+        with self.assertRaisesRegex(SystemExit, "A4C_RV"):
+            self.read({"PSAX": 10, "A4C_RV": 10})  # an option added in Labelbox is no predicted class.
+
+    def test_counts_are_whole_numbers(self):
+        for bad in ({"PSAX": 1.5}, {"PSAX": -1}, {"PSAX": True}, {"PSAX": "10"}, [], {}):
+            with self.assertRaises(SystemExit):
+                self.read(bad)
+
+    def test_the_first_batch_has_no_batch_number(self):
+        with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+            vl.main(["prepare", "--out-dir", "d", "--flags", "f", "--out", "o", "--batch-number", "1"])
+
+
 class TestEligible(unittest.TestCase):
     def kept(self, rows, patients=(), tails=()):
         return list(vl.eligible_clips(manifest(rows), set(patients), set(tails)).patient_id)
@@ -152,11 +176,12 @@ class TestPrepare(unittest.TestCase):
     def write_info(self, calibration):
         Path(str(self.flags) + ".info.json").write_text(json.dumps({"calibration": calibration}))
 
-    def run_prepare(self, changed=()):
+    def run_prepare(self, changed=(), batch_number=None, shuffle=False):
         def encode(_ffmpeg, _source, target):
             Path(target).write_bytes(b"video " + target.encode())
 
-        args = mock.Mock(out_dir=str(self.dir), flags=str(self.flags), out=self.root / "upload", ffmpeg="ffmpeg")
+        args = mock.Mock(out_dir=str(self.dir), flags=str(self.flags), out=self.root / "upload", ffmpeg="ffmpeg",
+                         batch_number=batch_number, shuffle=shuffle)
         with mock.patch.object(rp, "screen_chain", return_value={}), \
                 mock.patch.object(vl.clip_screen, "changed_media", return_value=list(changed)), \
                 mock.patch("tools.labelbox.workflow_test.encode", encode), \
@@ -192,6 +217,39 @@ class TestPrepare(unittest.TestCase):
         with self.assertRaisesRegex(SystemExit, "no longer hold"):
             self.run_prepare(changed=["key"])
         self.assertFalse((self.root / "upload").exists())
+
+    def test_a_first_batch_is_named_as_before_and_keeps_the_drawn_order(self):
+        plan = read_plan(self.run_prepare())
+        self.assertIsNone(plan.batch)
+        self.assertEqual(plan.predictions_name, VIEW_RELABEL.predictions_name)
+        self.assertEqual(list(plan.views.values()), ["PSAX", "PLAX_ZOOM", "A4C"])
+
+    def test_a_later_batch_carries_its_number_to_the_uploader(self):
+        out = self.run_prepare(batch_number=2)
+        plan = read_plan(out)
+        self.assertEqual(plan.batch, 2)
+        name, = plan.batches("view_review")
+        self.assertTrue(name.startswith(f"{VIEW_RELABEL.batch_prefix} 2 "))
+        self.assertEqual(json.loads((out / vl.PREPARE_RECORD).read_text())["batch_number"], 2)
+
+    def test_shuffle_mixes_the_views_with_the_draws_seed(self):
+        drawn = [vl.global_key(b"secret", f"/a/b/{i}/clip{i}.mp4") for i in range(12)]
+        clips = manifest([{"form": "view_review", "mode_source": "header", "global_key": key} for key in drawn])
+        clips[list(rp.CLIP_COLUMNS)].to_csv(self.dir / "shortlist_clips.csv", index=False)
+        flags = clips[["video_path"]].assign(decision="keep", decision_reasons="", pixel_mode="bmode")
+        for column in rp.MEDIA_COLUMNS:
+            flags[column] = "x"
+        flags["dicom_image_content"] = "0001"
+        flags.astype(str).to_parquet(self.flags)
+        (self.dir / vl.RECORD).write_text(json.dumps({"quotas": {"A4C": 12}, "seed": 5}))
+
+        order = list(read_plan(self.run_prepare(shuffle=True)).views)
+
+        self.assertEqual(sorted(order), sorted(drawn))
+        self.assertNotEqual(order, drawn)
+        self.assertEqual(pd.read_csv(self.dir / vl.PICKED, dtype=str).global_key.tolist(), order)
+        shutil.rmtree(self.root / "upload")
+        self.assertEqual(list(read_plan(self.run_prepare(shuffle=True)).views), order)  # the same seed, the same order
 
     def test_a_used_folder_is_refused(self):
         (self.root / "upload").mkdir()

@@ -17,6 +17,7 @@ from tools.labelbox.column_review import build_candidate, build_form, load_spec,
 from tools.labelbox.create_pilot_project import DATASET_DESCRIPTION, PROJECT_DESCRIPTION
 from tools.labelbox.pilot_upload import (
     BATCH_DELETE_WAITS,
+    BATCH_FILE,
     BATCH_PREFIX,
     CLIPS,
     COLUMN_REVIEW,
@@ -1368,6 +1369,188 @@ class MainTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertIn("Deleted what this folder uploaded: 2 study batches, 1 prelabel imports, 3 data rows", out)
         self.assertEqual(len([e for e in cleanup.events if e[0] == "delete row"]), 3)
+
+
+def grown_view_form():
+    """The view review form as reviewers edited it in Labelbox: options added at the end and project instructions."""
+    form = copy.deepcopy(view_review.build_form())
+    options = form["classifications"][0]["options"]
+    options += [{**options[0], "value": value, "label": f"{value}: added in Labelbox"}
+                for value in ("A4C_RV", "PLAX_ZOOM_MV")]
+    form["projectInstructions"] = "https://example.invalid/guide.pdf"
+    return form
+
+
+class LaterBatchTests(unittest.TestCase):
+    """A second batch of the view relabelling project, uploaded next to a first that reviewers have labelled."""
+
+    TARGET = WORKSPACES["view_relabel"][VIEW_REVIEW]
+
+    def later_plan(self, folder, batch=2):
+        root = make_view_folder(Path(folder))
+        (root / ITEMS / BATCH_FILE).write_text(json.dumps({"batch": batch}), encoding="utf-8")
+        return read_plan(root)
+
+    def test_a_later_batch_has_its_own_batch_and_prelabel_names(self):
+        with tempfile.TemporaryDirectory() as first, tempfile.TemporaryDirectory() as later:
+            one, two = read_plan(make_view_folder(Path(first))), self.later_plan(later)
+        self.assertEqual((one.batch, two.batch), (None, 2))
+        self.assertEqual(one.predictions_name, VIEW_RELABEL.predictions_name)  # the first batch's, unchanged.
+        self.assertEqual(two.predictions_name, f"{VIEW_RELABEL.predictions_name}, batch 2")
+        (name_one,), (name_two,) = one.batches(VIEW_REVIEW), two.batches(VIEW_REVIEW)
+        self.assertTrue(name_one.startswith(f"{VIEW_RELABEL.batch_prefix} ") and not name_one.startswith(
+            f"{VIEW_RELABEL.batch_prefix} 2 "))
+        self.assertTrue(name_two.startswith(f"{VIEW_RELABEL.batch_prefix} 2 "))
+        self.assertEqual(two.only(VIEW_REVIEW).batch, 2)
+        self.assertEqual(preview(two, WORKSPACES["view_relabel"])["rows"][0]["batch"], name_two)
+
+    def test_a_bad_batch_file_is_refused(self):
+        for text in ('{"batch": 1}', '{"batch": "2"}', '{"batch": true}', "[2]", "not json"):
+            with tempfile.TemporaryDirectory() as folder:
+                root = make_view_folder(Path(folder))
+                (root / ITEMS / BATCH_FILE).write_text(text, encoding="utf-8")
+                with self.assertRaisesRegex(UploadError, BATCH_FILE):
+                    read_plan(root)
+
+    def test_the_upload_imports_the_later_batchs_prefills_under_its_own_name(self):
+        with tempfile.TemporaryDirectory() as folder:
+            plan = self.later_plan(folder)
+        api = FakeApi()
+        result = ensure_upload(api, plan)
+        self.assertEqual(api.prelabel_name, f"{VIEW_RELABEL.predictions_name}, batch 2")
+        self.assertEqual(list(api.batches[f"project-{VIEW_REVIEW}"]), list(plan.batches(VIEW_REVIEW)))
+        self.assertTrue(result.prelabels_imported)
+
+    def test_rows_only_sends_the_rows_and_neither_batches_nor_prefills(self):
+        with tempfile.TemporaryDirectory() as folder:
+            plan = self.later_plan(folder)
+        api = FakeApi()
+
+        result = ensure_upload(api, plan, rows_only=True)
+
+        self.assertEqual(api.calls, [("workspace", (VIEW_REVIEW,), True), ("remove unprocessed", ()), "upload"])
+        self.assertEqual((result.uploaded, result.batches, result.prelabels_imported), (2, {}, False))
+        result = ensure_upload(api, plan)  # then --apply alone: nothing sent again, one batch, its prefills.
+        self.assertEqual(result.uploaded, 0)
+        self.assertEqual(result.created_batches, {VIEW_REVIEW: 1})
+        self.assertTrue(result.prelabels_imported)
+
+    def client(self, normalized):
+        ontology = SimpleNamespace(name=self.TARGET.ontology_name, uid="live", normalized=normalized)
+        project = FakeProject(self.TARGET.project_name, ontology=ontology, labels=1000)
+        project.batch_list.append(SimpleNamespace(name=f"{VIEW_RELABEL.batch_prefix} first"))
+        client = FakeClient(projects=[project], datasets=[fake_dataset(self.TARGET.dataset_name)],
+                            ontologies=[ontology])
+        api = OfflineApi(client, project_type=SimpleNamespace(name="name"), dataset_type=SimpleNamespace(name="name"),
+                         media_type="video", targets=WORKSPACES["view_relabel"], sleep=lambda _seconds: None)
+        return client, project, ontology, api
+
+    def test_a_form_grown_in_labelbox_is_used_as_it_is(self):
+        client, project, ontology, api = self.client(grown_view_form())
+
+        workspace = api.ensure_workspace([VIEW_REVIEW], create=True)
+
+        self.assertIs(workspace.ontologies[VIEW_REVIEW], ontology)
+        self.assertIs(project.ontology(), ontology)
+        self.assertEqual(client.created, [])
+        self.assertEqual(ontology.normalized, grown_view_form())  # nothing was changed in it.
+
+    def test_a_committed_option_changed_removed_or_archived_in_labelbox_is_refused(self):
+        def changed(edit):
+            form = grown_view_form()
+            edit(form["classifications"][0]["options"])
+            return form
+
+        for form in (changed(lambda options: options[0].update(label="another text")),
+                     changed(lambda options: options.pop(0)),
+                     changed(lambda options: options[0].update(archived=True)),
+                     changed(lambda options: options.insert(0, options.pop(1))),
+                     {**grown_view_form(), "classifications": grown_view_form()["classifications"][:1]}):
+            client, project, ontology, api = self.client(form)
+            with self.assertRaisesRegex(UploadError, "differs from the committed form"):
+                api.ensure_workspace([VIEW_REVIEW], create=True)
+            self.assertEqual(client.created, [])
+
+    def test_only_the_view_relabelling_form_may_grow(self):
+        self.assertTrue(self.TARGET.form_may_grow)
+        self.assertFalse(any(target.form_may_grow for name, workspace in WORKSPACES.items() if name != "view_relabel"
+                             for target in workspace.values()))
+        form = build_form()
+        form["projectInstructions"] = "https://example.invalid/guide.pdf"
+        client = FakeClient(ontologies=[SimpleNamespace(name=TARGETS[COLUMN_REVIEW].ontology_name, uid="old",
+                                                        normalized=form)])
+        with self.assertRaisesRegex(UploadError, "differs from the committed form"):
+            sdk_api(client).ensure_workspace(FORMS, create=True)
+
+    def test_a_data_row_read_that_fails_is_read_again(self):
+        client, _, _, api = self.client(grown_view_form())
+        with tempfile.TemporaryDirectory() as folder:
+            plan = self.later_plan(folder)
+        workspace = api.ensure_workspace([VIEW_REVIEW], create=False)
+        key = plan.rows[0].global_key
+        client.rows[key] = SimpleNamespace(dataset=lambda: client.datasets[0])
+        failures, read = [RuntimeError("Internal server error")] * len(LOOKUP_WAITS), client.get_data_row
+
+        def flaky(uid):
+            if failures:
+                raise failures.pop()
+            return read(uid)
+
+        client.get_data_row = flaky
+        self.assertEqual(api.existing_global_keys(workspace, plan.rows), {key})
+        failures.extend([RuntimeError("Internal server error")] * (len(LOOKUP_WAITS) + 1))
+        with self.assertRaises(StepFailed):
+            api.existing_global_keys(workspace, plan.rows)
+
+    @unittest.skipUnless(importlib.util.find_spec("labelbox"), "Labelbox SDK not installed")
+    def test_the_first_batchs_import_is_left_alone(self):
+        created, deleted = [], []
+
+        class Job:
+            state, errors = None, []
+
+            def wait_till_done(self):
+                return None
+
+        class PredictionImport:
+            @classmethod
+            def create_from_objects(cls, **kwargs):
+                created.append(kwargs)
+                return Job()
+
+        first = SimpleNamespace(name=VIEW_RELABEL.predictions_name, state=None, errors=[],
+                                wait_till_done=lambda: None, delete=lambda: deleted.append("first"))
+        form = grown_view_form()
+        for number, question in enumerate(form["classifications"]):
+            question["featureSchemaId"] = f"q{number}"
+            for choice, option in enumerate(question.get("options", [])):
+                option["featureSchemaId"] = f"q{number}.o{choice}"
+        project = SimpleNamespace(uid="project", get_mal_prediction_imports=lambda: [first],
+                                  get_label_count=lambda: 1000, enable_model_assisted_labeling=lambda enabled: None)
+        workspace = Workspace({}, {VIEW_REVIEW: project}, {VIEW_REVIEW: SimpleNamespace(normalized=form)})
+        with tempfile.TemporaryDirectory() as folder:
+            plan = self.later_plan(folder)
+        with mock.patch("labelbox.schema.annotation_import.MALPredictionImport", PredictionImport):
+            self.assertTrue(sdk_api(None).ensure_prelabels(workspace, plan.prelabel_items(), name=plan.predictions_name,
+                                                           refresh=True, form=VIEW_REVIEW))
+        self.assertEqual(deleted, [])
+        self.assertEqual(created[0]["name"], f"{VIEW_RELABEL.predictions_name}, batch 2")
+        self.assertEqual([p["dataRow"]["globalKey"] for p in created[0]["predictions"]], [VIEW_KEY_PREFIX + "a" * 24])
+
+    def test_main_rows_only_goes_with_an_upload_and_says_what_is_left(self):
+        with tempfile.TemporaryDirectory() as folder:
+            self.later_plan(folder)
+            for action in ([], ["--delete", "--apply"]):
+                with self.assertRaises(SystemExit), redirect_stderr(io.StringIO()):
+                    main(["--folder", folder, "--rows-only", *action], environ={})
+            out = io.StringIO()
+            with redirect_stdout(out):
+                code = main(["--folder", folder, "--apply", "--rows-only"], environ={"LABELBOX_API_KEY": "key"},
+                            api_factory=lambda _key: FakeApi())
+        self.assertEqual(code, 0)
+        self.assertIn("uploaded now: 2", out.getvalue())
+        self.assertIn("no batch and no prelabel yet", out.getvalue())
+        self.assertNotIn("study batches", out.getvalue())
 
 
 if __name__ == "__main__":

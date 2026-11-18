@@ -300,6 +300,16 @@ clip screen, then `prepare`.
   send it there, and once it holds reviews `--delete --apply` is refused.
 - **The labels.** The summary holds each clip's predicted view next to its answer;
   `picked_clips.csv` in the `draw` folder maps each key to its clip, and stays there.
+- **Training labels.** `export_view_labels.py` exports the project with each row's
+  workflow status and writes one row per picked clip (its clip, predicted view,
+  answer and `label_status`: done, unlabelled, skipped, in_rework or conflict),
+  keeping the export next to it; its header describes the columns. `--from-export`
+  writes the labels again from a kept export, without a request:
+
+  ```bash
+  UV_PROJECT_ENVIRONMENT=$HOME/.venvs/echojepa-labelbox uv run --frozen --only-group labelbox \
+    python -m tools.labelbox.export_view_labels --picked DRAW/picked_clips.csv --out LABELS/view_labels.csv
+  ```
 
 ## Data and credential safety
 
