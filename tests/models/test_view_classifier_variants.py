@@ -124,8 +124,8 @@ class TestVariantsAndScoring(unittest.TestCase):
     def test_make_variants_shapes_padding_and_fallbacks(self):
         frames = moving_disc(t=20)
         current = torch.full((3, 16, 64, 64), 7, dtype=torch.uint8)
-        clips, real, fell_back = pv.make_variants(frames, current, None, pv.VARIANTS, 64)
-        self.assertEqual(set(clips), set(pv.VARIANTS))
+        clips, real, fell_back = pv.make_variants(frames, current, None, pv.FIRST_ROUND, 64)
+        self.assertEqual(set(clips), set(pv.FIRST_ROUND))
         for name, clip in clips.items():
             self.assertEqual(tuple(clip.shape), (3, 16, 64, 64), name)
             self.assertEqual(clip.dtype, torch.uint8)
@@ -166,6 +166,58 @@ class TestVariantsAndScoring(unittest.TestCase):
         self.assertAlmostEqual(row["human_accuracy_old_classes"], 1.0)
 
 
+class TestSecondRound(unittest.TestCase):
+    """The second round's frame selections, resizes and inputs; the first round's variants are unchanged by it."""
+
+    def test_frame_selections(self):
+        long, short = np.arange(50)[:, None, None, None], np.arange(10)[:, None, None, None]
+        picked, n = pv.middle_frames(long)
+        self.assertEqual(n, 16)
+        self.assertEqual(picked[:, 0, 0, 0].tolist(), list(range(9, 41, 2)))
+        picked, n = pv.middle_frames(short)
+        self.assertEqual((picked[:, 0, 0, 0].tolist(), n), (list(range(0, 10, 2)), 5))
+        picked, n = pv.period1_frames(long)
+        self.assertEqual((picked[:, 0, 0, 0].tolist(), n), (list(range(16)), 16))
+        self.assertEqual(pv.period1_frames(short)[1], 10)
+        picked, n = pv.spread_frames(long)
+        self.assertEqual((n, int(picked[0, 0, 0, 0]), int(picked[-1, 0, 0, 0])), (16, 0, 49))
+        self.assertEqual(pv.spread_frames(short)[0][:, 0, 0, 0].tolist(), list(range(10)))
+
+    def test_resizes_keep_the_whole_frame(self):
+        frames = moving_disc(t=4)
+        for fn in (pv.squash, pv.squash_bilinear_aa, pv.squash_cv2):
+            out = fn(frames, 64)
+            self.assertEqual(out.shape, (4, 64, 64, 3), fn.__name__)
+            self.assertGreater(int(out[:, 1:4, 55:62].max()), 150, fn.__name__)    # the corner block survives
+        self.assertFalse(np.array_equal(pv.squash(frames, 64), pv.squash_bilinear_aa(frames, 64)))
+
+    def test_make_variants_second_round(self):
+        frames = moving_disc(t=20)
+        current = torch.full((3, 16, 64, 64), 7, dtype=torch.uint8)
+        cache_squash = torch.full((3, 16, 64, 64), 9, dtype=torch.uint8)
+        first, _, _ = pv.make_variants(frames, current, None, pv.FIRST_ROUND, 64)
+        clips, real, fell_back = pv.make_variants(frames, current, None, pv.VARIANTS, 64, cache_squash, frames.copy())
+        self.assertEqual(set(clips), set(pv.VARIANTS))
+        for name in pv.FIRST_ROUND:                                     # the first round is unchanged
+            self.assertTrue(torch.equal(clips[name], first[name]), name)
+        for name, clip in clips.items():
+            self.assertEqual(tuple(clip.shape), (3, 16, 64, 64), name)
+        self.assertTrue(torch.equal(clips["full_squash_cacheframes"], cache_squash))
+        self.assertEqual(real["full_squash_cacheframes"], 16)
+        # black padding instead of zeros after normalisation: same pixels, every frame counted as real
+        self.assertTrue(torch.equal(clips["full_squash_blackpad"], clips["full_squash"]))
+        self.assertEqual((real["full_squash"], real["full_squash_blackpad"]), (10, 16))
+        self.assertEqual((real["full_squash_period1"], real["full_squash_spread"], real["full_squash_middle"]),
+                         (16, 16, 10))
+        self.assertTrue(torch.equal(clips["full_squash_middle"], clips["full_squash"]))   # 20 frames: same window
+        self.assertTrue(torch.equal(clips["full_squash_cv2decode"], clips["full_squash"]))  # identical decoded frames
+        self.assertEqual(fell_back, ["region_square"])
+        _, _, fell_back = pv.make_variants(frames, current, None, ("full_squash_cv2decode",), 64, None, None)
+        self.assertEqual(fell_back, ["full_squash_cv2decode"])
+        with self.assertRaises(ValueError):
+            pv.make_variants(frames, current, None, ("full_squash_cacheframes",), 64)
+
+
 class StubModel(nn.Module):
     """Logits from the clip's mean intensity: deterministic, no weights needed."""
 
@@ -201,7 +253,7 @@ class TestRunEndToEnd(unittest.TestCase):
             with mock.patch.object(mvit, "load_original", lambda *a, **k: StubModel()):
                 summary = pv.run(cfg, torch.device("cpu"), workers=0, batch=2)
             out = os.path.join(tmp, "arm_b", "zeroshot_variants")
-            self.assertEqual(len(summary), len(pv.VARIANTS) * len(pv.ORDERS))
+            self.assertEqual(len(summary), len(pv.FIRST_ROUND) * len(pv.ORDERS))
             self.assertTrue((summary.n == 3).all())
             self.assertTrue((summary.loc[summary.variant == "region_square", "fallbacks"] == 3).all())
             table = pd.read_csv(os.path.join(out, "probs_full_pad_rgb.csv"))
@@ -209,6 +261,18 @@ class TestRunEndToEnd(unittest.TestCase):
             np.testing.assert_allclose(table[[f"p_{c}" for c in vc.OLD_CLASSES]].sum(axis=1), 1.0, rtol=1e-5)
             self.assertTrue(os.path.exists(os.path.join(out, "variants.json")))
             self.assertIn("agreement_160x120", summary.columns)
+            with self.assertRaises(FileExistsError):                  # scored results are never replaced
+                pv.run(cfg, torch.device("cpu"), workers=0, batch=2)
+            second = os.path.join(tmp, "second")
+            variants = ("full_squash",) + pv.SECOND_ROUND
+            with mock.patch.object(mvit, "load_original", lambda *a, **k: StubModel()):
+                summary2 = pv.run(cfg, torch.device("cpu"), workers=0, variants=variants, out=second, batch=2)
+            self.assertEqual(len(summary2), len(variants) * len(pv.ORDERS))
+            self.assertTrue((summary2.n == 3).all())
+            self.assertTrue((summary2.fallbacks == 0).all())            # OpenCV decoded every clip
+            a = pd.read_csv(os.path.join(out, "probs_full_squash_rgb.csv"))
+            b = pd.read_csv(os.path.join(second, "probs_full_squash_rgb.csv"))
+            pd.testing.assert_frame_equal(a, b)                        # the anchor reproduces the first round
 
 
 if __name__ == "__main__":

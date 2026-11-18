@@ -26,6 +26,20 @@ All but `current` take EchoPrime's frames. The masks use every decoded frame (`-
 cannot be computed for a clip (no declared region, no moving pixels, EchoPrime's masking failed) falls back to
 `full_pad` for that clip and is counted. Each variant is scored in RGB and BGR order, fp32, as `mvit zeroshot` does.
 
+Second round (added after the first eight were scored; `full_squash` reproduced the archive best): the same whole-frame
+squash with one other change each, for the disagreement that remains. They leave the first eight unchanged.
+
+- `full_squash_cacheframes`: the frames of `current` (the token cache's read: spread over the first 32, black padding),
+  i.e. arm B's input with `preprocessing: full_squash` and `frame_read: cache`.
+- `full_squash_blackpad`: EchoPrime's frames, a short clip padded with black frames (not zeros after normalisation).
+- `full_squash_period1`: the first 16 frames (period 1).
+- `full_squash_middle`: frames 0, 2, ..., 30 of the 32-frame window centred in the clip (the first 32 if shorter).
+- `full_squash_spread`: 16 frames spread evenly over the whole clip.
+- `full_squash_bilinear_aa`: EchoPrime's frames, bilinear resize with antialiasing (torchvision's tensor `Resize`).
+- `full_squash_cv2linear`: EchoPrime's frames, `cv2.resize` with its default bilinear interpolation.
+- `full_squash_cv2decode`: EchoPrime's frames decoded by OpenCV (`cv2.VideoCapture`, BGR turned to RGB) instead of
+  decord; bicubic as `full_squash`.
+
 Outputs (`--out`, default <runs>/arm_b/zeroshot_variants/): `probs_<variant>_<order>.csv` (one row per clip),
 `summary.csv` (per variant and order: agreement with the archive overall, B-mode and colour flow; share predicted
 OTHER; mean total-variation distance to the archive's probabilities; fallbacks; and, when the folds table exists,
@@ -33,6 +47,9 @@ accuracy against the human labels collapsed to the 20 classes) and `variants.jso
 stay in memory.
 
     python -m evals.view_classifier.preprocess_variants --config CONFIG --device cuda:0 --workers 8
+    python -m evals.view_classifier.preprocess_variants --config CONFIG --device cuda:0 --second-round --out DIR
+
+An output folder that already holds a `summary.csv` is refused, so a rerun never replaces scored results.
 """
 
 import argparse
@@ -53,8 +70,11 @@ import yaml
 from evals.view_classifier import classes as vc
 from evals.view_classifier import mvit
 
-VARIANTS = ("current", "current_epframes", "centre_nozoom", "full_pad", "full_squash", "region_square",
-            "mask_and_crop", "echoprime_mask")
+FIRST_ROUND = ("current", "current_epframes", "centre_nozoom", "full_pad", "full_squash", "region_square",
+               "mask_and_crop", "echoprime_mask")
+SECOND_ROUND = ("full_squash_cacheframes", "full_squash_blackpad", "full_squash_period1", "full_squash_middle",
+                "full_squash_spread", "full_squash_bilinear_aa", "full_squash_cv2linear", "full_squash_cv2decode")
+VARIANTS = FIRST_ROUND + SECOND_ROUND
 ORDERS = ("rgb", "bgr")
 ECHOPRIME_UTILS = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                                "video_classification_frozen", "modelcustom", "EchoPrime", "utils", "utils.py")
@@ -120,6 +140,40 @@ def squash(frames, size=224):
     x = torch.as_tensor(np.ascontiguousarray(frames)).permute(0, 3, 1, 2).float()
     x = F.interpolate(x, size=(size, size), mode="bicubic", align_corners=False)
     return x.round().clamp(0, 255).to(torch.uint8).permute(0, 2, 3, 1).numpy()
+
+
+def squash_bilinear_aa(frames, size=224):
+    """The whole frame to size x size, bilinear with antialiasing (as torchvision's `Resize` on a tensor)."""
+    x = torch.as_tensor(np.ascontiguousarray(frames)).permute(0, 3, 1, 2).float()
+    x = F.interpolate(x, size=(size, size), mode="bilinear", align_corners=False, antialias=True)
+    return x.round().clamp(0, 255).to(torch.uint8).permute(0, 2, 3, 1).numpy()
+
+
+def squash_cv2(frames, size=224):
+    """The whole frame to size x size by `cv2.resize` with its default (bilinear) interpolation."""
+    import cv2
+    return np.stack([cv2.resize(np.ascontiguousarray(f), (size, size), interpolation=cv2.INTER_LINEAR)
+                     for f in frames])
+
+
+def middle_frames(frames):
+    """Frames 0, 2, ..., 30 of the 32-frame window centred in the clip (the first 32 when shorter)."""
+    start = max(0, (len(frames) - WINDOW) // 2)
+    picked = frames[start:start + WINDOW:STEP]
+    return picked, len(picked)
+
+
+def period1_frames(frames):
+    """The first 16 frames."""
+    picked = frames[:FRAMES]
+    return picked, len(picked)
+
+
+def spread_frames(frames):
+    """16 frames spread evenly over the whole clip (every frame of a clip shorter than 16)."""
+    idx = np.round(np.linspace(0, len(frames) - 1, min(FRAMES, len(frames)))).astype(np.int64)
+    picked = frames[idx]
+    return picked, len(picked)
 
 
 def square_around(frames, box, keep=None):
@@ -211,10 +265,13 @@ def echoprime_preprocess(frames, size=224):
     return out, n_real
 
 
-def make_variants(frames, current, regions=None, variants=VARIANTS, size=224):
+def make_variants(frames, current, regions=None, variants=VARIANTS, size=224, cache_squash=None, cv2_frames=None):
     """All requested variants of one clip. `frames`: uint8 [T, H, W, 3] RGB, every decoded frame; `current`: arm B's
     clip as `mvit.ClipDecoder` returns it (uint8 [3, 16, size, size]) or None; `regions`: the DICOM's ultrasound
-    regions or None. Returns ({variant: uint8 [3, 16, size, size]}, {variant: n_real}, [variants that fell back])."""
+    regions or None; `cache_squash`: the clip as `mvit.ClipDecoder` returns it with `preprocessing: full_squash`
+    (for `full_squash_cacheframes`); `cv2_frames`: the frames as OpenCV decodes them, RGB, or None when it could not
+    (for `full_squash_cv2decode`, which then falls back). Returns ({variant: uint8 [3, 16, size, size]},
+    {variant: n_real}, [variants that fell back])."""
     clips, real, fell_back = {}, {}, []
     picked, n = echoprime_frames(frames)
     t, h, w, _ = frames.shape
@@ -228,6 +285,14 @@ def make_variants(frames, current, regions=None, variants=VARIANTS, size=224):
             if current is None:
                 raise ValueError("The current variant needs arm B's clip.")
             clips[name], real[name] = current, FRAMES      # already padded with black, as arm B sees it
+            continue
+        if name == "full_squash_cacheframes":
+            if cache_squash is None:
+                raise ValueError("The full_squash_cacheframes variant needs arm B's full_squash clip.")
+            clips[name], real[name] = cache_squash, FRAMES  # padded with black, as arm B would see it
+            continue
+        if name == "full_squash_blackpad":
+            clips[name], real[name] = _to_clip(squash(picked, size), n, size), FRAMES   # black padding kept
             continue
         n_real = n
         if name == "current_epframes":
@@ -255,6 +320,25 @@ def make_variants(frames, current, regions=None, variants=VARIANTS, size=224):
                 out = fallback(name)
             else:
                 out, n_real = result
+        elif name == "full_squash_period1":
+            sel, n_real = period1_frames(frames)
+            out = squash(sel, size)
+        elif name == "full_squash_middle":
+            sel, n_real = middle_frames(frames)
+            out = squash(sel, size)
+        elif name == "full_squash_spread":
+            sel, n_real = spread_frames(frames)
+            out = squash(sel, size)
+        elif name == "full_squash_bilinear_aa":
+            out = squash_bilinear_aa(picked, size)
+        elif name == "full_squash_cv2linear":
+            out = squash_cv2(picked, size)
+        elif name == "full_squash_cv2decode":
+            if cv2_frames is None or len(cv2_frames) == 0:
+                out = fallback(name)
+            else:
+                sel, n_real = echoprime_frames(cv2_frames)
+                out = squash(sel, size)
         else:
             raise ValueError(f"Unknown variant {name!r}.")
         clips[name], real[name] = _to_clip(out, n_real, size), n_real
@@ -289,6 +373,26 @@ def decode_frames(path, max_frames=0):
         return None
 
 
+def decode_frames_cv2(path, max_frames=WINDOW):
+    """The first `max_frames` frames (0 = all) as OpenCV decodes them, uint8 [T, H, W, 3] RGB, or None. Decoder output,
+    which could name the file, is discarded."""
+    import cv2
+    from src.datasets.video_dataset import _native_stderr_discarded
+    try:
+        with _native_stderr_discarded():
+            cap = cv2.VideoCapture(path)
+            out = []
+            while not max_frames or len(out) < max_frames:
+                ok, frame = cap.read()
+                if not ok:
+                    break
+                out.append(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+            cap.release()
+        return np.stack(out) if out else None
+    except Exception:
+        return None
+
+
 class VariantClips(torch.utils.data.Dataset):
     """Item i: (i, {variant: clip}, {variant: n_real}, [fallbacks], (H, W)) or (i, None, ...) when unreadable."""
 
@@ -296,11 +400,13 @@ class VariantClips(torch.utils.data.Dataset):
         self.video_paths, self.dicom_paths = list(video_paths), list(dicom_paths)
         self.variants, self.max_frames, self.size = tuple(variants), max_frames, size
         data_cfg = data_cfg or {}
-        self.current = None
+        frames, step = int(data_cfg.get("frames_per_clip", FRAMES)), int(data_cfg.get("frame_step", STEP))
+        self.current = self.cache_squash = None
         if "current" in self.variants:
-            self.current = mvit.ClipDecoder(self.video_paths, int(data_cfg.get("frames_per_clip", FRAMES)),
-                                            int(data_cfg.get("frame_step", STEP)), size,
-                                            float(data_cfg.get("zoom", 0.1)))
+            self.current = mvit.ClipDecoder(self.video_paths, frames, step, size, float(data_cfg.get("zoom", 0.1)))
+        if "full_squash_cacheframes" in self.variants:
+            self.cache_squash = mvit.ClipDecoder(self.video_paths, frames, step, size, preprocessing="full_squash",
+                                                 frame_read="cache")
 
     def __len__(self):
         return len(self.video_paths)
@@ -308,7 +414,9 @@ class VariantClips(torch.utils.data.Dataset):
     def __getitem__(self, i):
         frames = decode_frames(self.video_paths[i], self.max_frames)
         current = self.current[i][1] if self.current is not None else None
-        if frames is None or (self.current is not None and current is None):
+        cache_squash = self.cache_squash[i][1] if self.cache_squash is not None else None
+        if (frames is None or (self.current is not None and current is None)
+                or (self.cache_squash is not None and cache_squash is None)):
             return i, None, None, None, None
         regions = None
         if "region_square" in self.variants:
@@ -316,7 +424,9 @@ class VariantClips(torch.utils.data.Dataset):
                 regions = read_regions(self.dicom_paths[i])
             except Exception:
                 regions = None
-        clips, real, fell_back = make_variants(frames, current, regions, self.variants, self.size)
+        cv2_frames = decode_frames_cv2(self.video_paths[i]) if "full_squash_cv2decode" in self.variants else None
+        clips, real, fell_back = make_variants(frames, current, regions, self.variants, self.size, cache_squash,
+                                               cv2_frames)
         return i, clips, real, fell_back, frames.shape[1:3]
 
 
@@ -350,9 +460,11 @@ def summarize(table, archive_view, archive_probs=None, acq=None, human_parent=No
 
 
 @torch.no_grad()
-def run(cfg, device, workers=8, variants=VARIANTS, out=None, limit=None, max_frames=0, batch=16):
+def run(cfg, device, workers=8, variants=FIRST_ROUND, out=None, limit=None, max_frames=0, batch=16):
     paths, b = cfg["paths"], cfg[mvit.ARM]
     out = out or os.path.join(paths["runs"], mvit.ARM, "zeroshot_variants")
+    if os.path.exists(os.path.join(out, "summary.csv")):
+        raise FileExistsError(f"{out} already holds a summary.csv: name another --out (results are never replaced).")
     os.makedirs(out, exist_ok=True)
     pool = pd.read_csv(paths["pool_clips"], dtype=str)
     if limit:
@@ -422,16 +534,23 @@ def main(argv=None):
     parser.add_argument("--config", required=True)
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--workers", type=int, default=8)
-    parser.add_argument("--variants", nargs="*", default=list(VARIANTS), choices=VARIANTS)
+    parser.add_argument("--variants", nargs="*", default=list(FIRST_ROUND), choices=VARIANTS)
+    parser.add_argument("--second-round", action="store_true",
+                        help="score full_squash (the anchor: it must reproduce the first round) and the second round's "
+                             "variants instead of --variants; needs --out")
     parser.add_argument("--max-frames", type=int, default=0, help="frames decoded per clip for the masks; 0 = all")
     parser.add_argument("--limit", type=int, default=None, help="score only the first N pool clips (a quick check)")
     parser.add_argument("--batch", type=int, default=16)
     parser.add_argument("--out", default=None)
     args = parser.parse_args(argv)
+    variants = tuple(args.variants)
+    if args.second_round:
+        if not args.out:
+            parser.error("--second-round needs --out (the first round's folder is kept)")
+        variants = ("full_squash",) + SECOND_ROUND
     with open(args.config) as f:
         cfg = yaml.safe_load(f)
-    run(cfg, torch.device(args.device), args.workers, tuple(args.variants), args.out, args.limit, args.max_frames,
-        args.batch)
+    run(cfg, torch.device(args.device), args.workers, variants, args.out, args.limit, args.max_frames, args.batch)
 
 
 if __name__ == "__main__":

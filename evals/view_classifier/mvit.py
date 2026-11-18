@@ -14,6 +14,15 @@ pixels, and these clips are decoded MP4s. The channel order the weights expect i
 the unchanged model on the labelling pool in both orders and measures agreement with the archive's predictions, made
 by the same weights: the order to use, and a check that this input is close to the one the archive was scored with.
 
+The input is selectable in the arm's `data` section (the defaults are the input above, which the first runs used):
+- `preprocessing`: `centre_zoom` (default: centre square, `zoom` cut from each side, bicubic) or `full_squash` (the
+  whole frame resized to `resolution` x `resolution`, bicubic, nothing cut, aspect not kept; `zoom` is ignored). Of the
+  inputs `preprocess_variants` compared, `full_squash` reproduced the archive's predictions best.
+- `frame_read`: `cache` (default: the token cache's read, `frames_per_clip` frames spread over the first
+  `frames_per_clip * frame_step`, a short clip padded with black frames) or `echoprime` (frames 0, step, 2 step, ...
+  of the first `frames_per_clip * frame_step` that exist; a short clip's missing frames are zero after normalisation,
+  as EchoPrime and `preprocess_variants` pad).
+
 Fine-tuning: the 512 -> 20 layer becomes 512 -> len(new classes) (`extend_head`): a kept class keeps its row, a new
 class starts from its parent's row (`head_init: parent`, bias minus log of the number of classes sharing the parent)
 or at random (`head_init: random`). The whole network trains, the head at `head_lr_mult` times the backbone's rate.
@@ -112,6 +121,39 @@ def crop_and_scale(buffer, size=224, zoom=0.1):
     return x.round().clamp(0, 255).to(torch.uint8).permute(1, 0, 2, 3).contiguous()
 
 
+def full_squash(buffer, size=224):
+    """uint8 [T, H, W, 3] (array or tensor) -> uint8 tensor [3, T, size, size]: the whole frame resized to size x size
+    (bicubic, aspect not kept, nothing cut), as `preprocess_variants`' `full_squash`."""
+    x = torch.as_tensor(np.asarray(buffer)).permute(0, 3, 1, 2).float()
+    x = F.interpolate(x, size=(size, size), mode="bicubic", align_corners=False)
+    return x.round().clamp(0, 255).to(torch.uint8).permute(1, 0, 2, 3).contiguous()
+
+
+PREPROCESSING = ("centre_zoom", "full_squash")
+FRAME_READS = ("cache", "echoprime")
+
+
+def data_settings(data_cfg):
+    """(preprocessing, frame_read) of an arm's `data` section, checked; the defaults are the first runs' input."""
+    data_cfg = data_cfg or {}
+    preprocessing = data_cfg.get("preprocessing", "centre_zoom")
+    frame_read = data_cfg.get("frame_read", "cache")
+    if preprocessing not in PREPROCESSING:
+        raise ValueError(f"Unknown preprocessing {preprocessing!r} (one of {PREPROCESSING}).")
+    if frame_read not in FRAME_READS:
+        raise ValueError(f"Unknown frame_read {frame_read!r} (one of {FRAME_READS}).")
+    return preprocessing, frame_read
+
+
+def spatial(buffer, size=224, zoom=0.1, preprocessing="centre_zoom"):
+    """uint8 [T, H, W, 3] -> uint8 tensor [3, T, size, size] by the selected preprocessing."""
+    if preprocessing == "centre_zoom":
+        return crop_and_scale(buffer, size, zoom)
+    if preprocessing == "full_squash":
+        return full_squash(buffer, size)
+    raise ValueError(f"Unknown preprocessing {preprocessing!r}.")
+
+
 def normalize(x, channel_order="rgb", mean=README_MEAN, std=README_STD):
     """uint8 [B, 3, T, H, W] (RGB) -> float, channels in `channel_order`, normalised in 0-255 space."""
     if channel_order == "bgr":
@@ -121,6 +163,24 @@ def normalize(x, channel_order="rgb", mean=README_MEAN, std=README_STD):
     m = torch.tensor(mean, device=x.device).view(1, 3, 1, 1, 1)
     s = torch.tensor(std, device=x.device).view(1, 3, 1, 1, 1)
     return (x.float() - m) / s
+
+
+def trailing_black(x):
+    """bool [B, T]: the frames of uint8 [B, 3, T, H, W] that are entirely black and followed only by such frames (the
+    padding `frame_read: echoprime` appends to a short clip)."""
+    black = (x == 0).flatten(3).all(dim=-1).all(dim=1)
+    return black.flip(1).cumprod(dim=1).flip(1).bool()
+
+
+def model_input(x, channel_order="rgb", zero_padding=False):
+    """uint8 [B, 3, T, H, W] -> the model's float input: `normalize`, and with `zero_padding` the trailing black
+    (padding) frames set to 0 after normalisation, as EchoPrime pads a short clip."""
+    out = normalize(x, channel_order)
+    if zero_padding:
+        pad = trailing_black(x)
+        if pad.any():
+            out = out.masked_fill(pad[:, None, :, None, None], 0.0)
+    return out
 
 
 def random_crop(x, scale_min, generator):
@@ -140,23 +200,60 @@ def random_crop(x, scale_min, generator):
     return out
 
 
-class ClipDecoder(torch.utils.data.Dataset):
-    """Item i: (i, uint8 [3, T, 224, 224] or None when the clip cannot be decoded). The first `frames` frames at
-    `frame_step` (a short video padded with black frames), as the token cache reads a clip."""
+def echoprime_read(path, frames=16, frame_step=2):
+    """uint8 [n, H, W, 3] RGB: frames 0, frame_step, ... of the first frames * frame_step of the video that exist
+    (n <= frames), or None when it cannot be decoded. The window is decoded in order and then subsampled, as
+    `preprocess_variants` reads it. Decoder output, which could name the file, is discarded."""
+    from decord import VideoReader, cpu
+    from src.datasets.video_dataset import _native_stderr_discarded
+    try:
+        with _native_stderr_discarded():
+            vr = VideoReader(path, num_threads=1, ctx=cpu(0))
+            n = min(len(vr), frames * frame_step)
+            if n == 0:
+                return None
+            return vr.get_batch(list(range(n))).asnumpy()[::frame_step][:frames]
+    except Exception:
+        return None
 
-    def __init__(self, clip_ids, frames=16, frame_step=2, size=224, zoom=0.1):
+
+def pad_frames(clip, frames):
+    """uint8 [3, n, S, S] -> [3, frames, S, S], black frames appended."""
+    n = clip.shape[1]
+    if n >= frames:
+        return clip[:, :frames]
+    pad = torch.zeros((clip.shape[0], frames - n, *clip.shape[2:]), dtype=clip.dtype)
+    return torch.cat([clip, pad], dim=1)
+
+
+class ClipDecoder(torch.utils.data.Dataset):
+    """Item i: (i, uint8 [3, T, 224, 224] or None when the clip cannot be decoded). With `frame_read: cache` the first
+    `frames` frames at `frame_step` (a short video padded with black frames), as the token cache reads a clip; with
+    `echoprime`, EchoPrime's frames (`echoprime_read`), padded with black frames. Then `spatial`."""
+
+    def __init__(self, clip_ids, frames=16, frame_step=2, size=224, zoom=0.1, preprocessing="centre_zoom",
+                 frame_read="cache"):
         from src.datasets.video_study_dataset import make_clip_loader
         self.clip_ids, self.frames, self.size, self.zoom = list(clip_ids), frames, size, zoom
-        self.loader = make_clip_loader(frames, frame_step, random_clip_sampling=False)
+        self.frame_step = frame_step
+        self.preprocessing, self.frame_read = data_settings({"preprocessing": preprocessing, "frame_read": frame_read})
+        self.loader = None
+        if self.frame_read == "cache":
+            self.loader = make_clip_loader(frames, frame_step, random_clip_sampling=False)
 
     def __len__(self):
         return len(self.clip_ids)
 
     def __getitem__(self, i):
+        if self.frame_read == "echoprime":
+            buffer = echoprime_read(self.clip_ids[i], self.frames, self.frame_step)
+            if buffer is None or len(buffer) == 0:
+                return i, None
+            return i, pad_frames(spatial(buffer, self.size, self.zoom, self.preprocessing), self.frames)
         buffer, _ = self.loader.loadvideo_decord(self.clip_ids[i], self.frames)
         if buffer is None or len(buffer) == 0:
             return i, None
-        return i, crop_and_scale(buffer[:self.frames], self.size, self.zoom)
+        return i, spatial(buffer[:self.frames], self.size, self.zoom, self.preprocessing)
 
 
 def _collate(items):
@@ -166,8 +263,10 @@ def _collate(items):
 def decode_all(clip_ids, data_cfg, workers=8):
     """(uint8 tensor [N, 3, T, 224, 224], {clip_id: row}, unreadable clip ids, seconds) for the readable clips."""
     ids = list(dict.fromkeys(str(c) for c in clip_ids))
+    preprocessing, frame_read = data_settings(data_cfg)
     dataset = ClipDecoder(ids, int(data_cfg.get("frames_per_clip", 16)), int(data_cfg.get("frame_step", 2)),
-                          int(data_cfg.get("resolution", 224)), float(data_cfg.get("zoom", 0.1)))
+                          int(data_cfg.get("resolution", 224)), float(data_cfg.get("zoom", 0.1)), preprocessing,
+                          frame_read)
     loader = torch.utils.data.DataLoader(dataset, batch_size=8, num_workers=workers, collate_fn=_collate,
                                          multiprocessing_context="spawn" if workers else None)
     start, clips, failed = time.time(), {}, []
@@ -205,9 +304,10 @@ def make_arm(data, row, cfg, weights, classes=vc.NEW_CLASSES, parent=None):
                 {"params": groups["head_flat"], "lr": lr * mult, "weight_decay": 0.0}]
 
     scale_min = float(cfg.get("crop_scale_min", 0.85))
+    zero_padding = data_settings(cfg.get("data"))[1] == "echoprime"
 
     def prepare(x, training, generator):
-        x = normalize(x, channel_order)
+        x = model_input(x, channel_order, zero_padding)
         return random_crop(x, scale_min, generator) if training else x
 
     return vt.Arm(name=ARM, data=data, row=row, build=build, param_groups=param_groups, prepare=prepare)
@@ -221,9 +321,11 @@ def zero_shot(cfg, device, workers):
     os.makedirs(out, exist_ok=True)
     pool = pd.read_csv(paths["pool_clips"], dtype=str)
     data, row, failed, decode_seconds = decode_all(pool.video_path, b.get("data", {}), workers)
+    preprocessing, frame_read = data_settings(b.get("data"))
     model = load_original(paths["view_classifier"], b.get("weights_sha256")).to(device).eval()
     record = {"clips": len(pool), "decoded": len(row), "unreadable": len(failed), "decode_seconds": decode_seconds,
-              "decode_clips_per_s": len(row) / max(decode_seconds, 1e-9), "decode_workers": workers, "orders": {}}
+              "decode_clips_per_s": len(row) / max(decode_seconds, 1e-9), "decode_workers": workers,
+              "preprocessing": preprocessing, "frame_read": frame_read, "orders": {}}
     keep = pool[pool.video_path.isin(row)].reset_index(drop=True)
     for order in ("rgb", "bgr"):
         probs, seconds = [], 0.0
@@ -232,7 +334,7 @@ def zero_shot(cfg, device, workers):
             if device.type == "cuda":
                 torch.cuda.synchronize(device)
             t0 = time.time()
-            logits = model(normalize(x, order))
+            logits = model(model_input(x, order, frame_read == "echoprime"))
             if device.type == "cuda":
                 torch.cuda.synchronize(device)
             seconds += time.time() - t0

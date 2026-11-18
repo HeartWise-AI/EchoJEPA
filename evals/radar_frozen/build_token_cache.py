@@ -3,7 +3,11 @@
 """Write the token cache RADAR trains on: the frozen encoder's tokens of every clip of one clip table.
 
 Each clip is read as the study probe reads it at evaluation: the first `frames_per_clip` frames at `frame_step`
-(a short video is padded with black frames), resized and centre-cropped to `resolution`, no augmentation. The encoder
+(a short video is padded with black frames), resized and centre-cropped to `resolution`, no augmentation. With
+`data.spatial: full_squash` the centre crop is dropped instead: every frame is resized to `resolution` x `resolution`
+(the same bilinear resize, aspect not kept), so the whole frame is encoded, as in the 224 x 224 squashed videos
+EchoJEPA was pretrained on; the default `resize_centre_crop` keeps the short side's central 224/256 and less of the
+long side. The setting is recorded in the provenance (`transform: eval_full_squash`). The encoder
 is the probe's (`evals.video_classification_frozen.models.init_module`), run without gradients. One clip gives
 `prod(token_grid)` tokens, stored by `src.datasets.radar_token_cache`.
 
@@ -23,7 +27,7 @@ Two stages, so that several GPUs can share the work and an interrupted run loses
 `<out>` must be outside the repository: clip ids are file paths. Nothing printed names a clip or a study.
 
 Config (YAML): encoder {checkpoint, module_name, pretrain_kwargs, wrapper_kwargs}; data {frames_per_clip, frame_step,
-resolution, normalization}; cache {token_grid, embed_dim, dtype, use_bfloat16}. `--checkpoint` overrides
+resolution, normalization, spatial}; cache {token_grid, embed_dim, dtype, use_bfloat16}. `--checkpoint` overrides
 encoder.checkpoint.
 
 Usage (one process per GPU, then once):
@@ -51,6 +55,15 @@ REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 DEFAULT_NORMALIZATION = ((0.485, 0.456, 0.406), (0.229, 0.224, 0.225))
 EXCLUDE_COLUMNS = ("avi_path", "video_path", "clip_id")
 CACHE_VERSION = 1    # raise when a change here alters the tokens a given config writes
+SPATIAL = {"resize_centre_crop": "eval", "full_squash": "eval_full_squash"}   # data.spatial -> provenance transform
+
+
+def spatial_transform(data):
+    """The provenance name of `data.spatial` (default `resize_centre_crop`, the probe's eval transform)."""
+    spatial = data.get("spatial", "resize_centre_crop")
+    if spatial not in SPATIAL:
+        raise ValueError(f"Unknown data.spatial {spatial!r} (one of {sorted(SPATIAL)}).")
+    return SPATIAL[spatial]
 
 
 def chunk_of(clip_id, chunks):
@@ -96,7 +109,7 @@ def provenance(config, args, n_clips, n_excluded):
         "data": {"frames_per_clip": int(data.get("frames_per_clip", 16)), "frame_step": data.get("frame_step", 2),
                  "resolution": int(data.get("resolution", 224)),
                  "normalization": data.get("normalization") or DEFAULT_NORMALIZATION,
-                 "clip_sampling": "first_window", "transform": "eval"},
+                 "clip_sampling": "first_window", "transform": spatial_transform(data)},
         "use_bfloat16": bool(config["cache"].get("use_bfloat16", True)),
         "clips_sha256": file_sha256(args.clips), "split": args.split,
         "exclude_sha256": sorted(file_sha256(e) for e in args.exclude),
@@ -115,9 +128,14 @@ class ClipReader(torch.utils.data.Dataset):
         self.clip_ids = list(clip_ids)
         self.frames = int(data.get("frames_per_clip", 16))
         self.loader = make_clip_loader(self.frames, data.get("frame_step", 2), random_clip_sampling=False)
-        self.transform = make_transforms(training=False, crop_size=int(data.get("resolution", 224)),
-                                         num_views_per_clip=1,
-                                         normalize=data.get("normalization") or DEFAULT_NORMALIZATION)
+        resolution = int(data.get("resolution", 224))
+        normalization = data.get("normalization") or DEFAULT_NORMALIZATION
+        self.squash = spatial_transform(data) != "eval"     # (an attribute, not a closure: workers pickle the reader)
+        if self.squash:
+            self.transform = full_squash_transform(resolution, normalization)
+        else:
+            self.transform = make_transforms(training=False, crop_size=resolution, num_views_per_clip=1,
+                                             normalize=normalization)
 
     def __len__(self):
         return len(self.clip_ids)
@@ -126,7 +144,20 @@ class ClipReader(torch.utils.data.Dataset):
         buffer, indices = self.loader.loadvideo_decord(self.clip_ids[i], self.frames)
         if buffer is None or len(buffer) == 0:
             return i, None, None
-        return i, self.transform(buffer[:self.frames])[0], torch.as_tensor(np.asarray(indices[0], dtype=np.int64))
+        clip = self.transform(buffer[:self.frames])
+        return i, clip if self.squash else clip[0], torch.as_tensor(np.asarray(indices[0], dtype=np.int64))
+
+
+def full_squash_transform(resolution, normalization):
+    """The probe's eval transform without its centre crop: each frame resized to resolution x resolution with the same
+    bilinear resize, then to a [C, T, H, W] tensor in [0, 1] and normalised."""
+    import src.datasets.utils.video.transforms as video_transforms
+    import src.datasets.utils.video.volume_transforms as volume_transforms
+    return video_transforms.Compose([
+        video_transforms.Resize((resolution, resolution), interpolation="bilinear"),
+        volume_transforms.ClipToTensor(),
+        video_transforms.Normalize(mean=normalization[0], std=normalization[1]),
+    ])
 
 
 def _collate(items):
