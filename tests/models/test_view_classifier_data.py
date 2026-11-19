@@ -127,6 +127,35 @@ class TestLabels(unittest.TestCase):
         usable, _ = vl.read_labels(label_table(["A4C", "PSAX"], ["done", "in_rework"]))
         self.assertEqual(len(usable), 1)
 
+    def test_batches_keep_listed_batches_only(self):
+        t = label_table(["A4C", "unsure", "A2C", "PSAX_MID", ""], ["done", "done", "done", "unlabelled", "done"])
+        t["batch"] = ["1", "1", "2", "2", "2"]
+        usable, drops = vl.read_labels(t, batches=[1])
+        self.assertEqual(list(usable.global_key), ["k0"])
+        d = dict(zip(drops.reason, drops.n))
+        self.assertEqual((d["other_batch"], d["unsure"], d["status_unlabelled"], d["empty_view"]), (3, 1, 0, 0))
+        self.assertEqual(int(drops.n.sum()), 4)
+        usable, drops = vl.read_labels(t, batches=[1, 2])
+        self.assertEqual(list(usable.global_key), ["k0", "k2"])
+        self.assertEqual(dict(zip(drops.reason, drops.n))["other_batch"], 0)
+        # Without `batches`, every row counts and the drop table keeps its earlier reasons.
+        usable, drops = vl.read_labels(t)
+        self.assertEqual(len(usable), 2)
+        self.assertNotIn("other_batch", set(drops.reason))
+
+    def test_batches_need_a_batch_column_and_valid_numbers(self):
+        t = label_table(["A4C", "A2C"])
+        with self.assertRaisesRegex(ValueError, "no `batch` column"):
+            vl.read_labels(t, batches=[1])
+        for bad in ([], 1, "1", [0], [1.5], [True]):
+            with self.assertRaises(ValueError):
+                vl.read_labels(t.assign(batch="1"), batches=bad)
+        with self.assertRaisesRegex(ValueError, "not batch numbers"):
+            vl.read_labels(t.assign(batch=["1", "x"]), batches=[1])
+        # The export's checks still cover the rows of other batches.
+        with self.assertRaises(ValueError):
+            vl.read_labels(label_table(["A4C", "PSAX"]).assign(batch=["1", "2"]), batches=[1])
+
     def test_pool_and_split_checks(self):
         usable, _ = vl.read_labels(label_table(["A4C", "A2C"]))
         pool = pd.DataFrame({"global_key": ["k0", "k1"], "patient_id": ["p0", "p1"],

@@ -25,7 +25,8 @@ labels, printed as counts and metrics only. Uses the `pool` tables when they exi
     python -m evals.view_classifier.prepare folds --config CONFIG [--labels EXPORT]
 
 `--labels` replaces `paths.labels` (a later export under another name). When `paths.form` names the label project's
-form export, a view it offers that the config's `classes` lacks stops the run.
+form export, a view it offers that the config's `classes` lacks stops the run. `label_batches` (a list, e.g. [1])
+keeps only the export rows of those upload batches (its `batch` column); the other rows are counted as `other_batch`.
 """
 
 import argparse
@@ -126,7 +127,7 @@ def usable_labels(cfg):
         unused = vc.check_against_form(classes, p["form"])
         if unused:
             print(f"note: classes the label form does not offer (never a label): {unused}")
-    usable, drops = vl.read_labels(p["labels"], classes)
+    usable, drops = vl.read_labels(p["labels"], classes, batches=cfg.get("label_batches"))
     pool_path = os.path.join(p["inputs"], "pool_clips.csv")
     pool_clips = pd.read_csv(pool_path if os.path.exists(pool_path) else p["pool"], dtype=str)
     usable = vl.check_against_pool(usable, pool_clips)
@@ -215,7 +216,7 @@ def make_folds(cfg):
     pseudo.to_csv(p["pseudo_labels"], index=False)
     record = {"labels": p["labels"], "labels_sha256": vl.file_sha256(p["labels"]), "usable": len(table),
               "dropped": dict(zip(drops.reason, drops.n.astype(int))), "pseudo_labels": len(pseudo),
-              "k": int(cv["k"]), "seed": int(cv.get("seed", 0)),
+              "label_batches": cfg.get("label_batches"), "k": int(cv["k"]), "seed": int(cv.get("seed", 0)),
               "predicted_view_differs_from_pool": prediction_mismatch,
               "per_class": table.label.value_counts().to_dict(),
               "classes_without_labels": [c for c in classes if c not in set(table.label)]}

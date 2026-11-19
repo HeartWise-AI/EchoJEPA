@@ -273,7 +273,8 @@ def write(cfg):
           f"(trained and counted in accuracy and macro_f1_all, not scored one by one): "
           f"{', '.join(below) if below else 'none'}.", "",
           "Metrics on pooled out-of-fold predictions (5-fold, nested selection); intervals: percentile bootstrap "
-          "over clips (one clip per patient). `old` granularity: 23 classes collapsed to the current 20. "
+          "over clips (one clip per patient). `old` granularity: "
+          f"{len(classes)} classes collapsed to the current {len(vc.OLD_CLASSES)}. "
           "`old_kept`: clips whose human label is one of the current classes. The review form was prefilled with "
           "the current classifier's view: its agreement may be inflated.", "", markdown(table), ""]
     notes = cfg["report"].get("notes") or []

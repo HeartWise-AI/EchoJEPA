@@ -4,9 +4,11 @@
 
 Human labels come from the label export (`LABEL_COLUMNS`). A clip is used when its `label_status` is `done` and its
 `human_view` is a class; `unsure`, an empty view and every other status are dropped and counted by reason
-(`read_labels`). A view that is neither a class, an alias of one nor `unsure` stops the run, since it means the export
-and the class list disagree. `check_against_pool` ties each label to the clip drawn for labelling (same patient, same
-video) and `check_train_split` to the train split.
+(`read_labels`). When the label project holds several upload batches, the export's `batch` column names each row's
+batch and `batches` keeps only the batches listed (the others are counted as `other_batch`). A view that is neither a
+class, an alias of one nor `unsure` stops the run, since it means the export and the class list disagree.
+`check_against_pool` ties each label to the clip drawn for labelling (same patient, same video) and
+`check_train_split` to the train split.
 
 Pseudo-labels (`select_pseudo_labels`) are the current classifier's predictions on other train-split clips: only for
 the old classes that map to exactly one new class, above a probability threshold, at most one clip per patient, never
@@ -36,9 +38,11 @@ def file_sha256(path):
     return h.hexdigest()
 
 
-def read_labels(table, new_classes=vc.NEW_CLASSES, aliases=None):
+def read_labels(table, new_classes=vc.NEW_CLASSES, aliases=None, batches=None):
     """(usable labels, drop counts). `table` is a DataFrame or a CSV path. Usable rows get `label` (the class name)
-    and `y` (its index in `new_classes`). Drop counts: a DataFrame with `reason` and `n`, zero rows included."""
+    and `y` (its index in `new_classes`). Drop counts: a DataFrame with `reason` and `n`, zero rows included.
+    `batches` (a list of batch numbers, or None for every row): keep only rows whose `batch` is listed; the others
+    are dropped first, as `other_batch`. The checks of statuses, keys and views still cover every row."""
     labels = pd.read_csv(table, dtype=str, keep_default_na=False) if isinstance(table, str) else table.copy()
     missing = [c for c in LABEL_COLUMNS if c not in labels.columns]
     if missing:
@@ -55,16 +59,43 @@ def read_labels(table, new_classes=vc.NEW_CLASSES, aliases=None):
     bad = sorted(set(view[done & ~known]))
     if bad:
         raise ValueError(f"Labels that are not classes: {bad}. Add them to the class list or to ALIASES.")
-    reasons = np.select([~done, view == vc.UNSURE, view == ""],
-                        ["status_" + status, "unsure", "empty_view"], default="")
+    other = pd.Series(False, index=labels.index)
+    if batches is not None:
+        other = ~batch_numbers(labels).isin(parse_batches(batches))
+    reasons = np.select([other, ~done, view == vc.UNSURE, view == ""],
+                        ["other_batch", "status_" + status, "unsure", "empty_view"], default="")
     counts = pd.Series(reasons[reasons != ""], dtype=str).value_counts()
-    every = [f"status_{s}" for s in STATUSES if s != "done"] + ["unsure", "empty_view"]
+    every = ([] if batches is None else ["other_batch"]) \
+        + [f"status_{s}" for s in STATUSES if s != "done"] + ["unsure", "empty_view"]
     drops = pd.DataFrame({"reason": every, "n": [int(counts.get(r, 0)) for r in every]})
     usable = labels[reasons == ""].copy()
     usable["label"] = view[reasons == ""]
     index = {c: i for i, c in enumerate(new_classes)}
     usable["y"] = usable.label.map(index).astype(int)
     return usable.reset_index(drop=True), drops
+
+
+def parse_batches(batches):
+    """The batch numbers to keep, from a config list (`label_batches`): positive integers, at least one."""
+    if isinstance(batches, (str, int)) or not batches:
+        raise ValueError("`label_batches` must be a non-empty list of batch numbers, e.g. [1].")
+    out = []
+    for b in batches:
+        if isinstance(b, bool) or not isinstance(b, int) or b < 1:
+            raise ValueError(f"`label_batches` holds {b!r}: batch numbers are integers from 1.")
+        out.append(b)
+    return out
+
+
+def batch_numbers(labels):
+    """The `batch` column of a label export as integers; raise when it is missing or not a whole number."""
+    if "batch" not in labels.columns:
+        raise ValueError("`label_batches` is set but the label table has no `batch` column (export it with every "
+                         "batch's picked list).")
+    numbers = pd.to_numeric(labels.batch.astype(str).str.strip(), errors="coerce")
+    if numbers.isna().any() or (numbers != numbers.round()).any():
+        raise ValueError("The label table's `batch` column holds values that are not batch numbers.")
+    return numbers.astype(int)
 
 
 def check_against_pool(labels, pool):

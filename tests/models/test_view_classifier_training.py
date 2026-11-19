@@ -6,6 +6,7 @@ export, arm A's probe on a synthetic token cache with and without pseudo-labels,
 
 import json
 import os
+import shutil
 import tempfile
 import unittest
 
@@ -311,6 +312,42 @@ class TestEndToEnd(unittest.TestCase):
             with contextlib.redirect_stdout(out):
                 prepare.main(["check", "--config", path, "--labels", other])
             self.assertIn('"usable": 10', out.getvalue())
+
+    def test_label_batches_keep_the_pool_batch(self):
+        """A later batch's rows in the export (not in this pool) stop the folds unless `label_batches` leaves them
+        out; then they are counted as other_batch and the folds equal those of the batch alone."""
+        with tempfile.TemporaryDirectory() as root:
+            cfg, path = synthetic_run(root)
+            export = pd.read_csv(cfg["paths"]["labels"], dtype=str, keep_default_na=False)
+            alone = os.path.join(root, "labels", "alone.csv")
+            export.to_csv(alone, index=False)
+            later = export.head(5).assign(global_key=[f"b2_{i}" for i in range(5)],
+                                          patient_id=[f"r{i}" for i in range(5)],
+                                          video_path=[f"/later/{i}.mp4" for i in range(5)])
+            both = pd.concat([export.assign(batch="1"), later.assign(batch="2")], ignore_index=True)
+            both.loc[len(export) + 1, "label_status"] = "unlabelled"
+            both.loc[len(export) + 1, "human_view"] = ""
+            both.to_csv(cfg["paths"]["labels"], index=False)
+            with self.assertRaisesRegex(ValueError, "not in the labelling pool"):
+                prepare.main(["folds", "--config", path])
+            cfg["label_batches"] = [1]
+            with open(path, "w") as f:
+                yaml.safe_dump(cfg, f)
+            prepare.main(["folds", "--config", path])
+            runs = os.path.dirname(cfg["paths"]["folds"])
+            drops = dict(pd.read_csv(os.path.join(runs, "label_drops.csv")).itertuples(index=False))
+            self.assertEqual((drops["other_batch"], drops["status_unlabelled"], drops["unsure"]), (5, 0, 1))
+            record = json.load(open(os.path.join(runs, "folds.json")))
+            self.assertEqual(record["label_batches"], [1])
+            with_batches = pd.read_csv(cfg["paths"]["folds"], dtype=str)
+            shutil.rmtree(runs)
+            del cfg["label_batches"]
+            with open(path, "w") as f:
+                yaml.safe_dump(cfg, f)
+            prepare.main(["folds", "--config", path, "--labels", alone])
+            plain = pd.read_csv(cfg["paths"]["folds"], dtype=str)
+            cols = ["global_key", "label", "fold"]
+            pd.testing.assert_frame_equal(with_batches[cols], plain[cols])
 
     def test_pseudo_patients_must_be_disjoint(self):
         with tempfile.TemporaryDirectory() as root:
