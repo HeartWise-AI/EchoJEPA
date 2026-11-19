@@ -267,7 +267,7 @@ class VideoStudyDataset(torch.utils.data.Dataset):
         if filler_families is not None:
             if mode != "view_balanced":
                 raise ValueError("filler_families is only used by sampling_mode: view_balanced.")
-            if (isinstance(filler_families, str) or not filler_families
+            if (not isinstance(filler_families, list) or not filler_families
                     or not all(isinstance(f, str) and f for f in filler_families)):
                 raise ValueError("filler_families must be a nonempty list of view family names.")
             filler_families = frozenset(filler_families)
@@ -325,10 +325,13 @@ class VideoStudyDataset(torch.utils.data.Dataset):
             if probabilities is not None:
                 metadata["view_probs"] = probabilities[i]
             self.video_metadata[(study, path)] = metadata
-        missing = self.filler_families - {m["family"] for m in self.video_metadata.values()}
+        # Only the videos of the studies kept (after `views` and `min_videos`) can fill a slot.
+        missing = self.filler_families and self.filler_families - {
+            self.video_metadata[(study, path)]["family"] for study, paths, *_ in self.studies for path in paths}
         if missing:
             # Most likely a spelling that view_family_map does not produce (e.g. `Other` mapped to `OTHER`).
-            raise ValueError(f"filler_families {sorted(missing)} match no video's view family in this split.")
+            raise ValueError(f"filler_families {sorted(missing)} match no video's view family in this split "
+                             "(after view_family_map, views and min_videos).")
         self.transform = transform
         self.loader = make_clip_loader(frames_per_clip, frame_step, duration, fps, num_clips_per_video,
                                        random_clip_sampling=self.training, filter_long_videos=filter_long_videos)

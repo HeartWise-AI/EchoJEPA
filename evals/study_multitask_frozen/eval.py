@@ -21,6 +21,8 @@ its mask decoder finds, one study at a time. Data, heads, losses, selection and 
 """
 
 import copy
+import hashlib
+import io
 import json
 import logging
 import math
@@ -290,7 +292,9 @@ def main(args_eval, resume_preempt=False):
 
     def make_dataset(split, training, table=None):
         options, shuffle = data_options, shuffle_videos
-        if rescore_out is not None and not training:
+        # The rescore's bags apply to the studies it scores: validation, or the external studies in its place (then
+        # validation, only checked for overlap, keeps the run's bags, e.g. its filler families).
+        if rescore_out is not None and not training and (external_path is None or split == "external"):
             # A rescore's validation bags. `shuffle_videos` only shapes training reads; it is set from the
             # evaluation mode so that a run trained with it off can be rescored with random or view-balanced bags.
             options = {**data_options, "sampling_mode": val_bags["sampling_mode"], "eval_seed": val_bags["eval_seed"]}
@@ -450,12 +454,27 @@ def main(args_eval, resume_preempt=False):
         if external_path is not None:
             # The external studies must share no study or patient with the splits the probe was trained and
             # selected on (identifiers compared as text; give an external set its own identifier prefix).
-            table = pd.read_csv(external_path, dtype=id_columns(args_data))
+            # One snapshot per rank, read once, hashed and parsed from the same bytes; all ranks must hold the same
+            # one, or a manifest changed while they read it would score mixed revisions.
+            with open(external_path, "rb") as f:
+                raw = f.read()
+            digest = hashlib.sha256(raw).hexdigest()
+            if dist.is_available() and dist.is_initialized() and world_size > 1:
+                digests = [None] * world_size
+                dist.all_gather_object(digests, digest)
+                if len(set(digests)) != 1:
+                    raise RuntimeError(f"{external_path} changed while the ranks read it: score it again.")
+            table = pd.read_csv(io.BytesIO(raw), dtype=id_columns(args_data))
             external_dataset = make_dataset("external", training=False, table=table)
             check_disjoint({"train": train_dataset, "val": val_dataset, "external": external_dataset})
+            # The run's `views` and `min_videos` apply: studies they leave out are counted, not scored.
+            manifest_studies = int(table[group_column].nunique())
+            if len(external_dataset) < manifest_studies:
+                logger.warning(f"{manifest_studies - len(external_dataset)} of {manifest_studies} external studies "
+                               "left out by the run's views/min_videos.")
             external = {"dataset": external_dataset,
                         "manifest": {"file": os.path.basename(external_path), "rows": int(len(table)),
-                                     "sha256": provenance.sha256(external_path) if rank == 0 else None,
+                                     "sha256": digest, "manifest_studies": manifest_studies,
                                      "studies": len(external_dataset)}}
         if test_only:
             check_disjoint({"train": train_dataset, "val": val_dataset, "test": test_dataset})

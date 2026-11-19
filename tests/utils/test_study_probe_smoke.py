@@ -6,6 +6,8 @@ video), a tiny V-JEPA 2.1 encoder, two epochs with two probes, a resume, and the
 with the same seed, it gives the same probe and the same numbers."""
 
 import contextlib
+import copy
+import hashlib
 import json
 import os
 import pickle
@@ -550,6 +552,9 @@ class TestStudyProbeSmoke(QuietLogs):
         self.assertEqual(result["rescore"]["external_manifest"]["file"], "external.csv")
         self.assertEqual(result["rescore"]["external_manifest"]["rows"], len(external))
         self.assertEqual(result["rescore"]["external_manifest"]["studies"], external.study_id.nunique())
+        self.assertEqual(result["rescore"]["external_manifest"]["manifest_studies"], external.study_id.nunique())
+        with open(external_path, "rb") as f:
+            self.assertEqual(result["rescore"]["external_manifest"]["sha256"], hashlib.sha256(f.read()).hexdigest())
         self.assertEqual(result["rescore"]["changed"], [])
         self.assertEqual(result["external"]["heads"]["as_present"]["n"], 0)
         self.assertEqual(result["external"]["num_bags"], 2)  # the run's validation bags
@@ -567,11 +572,16 @@ class TestStudyProbeSmoke(QuietLogs):
         with self.on_cpu(), mock.patch.object(probe, "VideoStudyDataset", side_effect=spy):
             probe.main(dict(cfg, val_only=True, rescore={"out": bagged, "manifest": external_path,
                                                          "sampling_mode": "random", "eval_seed": 0, "num_bags": 1}))
-        self.assertEqual(len([b for b in built if not b[0]]), 2)  # validation and the external studies
-        self.assertEqual({b[1:] for b in built if not b[0]}, {("seeded_random", 0, frozenset())})
+        # Validation (only checked for overlap) keeps the run's bags; the external studies get the rescore's.
+        self.assertEqual([b[1:] for b in built if not b[0]],
+                         [("view_balanced", 13, frozenset()), ("seeded_random", 0, frozenset())])
         self.assertEqual({b[1:] for b in built if b[0]}, {("view_balanced", 13, frozenset())})
         with open(os.path.join(bagged, "external_metrics.json")) as f:
-            self.assertEqual(json.load(f)["rescore"]["changed"], ["eval_seed", "num_bags", "sampling_mode"])
+            bagged_result = json.load(f)
+        self.assertEqual(bagged_result["rescore"]["changed"], ["eval_seed", "num_bags", "sampling_mode"])
+        # One bag was scored, not the run's two: no bag count recorded, no bag spread in the predictions.
+        self.assertNotIn("num_bags", bagged_result["external"])
+        self.assertNotIn("lvef_bag_std", pd.read_csv(os.path.join(bagged, "external_predictions.csv")))
         # Refused, with nothing written: a manifest sharing a study or a patient with the probe's own splits, a
         # relative path, and a manifest without `rescore.out`.
         for column in ("study_id", "patient_id"):

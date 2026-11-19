@@ -50,7 +50,7 @@ experiment:
     num_videos: 8                                 # video slots per study; shorter studies are padded and masked.
     shuffle_videos: true                          # training: a random subset in random order at every read.
     sampling_mode: random                         # random | view_balanced | fixed (legacy path order).
-    # filler_families: [OTHER]                   # view_balanced only: these families fill leftover slots.
+    # filler_families: [Other]                   # view_balanced only: these families (after view_family_map) fill leftover slots.
     eval_seed: 0                                  # held constant across initialization seeds.
     min_videos: 1                                 # studies with fewer videos are left out.
     num_clips_per_video: 1                        # clips per video (each of `frames_per_clip` frames).

@@ -303,7 +303,7 @@ class TestVideoStudyDataset(unittest.TestCase):
         balanced = dict(view_column="view", sampling_mode="view_balanced")
         with self.assertRaisesRegex(ValueError, "only used by sampling_mode: view_balanced"):
             self.dataset(training=False, view_column="view", sampling_mode="random", filler_families=["A2C"])
-        for bad in ("A2C", [], [""], [None]):
+        for bad in ("A2C", [], [""], [None], ("A2C",), {"A2C": "x"}):
             with self.assertRaisesRegex(ValueError, "nonempty list"):
                 self.dataset(training=False, filler_families=bad, **balanced)
         # A family no video has after view_family_map (here the map spells it `Other2`) is a spelling error.
@@ -311,6 +311,9 @@ class TestVideoStudyDataset(unittest.TestCase):
             self.dataset(training=False, filler_families=["Other"], view_family_map={"A2C": "Other2"}, **balanced)
         ds = self.dataset(training=False, filler_families=["Other2"], view_family_map={"A2C": "Other2"}, **balanced)
         self.assertEqual(ds.filler_families, {"Other2"})
+        # A family whose videos are all filtered out (here by `views`) can never fill a slot: refused too.
+        with self.assertRaisesRegex(ValueError, r"\['A2C'\] match no video"):
+            self.dataset(training=False, filler_families=["A2C"], views=["A4C"], **balanced)
 
     def test_probability_and_type_metadata_follow_sampling_and_padding(self):
         table = self.table.copy()
