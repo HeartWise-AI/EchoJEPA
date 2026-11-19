@@ -50,7 +50,9 @@ captions whose appended EF would have been cut, and the run stops if any structu
 
 Logs (rank 0): `log.jsonl`, one line per step (epoch, step, loss, learning rates, temperature, contributed,
 per-structure rows, skip reason, exact-caption pairs and normal-normal pairs); `epochs.jsonl`, per epoch and structure
-the contributing steps and the medians of rows, exact-caption pairs and normal-normal pairs over them. Both pair
+the contributing steps, the epoch's steps, their ratio (`use_fraction`, the structure's training use), the count of
+steps skipped for each reason (`skipped_too_few_rows`, `skipped_uniform_targets`, `skipped_no_abnormal_row`) and the
+medians of rows, exact-caption pairs and normal-normal pairs over the contributing steps. Both pair
 counts are taken in every arm, so the logs of two arms show the same quantities: exact-caption pairs are positives
 in A1 and negatives in A0, normal-normal pairs are positives in A2 and A3 only, and their count is what
 `data.normal_fraction` reduces. A resume drops the lines
@@ -85,6 +87,7 @@ docs/radar/RADAR_stills_integration.md.
 """
 
 import argparse
+import collections
 import copy
 import hashlib
 import json
@@ -369,6 +372,27 @@ def make_loader(dataset, sampler, tokenizer, num_workers=0, start_method="spawn"
                                        collate_fn=partial(collate, tokenizer=tokenizer), **workers)
 
 
+SKIP_REASONS = ("too_few_rows", "uniform_targets", "no_abnormal_row")
+
+
+def structure_summary(contributing, skips, steps):
+    """One epoch's entry per structure for `epochs.jsonl`. `contributing`: {name: [(rows, exact_pairs,
+    normal_pairs)] of the steps it contributed to}; `skips`: {name: Counter of skip reasons}; `steps`: the epoch's
+    steps. `use_fraction` (contributing steps / steps) is a structure's training use; the `skipped_<reason>` counts
+    say why it was not used, so a structure at 0% can be told apart: too few valid rows in the global batch (no
+    caption, or no clip of its views in the bag) versus identical captions on every row (`uniform_targets`)."""
+    out = {}
+    for name, used in contributing.items():
+        reasons = skips.get(name, {})
+        out[name] = {"contributing_steps": len(used), "steps": steps,
+                     "use_fraction": len(used) / steps if steps else None,
+                     "median_rows": statistics.median(r for r, _, _ in used) if used else None,
+                     "median_exact_pairs": statistics.median(p for _, p, _ in used) if used else None,
+                     "median_normal_pairs": statistics.median(p for _, _, p in used) if used else None,
+                     **{f"skipped_{reason}": int(reasons.get(reason, 0)) for reason in SKIP_REASONS}}
+    return out
+
+
 def _to(batch, device):
     return {k: v.to(device, non_blocking=True) if torch.is_tensor(v) else v for k, v in batch.items()}
 
@@ -551,6 +575,8 @@ def train(config, out_dir, resume=True, stop_after_epoch=None, allow_code_change
         sampler.set_epoch(epoch)
         dataset.set_epoch(epoch)
         contributing = {name: [] for name in model.loss.structures}
+        skips = {name: collections.Counter() for name in model.loss.structures}
+        epoch_steps = 0
         for batch in loader:
             for group in optimizer.param_groups:
                 group["lr"] = learning_rate(group["base_lr"], step, schedule, min_ratio)
@@ -558,9 +584,12 @@ def train(config, out_dir, resume=True, stop_after_epoch=None, allow_code_change
             losses.append(loss)
             optimizer_steps += int(contributed)
             skipped += int(not contributed)
+            epoch_steps += 1
             for name, stat in stats.items():
                 if stat["loss"] is not None:
                     contributing[name].append((stat["rows"], stat["exact_pairs"], stat["normal_pairs"]))
+                elif stat["skipped"]:
+                    skips[name][stat["skipped"]] += 1
             if rank == 0:
                 line = {"epoch": epoch, "step": step, "loss": loss, "contributed": contributed,
                         "temperature": float(model.loss.temperature.detach()),
@@ -578,12 +607,7 @@ def train(config, out_dir, resume=True, stop_after_epoch=None, allow_code_change
             step += 1
         rng = _all_rng_states(device, world_size)
         if rank == 0:
-            summary = {"epoch": epoch, "structures": {
-                name: {"contributing_steps": len(steps),
-                       "median_rows": statistics.median(r for r, _, _ in steps) if steps else None,
-                       "median_exact_pairs": statistics.median(p for _, p, _ in steps) if steps else None,
-                       "median_normal_pairs": statistics.median(p for _, _, p in steps) if steps else None}
-                for name, steps in contributing.items()}}
+            summary = {"epoch": epoch, "structures": structure_summary(contributing, skips, epoch_steps)}
             with open(os.path.join(out_dir, "epochs.jsonl"), "a") as f:
                 f.write(json.dumps(summary) + "\n")
             log_scalars(wandb_run, {f"structures/{name}/{key}": value

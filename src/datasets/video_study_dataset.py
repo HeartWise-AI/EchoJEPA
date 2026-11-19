@@ -10,7 +10,8 @@ Each item returns a fixed number of video slots (`num_videos`), each holding
 - training with `shuffle_videos`: a random subset of the study's videos, in random order, drawn
   again every time the study is read, so an epoch sees another bag of the same study;
 - evaluation: deterministic random bags, seeded by study id, eval_seed and bag index;
-- `sampling_mode: view_balanced`: round-robin draws across the available view families;
+- `sampling_mode: view_balanced`: round-robin draws across the available view families; with
+  `filler_families` (e.g. [OTHER]), those families only fill the slots the round-robin leaves;
 - `sampling_mode: shared_bags`: the bags of `src.datasets.study_bags`, the ones RADAR reads: a matched baseline. The
   routing registry gives the view families, and a bag depends only on the run's seed, the epoch and the study in
   training, and on eval_seed, the bag index and the study in evaluation. The video path is the clip id, and the bag
@@ -229,6 +230,7 @@ class VideoStudyDataset(torch.utils.data.Dataset):
         eval_seed=0,
         eval_bag_index=0,
         view_family_map=None,
+        filler_families=None,
         view_probability_columns=None,
         acquisition_column=None,
         acquisition_labels_map=None,
@@ -260,6 +262,16 @@ class VideoStudyDataset(torch.utils.data.Dataset):
             check_shared_bags(table, path_column, view_column, group_column, routing, view_family_map, views,
                               self.num_clips_per_video)
             view_family_map = routing.view_families
+        # Families (after `view_family_map`) left out of the round-robin: they only fill the slots the
+        # other families leave empty. None keeps every family in the round-robin.
+        if filler_families is not None:
+            if mode != "view_balanced":
+                raise ValueError("filler_families is only used by sampling_mode: view_balanced.")
+            if (not isinstance(filler_families, list) or not filler_families
+                    or not all(isinstance(f, str) and f for f in filler_families)):
+                raise ValueError("filler_families must be a nonempty list of view family names.")
+            filler_families = frozenset(filler_families)
+        self.filler_families = filler_families or frozenset()
         # Patient ids are mandatory: patient-disjoint splits are checked on every run.
         if not patient_column or patient_column not in table:
             raise ValueError(f"The manifest needs a patient id column ({patient_column!r}): patient-disjoint "
@@ -313,6 +325,13 @@ class VideoStudyDataset(torch.utils.data.Dataset):
             if probabilities is not None:
                 metadata["view_probs"] = probabilities[i]
             self.video_metadata[(study, path)] = metadata
+        # Only the videos of the studies kept (after `views` and `min_videos`) can fill a slot.
+        missing = self.filler_families and self.filler_families - {
+            self.video_metadata[(study, path)]["family"] for study, paths, *_ in self.studies for path in paths}
+        if missing:
+            # Most likely a spelling that view_family_map does not produce (e.g. `Other` mapped to `OTHER`).
+            raise ValueError(f"filler_families {sorted(missing)} match no video's view family in this split "
+                             "(after view_family_map, views and min_videos).")
         self.transform = transform
         self.loader = make_clip_loader(frames_per_clip, frame_step, duration, fps, num_clips_per_video,
                                        random_clip_sampling=self.training, filter_long_videos=filter_long_videos)
@@ -365,14 +384,22 @@ class VideoStudyDataset(torch.utils.data.Dataset):
                 buckets.setdefault(family, []).append(index)
             for bucket in buckets.values():
                 rng.shuffle(bucket)
+            size = min(self.num_videos, len(paths))
             chosen = []
-            while len(chosen) < min(self.num_videos, len(paths)):
-                active = [family for family, bucket in buckets.items() if bucket]
-                rng.shuffle(active)
-                for family in active:
-                    chosen.append(buckets[family].pop())
-                    if len(chosen) == min(self.num_videos, len(paths)):
+            # The round-robin runs over the other families first; filler families (e.g. OTHER) only take
+            # the slots left once those are used up. Without filler families this is a single pass with the
+            # same random draws as before the option existed, so earlier bags are unchanged.
+            for tier in ([f for f in buckets if f not in self.filler_families],
+                         [f for f in buckets if f in self.filler_families]):
+                while len(chosen) < size:
+                    active = [family for family in tier if buckets[family]]
+                    if not active:
                         break
+                    rng.shuffle(active)
+                    for family in active:
+                        chosen.append(buckets[family].pop())
+                        if len(chosen) == size:
+                            break
             rng.shuffle(chosen)
             return chosen
         return list(range(min(self.num_videos, len(paths))))

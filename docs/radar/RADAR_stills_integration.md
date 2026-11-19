@@ -52,7 +52,8 @@ DeepEcho now has a still-image measurement dataset. It contains the CW and PW/TD
             \___________________ loss = L_radar + heads.weight * L_measure ___________________/
 ```
 
-1. **Manifest** (`data/build_still_manifest.py`). The still dataset's `StudyInstanceUID` is the extractor's own and never matches RADAR's `study_id` (0 of 6,687 studies in 2024). The study is therefore found through the DICOM study folder (`dirname(dcm_path)`) in the video metadata, which matched 100% of 2024.
+1. **Manifest** (`data/build_still_manifest.py`). The still dataset's `StudyInstanceUID` column is not always RADAR's `study_id` (about 1.5% of the 2024 stills differ; the still's DICOM header and its study folder agree). The study is therefore found through the DICOM study folder (`dirname(dcm_path)`) in the video metadata, which matched 100% of 2024. A folder the video metadata does not hold (all of 2025) is linked through the stills' own DICOM headers (StudyInstanceUID, PatientID, sex, birth/study dates, weight, height: the same header fields the video metadata holds), read in memory and never written. `build_info.json` gives the link rate per year (`link_rate_by_year`), and a `--temporal-test-years` year that links fewer than `--min-temporal-link-rate` (default 50%) of its stills stops the build.
+   - Still dataset v1.1 (mitral inflow labels fixed): `MV E`, `MV A` are `y_MV_E`, `y_MV_A`; `MV E/A` is `y_MV_EA` (ratio); `MVA (PHT)` is `y_MVA_PHT` (cm²). Tissue Doppler measurements (e', a', s', E/e') are never targets; a `TDI` still keeps its tag for routing, with no target (`tdi_excluded` in `build_info.json`).
    - The split is inherited from RADAR's full cohort split. A patient outside it gets a split drawn from a salted hash, and every study of a patient shares that split.
    - Measured values become wide targets, in fixed units and averaged over the still's beats. Implausible values are dropped and counted in `build_info.json`.
 2. **Still encoding** (`src/datasets/still_preprocess.py`). The still is processed in this order:
@@ -151,7 +152,7 @@ The measured value reaches the model in four ways. Each has a control:
 | Structure imbalance (rows) | LVOT 34k, AV 14k, MV 5k, TR 0.5k, MR 35 |
 | Modes | CW and PW/TDI; no M-mode detected (the header rule never fires) |
 | Vendors | 95% GE at one screen layout; 2025 is about 25% Philips |
-| 2025 | not yet in `master_metadata`, so no study id or demographics until it is rebuilt |
+| 2025 | not in `master_metadata`; linked through the stills' DICOM headers (see Manifest) |
 | EchoNet AV Vmax | within 10% for about 74% of stills after width-1024 rescaling |
 | EchoNet coverage | AV, LVOT, TR and MR Vmax only, so the heat-map path is optional |
 

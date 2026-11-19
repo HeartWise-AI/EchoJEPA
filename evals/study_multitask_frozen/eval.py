@@ -12,7 +12,8 @@ setting. Validation scores every study once with every probe after each epoch; `
 the epoch and probe with the best selection score. `--test_only` scores the test split once with
 that probe. `--val_only` rescores only validation; with `rescore: {out: <folder>, ...}` it scores validation with
 the evaluation bags the `rescore` block sets (`RESCORE_KEYS`) and writes a new folder, leaving the run's files
-untouched. Protocol and outputs: `docs/study_multitask_probe.md`.
+untouched; with `rescore.manifest` it scores the studies of that external manifest instead of validation
+(`external_metrics.json`). Protocol and outputs: `docs/study_multitask_probe.md`.
 
 `pooling_mode: region` replaces the pooling by the two-pass `RegionStudyProbe` (`src/models/region_probe.py`):
 the probe calls the encoder itself, once on the study's whole views and once on crops of the regions
@@ -20,6 +21,8 @@ its mask decoder finds, one study at a time. Data, heads, losses, selection and 
 """
 
 import copy
+import hashlib
+import io
 import json
 import logging
 import math
@@ -53,7 +56,7 @@ from evals.video_classification_frozen.models import init_module
 from evals.video_classification_frozen.utils import make_transforms
 from src.datasets.utils.video import transforms as video_transforms
 from src.datasets.utils.video import volume_transforms
-from src.datasets.video_study_dataset import SELECTION, VideoStudyDataset, read_split, shared_bag_options
+from src.datasets.video_study_dataset import SELECTION, VideoStudyDataset, id_columns, read_split, shared_bag_options
 from src.models.region_probe import RegionStudyProbe, region_options, validate_blocks
 from src.models.study_probe import POOLING_MODES, StudyProbe, head_loss, head_specs, multitask_loss
 from src.utils.checkpoint_loader import robust_checkpoint_loader
@@ -81,7 +84,7 @@ PROTOCOL = {
 }
 # What a `rescore` may set for the validation bags (`experiment.data.*` and `experiment.evaluation.num_bags` of
 # the run stay as trained): how the evaluation bags are drawn, nothing the probe learned from.
-RESCORE_KEYS = ("sampling_mode", "eval_seed", "view_family_map", "num_bags")
+RESCORE_KEYS = ("sampling_mode", "eval_seed", "view_family_map", "filler_families", "num_bags")
 # Metrics a selection rule `<head>/<metric>` may name, per head task (as `head_metrics` reports
 # them), and the direction that is better.
 TASK_METRICS = {
@@ -103,21 +106,28 @@ def main(args_eval, resume_preempt=False):
     # Rescore: the selected probe of a finished run, scored on validation with other evaluation bags, written
     # to its own folder (the run's val_metrics.json, predictions and wandb run are left as they are).
     rescore = args_eval.get("rescore")
-    rescore_out, rescore_bags = None, {}
+    rescore_out, rescore_bags, external_path = None, {}, None
     if rescore is not None:
         if not val_only:
             raise ValueError("`rescore` needs --val_only: it scores validation only, never the test split.")
         if not isinstance(rescore, dict):
-            raise ValueError("`rescore` is a mapping: `out` and any of " + ", ".join(RESCORE_KEYS) + ".")
-        unknown = sorted(set(rescore) - {"out", *RESCORE_KEYS})
+            raise ValueError("`rescore` is a mapping: `out`, optionally `manifest`, and any of "
+                             + ", ".join(RESCORE_KEYS) + ".")
+        unknown = sorted(set(rescore) - {"out", "manifest", *RESCORE_KEYS})
         if unknown:
-            raise ValueError(f"`rescore` sets only the evaluation bags ({', '.join(RESCORE_KEYS)}), not {unknown}.")
+            raise ValueError(f"`rescore` sets only `out`, `manifest` and the evaluation bags "
+                             f"({', '.join(RESCORE_KEYS)}), not {unknown}.")
         rescore_out = rescore.get("out")
         rescore_bags = {k: rescore[k] for k in RESCORE_KEYS if k in rescore}
         if not rescore_out or not os.path.isabs(rescore_out):
             raise ValueError("`rescore.out` must be an absolute folder for the rescored outputs.")
         if os.path.lexists(rescore_out):
             raise FileExistsError(f"`rescore.out` {rescore_out} already exists: a rescore writes a new folder.")
+        # External validation: `rescore.manifest` names a manifest of studies from elsewhere (no split column: every
+        # row is scored), read with the run's columns and scored in place of validation, with the validation bags.
+        external_path = rescore.get("manifest")
+        if external_path is not None and (not isinstance(external_path, str) or not os.path.isabs(external_path)):
+            raise ValueError("`rescore.manifest` must be an absolute path to the external manifest.")
     pretrain_folder = args_eval.get("folder")
     tag = args_eval.get("tag")
     num_workers = int(args_eval.get("num_workers", 8))
@@ -177,7 +187,8 @@ def main(args_eval, resume_preempt=False):
     probe_options = (region_options(args_classifier, args_data, args_pretrain, specs) if region
                      else study_probe_options(args_classifier, args_data, args_pretrain))
     data_options = {k: args_data[k] for k in (
-        "sampling_mode", "eval_seed", "view_family_map", "view_probability_columns",
+        # filler_families: only when set, so the fingerprints of configs without it stay as they were.
+        "sampling_mode", "eval_seed", "view_family_map", "filler_families", "view_probability_columns",
         "acquisition_column", "acquisition_labels_map", "patient_column") if k in args_data}
     data_options.setdefault("eval_seed", 0)  # identical evaluation bags across training seeds
     bag_options = shared_bag_options(args_data, seed)
@@ -208,7 +219,8 @@ def main(args_eval, resume_preempt=False):
         raise ValueError("evaluation.num_bags > 1 needs random or view_balanced sampling: fixed bags are identical.")
     # The validation bags: the run's, or a rescore's. Training keeps the run's settings either way.
     run_bags = {"sampling_mode": eval_mode, "eval_seed": int(args_data.get("eval_seed", 0)),
-                "view_family_map": args_data.get("view_family_map"), "num_bags": num_eval_bags}
+                "view_family_map": args_data.get("view_family_map"),
+                "filler_families": args_data.get("filler_families"), "num_bags": num_eval_bags}
     val_bags = {**run_bags, **rescore_bags}
     val_bags["num_bags"] = int(val_bags["num_bags"])
     if val_bags["num_bags"] < 1:
@@ -278,18 +290,24 @@ def main(args_eval, resume_preempt=False):
                             crop_size=resolution, num_views_per_clip=1,
                             normalize=normalization or DEFAULT_NORMALIZATION)
 
-    def make_dataset(split, training):
+    def make_dataset(split, training, table=None):
         options, shuffle = data_options, shuffle_videos
-        if rescore_out is not None and not training:
+        # The rescore's bags apply to the studies it scores: validation, or the external studies in its place (then
+        # validation, only checked for overlap, keeps the run's bags, e.g. its filler families).
+        if rescore_out is not None and not training and (external_path is None or split == "external"):
             # A rescore's validation bags. `shuffle_videos` only shapes training reads; it is set from the
             # evaluation mode so that a run trained with it off can be rescored with random or view-balanced bags.
             options = {**data_options, "sampling_mode": val_bags["sampling_mode"], "eval_seed": val_bags["eval_seed"]}
-            options.pop("view_family_map", None)
-            if val_bags["view_family_map"] is not None:
-                options["view_family_map"] = val_bags["view_family_map"]
+            # A key the rescore sets to null is dropped, e.g. `filler_families: null` to score a probe trained
+            # with filler families on random bags (the dataset refuses them outside view_balanced).
+            for key in ("view_family_map", "filler_families"):
+                options.pop(key, None)
+                if val_bags[key] is not None:
+                    options[key] = val_bags[key]
             shuffle = val_bags["sampling_mode"] != "fixed"
         return VideoStudyDataset(
-            read_split(args_data, split), path_column=path_column, group_column=group_column,
+            read_split(args_data, split) if table is None else table, path_column=path_column,
+            group_column=group_column,
             target_columns=list(specs), view_column=view_column, views=views, labels_map=labels_map,
             num_videos=num_videos, shuffle_videos=shuffle, training=training,
             frames_per_clip=frames_per_clip, frame_step=frame_step, duration=duration, fps=fps,
@@ -432,6 +450,32 @@ def main(args_eval, resume_preempt=False):
 
     if scoring_only:
         test_dataset = make_dataset("test", training=False) if test_only else None
+        external = None
+        if external_path is not None:
+            # The external studies must share no study or patient with the splits the probe was trained and
+            # selected on (identifiers compared as text; give an external set its own identifier prefix).
+            # One snapshot per rank, read once, hashed and parsed from the same bytes; all ranks must hold the same
+            # one, or a manifest changed while they read it would score mixed revisions.
+            with open(external_path, "rb") as f:
+                raw = f.read()
+            digest = hashlib.sha256(raw).hexdigest()
+            if dist.is_available() and dist.is_initialized() and world_size > 1:
+                digests = [None] * world_size
+                dist.all_gather_object(digests, digest)
+                if len(set(digests)) != 1:
+                    raise RuntimeError(f"{external_path} changed while the ranks read it: score it again.")
+            table = pd.read_csv(io.BytesIO(raw), dtype=id_columns(args_data))
+            external_dataset = make_dataset("external", training=False, table=table)
+            check_disjoint({"train": train_dataset, "val": val_dataset, "external": external_dataset})
+            # The run's `views` and `min_videos` apply: studies they leave out are counted, not scored.
+            manifest_studies = int(table[group_column].nunique())
+            if len(external_dataset) < manifest_studies:
+                logger.warning(f"{manifest_studies - len(external_dataset)} of {manifest_studies} external studies "
+                               "left out by the run's views/min_videos.")
+            external = {"dataset": external_dataset,
+                        "manifest": {"file": os.path.basename(external_path), "rows": int(len(table)),
+                                     "sha256": digest, "manifest_studies": manifest_studies,
+                                     "studies": len(external_dataset)}}
         if test_only:
             check_disjoint({"train": train_dataset, "val": val_dataset, "test": test_dataset})
             # The fingerprint leaves out a separate test manifest; record the one scored here.
@@ -446,7 +490,7 @@ def main(args_eval, resume_preempt=False):
                  selection_rule=selection_rule, run_info=run_info, wandb_run=wandb_run, step=num_epochs * ipe,
                  val_only=val_only, rescore_out=rescore_out,
                  rescore_bags=None if rescore_out is None else {"run": run_bags, "rescore": val_bags},
-                 **score_kwargs)
+                 external=external, **score_kwargs)
         finish_wandb(wandb_run)
         return
 
@@ -1215,13 +1259,20 @@ def publish_new_folder(path, files):
 
 def run_test(folder, probes, probe_names, val_dataset, test_dataset, num_epochs, fingerprint, selection_rule, run_info,
              wandb_run, step, device, encoder, batch_size, num_workers, use_bfloat16, specs, normalization, rank,
-             world_size, trainable=False, val_only=False, num_bags=1, rescore_out=None, rescore_bags=None):
+             world_size, trainable=False, val_only=False, num_bags=1, rescore_out=None, rescore_bags=None,
+             external=None):
     """Score validation and optionally the test with the probe and epoch chosen on validation (`best.pt`, with
     its fine-tuned encoder when the encoder trained), and write `test_metrics.json`,
     `test_predictions.csv` and `val_predictions.csv`. The prediction files list study ids, which
     can identify patients: keep them where the data is. With `rescore_out` (validation only), validation was
     built with other evaluation bags (`rescore_bags`: the run's and the rescore's), the run's own settings are
-    checked as usual, and the outputs go to the new folder `rescore_out`."""
+    checked as usual, and the outputs go to the new folder `rescore_out`. With `external` (a rescore's
+    `{dataset, manifest}`), that dataset is scored in place of validation and the files are
+    `external_metrics.json` and `external_predictions.csv`, the metrics under `external`."""
+    if external is not None and rescore_out is None:
+        raise ValueError("An external manifest is scored through a rescore (`rescore.out`).")
+    name = "val" if external is None else "external"
+    scored_dataset = val_dataset if external is None else external["dataset"]
     check_finished(folder, num_epochs)
     if not val_only and os.path.exists(os.path.join(folder, "test_metrics.json")):
         raise RuntimeError("This probe has already been tested (`test_metrics.json` exists); repeat testing only if "
@@ -1238,6 +1289,8 @@ def run_test(folder, probes, probe_names, val_dataset, test_dataset, num_epochs,
     if rescore_out is not None:
         rescored = {"run_folder": folder, "run_bags": rescore_bags["run"], "bags": rescore_bags["rescore"],
                     "changed": sorted(k for k in RESCORE_KEYS if rescore_bags["run"][k] != rescore_bags["rescore"][k])}
+        if external is not None:
+            rescored["external_manifest"] = external["manifest"]
     probe = int(checkpoint["best_probe"])
     module = getattr(probes[probe], "module", probes[probe])
     module.load_state_dict({k.removeprefix("module."): v for k, v in checkpoint["probes"][probe].items()})
@@ -1253,13 +1306,13 @@ def run_test(folder, probes, probe_names, val_dataset, test_dataset, num_epochs,
         return score_studies(device, encoder, [module], dataset, batch_size, num_workers, use_bfloat16, specs,
                              normalization, rank, world_size, num_bags=num_bags)[0]
 
-    val_scored = score(val_dataset)
+    val_scored = score(scored_dataset)
     test_scored = None if val_only else score(test_dataset)
     if rank != 0:
         return None
     val = evaluate(val_scored, specs, normalization, selection_rule)
     test = None if val_only else evaluate(test_scored, specs, normalization, selection_rule)
-    val_table = prediction_table(val_scored, val_dataset, specs, normalization)
+    val_table = prediction_table(val_scored, scored_dataset, specs, normalization)
     if rescore_out is None:
         val_table.to_csv(os.path.join(folder, "val_predictions.csv"), index=False)
     if not val_only:
@@ -1270,7 +1323,7 @@ def run_test(folder, probes, probe_names, val_dataset, test_dataset, num_epochs,
         "checkpoint": checkpoint_path, "checkpoint_sha256": provenance.sha256(checkpoint_path),
         "epoch": int(checkpoint["epoch"]), "probe": probe, "probe_name": probe_names[probe],
         "val_score": float(checkpoint["best_score"]),
-        "val": val, "normalization": normalization,
+        name: val, "normalization": normalization,
         "run_info": run_info, "failed_rows": (val_scored if val_only else test_scored)["failed"],
         # How the probe was trained (from `best.pt`, with its GPU count), and how this scoring ran.
         "training_fingerprint": checkpoint.get("fingerprint"), "scoring_fingerprint": fingerprint,
@@ -1279,15 +1332,15 @@ def run_test(folder, probes, probe_names, val_dataset, test_dataset, num_epochs,
         result["rescore"] = rescored
     if not val_only:
         result["test"] = test
-    prefix = "selected_val" if val_only else "test"
-    filename = "val_metrics.json" if val_only else "test_metrics.json"
+    prefix = ("selected_val" if external is None else "external") if val_only else "test"
+    filename = f"{name}_metrics.json" if val_only else "test_metrics.json"
     if rescore_out is None:
         tmp = os.path.join(folder, filename + ".tmp")
         with open(tmp, "w") as f:
             json.dump(result, f, indent=2)
         os.replace(tmp, os.path.join(folder, filename))
     else:
-        publish_new_folder(rescore_out, {"val_predictions.csv": val_table.to_csv(index=False),
+        publish_new_folder(rescore_out, {f"{name}_predictions.csv": val_table.to_csv(index=False),
                                          filename: json.dumps(result, indent=2)})
 
     metrics_result = val if val_only else test

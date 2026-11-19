@@ -298,6 +298,35 @@ class TestZeroShotEval(unittest.TestCase):
         self.assertAlmostEqual(self.rows("ef").loc["V03"].prediction, np.mean(estimate), places=5)
         self.assertEqual(self.rows("ef").loc["V03"].supported_bags, 3)
 
+    def test_a_dumped_study_explains_its_predictions(self):
+        out = os.path.join(self.root, "dump")
+        zs.evaluate(config=self.config, checkpoint=self.checkpoint, clips=self.clips, labels=self.labels,
+                    out_dir=out, prompts=self.prompts, split="val", cache_dir=self.cache_dir, samples=5,
+                    dump_studies=["V03", "V00"])
+        with self.assertRaises(ValueError):
+            self.run_eval("dump_bad", dump_studies=["NOT_A_STUDY"])
+        clips = read_table(self.clips)
+        for study in ("V03", "V00"):
+            record = strict_json(os.path.join(out, f"explain_{study}.json"))
+            self.assertEqual(record["study_id"], study)
+            self.assertEqual(len(record["bags"]), 3)
+            own = dict(zip(clips[clips.study_id == study].clip_id, clips[clips.study_id == study].view))
+            for bag in record["bags"]:
+                self.assertTrue(bag["clips"])
+                for clip in bag["clips"]:
+                    self.assertEqual(own[clip["clip_id"]], clip["view"])
+            for name, task in record["tasks"].items():
+                row = self.rows(name).loc[study]
+                same = (task["prediction"] is None and np.isnan(row.prediction)) or \
+                    abs(task["prediction"] - row.prediction) < 1e-6
+                self.assertTrue(same, name)
+                self.assertEqual(sum(task["bags_supported"]), row.supported_bags)
+                self.assertEqual(len(task["bags"][0]["similarities"]), len(task["prompts"]))
+            ef = record["tasks"]["ef"]
+            for bag in ef["bags"]:
+                self.assertEqual(len(bag["selected"]), ef["top_k"])
+                self.assertAlmostEqual(bag["value"], float(torch.tensor(bag["selected_values"]).median()), places=5)
+
     def test_the_run_is_reproducible_and_pooling_and_seed_change_what_they_should(self):
         again = self.run_eval("again")
         self.assertEqual(again, self.report)
