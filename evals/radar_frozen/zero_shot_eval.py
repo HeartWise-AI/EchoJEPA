@@ -40,6 +40,14 @@ prior that gives each 5-point value bin of the prompt pool the share of the TRAI
 column of that label table, and the prior is refused when a training study is also evaluated. A read-out with the
 prior uses the training label distribution: it is not strictly zero-shot, and the report says so (`regression_prior`).
 
+View prefix (`--prompt_view_prefix`, off by default). A checkpoint trained with `data.view_prefix` read each caption
+after the views of the bag's clips that fed its structure (`src/models/radar/view_prefix.py`). With the option, each
+study's prompts in each evaluation bag start with the prefix that bag gives the task's structure, the same text its
+training captions began with; studies with the same prefix share one encoding of the prompts. Without it, prompts are
+scored as written. `metrics.json` of such a checkpoint says which was used (`prompt_view_prefix`, with the phrase
+file's record under `view_prefix`); the report of a checkpoint trained without a prefix is unchanged, and the option
+is refused for it. Thresholds chosen with one setting are refused for the other.
+
 Operating threshold. 0.5 (the finding's prompt set is the closer one) unless `--thresholds` names the
 `thresholds.json` of another run of this script on a tuning split, with the same checkpoint, prompt file and pooling.
 Every run writes its own `thresholds.json` (Youden's J per binary task on the split it read) for that use, and a run
@@ -101,6 +109,7 @@ from src.datasets.radar_study_dataset import RadarStudyDataset, file_sha256, rea
 from src.datasets.radar_token_cache import TokenCache
 from src.models.radar.model import STILL_KEYS
 from src.models.radar.routing import DEFAULT_ROUTING, load_routing
+from src.models.radar.view_prefix import prefixed, view_phrases
 from src.models.radar.zero_shot import (
     POOLINGS,
     binary_probability,
@@ -293,11 +302,12 @@ def embed_studies(model, dataset, device, amp="none", num_bags=3, batch_size=32,
     return torch.stack(z_bags), torch.stack(has_bags)
 
 
-def encode_task(task, text_encoder, tokenizer):
+def encode_task(task, text_encoder, tokenizer, prefix=""):
     """The task's prompt embeddings, on the CPU: {"values", "prompts"} (regression), {"positive", "negative"}
-    (binary) or {"grades", "sets"} (categorical: one set per distinct value, in increasing order)."""
+    (binary) or {"grades", "sets"} (categorical: one set per distinct value, in increasing order). `prefix`: a view
+    prefix put before every prompt ("" leaves them as written)."""
     def encode(prompts):
-        prompts = list(prompts)
+        prompts = [prefixed(prefix, p) for p in prompts]
         too_long = sum(n > tokenizer.max_length for n in tokenizer.lengths(prompts))
         if too_long:
             raise ValueError(f"{task.name}: {too_long} prompts are longer than the {tokenizer.max_length} tokens the "
@@ -389,6 +399,8 @@ def read_thresholds(path, source, tasks):
     if all(chosen_on.get(key) == source[key] for key in ("clips_sha256", "split")):
         raise ValueError(f"{path} was chosen on the split being reported. Choose thresholds on a tuning split.")
     other = [key for key in ("checkpoint_sha256", "prompts_sha256", "pooling") if chosen_on.get(key) != source[key]]
+    if chosen_on.get("prompt_view_prefix", False) != source.get("prompt_view_prefix", False):
+        other.append("prompt_view_prefix")
     if other:
         raise ValueError(f"{path} was chosen with another {', '.join(other)}: its thresholds do not apply here.")
     binary = [name for name, task in tasks.items() if task.mode == "binary"]
@@ -459,7 +471,8 @@ def evaluate(config, checkpoint, clips, labels, out_dir, prompts=DEFAULT_PROMPTS
              num_bags=3, eval_seed=0, num_clips=None, selection=None, pooling="mean_similarity", keep=0.2,
              top_k=None, thresholds=None, group_column=None, samples=1000, seed=0, batch_size=32, num_workers=0,
              allow_training_studies=False, wandb=None, stills=None, still_cache_dir=None, demographics=None,
-             clip_only=False, dump_studies=(), regression_readout="top_fraction", regression_prior=None):
+             clip_only=False, dump_studies=(), regression_readout="top_fraction", regression_prior=None,
+             prompt_view_prefix=False):
     """Evaluate and write the outputs; returns the report written to `metrics.json`. `clips`, `labels`, `prompts`,
     `checkpoint`, `thresholds` are paths; `num_clips` and `selection` default to the training config's; `wandb` is
     {wandb_project, wandb_entity, wandb_run_name} or None. A checkpoint trained with Doppler stills is evaluated
@@ -469,7 +482,9 @@ def evaluate(config, checkpoint, clips, labels, out_dir, prompts=DEFAULT_PROMPTS
     `dump_studies`: study ids whose `explain_<study_id>.json` is written (`explain_task`). `top_k` (regression):
     keep that many best-ranked prompts instead of the `keep` fraction. `regression_readout`: "top_fraction" (the
     median rule) or "softmax"; `regression_prior` (softmax only): the label table whose training-split labels make
-    the prompts' log prior (`read_prior_labels`), or None."""
+    the prompts' log prior (`read_prior_labels`), or None. `prompt_view_prefix` (a checkpoint trained with
+    data.view_prefix only): each study's prompts in each bag start with the view prefix that bag gives the task's
+    structure, as its training captions did (`prefixed_prompt_scores`)."""
     check_outside_repo(out_dir, "out_dir")
     if regression_readout not in REGRESSION_READOUTS:
         raise ValueError(f"regression_readout must be one of {REGRESSION_READOUTS}, got {regression_readout!r}.")
@@ -506,6 +521,16 @@ def evaluate(config, checkpoint, clips, labels, out_dir, prompts=DEFAULT_PROMPTS
                          "(model.stills.demo_film): they come with the still source.")
     still_source = (read_eval_stills(config, state, routing, model, stills, split, still_cache_dir, demographics)
                     if stills else None)
+    trained_prefix = state["fingerprint"].get("view_prefix")
+    phrases = None
+    if prompt_view_prefix:
+        if not trained_prefix:
+            raise ValueError("prompt_view_prefix needs a checkpoint trained with data.view_prefix.")
+        if dump_studies:
+            raise ValueError("dump_study does not record prefixed prompts yet; run it without prompt_view_prefix.")
+        phrases = view_phrases(config["data"], routing)
+        if phrases is None or phrases.record() != trained_prefix:
+            raise ValueError("The config's view phrases are not those the checkpoint trained with.")
 
     table = read_table(clips)
     if split is not None:
@@ -522,7 +547,7 @@ def evaluate(config, checkpoint, clips, labels, out_dir, prompts=DEFAULT_PROMPTS
                                 selection=selection or data.get("selection", "view_balanced"), training=False,
                                 eval_seed=eval_seed,
                                 acquisition_classes=data.get("acquisition_classes", ("bmode", "color_flow")),
-                                stills=still_source)
+                                stills=still_source, view_prefix=phrases)
     study_ids = [study for study, _ in dataset.studies]
     training_ids = None if allow_training_studies else check_not_trained_on(config, state, study_ids)
     label_table, unused_rows = read_labels(labels, tasks, study_ids, group_column)
@@ -536,6 +561,8 @@ def evaluate(config, checkpoint, clips, labels, out_dir, prompts=DEFAULT_PROMPTS
     source = {"checkpoint_sha256": file_sha256(checkpoint), "clips_sha256": file_sha256(clips),
               "labels_sha256": file_sha256(labels), "prompts_sha256": file_sha256(prompts), "split": split,
               "pooling": pooling}
+    if prompt_view_prefix:
+        source["prompt_view_prefix"] = True
     chosen = read_thresholds(thresholds, source, tasks) if thresholds else {}
 
     temperature = float(model.loss.effective_temperature().detach())
@@ -563,6 +590,12 @@ def evaluate(config, checkpoint, clips, labels, out_dir, prompts=DEFAULT_PROMPTS
                       "resampled": group_column if group_column else "study_id"},
         "tasks": {},
     }
+    if trained_prefix or prompt_view_prefix:       # the report of a checkpoint without a view prefix is unchanged
+        report["prompt_view_prefix"] = bool(prompt_view_prefix)
+        report["view_prefix"] = trained_prefix
+    prefixes = bag_prefixes(dataset, num_bags, has_clip) if prompt_view_prefix else None
+    if prefixes is not None and hasattr(tokenizer, "prepare"):      # a frozen encoder: encode every prompt at once
+        tokenizer.prepare(sorted(prefixed_prompts(tasks, structures, prefixes)))
     missing_dump = sorted(set(dump_studies) - set(study_ids))
     if missing_dump:
         raise ValueError(f"dump_study names {len(missing_dump)} studies that are not evaluated here.")
@@ -576,9 +609,14 @@ def evaluate(config, checkpoint, clips, labels, out_dir, prompts=DEFAULT_PROMPTS
         log_prior, prior = None, None
         if task.mode == "regression" and prior_table is not None:
             log_prior, prior = regression_log_prior(encoded["values"], prior_table[task.target].to_numpy(dtype=float))
-        per_bag = torch.stack([score_task(task, z[b, :, s], encoded, temperature, pooling, keep, top_k,
-                                          regression_readout, log_prior)
-                               for b in range(num_bags)])
+        if prefixes is not None:
+            per_bag = prefixed_prompt_scores(task, z[:, :, s], prefixes[:, :, s], has_clip[:, :, s], model.text,
+                                             tokenizer, temperature, pooling, keep, top_k, regression_readout,
+                                             log_prior)
+        else:
+            per_bag = torch.stack([score_task(task, z[b, :, s], encoded, temperature, pooling, keep, top_k,
+                                              regression_readout, log_prior)
+                                   for b in range(num_bags)])
         pooled, bags = pool_bags(per_bag, has_clip[:, :, s])
         supported = bags > 0
         label = label_table[task.target].to_numpy(dtype=float)
@@ -623,6 +661,62 @@ def evaluate(config, checkpoint, clips, labels, out_dir, prompts=DEFAULT_PROMPTS
             json.dump(_json(record), f, indent=2, ensure_ascii=False, allow_nan=False)
     log_report(report, wandb, out_dir)
     return report
+
+
+def bag_prefixes(dataset, num_bags, has_clip):
+    """[bags, N, S] array of the view prefix each evaluation bag gives each study's structures ("" where no clip
+    feeds the structure, which is exactly where the pooler has no clip). Restores the dataset's bag index."""
+    previous = dataset.eval_bag_index
+    out = np.empty(tuple(has_clip.shape), dtype=object)
+    try:
+        for b in range(num_bags):
+            dataset.eval_bag_index = b
+            for i in range(len(dataset)):
+                out[b, i] = dataset.view_prefixes(i)
+    finally:
+        dataset.eval_bag_index = previous
+    if not np.array_equal(out != "", has_clip.numpy()):
+        raise ValueError("A view prefix disagrees with the pooler's clip support.")
+    return out
+
+
+def task_prompts(task):
+    """Every prompt a task encodes, as written."""
+    if task.mode == "regression" and not task.values:
+        return [p for _, p in regression_prompts(task.label_sources, *task.value_range)]
+    return list(task.label_sources) + list(task.negative_sources)
+
+
+def prefixed_prompts(tasks, structures, prefixes):
+    """Every prompt text the evaluation encodes: each task's prompts after each prefix of its structure, and as
+    written (`evaluate` still encodes those once for the task's values and grades)."""
+    texts = set()
+    for task in tasks.values():
+        s = structures.index(task.structure)
+        texts.update(task_prompts(task))
+        for prefix in set(prefixes[:, :, s].ravel()) - {""}:
+            texts.update(prefixed(prefix, p) for p in task_prompts(task))
+    return texts
+
+
+def prefixed_prompt_scores(task, z, prefixes, supported, text_encoder, tokenizer, temperature, pooling, keep, top_k,
+                           readout, log_prior):
+    """One task's per-bag outputs ([bags, N] or [bags, N, G], as `score_task` stacked over bags) when each study's
+    prompts start with the view prefix of its bag: z [bags, N, P], prefixes [bags, N] (text), supported [bags, N].
+    Studies with the same prefix are scored together against prompts encoded once per prefix; a study whose bag has
+    no clip of the structure gets NaN (it supports no prediction and `pool_bags` leaves it out)."""
+    encoded, per_bag = {}, []
+    width = (len(set(task.values)),) if task.mode == "categorical" else ()
+    for b in range(z.shape[0]):
+        out = torch.full((z.shape[1],) + width, float("nan"), dtype=torch.float64)
+        for prefix in sorted(set(prefixes[b]) - {""}):
+            rows = torch.from_numpy(np.flatnonzero(prefixes[b] == prefix))
+            if prefix not in encoded:
+                encoded[prefix] = encode_task(task, text_encoder, tokenizer, prefix)
+            out[rows] = score_task(task, z[b, rows], encoded[prefix], temperature, pooling, keep, top_k, readout,
+                                   log_prior).double()
+        per_bag.append(out)
+    return torch.stack(per_bag)
 
 
 def explain_header(dataset, index, num_bags, structures, has_clip, temperature, pooling, keep, top_k=None,
@@ -810,6 +904,9 @@ def main(argv=None):
     parser.add_argument("--demographics", help="demographics of the evaluated studies (default: the config's)")
     parser.add_argument("--clip_only", action="store_true",
                         help="evaluate a checkpoint trained with stills on clips alone (an ablation)")
+    parser.add_argument("--prompt_view_prefix", action="store_true",
+                        help="a checkpoint trained with data.view_prefix: start each study's prompts with the view "
+                             "prefix its bag gives the task's structure (default: prompts as written)")
     parser.add_argument("--dump_study", action="append", default=[], metavar="STUDY_ID",
                         help="write explain_<STUDY_ID>.json (clips, prompts, scores, selection, value); repeatable")
     parser.add_argument("--wandb_project")
@@ -830,7 +927,7 @@ def main(argv=None):
                       clip_only=args.clip_only, dump_studies=args.dump_study,
                       regression_readout=args.regression_readout,
                       regression_prior=None if (args.regression_prior or "none").lower() == "none"
-                      else args.regression_prior)
+                      else args.regression_prior, prompt_view_prefix=args.prompt_view_prefix)
     print(json.dumps({name: {**task["coverage"], **task["metrics"]} for name, task in report["tasks"].items()}))
 
 

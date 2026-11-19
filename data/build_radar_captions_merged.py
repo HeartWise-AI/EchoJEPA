@@ -23,22 +23,28 @@ as short English sentences, one per finding, from four sources:
    written on the device side. Without them a valve whose cell states only such a procedure has no caption.
 4. The visual EF, for the LV function only, when the prefill says nothing: the grade of the EF's band in this lab
    (`configs/radar/prefill_check_limits_v0.yaml`), unless the EF is in a grey zone or the parser reads the text the
-   other way. The EF number itself is not written.
+   other way. The EF number itself is not written, except with item 7.
 5. Only with `--regurgitation-default-from YEAR` (off by default): `No tricuspid regurgitation.` or `No pulmonic
    regurgitation.` for a valve left without a caption, when no source says anything of it (`REGURGITATION_DEFAULT`).
 6. Only with `--regurgitation-grade-valves VALVE ...` (off by default): the structured regurgitation grade, in the
    ontology's words, for a valve whose study has a routed colour-flow clip, in a second row of `scope` `color_flow`
    (`regurgitation_grade`). B-mode rows are never changed: a regurgitation jet is seen on colour Doppler only.
+7. Only with `--ef-sentence` (off by default): the LV ejection fraction as a number, `LV ejection fraction is 45%.`
+   (`ef_entry`), right after the LV function sentence, which is kept. The EF stated in the report text is preferred:
+   the LV cell's retained text, else the conclusion, read by `stated_ef` (a point, a closed interval's midpoint);
+   else the structured visual EF. The sentence is on no side (`EF_SIDE`): the row's flag is the flag
+   without it. Its source is `ef_text`, `ef_conclusion` or `ef_structured`.
 
 The 16 wall segments are one sentence when all are normal, and one sentence per abnormal segment otherwise. A caption
 is the union over the views of every eligible clip of the study: an upper bound for a sampled bag, as in the
 comparison tool.
 
 `normality` is `abnormal` when a kept sentence is abnormal or names a device, `normal` when every sentence is normal
-and the parser's own flag for the report text is normal, else `unknown`. It is PROVISIONAL (`normality_status`), so
-the loss arms that read it (A2, A3) refuse this table. `sources` lists, per sentence, the column, the value and where
-it came from (prefill_text, prefill_code, parser, ef_band, default, grade): categories only, no report text.
-`dropped.csv` lists the prefill findings left out and why.
+and the parser's own flag for the report text is normal, else `unknown`; the EF sentence (item 7) is left out of it.
+It is PROVISIONAL (`normality_status`), so the loss arms that read it (A2, A3) refuse this table. `sources` lists,
+per sentence, the column, the value and where it came from (prefill_text, prefill_code, parser, ef_band, default,
+grade, ef_text, ef_conclusion, ef_structured): categories and the EF value only, no report text. `dropped.csv` lists
+the prefill findings left out and why.
 
 The table and `build_info.json` have the layout `evals/radar_frozen/train.py` checks. Outputs go outside the
 repository. Nothing printed holds report text; counts from 1 to 4 print as `<5`.
@@ -49,10 +55,13 @@ Example:
 """
 
 import argparse
+import dataclasses
 import json
+import math
 import os
 import re
 import sys
+import unicodedata
 from collections import Counter
 
 import compare_column_prefill as ccp
@@ -168,6 +177,15 @@ UNMAPPED_GRADE = re.compile(r"\blegerement\b|\bdiscrete?s?\b|\bsignificative?s?\
 TRACE_WORD = re.compile(r"\btraces?\b")     # a grade here, a hedge to the parser (`rn._HEDGE`)
 # Segments of a clause: a comma that leads to an alternative (`, voire modérée`) does not end one.
 SEGMENT_SPLIT = re.compile(r",(?!\d)(?!\s*(?:voire|ou)\b)|\bet\b|\bavec\b|\bainsi que\b")
+# An option (`--ef-sentence`), off by default: the LV row's EF as a number (`ef_entry`). Its key sorts right after the
+# LV function column; its side is none of normal, abnormal or device, so the row's flag never reads it.
+EF_COLUMN, EF_AFTER, EF_SIDE = "lv_ef", "lv_function", "value"
+EF_TEXT_READS = ("ef_text", "ef_conclusion")     # sources of a text EF: the LV cell, then the conclusion
+EF_SENTENCE = "LV ejection fraction is {}%."     # an integer; `src/models/radar/loss.py` reads it back (soft EF)
+EF_SPREAD = 5.0                                  # text statements further apart than this give no value
+# An EF labelled with another method than the visual estimate, in the words between the EF label and its value
+# (`calculée à`, `calculée par méthode Simpson`, 3D): left out of the text reading, as a strain value is.
+OTHER_METHOD = re.compile(r"simpson|biplan|\b[23]\s?d\b|teichholz|quinones|\bcalcul|\bmesur", re.IGNORECASE)
 
 
 def sentence(cr, spec, column, value):
@@ -350,6 +368,77 @@ def regurgitation_grade(report, structure, has_color):
     return "written", (grade_sentence(structure.name, grade), side, grade)
 
 
+def stated_ef(text, spread=EF_SPREAD):
+    """(value, status, statements) of the EF a report text states, by `radar_captions` (`find_ef`, clause by clause,
+    its clause-wide hedge rule included). `statements`: those read, without those labelled with another method than
+    the visual estimate (`OTHER_METHOD`), which count as unstated. `status`: `value` (a point, a closed interval's
+    midpoint, or the mean of the midpoints of statements no more than `spread` points apart), `uncertain` (a hedge),
+    `bound` (an open or one-sided range), `disagree` (statements further apart), `other_method` (only such
+    statements), `unread` (EF wording whose value the reader does not take, `estimée à` after a comma) or `none`.
+    `value` is None unless the status is `value`."""
+    text = unicodedata.normalize("NFC", rc.caption_text(text)).translate(rc._APOSTROPHES)
+    statements, other = [], False
+    for clause in rc._CLAUSE_SPLIT.split(text):
+        found = []
+        for match, statement in rc.ef_expressions(clause):
+            if OTHER_METHOD.search(match.group("gap")):
+                other = True
+            else:
+                found.append(statement)
+        if found and rc._qualified(rc._EF.sub(" ", clause)):
+            found = [dataclasses.replace(st, certain=False) for st in found]
+        statements.extend(found)
+    if not statements:
+        return None, "other_method" if other else "unread" if rc._EF_UNREAD.search(text) else "none", []
+    if not all(s.certain for s in statements):
+        return None, "uncertain", statements
+    if any(s.low_open or s.high_open or (s.low != s.high and (s.low == rc.EF_RANGE[0] or s.high == rc.EF_RANGE[1]))
+           for s in statements):
+        return None, "bound", statements
+    mids = [(s.low + s.high) / 2.0 for s in statements]
+    if max(mids) - min(mids) > spread:
+        return None, "disagree", statements
+    return sum(mids) / len(mids), "value", statements
+
+
+def ef_integer(value):
+    """An EF rounded half up (57.5 -> 58; a stored 64.9999976 -> 65)."""
+    return int(math.floor(float(value) + 0.5))
+
+
+def ef_entry(report, lv_text, policy):
+    """(sentence entry or None, reason) of the LV row's EF sentence (`--ef-sentence`). `lv_text`: the LV cell's
+    retained text (the parser's caption). Entry = (sentence, side `EF_SIDE`, integer value, source).
+
+    The text is read first (`stated_ef`): the LV cell, then, when the cell states no EF of its own (no statement,
+    only one of another method, or wording the reader does not take), the conclusion. A text value is written
+    (`ef_text`, `ef_conclusion`). A statement without a value (a hedge, a bound, two values more than 5 points apart)
+    stops the reading there: the structured visual EF (`policy.ef`: column, valid range) is written only when it lies
+    within `policy.ef["tolerance"]` points of every such statement, else nothing (`text_conflict`). Otherwise the
+    structured EF (`ef_structured`), else nothing (`no_ef`). The reason of a structured EF names the status of each
+    text read (`ef_structured:lv_cell=unread,conclusion=none`)."""
+    structured = rc.finite(report.get(policy.ef["column"]))
+    low, high = policy.ef["valid"]
+    if structured is not None and not low <= structured <= high:
+        structured = None
+    tolerance, read = float(policy.ef["tolerance"]), []
+    for text, source, place in ((lv_text, EF_TEXT_READS[0], "lv_cell"),
+                                (report.get(CONCLUSION_COLUMN), EF_TEXT_READS[1], "conclusion")):
+        value, status, statements = stated_ef(text)
+        read.append(f"{place}={status}")
+        if status == "value":
+            return (EF_SENTENCE.format(ef_integer(value)), EF_SIDE, ef_integer(value), source), source
+        if statements:
+            if structured is not None and all(s.low - tolerance <= structured <= s.high + tolerance
+                                              for s in statements):
+                break
+            return None, "text_conflict"
+    if structured is None:
+        return None, "no_ef"
+    value = ef_integer(structured)
+    return (EF_SENTENCE.format(value), EF_SIDE, value, "ef_structured"), "ef_structured:" + ",".join(read)
+
+
 def segment_values(report, views, name, acquisition, spec, cr, cache):
     """{wall segment column: value} of the prefill for the structure's views; a segment the views disagree on is left
     out. Uses the candidates `ccp.prefill_columns` cached."""
@@ -364,19 +453,19 @@ def segment_values(report, views, name, acquisition, spec, cr, cache):
 
 
 def merged_row(study_id, structure, report, views, policy, spec, cr, limits, acquisition="bmode",
-               regurgitation_default_from=None):
+               regurgitation_default_from=None, ef_sentence=False):
     """(caption row or None, dropped prefill findings) of one (study, structure) whose clips have `views`. With
     `regurgitation_default_from` (a year), a valve left without a caption may get the default sentence
-    (`REGURGITATION_DEFAULT`)."""
+    (`REGURGITATION_DEFAULT`); with `ef_sentence`, the LV gets its EF sentence (`ef_entry`)."""
     kept, flag, dropped = merged_sentences(study_id, structure, report, views, policy, spec, cr, limits, acquisition,
-                                           regurgitation_default_from)
+                                           regurgitation_default_from, ef_sentence)
     return caption_row(study_id, structure.name, kept, flag, policy, spec), dropped
 
 
 def merged_sentences(study_id, structure, report, views, policy, spec, cr, limits, acquisition="bmode",
-                     regurgitation_default_from=None):
+                     regurgitation_default_from=None, ef_sentence=False, ef_reasons=None):
     """(kept sentences {column: (sentences, side, value, source)}, the parser's flag, dropped prefill findings) of one
-    (study, structure): what `merged_row` writes."""
+    (study, structure): what `merged_row` writes. `ef_reasons` (a Counter) counts the LV's `ef_entry` reasons."""
     import build_radar_captions as brc
 
     name, cache = structure.name, {}
@@ -447,19 +536,28 @@ def merged_sentences(study_id, structure, report, views, policy, spec, cr, limit
     if (not kept and regurgitation_default_from is not None
             and regurgitation_default(report, structure, regurgitation_default_from) is None):
         kept[f"{name}_regurgitation"] = ([f"No {name} regurgitation."], "normal", "none", "default")
+    if ef_sentence and name == "lv":
+        entry, reason = ef_entry(report, row["caption"] if row is not None else "", policy)
+        if ef_reasons is not None:
+            ef_reasons[reason] += 1
+        if entry is not None:
+            text, side, value, source = entry
+            kept[EF_COLUMN] = ([text], side, value, source)
     return kept, flag, dropped
 
 
 def caption_row(study_id, name, kept, flag, policy, spec):
     """The caption row of the sentences `kept` (see `merged_sentences`), or None when they say nothing."""
     order = {c: i for i, c in enumerate(spec["fields"])}
+    if EF_COLUMN in kept:       # the EF sentence right after the LV function sentence
+        order[EF_COLUMN] = order[EF_AFTER] + 0.5
     # The wall summary and the extra sentences come last.
     columns = sorted(kept, key=lambda c: order.get(c, len(order)))
     texts = [text for column in columns for text in kept[column][0]]
     caption = " ".join(texts)
     if not rc.canonical_caption(caption):
         return None
-    sides = {kept[c][1] for c in columns}
+    sides = {kept[c][1] for c in columns} - {EF_SIDE}
     normality = ("abnormal" if sides & {"abnormal", "device"} else
                  "normal" if sides == {"normal"} and flag == "normal" else "unknown")
     sources = [kept[c][3] for c in columns]
@@ -472,7 +570,7 @@ def caption_row(study_id, name, kept, flag, policy, spec):
 
 def build_tables(linked, clips, routing, policy, spec, cr, limits, acquisition="bmode",
                  regurgitation_default_from=None, default_reasons=None, grade_valves=(), color_clips=None,
-                 grade_reasons=None):
+                 grade_reasons=None, ef_sentence=False, ef_reasons=None):
     """(caption table, dropped prefill findings) of the linked studies with clips. With `regurgitation_default_from`,
     `default_reasons` (a dict) gets, per default valve, the count of each reason a row without another caption got no
     default sentence, and `written`.
@@ -483,7 +581,10 @@ def build_tables(linked, clips, routing, policy, spec, cr, limits, acquisition="
     takes the place of a default sentence. The table then has a `scope` column, `bmode` on every other row, and
     `grade_reasons` (a dict) gets, per graded valve with a routed clip of either kind, the count of each reason.
     A row is per study, a bag is not: a reader must use a `color_flow` row only for a bag that holds a colour clip
-    routed to the structure, and the B-mode row otherwise."""
+    routed to the structure, and the B-mode row otherwise.
+
+    With `ef_sentence`, every LV row with an EF gets the EF sentence (`ef_entry`), and `ef_reasons` (a Counter) gets
+    the count of each reason over the studies with an LV clip."""
     views_of = clips.groupby("study_id").view.agg(lambda v: set(map(str, v))).to_dict()
     color_of = ({} if not grade_valves or color_clips is None else
                 color_clips.groupby("study_id").view.agg(lambda v: set(map(str, v))).to_dict())
@@ -499,7 +600,7 @@ def build_tables(linked, clips, routing, policy, spec, cr, limits, acquisition="
             kept, flag = {}, "unknown"
             if views:
                 kept, flag, out = merged_sentences(study_id, structure, report, views, policy, spec, cr, limits,
-                                                   acquisition, regurgitation_default_from)
+                                                   acquisition, regurgitation_default_from, ef_sentence, ef_reasons)
                 row = caption_row(study_id, name, kept, flag, policy, spec)
                 dropped += out
                 if (regurgitation_default_from is not None and default_reasons is not None
@@ -548,6 +649,9 @@ def parse_args(argv=None):
                    help="Off by default. For these valves, a row of scope color_flow with the structured "
                         "regurgitation grade as a sentence, when the study has a colour-flow clip routed to the valve "
                         "in --clips and the text agrees (regurgitation_grade). Adds a scope column.")
+    p.add_argument("--ef-sentence", action="store_true",
+                   help="Off by default. The LV row also states its EF as a number ('LV ejection fraction is 45%%.'), "
+                        "from the report text (LV cell, then conclusion), else the structured visual EF (ef_entry).")
     p.add_argument("--policy", default=rn.DEFAULT_POLICY)
     p.add_argument("--report-accession-col", default="AccessionNumber")
     p.add_argument("--report-patient-col", default="Dossier")
@@ -607,6 +711,8 @@ def main(argv=None):
         needed |= {YEAR_COLUMN, CONCLUSION_COLUMN, *(column for column, _ in REGURGITATION_DEFAULT.values())}
     if valves:
         needed |= {CONCLUSION_COLUMN, *(GRADE_COLUMNS[valve] for valve in valves)}
+    if args.ef_sentence:
+        needed |= {CONCLUSION_COLUMN, policy.ef["column"]}
     missing = sorted(needed - set(reports.columns))
     if missing:
         raise SystemExit(f"The reports have no column {missing}: a missing column would look like missing evidence.")
@@ -614,10 +720,10 @@ def main(argv=None):
     linked = linked[linked.study_id.isin(studies)]
     if linked.study_id.nunique() < args.min_linked * len(studies):
         raise SystemExit(f"Only {linked.study_id.nunique()} of the split's {len(studies)} studies link to a report.")
-    default_reasons, grade_reasons = {}, {}
+    default_reasons, grade_reasons, ef_reasons = {}, {}, Counter()
     captions, dropped = build_tables(linked, clips, routing, policy, spec, cr, limits, args.acquisition,
                                      args.regurgitation_default_from, default_reasons, valves, color_clips,
-                                     grade_reasons)
+                                     grade_reasons, args.ef_sentence, ef_reasons)
     path = os.path.join(args.out_dir, "captions.csv")
     brc.write_atomic(path, lambda temporary: captions.to_csv(temporary, index=False))
     brc.write_atomic(os.path.join(args.out_dir, "dropped.csv"),
@@ -648,6 +754,15 @@ def main(argv=None):
             "scopes": {k: int(v) for k, v in captions.scope.value_counts().items()},
             "per_valve": {name: {k: ccp.suppressed(int(n)) for k, n in sorted(reasons.items())}
                           for name, reasons in sorted(grade_reasons.items())}}
+
+    if args.ef_sentence:        # absent when off, as above
+        lv = captions[captions.structure == "lv"]
+        values = [e[1] for s in lv.sources for e in json.loads(s) if e[0] == EF_COLUMN]
+        info["ef_sentence"] = {
+            "sentence": EF_SENTENCE, "order": ["lv_cell", "conclusion", "structured"],
+            "tolerance": policy.ef["tolerance"], "lv_rows": len(lv), "lv_rows_with_ef": len(values),
+            "reasons": {k: ccp.suppressed(int(n)) for k, n in sorted(ef_reasons.items())},
+            "distinct_lv_captions": int(lv.caption.nunique())}
 
     def write_info(temporary):
         with open(temporary, "w", encoding="utf-8") as f:

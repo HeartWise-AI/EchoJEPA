@@ -67,14 +67,19 @@ identifier or environment metadata is sent. A resume continues the same W&B run 
 is run control, outside the fingerprint, and a failure to log never stops training.
 
 Config: data {cache_dir, clips, captions, split, routing, normality_policy, num_clips, selection, acquisition_classes,
-normal_fraction (share of normal captions a training epoch keeps, drawn per epoch, default 1)}
+normal_fraction (share of normal captions a training epoch keeps, drawn per epoch, default 1), view_prefix
+(default false; true: each caption after the views of the bag's clips that feed its structure, clip-only runs, see
+src/models/radar/view_prefix.py), view_phrases (the phrase file, default configs/radar/view_phrases_v0.yaml)}
 (another view family map means another registry through `routing`; the old `view_families` key is refused);
 model {token_grid, embed_dim, depth, num_heads, mlp_ratio, proj_dim, activation_checkpointing};
 text {backbone, max_length, max_overlength_fraction, ...: see `build_text_encoder`; frozen (default false), pooling,
 layer, template, dtype, head, head_hidden_dim, input_norm: a frozen backbone with cached caption features and a
 trained head, `src/models/radar/frozen_text.py`, its features kept under data.text_cache_dir}; loss {use_exact
 (required: false = A0, true = A1 and the base of A2/A3), use_normal,
-use_abnormal_teacher, release_gate, min_pairs, init_temperature, temperature_bounds, teacher_momentum}; optimization
+use_abnormal_teacher, release_gate, min_pairs, init_temperature, temperature_bounds, teacher_momentum, soft_ef
+(off when absent: {sigma, weight, structure, source, grade_values}, soft value targets from the caption text, see
+`src/models/radar/loss.py`; A0 and A1 only, not with data.view_prefix; its coverage goes to `soft_ef_coverage.json`
+and its per-step diagnostics to the structure's `soft_*` keys in `log.jsonl`)}; optimization
 {epochs, global_batch, lr, text_lr, min_lr, weight_decay, warmup_fraction, seed, amp (none or bf16), num_workers,
 worker_start_method}; meta {wandb_project, wandb_entity, wandb_run_name}; device (auto, cpu or cuda).
 
@@ -119,12 +124,13 @@ from src.datasets.radar_token_cache import TokenCache
 from src.datasets.study_bags import choose_bag
 from src.models.radar.frozen_text import frozen_feature_key
 from src.models.radar.heads import StillMeasurementHeads
-from src.models.radar.loss import StructureContrastiveLoss
+from src.models.radar.loss import StructureContrastiveLoss, caption_soft_values
 from src.models.radar.model import RadarModel
 from src.models.radar.routing import DEFAULT_ROUTING, load_routing
 from src.models.radar.schedule import step_schedule
 from src.models.radar.structure_pooler import StructurePooler
 from src.models.radar.text_encoder import MomentumTeacher, build_text_encoder, build_tokenizer
+from src.models.radar.view_prefix import longest_prefixes, prefixed, view_phrases
 from src.utils.optimizer_coverage import check_optimizer_coverage
 from src.utils.wandb_logging import PRIVATE_WANDB_SETTINGS, finish_wandb, init_wandb, log_scalars
 
@@ -159,9 +165,12 @@ def code_files():
                RadarModel.__module__, load_routing.__module__, step_schedule.__module__, StructurePooler.__module__,
                build_text_encoder.__module__, check_optimizer_coverage.__module__, StillSource.__module__,
                StillMeasurementHeads.__module__, frozen_feature_key.__module__, "src.datasets.still_preprocess",
+               view_phrases.__module__,
                "src.utils.distributed",
                "src.models.utils.modules", "src.models.utils.pos_embs"}
-    return sorted(os.path.relpath(os.path.abspath(sys.modules[m].__file__), REPO) for m in modules)
+    # data/radar_captions.py: the EF reader of `loss.soft_ef.source: caption_number`
+    return sorted([os.path.relpath(os.path.abspath(sys.modules[m].__file__), REPO) for m in modules]
+                  + [os.path.join("data", "radar_captions.py")])
 
 
 def code_digest():
@@ -175,20 +184,24 @@ def code_digest():
 
 
 def fingerprint(config, routing, cache, n_studies, normality_digest=None, bags=None, caption_digest=None,
-                stills=None, text_features=None):
+                stills=None, text_features=None, view_prefix=None):
     """What defines the run: the config without run-control keys and data paths, and the contents behind them.
     `normality_digest`: the approved policy behind the flags of A2 and A3. `bags`: {split: `bag_record`}, the same
     in the matched baseline's run when both read the same clips. `caption_digest`: the rules the caption table was
     built with, recorded in every arm, approved or not. `stills`: the still stream's record (absent without stills,
     so a v0 config keeps its v0 fingerprint). `text_features`: the feature key of a frozen caption encoder
     (`frozen_feature_key`; absent for a trained encoder, whose fingerprint is unchanged), which says what the
-    cached features were computed from; `data.text_cache_dir`, where they are kept, is left out."""
+    cached features were computed from; `data.text_cache_dir`, where they are kept, is left out. `view_prefix`: the
+    view phrase file's record (`ViewPhrases.record`) of a run with `data.view_prefix` on; absent otherwise, and the
+    `view_prefix` / `view_phrases` keys are left out of the config, so a run without it keeps its fingerprint."""
     semantic = copy.deepcopy(config)
     for section, keys in RUN_CONTROL.items():
         for key in keys:
             semantic.get(section, {}).pop(key, None)
     for section in RUN_CONTROL_SECTIONS:
         semantic.pop(section, None)
+    if not semantic.get("loss", {}).get("soft_ef", True):     # an empty soft_ef is off: the run of a config without it
+        semantic["loss"].pop("soft_ef")
     data = semantic.get("data", {})
     record = {
         "config": semantic,
@@ -214,6 +227,10 @@ def fingerprint(config, routing, cache, n_studies, normality_digest=None, bags=N
     data.pop("cache_dir", None)
     data.pop("routing", None)
     data.pop("normality_policy", None)
+    data.pop("view_prefix", None)
+    data.pop("view_phrases", None)
+    if view_prefix is not None:
+        record["view_prefix"] = view_prefix
     record["sha256"] = hashlib.sha256(json.dumps(record, sort_keys=True, default=str).encode()).hexdigest()
     return record
 
@@ -253,9 +270,13 @@ def check_normality_approved(captions, loss, policy_path=None):
     return digest
 
 
-def fit_captions(captions, tokenizer, max_fraction=0.01):
-    """(the captions the encoder reads whole, a report per structure). See the module docstring."""
-    tokens = tokenizer.lengths(captions["caption"].tolist())
+def fit_captions(captions, tokenizer, max_fraction=0.01, prefixes=None):
+    """(the captions the encoder reads whole, a report per structure). See the module docstring. `prefixes`
+    ({structure: its longest view prefix}, data.view_prefix) measures each caption after that prefix."""
+    texts = captions["caption"].tolist()
+    if prefixes is not None:
+        texts = [prefixed(prefixes.get(s, ""), t) for s, t in zip(captions["structure"], texts)]
+    tokens = tokenizer.lengths(texts)
     table = captions.assign(tokens=tokens, over=[n > tokenizer.max_length for n in tokens])
     report = {"max_length": tokenizer.max_length, "max_overlength_fraction": max_fraction, "structures": {}}
     for structure, rows in table.groupby("structure", sort=True):
@@ -317,7 +338,7 @@ def build_model(config, routing):
         trained, use_exact=lc["use_exact"], use_normal=lc.get("use_normal", False),
         use_abnormal_teacher=lc.get("use_abnormal_teacher", False), release_gate=lc.get("release_gate", False),
         min_pairs=lc.get("min_pairs", 2), init_temperature=lc.get("init_temperature", 0.07),
-        temperature_bounds=tuple(lc.get("temperature_bounds", (0.001, 0.5))))
+        temperature_bounds=tuple(lc.get("temperature_bounds", (0.001, 0.5))), soft_ef=lc.get("soft_ef"))
     if heads is None:
         return RadarModel(pooler, text_encoder, loss), tokenizer
     return RadarModel(pooler, text_encoder, loss, heads, heads_config.get("weight", 1.0),
@@ -402,11 +423,12 @@ def structure_summary(contributing, skips, steps):
     return out
 
 
-def prepare_caption_features(tokenizer, captions, device, rank, world_size):
+def prepare_caption_features(tokenizer, captions, device, rank, world_size, texts=None):
     """Frozen caption encoder: encode every distinct training caption once (and the empty caption of structures
     without one), then seal the store, so no step ever runs the text model. Rank 0 encodes first and writes the
-    cache file; the other ranks then read it (or encode for themselves without `data.text_cache_dir`)."""
-    texts = sorted(set(captions["caption"])) + [""]
+    cache file; the other ranks then read it (or encode for themselves without `data.text_cache_dir`). `texts`:
+    the captions as bags hold them, when they differ from the table's (data.view_prefix)."""
+    texts = sorted(set(captions["caption"] if texts is None else texts)) + [""]
     if rank == 0:
         tokenizer.prepare(texts, device)
     if world_size > 1:
@@ -507,6 +529,7 @@ def train(config, out_dir, resume=True, stop_after_epoch=None, allow_code_change
         raise ValueError("data.view_families was removed: the routing registry holds the view family map. "
                          "To change it, point data.routing at another registry.")
     routing = load_routing(data.get("routing") or DEFAULT_ROUTING)
+    phrases = view_phrases(data, routing)
     m = config["model"]
     cache = TokenCache(data["cache_dir"], token_grid=m["token_grid"], embed_dim=m["embed_dim"])
     split = data.get("split", "train")
@@ -519,26 +542,39 @@ def train(config, out_dir, resume=True, stop_after_epoch=None, allow_code_change
         raise ValueError("The caption table is empty.")
     normality_digest = check_normality_approved(captions, config.get("loss", {}), data.get("normality_policy"))
     captions, lengths = fit_captions(captions, build_tokenizer(config["text"]),
-                                     config["text"].get("max_overlength_fraction", 0.01))
+                                     config["text"].get("max_overlength_fraction", 0.01),
+                                     longest_prefixes(phrases, routing, [s.name for s in routing.trained])
+                                     if phrases else None)
     stills = read_stills(data["stills"], routing, split, config.get("heads")) if data.get("stills") else None
     if stills is not None:
         same_encoder(cache.meta, stills.cache.meta)
     dataset = RadarStudyDataset(clips, captions, routing, cache, num_clips=data.get("num_clips", 12),
                                 selection=data.get("selection", "view_balanced"), training=True, seed=seed,
                                 acquisition_classes=data.get("acquisition_classes", ("bmode", "color_flow")),
-                                normal_fraction=data.get("normal_fraction", 1.0), stills=stills)
+                                normal_fraction=data.get("normal_fraction", 1.0), stills=stills,
+                                view_prefix=phrases)
     global_batch = int(opt["global_batch"])
     sampler = StudyBatchSampler(len(dataset), global_batch, rank, world_size, seed)
     schedule = step_schedule(len(dataset), global_batch, opt["epochs"], opt.get("warmup_fraction", 0.05))
     record = fingerprint(config, routing, cache, len(dataset), normality_digest, {split: dataset.bag_record()},
                          build.get("policy_digest"), stills.record() if stills is not None else None,
-                         frozen_feature_key(config["text"], data.get("text_cache_dir")))
+                         frozen_feature_key(config["text"], data.get("text_cache_dir")),
+                         phrases.record() if phrases else None)
     code = code_digest()
 
     model, tokenizer = build_model(config, routing)
     model.to(device)
+    if model.loss.soft_ef is not None:      # values from the caption text, keyed by the builder's caption id
+        if phrases:
+            raise ValueError("loss.soft_ef reads values by the builder's caption ids; data.view_prefix changes them.")
+        soft_values, soft_coverage = caption_soft_values(captions, config["loss"]["soft_ef"])
+        model.loss.set_soft_values(soft_values)
+        if rank == 0:
+            with open(os.path.join(out_dir, "soft_ef_coverage.json"), "w") as f:
+                json.dump(soft_coverage, f, indent=2, sort_keys=True)
     if config["text"].get("frozen"):
-        prepare_caption_features(tokenizer, captions, device, rank, world_size)
+        prepare_caption_features(tokenizer, captions, device, rank, world_size,
+                                 dataset.prefixed_texts() if phrases else None)
     optimizer = torch.optim.AdamW(param_groups(model, opt), lr=opt["lr"])
     check_optimizer_coverage(model, optimizer)
     wrapped = model
@@ -622,7 +658,8 @@ def train(config, out_dir, resume=True, stop_after_epoch=None, allow_code_change
                         "temperature": float(model.loss.temperature.detach()),
                         "lr": {g["name"]: g["lr"] for g in optimizer.param_groups},
                         "structures": {n: {"rows": s["rows"], "skipped": s["skipped"],
-                                           "exact_pairs": s["exact_pairs"], "normal_pairs": s["normal_pairs"]}
+                                           "exact_pairs": s["exact_pairs"], "normal_pairs": s["normal_pairs"],
+                                           **{k: v for k, v in s.items() if k.startswith("soft_")}}
                                        for n, s in stats.items()}}
                 if model.last_measurement is not None:
                     line["measurement"] = model.last_measurement

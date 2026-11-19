@@ -29,6 +29,25 @@ A structure is skipped in a step when it has fewer than `min_pairs` valid rows o
 `release_gate`, a structure with no abnormal row is skipped too, as the release does; that gate is off by default
 because captions of unknown normality still carry identity and exact-caption targets.
 
+Soft value targets (`soft_ef`, off by default; A0 and A1 only): for the rows of one structure (the LV) whose caption
+carries a value (an EF), the target row also puts mass on the other rows of that structure in the batch, in
+proportion to a Gaussian kernel of the value difference. With Q from above (Q_ii > 0, so b_i = 1 / Q_ii is the row's
+unnormalised mass: 1 + its exact-caption positives under A1, 1 under A0), v_i the row's value, and only the rows j
+that are negatives under Q (Q_ij = 0) and carry a value:
+
+    K_ij = exp(-(v_i - v_j)^2 / (2 sigma^2))
+    k_i  = sum_j K_ij
+    m_i  = min(lambda, k_i / (b_i + k_i))      the kernel's natural share, as if each K_ij were one more positive,
+                                               capped at lambda = `weight`
+    Q'_i = (1 - m_i) Q_i + m_i K_i / k_i
+
+so a row keeps its identity and exact-caption positives in their proportions, its soft mass never exceeds lambda,
+and it still sums to one. Rows without a value, and rows whose valued neighbours are all positives already, keep
+Q_i unchanged; a row without a value takes no soft mass from others either (K needs both values). Same Q' for both
+directions, as above, and only rows of the same structure (the loss is per structure). Values are looked up from the
+caption ids (`set_soft_values`), so every rank derives them from the gathered ids. With the option off, nothing of
+this runs: the targets and the loss are those of the base arm, bit for bit.
+
 Distributed training: every rank computes the same global loss from all-gathered rows. Features are gathered with
 `src.utils.distributed.AllGather`, whose backward sums the gradients of every rank, so after DDP averages the
 parameter gradients they equal the single-process gradient of the global loss; the temperature, used directly, gets
@@ -36,6 +55,10 @@ its full gradient on every rank. (The release's detached gather with the rank's 
 features only 1 / world_size of their gradient under DDP.) Rows are padded to the largest local batch, and the
 skip decisions are made on gathered counts, so every rank takes the same decisions.
 """
+
+import os
+import re
+import sys
 
 import torch
 import torch.distributed as dist
@@ -62,6 +85,112 @@ def caption_targets(caption_ids, normal=None, abnormal=None, teacher=None, tau=N
             R = R + (abnormal[:, None] & abnormal[None, :]).float() * weights
         R.fill_diagonal_(1.0)
         return R / R.sum(dim=1, keepdim=True)
+
+
+def soft_value_targets(Q, values, sigma, weight):
+    """(Q', diagnostics) for one structure: Q [n, n] row-normalised targets with a positive diagonal, values [n] float
+    (NaN where the caption carries none). See the module docstring for the formula. Diagnostics, over the rows with a
+    value: `rows` (count), `mass` (mean m_i) and `positives` (mean effective number of soft positives, the inverse
+    Simpson index (sum K)^2 / sum K^2 of the rows that receive soft mass; None when none does)."""
+    with torch.autocast(device_type=Q.device.type, enabled=False):
+        Q = Q.float()
+        values = values.float()
+        has = torch.isfinite(values)
+        diff = values[:, None] - values[None, :]
+        K = torch.exp(-diff.square() / (2.0 * float(sigma) ** 2))
+        K = torch.where(has[:, None] & has[None, :] & (Q == 0), K, torch.zeros_like(K))
+        k = K.sum(dim=1, keepdim=True)
+        base = 1.0 / Q.diagonal()[:, None]
+        mass = torch.clamp(k / (base + k), max=float(weight))
+        receives = (k > 0).squeeze(1)
+        soft = (1.0 - mass) * Q + mass * K / k.clamp_min(torch.finfo(K.dtype).tiny)
+        out = torch.where(receives[:, None], soft, Q)
+        n_has = int(has.sum())
+        positives = (k.squeeze(1).square() / K.square().sum(dim=1).clamp_min(torch.finfo(K.dtype).tiny))[receives]
+        stats = {"rows": n_has,
+                 "mass": float(torch.where(receives, mass.squeeze(1), 0.0)[has].mean()) if n_has else None,
+                 "positives": float(positives.mean()) if positives.numel() else None}
+        return out, stats
+
+
+# The caption builder's LV function sentence (`build_radar_captions_merged.py`), whose grade `grade` values map.
+GRADE_SENTENCE = re.compile(r"\bLV systolic function appears (?P<grade>[a-z ]+?)\s*\.", re.IGNORECASE)
+# The same builder's EF sentence (`--ef-sentence`, its EF_SENTENCE `LV ejection fraction is {}%.`), an integer.
+EF_SENTENCE = re.compile(r"\bLV ejection fraction is (?P<value>\d{1,3})%")
+SOFT_SOURCES = ("caption_number", "caption_grade")
+
+
+def _radar_captions():
+    """The caption builder's text rules (`data/radar_captions.py`), imported as `train.py` imports the policy."""
+    folder = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(
+        os.path.abspath(__file__))))), "data")
+    if folder not in sys.path:
+        sys.path.append(folder)
+    import radar_captions
+    return radar_captions
+
+
+def _caption_number(text, rc):
+    """The EF a caption states as a number. An English caption: the value of the builder's EF sentence
+    (`EF_SENTENCE`; None for two different values). Otherwise by the French caption reader
+    (`radar_captions.find_ef`): the value of a point, the midpoint of a closed interval; None when the caption states
+    none, when a statement is uncertain or a bound (`< 55 %`), or when its statements lie more than 5 points apart
+    (else their midpoints' mean)."""
+    sentences = {float(m.group("value")) for m in EF_SENTENCE.finditer(text)}
+    if sentences:
+        return next(iter(sentences)) if len(sentences) == 1 else None
+    statements = rc.find_ef(text)
+    bound = [s.low != s.high and (s.low == rc.EF_RANGE[0] or s.high == rc.EF_RANGE[1]) for s in statements]
+    if not statements or any(not s.certain or s.low_open or s.high_open for s in statements) or any(bound):
+        return None
+    mids = [(s.low + s.high) / 2.0 for s in statements]
+    return sum(mids) / len(mids) if max(mids) - min(mids) <= 5.0 else None
+
+
+def _caption_grade(text, grade_values):
+    """The value of the grade the caption's LV function sentence states (`grade_values`: grade words -> value);
+    None without such a sentence, for a grade not in the map (e.g. a plain `reduced`), or for two different grades."""
+    grades = {" ".join(m.group("grade").lower().split()) for m in GRADE_SENTENCE.finditer(text)}
+    values = {grade_values.get(g) for g in grades}
+    return next(iter(values)) if len(values) == 1 and None not in values else None
+
+
+def caption_soft_values(captions, soft):
+    """({caption_id: value}, coverage) for the rows of `soft["structure"]` of a caption table (columns structure,
+    caption, caption_id), read from the caption text only. `soft["source"]`: `caption_number` (an EF number the
+    caption states) or `caption_grade` (fixed values per stated LV function grade, `soft["grade_values"]`). Coverage:
+    rows, rows with a value, distinct captions with a value, and the quartiles of the rows' values; no text."""
+    source = soft.get("source", "caption_number")
+    if source not in SOFT_SOURCES:
+        raise ValueError(f"loss.soft_ef.source must be one of {SOFT_SOURCES}, not {source!r}.")
+    if source == "caption_grade":
+        grade_values = {" ".join(str(k).lower().split()): float(v) for k, v in (soft.get("grade_values") or {}).items()}
+        if not grade_values:
+            raise ValueError("loss.soft_ef.source caption_grade needs grade_values (grade words -> EF value).")
+
+        def read(text):
+            return _caption_grade(text, grade_values)
+    else:
+        rc = _radar_captions()
+
+        def read(text):
+            return _caption_number(text, rc)
+    rows = captions[captions.structure == soft.get("structure", "lv")]
+    values, found = {}, []
+    for text, cid in zip(rows.caption, rows.caption_id):
+        value = read(text)
+        if value is None:
+            continue
+        cid = int(cid)
+        if cid in values and values[cid] != value:
+            raise ValueError("One caption id carries two values: the caption ids do not follow the caption text.")
+        values[cid] = float(value)
+        found.append(float(value))
+    found.sort()
+    quartiles = [found[min(len(found) - 1, int(q * len(found)))] for q in (0.25, 0.5, 0.75)] if found else None
+    return values, {"source": source, "rows": int(len(rows)), "rows_with_value": len(found),
+                    "share_with_value": len(found) / len(rows) if len(rows) else None,
+                    "distinct_captions_with_value": len(values), "value_quartiles": quartiles}
 
 
 def contrastive_loss(z, t, Q, tau):
@@ -96,9 +225,24 @@ class StructureContrastiveLoss(nn.Module):
     """Sum over structures of RADAR's adaptive contrastive loss, with a learnable temperature."""
 
     def __init__(self, structures, use_exact=True, use_normal=False, use_abnormal_teacher=False,
-                 release_gate=False, min_pairs=2, init_temperature=0.07, temperature_bounds=(0.001, 0.5)):
+                 release_gate=False, min_pairs=2, init_temperature=0.07, temperature_bounds=(0.001, 0.5),
+                 soft_ef=None):
         super().__init__()
         self.structures = list(structures)
+        self.soft_ef = None
+        if soft_ef:
+            soft_ef = dict(soft_ef)
+            sigma, weight = float(soft_ef.get("sigma", 5.0)), float(soft_ef.get("weight", 0.5))
+            structure = soft_ef.get("structure", "lv")
+            if not sigma > 0 or not 0 < weight < 1:
+                raise ValueError("loss.soft_ef needs sigma > 0 and 0 < weight < 1 (the cap on the soft mass).")
+            if structure not in self.structures:
+                raise ValueError(f"loss.soft_ef.structure {structure!r} is not a trained structure.")
+            if use_normal or use_abnormal_teacher:
+                raise ValueError("loss.soft_ef is defined for A0 and A1 only (identity and exact-caption targets).")
+            self.soft_ef = {"sigma": sigma, "weight": weight, "structure": structure}
+        self._soft_table = None     # (sorted caption ids, values), CPU; not a buffer (DDP would broadcast it)
+        self._soft_device = None
         self.use_exact = use_exact
         self.use_normal = use_normal
         self.use_abnormal_teacher = use_abnormal_teacher
@@ -118,6 +262,30 @@ class StructureContrastiveLoss(nn.Module):
         """Put the stored temperature back inside the bounds; call after each optimizer step."""
         self.temperature.clamp_(*self.temperature_bounds)
 
+    def set_soft_values(self, values):
+        """{caption_id: value} of the soft structure's captions (`caption_soft_values`); ids not in it have none."""
+        if self.soft_ef is None:
+            raise ValueError("set_soft_values needs loss.soft_ef.")
+        ids = sorted(values)
+        self._soft_table = (torch.tensor(ids, dtype=torch.int64),
+                            torch.tensor([values[i] for i in ids], dtype=torch.float32))
+        self._soft_device = None
+
+    def soft_values(self, caption_ids):
+        """The value of each caption id [n] (NaN where it has none)."""
+        if self._soft_table is None:
+            raise ValueError("loss.soft_ef is on but no values were set (set_soft_values).")
+        if self._soft_device is None or self._soft_device[0].device != caption_ids.device:
+            self._soft_device = tuple(x.to(caption_ids.device) for x in self._soft_table)
+        keys, vals = self._soft_device
+        out = torch.full(caption_ids.shape, float("nan"), dtype=torch.float32, device=caption_ids.device)
+        if keys.numel() == 0:
+            return out
+        caption_ids = caption_ids.contiguous()
+        pos = torch.searchsorted(keys, caption_ids).clamp(max=keys.numel() - 1)
+        found = keys[pos] == caption_ids
+        return torch.where(found, vals[pos], out)
+
     def forward(self, z, t, valid, caption_ids, normal=None, abnormal=None, teacher=None):
         """
         z, t: [B, S, P] L2-normalised image and caption embeddings (any value where invalid, but finite).
@@ -130,6 +298,8 @@ class StructureContrastiveLoss(nn.Module):
         (A0). It shows how far A1's targets differ from A0's in the batches actually trained on. `normal_pairs` counts
         the unordered pairs of valid rows that are both normal, in every arm that is given the flags (None without
         them): N makes them positives (A2, A3), so it shows how many positives `data.normal_fraction` leaves.
+        With soft_ef, the soft structure's entry also holds "soft_rows" (valid rows with a value), "soft_mass" and
+        "soft_positives" (`soft_value_targets`; None when the structure is skipped); other entries are unchanged.
         """
         B, S, _ = z.shape
         if S != len(self.structures):
@@ -170,6 +340,10 @@ class StructureContrastiveLoss(nn.Module):
             stat = {"rows": n, "loss": None, "skipped": None, "exact_pairs": same // 2,
                     "normal_pairs": normals * (normals - 1) // 2 if normals is not None else None}
             stats[name] = stat
+            soft = self.soft_ef is not None and name == self.soft_ef["structure"]
+            if soft:
+                values_s = self.soft_values(ids_s)
+                stat.update(soft_rows=int(torch.isfinite(values_s).sum()), soft_mass=None, soft_positives=None)
             if n < self.min_pairs:
                 stat["skipped"] = "too_few_rows"
                 continue
@@ -179,6 +353,9 @@ class StructureContrastiveLoss(nn.Module):
             Q = caption_targets(ids_s, normal_s, abnormal_s,
                                 teacher_all[idx, s] if teacher_all is not None else None, tau.detach(),
                                 use_exact=self.use_exact, use_normal=self.use_normal)
+            if soft:
+                Q, diag = soft_value_targets(Q, values_s, self.soft_ef["sigma"], self.soft_ef["weight"])
+                stat.update(soft_mass=diag["mass"], soft_positives=diag["positives"])
             if torch.allclose(Q, torch.full_like(Q, 1.0 / n)):
                 stat["skipped"] = "uniform_targets"
                 continue

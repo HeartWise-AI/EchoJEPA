@@ -2,7 +2,8 @@
 
 """`data/build_radar_captions_merged.py` on synthetic reports, through the column review's own code (needs a column
 review checkout in `COLUMN_REVIEW_ROOT`): prefill sentences, findings dropped by the checks, parser and EF fills, the
-wall segment summary, the flag, and a table the RADAR dataset accepts."""
+wall segment summary, the flag, and a table the RADAR dataset accepts. The EF sentence's reading of the text and its
+choice of source need no checkout."""
 
 import json
 import os
@@ -18,6 +19,7 @@ import build_radar_captions_merged as merged  # noqa: E402
 import compare_column_prefill as cmp  # noqa: E402
 import radar_normality as rn  # noqa: E402
 
+from src.models.radar.loss import caption_soft_values  # noqa: E402
 from src.models.radar.routing import load_routing  # noqa: E402
 
 POLICY = rn.load_policy()
@@ -29,6 +31,65 @@ CHECKOUT = bool(COLUMN_REVIEW_ROOT) and os.path.isfile(
 EF, LVIDD = POLICY.ef["column"], "LVID Diastole (2D)"
 LV, PERI = "Left ventricule findings", "Pericardium findings"
 TRICUSPID, TR, PR = "Tricuspid valve findings", "Referring TR Grade", "Referring PR Grade"
+CONCLUSION = merged.CONCLUSION_COLUMN
+
+
+class TestEfSentence(unittest.TestCase):
+    """`stated_ef` and `ef_entry` (`--ef-sentence`) on synthetic phrases; no column review needed."""
+
+    def test_stated_values(self):
+        for text, expected in (("FEVG 55 %.", (55.0, "value")), ("FEVG 50-60 %.", (55.0, "value")),
+                               ("FEVG estimée visuellement à 45 %. FE 48 %.", (46.5, "value")),
+                               ("FEVG > 55 %.", (None, "bound")), ("FEVG environ 40 %.", (None, "uncertain")),
+                               ("FEVG 30 %. FE 60 %.", (None, "disagree")),
+                               ("FEVG calculée à 45 %.", (None, "other_method")),
+                               ("FEVG calculée par méthode Simpson à 45 %. FEVG estimée à 55 %.", (55.0, "value")),
+                               ("Fraction d'éjection normale, estimée à 60 %.", (None, "unread")),
+                               ("Strain longitudinal global -18 %.", (None, "none")), ("", (None, "none"))):
+            value, status, _ = merged.stated_ef(text)
+            self.assertEqual((value, status), expected, text)
+
+    def test_values_round_half_up(self):
+        self.assertEqual([merged.ef_integer(v) for v in (57.5, 52.5, 64.99999761581421, 30.2)], [58, 53, 65, 30])
+
+    def entry(self, lv_text, ef=None, conclusion=""):
+        return merged.ef_entry({EF: ef, CONCLUSION: conclusion}, lv_text, POLICY)
+
+    def test_the_text_comes_first_then_the_conclusion_then_the_structured_value(self):
+        self.assertEqual(self.entry("FEVG 45 %.", 60.0),
+                         (("LV ejection fraction is 45%.", merged.EF_SIDE, 45, "ef_text"), "ef_text"))
+        self.assertEqual(self.entry("Ventricule gauche non dilaté.", 60.0, "FEVG 35 %.")[0][2:], (35, "ef_conclusion"))
+        entry, reason = self.entry("Ventricule gauche non dilaté.", 57.5)
+        self.assertEqual(entry, ("LV ejection fraction is 58%.", merged.EF_SIDE, 58, "ef_structured"))
+        self.assertEqual(reason, "ef_structured:lv_cell=none,conclusion=none")
+
+    def test_text_without_a_value_lets_a_compatible_structured_value_through(self):
+        self.assertEqual(self.entry("FEVG environ 55 %.", 58.0)[0][2:], (58, "ef_structured"))
+        self.assertEqual(self.entry("FEVG > 55 %.", 62.0)[0][2:], (62, "ef_structured"))
+        self.assertEqual(self.entry("FEVG environ 55 %.", 40.0), (None, "text_conflict"))
+        self.assertEqual(self.entry("FEVG environ 55 %.", None), (None, "text_conflict"))
+        self.assertEqual(self.entry("FEVG environ 55 %.", 30.0, "FEVG 30 %."), (None, "text_conflict"))
+
+    def test_other_methods_and_unread_wording_fall_through(self):
+        entry, reason = self.entry("FEVG calculée à 45 %.", 60.0)
+        self.assertEqual(entry[2:], (60, "ef_structured"))
+        self.assertEqual(reason, "ef_structured:lv_cell=other_method,conclusion=none")
+        entry, reason = self.entry("Fraction d'éjection normale, estimée à 60 %.", 60.0)
+        self.assertEqual(entry[2:], (60, "ef_structured"))
+        self.assertTrue(reason.startswith("ef_structured:lv_cell=unread"))
+
+    def test_no_ef_or_an_invalid_structured_value_writes_nothing(self):
+        self.assertEqual(self.entry("Ventricule gauche non dilaté.", None), (None, "no_ef"))
+        self.assertEqual(self.entry("", 95.0), (None, "no_ef"))      # outside the policy's valid range
+        self.assertEqual(self.entry("", float("nan")), (None, "no_ef"))
+
+    def test_the_soft_ef_targets_read_the_sentence_back(self):
+        captions = [f"LV systolic function appears normal. {merged.EF_SENTENCE.format(v)} LV mass is normal."
+                    for v in (12, 45, 75)]
+        table = pd.DataFrame({"structure": "lv", "caption": captions, "caption_id": [1, 2, 3]})
+        values, coverage = caption_soft_values(table, {"source": "caption_number"})
+        self.assertEqual(values, {1: 12.0, 2: 45.0, 3: 75.0})
+        self.assertEqual(coverage["share_with_value"], 1.0)
 
 
 @unittest.skipUnless(CHECKOUT, "COLUMN_REVIEW_ROOT does not name a column review checkout")
@@ -39,10 +100,10 @@ class TestMergedCaptions(unittest.TestCase):
         cls.cr, cls.spec = cmp.load_column_review(COLUMN_REVIEW_ROOT)
         cmp.index_columns(cls.spec)
 
-    def row(self, structure, report, views=("A4C", "PLAX")):
+    def row(self, structure, report, views=("A4C", "PLAX"), **options):
         entry = next(s for s in ROUTING.trained if s.name == structure)
         return merged.merged_row("S1", entry, report, set(views) & set(entry.views), POLICY, self.spec, self.cr,
-                                 LIMITS)
+                                 LIMITS, **options)
 
     def sources(self, row):
         return {column: (value, source) for column, value, source in json.loads(row["sources"])}
@@ -79,6 +140,50 @@ class TestMergedCaptions(unittest.TestCase):
         self.assertEqual(row["normality"], "abnormal")
         row, _ = self.row("lv", {LV: "Ventricule gauche non dilaté.", LVIDD: 4.8, EF: 53.0})     # a grey zone
         self.assertNotIn("lv_function", self.sources(row))
+
+    def test_ef_sentence_follows_the_lv_function_sentence_and_leaves_the_flag(self):
+        for report in ({LV: "Ventricule gauche non dilaté. Fonction systolique normale. FEVG 60 %.", LVIDD: 4.8,
+                        EF: 60.0},
+                       {LV: "Ventricule gauche non dilaté.", LVIDD: 4.8, EF: 35.0},
+                       {LV: "Ventricule gauche non dilaté. Fonction systolique normale.", LVIDD: 4.8, EF: 48.0},
+                       {LV: "Ventricule gauche dilaté. FEVG estimée à 45 %.", LVIDD: 6.4, EF: 45.0}):
+            off, _ = self.row("lv", report)
+            on, _ = self.row("lv", report, ef_sentence=True)
+            sentences = [s + "." for s in on["caption"].split(". ") if s]
+            value = merged.ef_integer(report[EF])
+            ef = merged.EF_SENTENCE.format(value)
+            self.assertIn(ef, on["caption"])
+            self.assertEqual(on["caption"].replace(" " + ef, "").replace(ef + " ", ""), off["caption"])
+            function = [s for s in sentences if s.startswith("LV systolic function")]
+            if function:
+                self.assertEqual(on["caption"].index(ef), on["caption"].index(function[0]) + len(function[0]) + 1)
+            self.assertEqual(on["normality"], off["normality"])
+            self.assertEqual(on["sentences"], off["sentences"] + 1)
+            self.assertEqual([on[k] for k in ("from_prefill", "from_parser", "from_ef")],
+                             [off[k] for k in ("from_prefill", "from_parser", "from_ef")])
+            self.assertEqual(self.sources(on)["lv_ef"][0], value)
+            self.assertNotIn("lv_ef", self.sources(off))
+
+    def test_ef_sentence_alone_makes_an_unknown_row_and_only_on_the_lv(self):
+        self.assertIsNone(self.row("lv", {LV: "", EF: 53.0})[0])          # a grey zone: no band sentence
+        row, _ = self.row("lv", {LV: "", EF: 53.0}, ef_sentence=True)
+        self.assertEqual((row["caption"], row["normality"]), ("LV ejection fraction is 53%.", "unknown"))
+        row, _ = self.row("pericardium", {PERI: "Pas d'épanchement péricardique.", EF: 50.0}, ef_sentence=True)
+        self.assertEqual(row["caption"], "No pericardial effusion.")
+
+    def test_ef_sentence_reasons_are_counted_per_lv_study(self):
+        from collections import Counter
+        reports = pd.DataFrame([{"study_id": "S1", LV: "Ventricule gauche non dilaté.", LVIDD: 4.8, EF: 60.0},
+                                {"study_id": "S2", LV: "FEVG 45 %.", EF: 50.0},
+                                {"study_id": "S3", LV: "Ventricule gauche non dilaté.", EF: None}])
+        clips = pd.DataFrame({"study_id": ["S1", "S2", "S3"], "view": ["A4C", "A4C", "A4C"]})
+        reasons = Counter()
+        table, _ = merged.build_tables(reports, clips, ROUTING, POLICY, self.spec, self.cr, LIMITS,
+                                       ef_sentence=True, ef_reasons=reasons)
+        self.assertEqual(dict(reasons), {"ef_structured:lv_cell=none,conclusion=none": 1, "ef_text": 1, "no_ef": 1})
+        self.assertEqual(list(table.columns), list(merged.COLUMNS))
+        off, _ = merged.build_tables(reports, clips, ROUTING, POLICY, self.spec, self.cr, LIMITS)
+        self.assertFalse(off.caption.str.contains("ejection fraction").any())
 
     def test_nothing_to_say_gives_no_row(self):
         row, dropped = self.row("pericardium", {PERI: ""})

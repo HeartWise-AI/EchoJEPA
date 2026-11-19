@@ -1,0 +1,29 @@
+# RADAR view phrases, version 0: the plain-English name of each view family, for captions with a view prefix
+# (`data.view_prefix: true`, src/models/radar/view_prefix.py).
+#
+# A structure's caption in a study's bag starts with the views that feed that structure in the bag, then the caption:
+# "Apical four-chamber view. <caption>", or "Parasternal long-axis and apical four-chamber views. <caption>" when
+# clips of two families feed it. A view class takes the phrase of its family (the routing registry's view_families:
+# A4C_LV and A4C_ZOOM are apical four-chamber), so the classifier's LV-focused and zoomed variants do not multiply
+# the prefixes. Families are listed in the order of a standard transthoracic exam, which is the fixed order of a
+# prefix with several views.
+#
+# Every view family of the routing registry needs a phrase, except those listed under `unphrased`: a clip of an
+# unphrased view adds nothing to a prefix (OTHER is never routed to a structure anyway).
+
+schema: radar-view-phrases
+version: 0
+
+families:
+  PLAX: parasternal long-axis
+  RVINF: right ventricular inflow
+  PSAX_AV: parasternal short-axis aortic valve level
+  PSAX: parasternal short-axis
+  A4C: apical four-chamber
+  A5C: apical five-chamber
+  A2C: apical two-chamber
+  A3C: apical three-chamber
+  SUBCOSTAL: subcostal
+  SUPRASTERNAL: suprasternal
+
+unphrased: [OTHER]
