@@ -17,6 +17,10 @@ Three prompt modes, as in the prompt files of the two reference papers:
   prompts with one `values` entry each and no slot: EchoCLIP-R's "sampled prompts", real captions of training studies
   whose label is the value (up to ten per value there), because short single-phrase prompts were out of distribution
   for an encoder trained on whole reports. `evals/radar_frozen/mine_prompts.py` writes such a file.
+  The `softmax` read-out (`regression_softmax`) is an option to the median: the expected value of the prompts' values
+  under the softmax of the similarities at the temperature, optionally with a log prior over the prompts
+  (`regression_log_prior`) that makes the pool's value distribution that of the training split's labels. That prior
+  reads training labels, so a read-out using it is no longer strictly label-free.
 
 `PromptTask` reads one task of a prompt file (`configs/radar/prompts_v0.yaml`). `held_out` prompts (EchoCLIP's
 `testers`) are never used to choose settings, only to report. `target` names the column of a study-level label table
@@ -31,12 +35,15 @@ embeddings [M, P] from the caption encoder (`encode_prompts`). Everything is com
 
 from dataclasses import dataclass, field
 
+import numpy as np
 import torch
 import torch.nn.functional as F
 import yaml
 
 MODES = ("binary", "categorical", "regression")
 SLOT = "<#>"
+REGRESSION_READOUTS = ("top_fraction", "softmax")
+PRIOR_BIN_WIDTH = 5.0
 
 
 @dataclass(frozen=True)
@@ -177,3 +184,56 @@ def regression_estimate(z, prompt_embeddings, values, keep=0.2, top_k=None):
     sims = z.float() @ prompt_embeddings.float().T                      # [N, M]
     best = sims.topk(top, dim=-1).indices                              # [N, top]
     return values[best].median(dim=-1).values
+
+
+def regression_softmax(z, prompt_embeddings, values, temperature, log_prior=None):
+    """Value estimate [N] (float64): the expected value of the prompts' values under the softmax over the prompts of
+    similarity / temperature, plus `log_prior` [M] (natural log of a weight per prompt, -inf to leave a prompt out)
+    when given. Without a prior every prompt counts once, so a value that more prompts carry weighs more."""
+    values = torch.as_tensor(values, dtype=torch.float64)
+    if prompt_embeddings.shape[0] != values.shape[0]:
+        raise ValueError("One value per prompt embedding.")
+    if not float(temperature) > 0.0:
+        raise ValueError("temperature must be positive.")
+    logits = (z.float() @ prompt_embeddings.float().T).double() / float(temperature)        # [N, M]
+    if log_prior is not None:
+        log_prior = torch.as_tensor(log_prior, dtype=torch.float64)
+        if log_prior.shape != values.shape:
+            raise ValueError("One log prior weight per prompt.")
+        if not torch.isfinite(log_prior).any():
+            raise ValueError("The log prior leaves no prompt.")
+        logits = logits + log_prior
+    return F.softmax(logits, dim=-1) @ values
+
+
+def regression_log_prior(values, training_labels, bin_width=PRIOR_BIN_WIDTH):
+    """Log weight [M] (float64) per prompt that gives each value bin of the pool the share of the training labels
+    falling in it, and the histogram it was built from.
+
+    Bins are `bin_width` wide, from the pool's lowest value rounded down to a multiple of the width, to past its
+    highest value. A prompt's weight is its bin's share of the training labels divided by the number of pool prompts in
+    that bin, so a bin's total weight is its label share however many prompts (and repeated values) it holds. Labels
+    outside the bins count in the end bins; a bin no training label falls in gets weight 0 (log -inf: its prompts are
+    left out); training label share in a bin without prompts is dropped. Weights are scaled to mean 1, which does not
+    change a softmax. `training_labels` must be the training split's labels only; missing (NaN) labels are skipped."""
+    values = np.asarray(values, dtype=float)
+    labels = np.asarray(training_labels, dtype=float)
+    labels = labels[np.isfinite(labels)]
+    if values.ndim != 1 or values.size == 0 or not np.isfinite(values).all():
+        raise ValueError("values must be finite numbers, one per prompt.")
+    if labels.size == 0:
+        raise ValueError("The prior needs at least one training label.")
+    if not bin_width > 0:
+        raise ValueError("bin_width must be positive.")
+    edges = np.arange(np.floor(values.min() / bin_width) * bin_width, values.max() + bin_width + 0.01, bin_width)
+    bins = np.clip(np.digitize(values, edges) - 1, 0, len(edges) - 2)
+    pool_count = np.bincount(bins, minlength=len(edges) - 1).astype(float)
+    share = np.histogram(np.clip(labels, edges[0], edges[-1] - 1e-6), edges)[0] / labels.size
+    weight = share[bins] / pool_count[bins]
+    if not (weight > 0).any():
+        raise ValueError("No training label falls in a bin that holds a prompt.")
+    weight = weight / weight.mean()
+    with np.errstate(divide="ignore"):
+        log_prior = torch.from_numpy(np.log(weight))
+    return log_prior, {"bin_width": float(bin_width), "bin_edges": edges.tolist(), "label_share": share.tolist(),
+                       "pool_count": pool_count.astype(int).tolist(), "training_labels": int(labels.size)}

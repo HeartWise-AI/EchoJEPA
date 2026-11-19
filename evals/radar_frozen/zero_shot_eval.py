@@ -25,8 +25,20 @@ Metrics (`zero_shot_metrics`), each with a 95 % percentile bootstrap interval ov
 
 - binary: prevalence, AUROC, AUPRC, Brier score, expected calibration error, calibration intercept and slope, and at
   the operating threshold precision, recall, specificity and F1;
-- regression: MAE, RMSE, R2, Pearson r and bias;
+- regression: MAE, RMSE, R2, Pearson r and bias; and without an interval, under `stratified`, the slope of the
+  prediction on the label, Pearson r, and MAE, bias and count per label range (`LABEL_RANGES`, by target: for LVEF
+  <40, 40-49, 50-59, >=60) with their mean (`range_balanced_mae`), because a read-out that pulls every study towards
+  the middle can have a small overall MAE and large errors at the low end;
 - categorical: accuracy, macro F1 and macro one-against-rest AUROC.
+
+Regression read-out (`--regression_readout`). `top_fraction` (default): the median of the values of the best-ranked
+prompts (`--keep`, `--top_k`). `softmax`: the expected value under the softmax over all the task's prompts at the
+checkpoint's temperature (`zero_shot.regression_softmax`). `--regression_prior <label table>` (softmax only) adds a log
+prior that gives each 5-point value bin of the prompt pool the share of the TRAINING split's labels in it
+(`zero_shot.regression_log_prior`). The training studies are those of the checkpoint's own training clip table
+(`data.clips` at `data.split`, refused unless its checksum is the checkpoint's), the labels those of the task's target
+column of that label table, and the prior is refused when a training study is also evaluated. A read-out with the
+prior uses the training label distribution: it is not strictly zero-shot, and the report says so (`regression_prior`).
 
 Operating threshold. 0.5 (the finding's prompt set is the closer one) unless `--thresholds` names the
 `thresholds.json` of another run of this script on a tuning split, with the same checkpoint, prompt file and pooling.
@@ -93,11 +105,14 @@ from src.models.radar.zero_shot import (
     POOLINGS,
     binary_probability,
     categorical_probabilities,
+    REGRESSION_READOUTS,
     encode_prompts,
     load_prompt_tasks,
     regression_count,
     regression_estimate,
+    regression_log_prior,
     regression_prompts,
+    regression_softmax,
 )
 from src.models.radar.zero_shot import pool as zero_shot_pool
 from src.utils.wandb_logging import PRIVATE_WANDB_SETTINGS, finish_wandb, init_wandb, log_scalars
@@ -108,6 +123,8 @@ CAPTION_COLUMNS = ("study_id", "structure", "caption", "caption_id", "normality"
 INTERVALS = {"binary": zm.BINARY_INTERVALS, "regression": zm.REGRESSION_INTERVALS,
              "categorical": zm.CATEGORICAL_INTERVALS}
 DEFAULT_THRESHOLD = 0.5
+# label ranges of the stratified regression report, by label column: (name, low (inclusive), high (exclusive))
+LABEL_RANGES = {"lvef": (("<40", None, 40.0), ("40-49", 40.0, 50.0), ("50-59", 50.0, 60.0), (">=60", 60.0, None))}
 
 
 def check_outside_repo(path, flag):
@@ -141,19 +158,67 @@ def load_model(config, checkpoint, routing, device):
     return model.to(device).eval(), tokenizer, state
 
 
+def training_clip_studies(config, state, consequence):
+    """The study ids of the checkpoint's training split in its clip table (`data.clips` rows at `data.split`),
+    refused (with `consequence` in the message) unless that table is the one the checkpoint trained on."""
+    data = config["data"]
+    if not os.path.exists(data["clips"]) or file_sha256(data["clips"]) != state["fingerprint"]["clips_sha256"]:
+        raise ValueError(f"data.clips of the config is not the clip table the checkpoint trained on, {consequence}")
+    train = read_table(data["clips"])
+    if "split" in train.columns:
+        train = train[train.split.astype(str) == data.get("split", "train")]
+    return set(train.study_id.astype(str))
+
+
+def read_prior_labels(config, state, path, tasks, study_ids):
+    """The regression prior's labels: the label table at `path` restricted to the checkpoint's training split
+    (`training_clip_studies`), one float column per regression task target, and the report entry. Refused when a
+    training study is also an evaluated study (`study_ids`), so the prior never reads an evaluated label."""
+    train_ids = training_clip_studies(config, state, "so the regression prior cannot be restricted to the training "
+                                                     "split. Point the config at that table.")
+    overlap = train_ids & set(study_ids)
+    if overlap:
+        raise ValueError(f"{len(overlap)} evaluated studies are in the training split: the regression prior would read "
+                         "their labels. A prior is built from training studies only and scored on other studies.")
+    regression = {name: task for name, task in tasks.items() if task.mode == "regression"}
+    if not regression:
+        raise ValueError("regression_prior was given but the prompt file has no regression task.")
+    labels, _ = read_labels(path, regression, sorted(train_ids))
+    return labels, {"labels_sha256": file_sha256(path), "split": config["data"].get("split", "train"),
+                    "studies": len(train_ids), "clips_sha256": state["fingerprint"]["clips_sha256"]}
+
+
+def stratified_regression(label, prediction, ranges=()):
+    """Slope (least squares of the prediction on the label), Pearson r, and per label range (name, low inclusive or
+    None, high exclusive or None) the count, MAE and bias (prediction - label), with `range_balanced_mae`, the mean of
+    the MAE of the ranges that hold a study. None where a number is undefined."""
+    y, p = np.asarray(label, dtype=float), np.asarray(prediction, dtype=float)
+    varied = y.size >= 2 and np.ptp(y) > 0
+    out = {"n": int(y.size), "slope": float(np.polyfit(y, p, 1)[0]) if varied else None,
+           "pearson_r": float(np.corrcoef(p, y)[0, 1]) if varied and np.ptp(p) > 0 else None, "ranges": {}}
+    for name, low, high in ranges:
+        inside = np.ones(y.size, bool)
+        if low is not None:
+            inside &= y >= low
+        if high is not None:
+            inside &= y < high
+        error = p[inside] - y[inside]
+        out["ranges"][name] = {"low": low, "high": high, "n": int(inside.sum()),
+                               "mae": float(np.abs(error).mean()) if inside.any() else None,
+                               "bias": float(error.mean()) if inside.any() else None}
+    maes = [r["mae"] for r in out["ranges"].values() if r["mae"] is not None]
+    out["range_balanced_mae"] = float(np.mean(maes)) if maes else None
+    return out
+
+
 def check_not_trained_on(config, state, study_ids):
     """Refuse when an evaluated study is in the training split, or when that cannot be told. Returns the training
     split's study ids: those of the clip table and, for a checkpoint trained with Doppler stills, those of its still
     table too (a study may have trained through its stills alone)."""
     data = config["data"]
-    if not os.path.exists(data["clips"]) or file_sha256(data["clips"]) != state["fingerprint"]["clips_sha256"]:
-        raise ValueError("data.clips of the config is not the clip table the checkpoint trained on, so the evaluated "
-                         "studies cannot be checked against the training studies. Point the config at that table, "
-                         "or pass allow_training_studies to skip the check.")
-    train = read_table(data["clips"])
-    if "split" in train.columns:
-        train = train[train.split.astype(str) == data.get("split", "train")]
-    trained = set(train.study_id.astype(str))
+    trained = training_clip_studies(config, state, "so the evaluated studies cannot be checked against the training "
+                                                   "studies. Point the config at that table, or pass "
+                                                   "allow_training_studies to skip the check.")
     if state["fingerprint"].get("stills"):
         path = (data.get("stills") or {}).get("table")
         if not path or not os.path.exists(path) or file_sha256(path) != state["fingerprint"]["stills"]["table_sha256"]:
@@ -251,9 +316,13 @@ def encode_task(task, text_encoder, tokenizer):
             "sets": [encode([p for p, v in zip(task.label_sources, task.values) if v == g]) for g in grades]}
 
 
-def score_task(task, z, encoded, temperature, pooling="mean_similarity", keep=0.2, top_k=None):
+def score_task(task, z, encoded, temperature, pooling="mean_similarity", keep=0.2, top_k=None,
+               readout="top_fraction", log_prior=None):
     """One bag's predictions for z [N, P]: [N] (binary probability, regression estimate) or [N, G] (grades).
-    `top_k`, when given, keeps that many best-ranked regression prompts instead of the `keep` fraction."""
+    `top_k`, when given, keeps that many best-ranked regression prompts instead of the `keep` fraction. `readout`
+    "softmax" reads a regression task out as the softmax expected value at `temperature`, with `log_prior` [M]."""
+    if task.mode == "regression" and readout == "softmax":
+        return regression_softmax(z, encoded["prompts"], encoded["values"], temperature, log_prior)
     if task.mode == "regression":
         return regression_estimate(z, encoded["prompts"], encoded["values"], keep=keep, top_k=top_k)
     if task.mode == "binary":
@@ -390,7 +459,7 @@ def evaluate(config, checkpoint, clips, labels, out_dir, prompts=DEFAULT_PROMPTS
              num_bags=3, eval_seed=0, num_clips=None, selection=None, pooling="mean_similarity", keep=0.2,
              top_k=None, thresholds=None, group_column=None, samples=1000, seed=0, batch_size=32, num_workers=0,
              allow_training_studies=False, wandb=None, stills=None, still_cache_dir=None, demographics=None,
-             clip_only=False, dump_studies=()):
+             clip_only=False, dump_studies=(), regression_readout="top_fraction", regression_prior=None):
     """Evaluate and write the outputs; returns the report written to `metrics.json`. `clips`, `labels`, `prompts`,
     `checkpoint`, `thresholds` are paths; `num_clips` and `selection` default to the training config's; `wandb` is
     {wandb_project, wandb_entity, wandb_run_name} or None. A checkpoint trained with Doppler stills is evaluated
@@ -398,8 +467,16 @@ def evaluate(config, checkpoint, clips, labels, out_dir, prompts=DEFAULT_PROMPTS
     `demographics` default to the config's. `clip_only` evaluates such a checkpoint on clips alone, an ablation that
     the report names; without either the evaluation is refused, or the still stream would be dropped silently.
     `dump_studies`: study ids whose `explain_<study_id>.json` is written (`explain_task`). `top_k` (regression):
-    keep that many best-ranked prompts instead of the `keep` fraction."""
+    keep that many best-ranked prompts instead of the `keep` fraction. `regression_readout`: "top_fraction" (the
+    median rule) or "softmax"; `regression_prior` (softmax only): the label table whose training-split labels make
+    the prompts' log prior (`read_prior_labels`), or None."""
     check_outside_repo(out_dir, "out_dir")
+    if regression_readout not in REGRESSION_READOUTS:
+        raise ValueError(f"regression_readout must be one of {REGRESSION_READOUTS}, got {regression_readout!r}.")
+    if regression_prior is not None and regression_readout != "softmax":
+        raise ValueError("regression_prior applies to the softmax regression read-out only.")
+    if top_k is not None and regression_readout == "softmax":
+        raise ValueError("top_k applies to the top_fraction regression read-out only.")
     dump_studies = [str(s) for s in (dump_studies or ())]
     if pooling not in POOLINGS:
         raise ValueError(f"pooling must be one of {POOLINGS}, got {pooling!r}.")
@@ -449,6 +526,8 @@ def evaluate(config, checkpoint, clips, labels, out_dir, prompts=DEFAULT_PROMPTS
     study_ids = [study for study, _ in dataset.studies]
     training_ids = None if allow_training_studies else check_not_trained_on(config, state, study_ids)
     label_table, unused_rows = read_labels(labels, tasks, study_ids, group_column)
+    prior_table, prior_source = (read_prior_labels(config, state, regression_prior, tasks, study_ids)
+                                 if regression_prior is not None else (None, None))
     groups = label_table["group"].to_numpy() if group_column else None
     group_checked = None
     if group_column and training_ids is not None:
@@ -468,7 +547,7 @@ def evaluate(config, checkpoint, clips, labels, out_dir, prompts=DEFAULT_PROMPTS
         **source,
         "checkpoint_fingerprint": state["fingerprint"]["sha256"], "checkpoint_epoch": state["epoch"],
         "checkpoint_step": state["step"], "temperature": temperature, "keep": keep, "top_k": top_k,
-        "num_bags": num_bags,
+        "num_bags": num_bags, "regression_readout": regression_readout, "regression_prior": prior_source,
         "bags": dataset.bag_record(), "training_studies_allowed": bool(allow_training_studies),
         "studies": len(study_ids), "label_rows_not_evaluated": unused_rows,
         "training_studies_checked_by_group": group_checked,
@@ -488,13 +567,17 @@ def evaluate(config, checkpoint, clips, labels, out_dir, prompts=DEFAULT_PROMPTS
     if missing_dump:
         raise ValueError(f"dump_study names {len(missing_dump)} studies that are not evaluated here.")
     explain = {study: explain_header(dataset, study_ids.index(study), num_bags, structures, has_clip, temperature,
-                                     pooling, keep, top_k)
+                                     pooling, keep, top_k, regression_readout)
                for study in dump_studies}
     rows, youden = [], {}
     for name, task in tasks.items():
         s = structures.index(task.structure)
         encoded = encode_task(task, model.text, tokenizer)
-        per_bag = torch.stack([score_task(task, z[b, :, s], encoded, temperature, pooling, keep, top_k)
+        log_prior, prior = None, None
+        if task.mode == "regression" and prior_table is not None:
+            log_prior, prior = regression_log_prior(encoded["values"], prior_table[task.target].to_numpy(dtype=float))
+        per_bag = torch.stack([score_task(task, z[b, :, s], encoded, temperature, pooling, keep, top_k,
+                                          regression_readout, log_prior)
                                for b in range(num_bags)])
         pooled, bags = pool_bags(per_bag, has_clip[:, :, s])
         supported = bags > 0
@@ -506,6 +589,11 @@ def evaluate(config, checkpoint, clips, labels, out_dir, prompts=DEFAULT_PROMPTS
         result, youden[name] = task_report(task, label, pooled, supported, groups, grades, threshold, samples, seed)
         if task.mode == "binary":
             result["threshold_source"] = "tuning_split" if name in chosen else "default_0.5"
+        if task.mode == "regression":
+            used = np.isfinite(label) & supported
+            result["stratified"] = stratified_regression(label[used], pooled[used], LABEL_RANGES.get(task.target, ()))
+            if prior is not None:
+                result["prior"] = prior
         report["tasks"][name] = {"mode": task.mode, "structure": task.structure, "target": task.target, **result}
         prediction = pooled if task.mode != "categorical" else np.where(
             supported, np.asarray(grades, dtype=float)[np.nan_to_num(pooled).argmax(axis=1)], np.nan)
@@ -519,7 +607,7 @@ def evaluate(config, checkpoint, clips, labels, out_dir, prompts=DEFAULT_PROMPTS
             i = study_ids.index(study)
             record["tasks"][name] = explain_task(task, z[:, i, s], has_clip[:, i, s], encoded, temperature, pooling,
                                                  keep, per_bag[:, i], pooled[i], prediction[i], label[i],
-                                                 top_k=top_k)
+                                                 top_k=top_k, readout=regression_readout, log_prior=log_prior)
 
     report["summary"] = summary(report["tasks"])
     os.makedirs(out_dir, exist_ok=True)
@@ -537,7 +625,8 @@ def evaluate(config, checkpoint, clips, labels, out_dir, prompts=DEFAULT_PROMPTS
     return report
 
 
-def explain_header(dataset, index, num_bags, structures, has_clip, temperature, pooling, keep, top_k=None):
+def explain_header(dataset, index, num_bags, structures, has_clip, temperature, pooling, keep, top_k=None,
+                   readout="top_fraction"):
     """The study part of an explain record: per evaluation bag the clips read (id, which is the file path, view,
     acquisition) and which structures the bag lets read a clip. Restores the dataset's bag index."""
     study_id, clips = dataset.studies[index]
@@ -553,8 +642,11 @@ def explain_header(dataset, index, num_bags, structures, has_clip, temperature, 
                                                   if bool(has_clip[b, index, k])]})
     finally:
         dataset.eval_bag_index = previous
-    return {"study_id": study_id, "synthetic": False, "temperature": temperature, "pooling": pooling, "keep": keep,
-            "top_k": top_k, "num_bags": num_bags, "bags": bags, "tasks": {}}
+    record = {"study_id": study_id, "synthetic": False, "temperature": temperature, "pooling": pooling, "keep": keep,
+              "top_k": top_k, "num_bags": num_bags, "bags": bags, "tasks": {}}
+    if readout != "top_fraction":                   # the default record is unchanged
+        record["regression_readout"] = readout
+    return record
 
 
 def _sims(z, embeddings):
@@ -562,13 +654,34 @@ def _sims(z, embeddings):
 
 
 def explain_task(task, z, supported, encoded, temperature, pooling, keep, per_bag, pooled, prediction, label,
-                 top_k=None):
+                 top_k=None, readout="top_fraction", log_prior=None):
     """Everything that produced one task's prediction for one study. z [bags, P]: the study's structure embedding
-    in each bag; per_bag [bags] or [bags, G]: the scorer's output per bag (as in `evaluate`)."""
+    in each bag; per_bag [bags] or [bags, G]: the scorer's output per bag (as in `evaluate`). For the softmax
+    regression read-out, `selected` are the most probable prompts that together hold half the probability."""
     out = {"mode": task.mode, "structure": task.structure, "target": task.target,
            "label": label, "prediction": prediction, "per_bag_output": per_bag.double().tolist(),
            "bags_supported": [bool(x) for x in supported], "bags": []}
-    if task.mode == "regression":
+    if task.mode == "regression" and readout == "softmax":
+        values = [float(v) for v in encoded["values"]]
+        texts = (list(task.label_sources) if task.values
+                 else [p for _, p in regression_prompts(task.label_sources, *task.value_range)])
+        prior = "none" if log_prior is None else "log share of the training labels in the value's 5-point bin"
+        out.update(prompts=texts, values=values, keep=keep, top_k=None, readout="softmax",
+                   log_prior=None if log_prior is None else log_prior.tolist(),
+                   rule=f"value = expected value of the {len(values)} prompts' values under softmax(similarity / T"
+                        f" + log prior) (T={temperature:.4g}, prior: {prior}); study value = mean over the "
+                        "supporting bags")
+        for b in range(z.shape[0]):
+            sims = torch.as_tensor(_sims(z[b:b + 1], encoded["prompts"])[0], dtype=torch.float64)
+            logits = sims / temperature + (0.0 if log_prior is None else log_prior)
+            probability = torch.softmax(logits, dim=-1)
+            order = probability.argsort(descending=True)
+            count = int((probability[order].cumsum(0) < 0.5).sum()) + 1
+            best = order[:count].tolist()
+            out["bags"].append({"similarities": sims.tolist(), "logits": logits.tolist(),
+                                "probabilities": probability.tolist(), "selected": best,
+                                "selected_values": [values[j] for j in best], "value": float(per_bag[b])})
+    elif task.mode == "regression":
         values = [float(v) for v in encoded["values"]]
         texts = (list(task.label_sources) if task.values
                  else [p for _, p in regression_prompts(task.label_sources, *task.value_range)])
@@ -678,6 +791,12 @@ def main(argv=None):
     parser.add_argument("--keep", type=float, default=0.2, help="regression: fraction of best-ranked values kept")
     parser.add_argument("--top_k", type=int,
                         help="regression: keep this many best-ranked prompts instead of the --keep fraction")
+    parser.add_argument("--regression_readout", default="top_fraction", choices=REGRESSION_READOUTS,
+                        help="regression: median of the best-ranked prompts (top_fraction) or the softmax expected "
+                             "value over all prompts at the checkpoint's temperature (softmax)")
+    parser.add_argument("--regression_prior", metavar="LABELS",
+                        help="softmax read-out: label table whose TRAINING-split labels (the checkpoint's training "
+                             "clip table) give the prompts' log prior; 'none' for no prior. Not strictly zero-shot")
     parser.add_argument("--thresholds", help="thresholds.json of a run on a tuning split")
     parser.add_argument("--group_column", help="label-table column to resample by (for example the patient)")
     parser.add_argument("--samples", type=int, default=1000, help="bootstrap resamples")
@@ -708,7 +827,10 @@ def main(argv=None):
                       samples=args.samples, seed=args.seed, batch_size=args.batch_size, num_workers=args.num_workers,
                       allow_training_studies=args.allow_training_studies, wandb=wandb, stills=args.stills,
                       still_cache_dir=args.still_cache_dir, demographics=args.demographics,
-                      clip_only=args.clip_only, dump_studies=args.dump_study)
+                      clip_only=args.clip_only, dump_studies=args.dump_study,
+                      regression_readout=args.regression_readout,
+                      regression_prior=None if (args.regression_prior or "none").lower() == "none"
+                      else args.regression_prior)
     print(json.dumps({name: {**task["coverage"], **task["metrics"]} for name, task in report["tasks"].items()}))
 
 
