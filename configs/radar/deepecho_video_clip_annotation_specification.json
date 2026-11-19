@@ -1,6 +1,6 @@
 {
   "schema": "deepecho-column-review",
-  "version": 4,
+  "version": 5,
   "fields": {
     "lv_function": {
       "label": "LV function",
@@ -54,10 +54,10 @@
         "Ventricular septum findings"
       ],
       "values": {
-        "not_increased": "Not increased",
-        "increased": "Increased",
-        "septum_only": "Septum only, normal elsewhere",
-        "posterior_only": "Posterior wall only"
+        "not_increased": "Visualized walls not thickened",
+        "increased": "Generalized thickening of visualized walls",
+        "septal_thickening": "Septal thickening",
+        "posterior_thickening": "Posterior-wall thickening"
       },
       "modalities": [
         "bmode",
@@ -67,7 +67,14 @@
         "IVS Diastole Thickness (2D)",
         "LVIW Diastolic Thickness (2D)"
       ],
-      "note": "Septal, posterior and whole-wall thickening have different causes, so they are different values. Increased: the report calls the septum and the posterior wall thick, or the walls together. Septum only: it calls the septum thick and the posterior wall was measured but not called thick; not claimed in a view that does not list the septum, or when the report states concentric hypertrophy. Posterior wall only: it calls the posterior wall alone thick; claimed only where that wall is seen (PLAX, PLAX_DEEP, A3C, PSAX_BASAL) and says nothing of the other walls."
+      "note": "Explicit visual thickening only, without an LVH diagnosis or severity grade. Regional findings say nothing about other walls. A measurement is context, never evidence of normality elsewhere. Generalized thickening requires an explicit collective wall statement.",
+      "canonical_concept": "lv_wall_thickening_distribution",
+      "canonical_values": {
+        "not_increased": "not_increased",
+        "increased": "whole_wall",
+        "septal_thickening": "septal_thickening",
+        "posterior_thickening": "posterior_wall_thickening"
+      }
     },
     "septal_bulge": {
       "label": "Basal septal bulge",
@@ -87,7 +94,7 @@
       "context_columns": [
         "IVS Diastole Thickness (2D)"
       ],
-      "note": "A localized thickening of the basal septum: not a thick septum and not LV hypertrophy, so a finding of its own."
+      "note": "Focal basal septal prominence relative to the adjacent mid septum, assessed with adequate end-diastolic visualization. If the comparison cannot be made, use Cannot assess. This morphology alone establishes neither etiology, global LVH, HCM nor LVOT obstruction; none of those is excluded by its presence."
     },
     "rv_function": {
       "label": "RV function",
@@ -1002,6 +1009,7 @@
       "columns": [
         "lv_function",
         "lv_wall_thickness",
+        "septal_bulge",
         "mitral_appearance",
         "mitral_motion",
         "mitral_device",
@@ -1020,7 +1028,8 @@
       "targets": [
         "lv",
         "mitral",
-        "tricuspid"
+        "tricuspid",
+        "ivs"
       ],
       "wall_sources": {
         "basal_inferoseptal": "WMS Basal Inferoseptal",
@@ -1100,6 +1109,7 @@
         "lv_function",
         "lv_size",
         "lv_wall_thickness",
+        "septal_bulge",
         "la_size",
         "pericardial_effusion",
         "mitral_appearance",
@@ -1125,7 +1135,8 @@
         "aortic",
         "lvot",
         "aorta_root",
-        "pericardium"
+        "pericardium",
+        "ivs"
       ],
       "wall_sources": {
         "basal_inferolateral": "WMS LAX Basal Inferolateral",
@@ -1139,6 +1150,7 @@
       "columns": [
         "lv_function",
         "lv_wall_thickness",
+        "septal_bulge",
         "mitral_appearance",
         "mitral_motion",
         "mitral_device",
@@ -1157,7 +1169,8 @@
       "targets": [
         "lv",
         "mitral",
-        "aortic"
+        "aortic",
+        "ivs"
       ],
       "wall_sources": {
         "basal_inferolateral": "WMS LAX Basal Inferolateral",
@@ -1349,17 +1362,12 @@
         "lv",
         "ivs",
         "pericardium",
-        "mitral",
         "papillary_muscles",
         "chordae"
       ],
       "columns": [
         "lv_function",
         "pericardial_effusion",
-        "mitral_appearance",
-        "mitral_motion",
-        "mitral_device",
-        "mitral_regurgitant_jet",
         "wall_mid_inferoseptal",
         "wall_mid_anterolateral",
         "wall_mid_inferior",
@@ -1375,7 +1383,7 @@
         "mid_inferoseptal": "WMS SAX Inferoseptal",
         "mid_anteroseptal": "WMS SAX Anteroseptal"
       },
-      "note": "Short axis at the papillary muscles: the mitral valve is claimed here too, and the report's short-axis wall segments, which are mid segments, only here. No RV, no chamber size, no LV wall thickness."
+      "note": "Fixed short axis at the papillary muscles. Papillary muscles, chordae and the mid wall segments may be assessed. No mitral leaflet, valve-device or regurgitant-jet claims; no chamber size or LV wall thickness. A sweep crossing levels must be split into level-specific clips or left unresolved, not assumed to show every level."
     },
     "PSAX_APICAL": {
       "refines": "PSAX",
@@ -1538,6 +1546,7 @@
       "columns": [
         "lv_function",
         "lv_wall_thickness",
+        "septal_bulge",
         "pericardial_effusion",
         "mitral_appearance",
         "mitral_motion",
@@ -1562,7 +1571,8 @@
         "aortic",
         "lvot",
         "aorta_root",
-        "pericardium"
+        "pericardium",
+        "ivs"
       ],
       "wall_sources": {
         "basal_inferolateral": "WMS LAX Basal Inferolateral",
@@ -1809,8 +1819,8 @@
     "4": "dyskinetic",
     "5": "aneurysmal"
   },
-  "prefill_policy": "Explicit report values only, routed by view, mode, structures and level. Each view prefills its structures for the reviewer to confirm or untick (a tick means visible, even partly); a structure is never added by the reviewer. Suggestions are MAL drafts. No review_completed prelabel, no missing-to-normal inference, no automatic ground truth.",
-  "scoring_policy": "Score immutable original columns; corrections and confirmed omissions are separate, and a finding ticked among the prefilled findings without being prefilled counts as a confirmed omission. Cannot assess is not an error or a negative. An uninterpretable clip is scored on nothing else and gets no caption. A subcostal clip needs its subtype, and any other view has none. A view that refines the candidate's view is a correct view; the prefilled findings it does not claim leave the candidate, neither confirmed nor rejected. Exact report numbers remain context. Submitted review and exact input provenance gate release.",
+  "prefill_policy": "Explicit report values only, routed by view, mode, structures and level. Suggested structures are unverified priors; after a view or subtype change reviewers must explicitly select newly visible structures. No missing-to-normal inference. Candidates are unverified drafts; review_completed is never prefilled.",
+  "scoring_policy": "Immutable candidates and explicit corrections remain separate. Cannot assess is neither an error nor a negative. An uninterpretable clip requires only its reason, optional comment and review completion; no view or clinical findings are asked. Full nested validation and submitted review plus exact input provenance gate release. Refined views exclude unsupported candidate columns into out_of_view, not supported or rejected.",
   "sources": [
     "https://www.asecho.org/wp-content/uploads/2016/02/2015_ChamberQuantificationREV.pdf",
     "https://www.asecho.org/wp-content/uploads/2025/09/PIIS0894731725002925.pdf",

@@ -49,7 +49,7 @@ class TestShippedOntology(unittest.TestCase):
         self.assertEqual(self.o.concept("septal_bulge").kind, "finding")
         self.assertIn("interventricular_septum", self.o.concept("septal_bulge").structures)
         self.assertEqual(self.o.allowed_values("lv_wall_thickening_distribution"),
-                         ("septum_only", "posterior_wall_only", "whole_wall"))
+                         ("not_increased", "septal_thickening", "posterior_wall_thickening", "whole_wall"))
         self.assertNotIn("PLAX_ZOOM", self.o.concept("mechanical_circulatory_support").prior_views)
         self.assertNotIn("PSAX", self.o.concept("pacing_lead").prior_views)
 

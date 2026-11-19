@@ -3,3 +3,4 @@ pyarrow
 black == 26.10.1
 flake8 == 7.0.0
 isort == 5.13.2
+pytest>=8,<10

@@ -1,0 +1,33 @@
+# Generate only: python -m tools.study_probe_sweep generate --spec configs/sweeps/radar_matched_baseline.yaml \
+#   --output /your_folder/sweep-configs --base <config> --checkpoint <encoder> --data <manifest> --folder <folder>
+# Pass RADAR's frozen encoder as --checkpoint, and as --data a manifest of the same final clip table, with the study
+# targets joined: its video paths are RADAR's clip ids.
+#
+# The study probe as RADAR's matched baseline: `shared_bags` reads the clips RADAR reads, for a study in an epoch or an
+# evaluation bag, with the routing registry's view families. The run stores what fixed its bags under `bags`; a split's
+# entry must equal the one in the RADAR run's fingerprint. `study_probe.yaml` keeps its own map and stays as it was: its
+# results are earlier experiments, and it groups PSAX_AV with PSAX, which this registry does not.
+#
+# Only the choice of clips is matched. The probe still trains online with its own frame sampling and augmentation,
+# and reads studies in its own order. Report that difference.
+name: radar-matched-baseline
+base_config: ../eval/vitl/study_multitask_deepecho.yaml
+seeds: [0]    # a bag follows the seed: use the seed of the RADAR run it is matched to
+
+defaults:
+  experiment.classifier.pooling_mode: attentive
+  experiment.classifier.query_mode: shared
+  experiment.classifier.task_groups: null
+  experiment.classifier.use_view_embedding: true
+  experiment.classifier.view_dropout: 0.0
+  experiment.classifier.local_use_rope: false
+  experiment.classifier.local_depth: 1
+  experiment.classifier.local_num_queries: 4
+  experiment.data.sampling_mode: shared_bags
+  experiment.data.routing: configs/radar/radar_routing_v0.yaml
+  experiment.data.eval_seed: 0
+  experiment.data.num_videos: 12
+  experiment.evaluation.selection: weighted_loss
+  experiment.evaluation.num_bags: 3
+
+factors: {}

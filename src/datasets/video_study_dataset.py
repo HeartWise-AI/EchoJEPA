@@ -11,13 +11,19 @@ Each item returns a fixed number of video slots (`num_videos`), each holding
   again every time the study is read, so an epoch sees another bag of the same study;
 - evaluation: deterministic random bags, seeded by study id, eval_seed and bag index;
 - `sampling_mode: view_balanced`: round-robin draws across the available view families;
+- `sampling_mode: shared_bags`: the bags of `src.datasets.study_bags`, the ones RADAR reads: a matched baseline. The
+  routing registry gives the view families, and a bag depends only on the run's seed, the epoch and the study in
+  training, and on eval_seed, the bag index and the study in evaluation. The video path is the clip id, and the bag
+  comes from the manifest's view names, whatever `view_labels_map` makes of them;
 - `sampling_mode: fixed` (or `shuffle_videos: false` without a mode): legacy path-order bags.
 
 A study with fewer videos than slots is padded with black clips; `video_mask` says which slots are
 real. A video that fails to load is skipped and its slot padded; a study whose selected videos all
-fail returns `None`. Targets are study-level: every row of a study must agree (missing values are
-allowed and masked in the loss). With a `view_column`, `views` keeps only some views and
-`view_labels_map` gives each slot its view class (for the probe's view embedding).
+fail returns `None`. In `shared_bags` a failed video stops the run instead: a skipped clip or a
+replaced study would no longer be the bag the run records. Targets are study-level: every row of a
+study must agree (missing values are allowed and masked in the loss). With a `view_column`, `views`
+keeps only some views and `view_labels_map` gives each slot its view class (for the probe's view
+embedding).
 """
 
 import hashlib
@@ -28,7 +34,9 @@ import numpy as np
 import pandas as pd
 import torch
 
+from src.datasets.study_bags import bag_record, check_study_ids, choose_bag, evaluation_rng, training_rng
 from src.datasets.video_dataset import VideoDataset
+from src.models.radar.routing import load_routing
 
 logger = logging.getLogger()
 
@@ -38,7 +46,16 @@ SELECTION = {
     "fixed": "the first `num_videos` videos of the study in path order, every time",
     "seeded_random": "a random bag seeded by eval_seed, bag index and study identity",
     "view_balanced": "round-robin sampling across available view families; seeded during evaluation",
+    "shared_bags": "the bags RADAR reads: the routing registry's families, seeded by study and epoch or bag index",
 }
+
+
+def shared_bag_options(args_data, seed):
+    """The dataset's options for `sampling_mode: shared_bags`, none in any other mode."""
+    shared = args_data.get("sampling_mode") == "shared_bags"
+    if shared != bool(args_data.get("routing")):
+        raise ValueError("`experiment.data.routing` and `sampling_mode: shared_bags` go together.")
+    return {"routing": load_routing(args_data["routing"]), "seed": seed} if shared else {}
 
 
 def id_columns(args_data):
@@ -165,6 +182,25 @@ def group_studies(table, path_column, group_column, target_columns, view_column=
     return studies
 
 
+def check_shared_bags(table, path_column, view_column, group_column, routing, view_family_map, views,
+                      num_clips_per_video):
+    """Refuse what would make `shared_bags` read other clips than RADAR, or use another family map."""
+    if routing is None:
+        raise ValueError("shared_bags needs the routing registry: set `experiment.data.routing`.")
+    if view_family_map:
+        raise ValueError("shared_bags takes its view families from the routing registry: remove `view_family_map`.")
+    if views:
+        raise ValueError("shared_bags reads every clip of the manifest: remove `views`, filter the manifest instead.")
+    if num_clips_per_video != 1:
+        raise ValueError("shared_bags reads one clip of each video: set `num_clips_per_video: 1`.")
+    if table[path_column].astype(str).duplicated().any():
+        raise ValueError("shared_bags needs each clip once in the manifest.")
+    check_study_ids(table[group_column])
+    unknown = sorted(set(table[view_column].astype(str)) - set(routing.view_classes))
+    if unknown:
+        raise ValueError(f"The manifest has views the routing registry does not know: {unknown}.")
+
+
 class VideoStudyDataset(torch.utils.data.Dataset):
     """A split of studies, each read as `num_videos` video slots of `num_clips_per_video` clips."""
 
@@ -197,6 +233,8 @@ class VideoStudyDataset(torch.utils.data.Dataset):
         acquisition_column=None,
         acquisition_labels_map=None,
         patient_column="patient_id",
+        routing=None,
+        seed=0,
     ):
         if num_videos < 1:
             raise ValueError("`num_videos` must be at least 1.")
@@ -208,14 +246,20 @@ class VideoStudyDataset(torch.utils.data.Dataset):
         self.frames_per_clip = int(frames_per_clip)
         self.training = bool(training)
         mode = sampling_mode or ("random" if shuffle_videos else "fixed")
-        if mode not in ("random", "view_balanced", "fixed"):
-            raise ValueError("sampling_mode must be random, view_balanced or fixed.")
+        if mode not in ("random", "view_balanced", "fixed", "shared_bags"):
+            raise ValueError("sampling_mode must be random, view_balanced, shared_bags or fixed.")
         if mode != "fixed" and not shuffle_videos:
             raise ValueError(f"shuffle_videos: false contradicts sampling_mode: {mode}; use sampling_mode: fixed.")
         self.selection = "seeded_random" if mode == "random" and not self.training else mode
         self.eval_seed, self.eval_bag_index = int(eval_seed), int(eval_bag_index)
-        if mode == "view_balanced" and (not view_column or view_column not in table):
-            raise ValueError("view_balanced sampling requires view_column in the manifest.")
+        self.seed, self.epoch = int(seed), 0
+        self.routing_sha256 = routing.sha256 if routing else None
+        if mode in ("view_balanced", "shared_bags") and (not view_column or view_column not in table):
+            raise ValueError(f"{mode} sampling requires view_column in the manifest.")
+        if mode == "shared_bags":
+            check_shared_bags(table, path_column, view_column, group_column, routing, view_family_map, views,
+                              self.num_clips_per_video)
+            view_family_map = routing.view_families
         # Patient ids are mandatory: patient-disjoint splits are checked on every run.
         if not patient_column or patient_column not in table:
             raise ValueError(f"The manifest needs a patient id column ({patient_column!r}): patient-disjoint "
@@ -250,8 +294,9 @@ class VideoStudyDataset(torch.utils.data.Dataset):
                        if acquisition_column else [-1] * len(table))
         labels = (table[view_column].astype(str).tolist() if view_column and view_column in table
                   else ["Other"] * len(table))
-        if view_labels_map:
-            # A view the map lacks is the `Other` class (`view_ids`): one family, not one per raw label.
+        if view_labels_map and mode != "shared_bags":
+            # A view the map lacks is the `Other` class (`view_ids`): one family, not one per raw label. The map only
+            # numbers the view embedding of a shared bag, whose families are the registry's, by view name.
             known = {str(k) for k in view_labels_map}
             labels = [label if label in known else "Other" for label in labels]
         probabilities = None
@@ -264,7 +309,7 @@ class VideoStudyDataset(torch.utils.data.Dataset):
         for i, (study, path, label, acq) in enumerate(zip(table[group_column].tolist(),
                                                           table[path_column].astype(str).tolist(),
                                                           labels, acquisition)):
-            metadata = {"family": (view_family_map or {}).get(label, label), "acquisition_ids": acq}
+            metadata = {"view": label, "family": (view_family_map or {}).get(label, label), "acquisition_ids": acq}
             if probabilities is not None:
                 metadata["view_probs"] = probabilities[i]
             self.video_metadata[(study, path)] = metadata
@@ -286,8 +331,24 @@ class VideoStudyDataset(torch.utils.data.Dataset):
         """[studies, targets], NaN where missing."""
         return np.stack([s[2] for s in self.studies])
 
+    def set_epoch(self, epoch):
+        """The epoch of `shared_bags` training bags. Workers must not persist: they keep the epoch they began with."""
+        self.epoch = int(epoch)
+
+    def bag_record(self):
+        """What fixes this split's bags in `sampling_mode: shared_bags` (`study_bags.bag_record`)."""
+        candidates = [(study, path, self.video_metadata[(study, path)]["view"])
+                      for study, paths, *_ in self.studies for path in paths]
+        return bag_record(candidates, self.routing_sha256, "view_balanced", self.num_videos,
+                          self.seed if self.training else self.eval_seed)
+
     def select(self, paths, families=None, study_id=None):
         """The positions of the videos read for one item, as `SELECTION[self.selection]` says."""
+        if self.selection == "shared_bags":
+            rng = (training_rng(self.seed, self.epoch, study_id) if self.training
+                   else evaluation_rng(self.eval_seed, self.eval_bag_index, study_id))
+            chosen = choose_bag(list(zip(paths, families)), self.num_videos, "view_balanced", rng, {})
+            return [paths.index(path) for path in chosen]
         rng = random
         if not self.training:
             identity = str(study_id) if study_id is not None else "\0".join(paths)
@@ -334,8 +395,8 @@ class VideoStudyDataset(torch.utils.data.Dataset):
     def get_item_study(self, index):
         """(clips [slots*clips, C, T, H, W], targets [targets], video_mask [slots], clip_indices
         [slots*clips, T], view_ids [slots], optional metadata dict) for the study at `index`, or `None` when none of its
-        selected videos loads. `view_ids` is -1 for a padded slot, and for every slot without a
-        `view_labels_map`."""
+        selected videos loads (a `shared_bags` run stops at the first that does not). `view_ids` is -1 for a padded
+        slot, and for every slot without a `view_labels_map`."""
         study_id, paths, targets, classes = self.studies[index]
         clips, indices, mask, views = [], [], [], []
         metadata = [self.video_metadata[(study_id, path)] for path in paths]
@@ -343,6 +404,9 @@ class VideoStudyDataset(torch.utils.data.Dataset):
         for position in self.select(paths, [m["family"] for m in metadata], study_id):
             loaded = self.load_video(paths[position])
             if loaded is None:
+                if self.selection == "shared_bags":
+                    raise RuntimeError(f"A selected video of study {index} failed to load: a shared bag is read whole "
+                                       "or the run stops. Remove the clip from the manifest of both runs.")
                 logger.warning(f"Skipping a video of study {index} that failed to load; its slot is padded.")
                 continue
             video_clips, video_indices = loaded

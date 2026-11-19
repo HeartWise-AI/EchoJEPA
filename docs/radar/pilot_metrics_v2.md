@@ -6,7 +6,7 @@ Once agreed, the pilot outcome is reported under these rules whatever it is. A c
 seeing pilot results needs a new version and is judged on new pilot studies, never on the clips already reviewed.
 
 The pilot reviews every valid video of 2–3 training-split studies. It tests whether the caption-and-review workflow
-is feasible under [`radar-caption-ontology-v2`](ontology_v2.md) with column review v4. It does not measure clinical
+is feasible under [`radar-caption-ontology-v2`](ontology_v2.md) with column review v5. It does not measure clinical
 accuracy or model performance, and its small size allows only coarse decisions. The metrics follow `score_review`
 in `tools/labelbox/column_review.py`.
 
@@ -103,7 +103,8 @@ The **review checks** are three, and a review that fails any of them is returned
   candidate; a view that refines the candidate's class (`PSAX_MID` for `PSAX`) counts as the same view, and the
   prefilled columns it does not claim leave the candidate, counted neither as supported nor as incorrect.
 
-An uninterpretable clip is checked only for its answers and its reason: its other answers are not read.
+An uninterpretable clip is checked only for the selected reason, any required comment and review completion.
+The clinical questions are nested under the interpretable answer and are neither shown nor required for it.
 
 For the view and type review, `review_problems` in `tools/labelbox/view_type_review.py` checks that every required
 question asked is answered, and that the view and acquisition mode are answered exactly for a cine loop.
@@ -184,3 +185,10 @@ What each outcome means:
 
 M3s, M6 and M7 are reported but do not gate the decision. M3s and M6 guide what a revision should change; M7 shows
 how much reviewer time scaling up would take.
+
+## Form v5 validation and separation
+
+The export workflow validates the complete nested form before scoring. Missing review completion, duplicate
+answers, invalid values and answers outside their selected branch are invalid and must be returned for correction.
+Only valid, submitted scores with verified input provenance can release captions. Existing v4 candidates and forms
+are refused; regenerate v5 inputs. Keep v4 exports separate and obtain a new clinical review before pilot use.

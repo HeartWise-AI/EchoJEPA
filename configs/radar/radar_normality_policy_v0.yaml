@@ -1,0 +1,168 @@
+# RADAR caption normality policy, version 0. PROVISIONAL until audited: the choices below are made, on the training
+# split, but the flags have not yet been checked on a manual sample, so `approval` is empty.
+#
+# This file holds every clinical choice behind the caption flags (`data/radar_normality.py` reads it). The flags feed
+# the A2 and A3 arms only; A0 and A1 never read them. Training refuses A2 and A3 until the flags come from an approved
+# policy: the cutoffs below reviewed, and the resulting flags audited on a manually checked sample of complete
+# captions (`data/radar_normality_audit.py`). See `approval` at the end of this file.
+#
+# These are task definitions for weak supervision, not clinical reference ranges. Report them as such: A2 and A3 use
+# supervision derived from cutoffs that the evaluation tasks also use (`data/make_study_targets.py`), so they are less
+# purely zero-shot than A0 and A1. Sharing a fixed definition is not test leakage, but the policy must be developed on
+# the training split only and frozen before the final evaluation.
+#
+# How the flags are used sets how they lean. In the loss, two normal captions are hard positives, two abnormal captions
+# are soft positives weighted by caption similarity, and an unknown caption keeps only its own targets. So a false normal
+# costs most and an unknown costs only coverage. Abnormal means a stated finding that these clips can show; wording that
+# is neither a plain normal nor such a finding stays unknown.
+#
+# Measurement rule: a value at or below `normal_max` is normal, above `abnormal_above` is abnormal, and between the
+# two is indeterminate (it neither supports nor contradicts the caption). A value outside `valid`, after `scale`, is
+# invalid and treated as missing: that also catches a column in unexpected units.
+#
+# Sex: reference ranges differ by sex, and the report export has no sex column. Where they differ, `normal_max` is the
+# women's upper limit and `abnormal_above` the men's, so the grey zone holds every value on which the two disagree.
+# Sources: EF, LVID, wall thickness, LV mass index and relative wall thickness were read in the 2015 ASE/EACVI chamber
+# quantification guideline (Lang et al.), Tables 2, 4 and 6; LA volume index, LA diameter and RV basal diameter in the
+# ASE quick reference of July 2018.
+#
+# Structured values never set a flag on their own, because the caption is what gets aligned: they can only confirm a
+# claim the caption makes, contradict it (a conflict, so the flag stays unknown), or stop a caption being normal when
+# they show an abnormality the caption does not mention. EF is the exception only in that the caption builder writes
+# the structured EF into the caption text, after which it is an ordinary claim.
+
+schema: radar-normality-policy
+version: 0
+
+# Caption and evidence scope. bmode: V1 clips are B-mode, so clauses that only Doppler can ground (regurgitation,
+# stenosis, gradients, velocities, pressures, diastology) are removed from the caption before it is judged or trained
+# on. V2 colour would ground regurgitation jets, but not stenosis gradients or velocities: those need spectral Doppler.
+scope: bmode
+
+# LV ejection fraction, in the report's visual estimate. Whole-range rule: an interval or bound is normal only when
+# all of it is at or above `normal_min`, abnormal only when all of it is below; otherwise unknown. One cutoff for both
+# sexes: ASE gives 52-72 % for men and 54-74 % for women, so EF 52-53 % in a man counts as abnormal here (the choice
+# that adds no false normals). `tolerance`: a text EF further than this from the structured EF is a conflict.
+# `boundary_margin`: EF this close to the cutoff is oversampled in the audit.
+ef:
+  column: Visually Estimated EF
+  unit: "%"
+  valid: [5, 90]
+  normal_min: 54
+  tolerance: 5
+  boundary_margin: 2
+
+# combine: every = abnormal when any source is abnormal, normal only when every source is present and normal.
+# first_available = the first valid source decides, the later ones are not read.
+measures:
+  lv_size:
+    structure: lv
+    combine: every
+    sources:
+      - {column: LVID Diastole (2D), unit: cm, valid: [2, 10], normal_max: 5.2, abnormal_above: 5.8}
+  # Each wall on its own. This differs on purpose from the benchmark's lvh_any, which needs both walls thick: a septum
+  # of 1.4 cm with a posterior wall of 0.9 cm is lvh_any = 0 there, but it is not a normal wall thickness.
+  #
+  # The limits are the guideline's, but the guideline classifies the LV by mass index and relative wall thickness, not
+  # by one wall, and this lab's mass wording follows that index closely. So up to `mild.up_to` a wall over the limit is
+  # no contradiction when the geometry is normal by that classification: mass shown normal, in the caption or by
+  # measurement, and 2 x wall / cavity within `geometry.max`, unrounded. A caption calling the walls or the whole LV
+  # normal is not enough. Anything less, or a missing value, and it still blocks a normal caption. Above `up_to` the wall
+  # counts in full. Mass alone is not enough: normal mass with a high relative
+  # wall thickness is concentric remodelling, which the reports state accurately but seldom, so their silence is no
+  # evidence. Relative wall thickness never blocks by itself: it only decides whether a wall already over its limit is
+  # excused. 1.2 cm keeps the benchmark's lvh_modsev and triage threshold of 1.3 cm as the point where a wall counts in
+  # full. Rows settled this way are marked `boundary`, one of the audit's strata.
+  lv_wall_thickness:
+    structure: lv
+    combine: every
+    mild:
+      up_to: 1.2
+      settled_by: lv_mass
+      geometry: {wall: LVIW Diastolic Thickness (2D), cavity: LVID Diastole (2D), max: 0.42}
+    sources:
+      - {column: IVS Diastole Thickness (2D), unit: cm, valid: [0.3, 3], normal_max: 0.9, abnormal_above: 1.0}
+      - {column: LVIW Diastolic Thickness (2D), unit: cm, valid: [0.3, 3], normal_max: 0.9, abnormal_above: 1.0}
+  # LV mass index by the linear method. The export holds it in kg/m2.
+  lv_mass:
+    structure: lv
+    combine: every
+    sources:
+      - {column: LV Mass Index (2D Cubed) DuBois, unit: g/m2, scale: 1000, valid: [20, 400], normal_max: 95,
+         abnormal_above: 115}
+  rv_size:
+    structure: rv
+    combine: every
+    sources:
+      - {column: RV Basal Diastolic Dimension, unit: cm, valid: [1.5, 8], normal_max: 4.1, abnormal_above: 4.1}
+  # Report code: 0 normal up to 3 severe, -1 missing (outside `valid`, so treated as missing).
+  rv_function:
+    structure: rv
+    combine: every
+    sources:
+      - {column: MHI VD fonction systolique, unit: grade, valid: [0, 3], normal_max: 0, abnormal_above: 0}
+  # LA volume index first, the diameter only when the index is missing, as the benchmark's la_size does: an index of
+  # 45 mL/m2 with a diameter of 3.8 cm is enlarged. The export holds the index in L/m2.
+  la_size:
+    structure: la
+    combine: first_available
+    sources:
+      - {column: LA Volume Index (BP MOD) DuBois, unit: mL/m2, scale: 1000, valid: [5, 200], normal_max: 34,
+         abnormal_above: 34}
+      - {column: LA Dimension, unit: cm, valid: [1.5, 9], normal_max: 3.8, abnormal_above: 4.0}
+
+# What a caption must state, directly or through a whole-structure statement such as "VG normal", to be normal. A
+# normal EF says nothing about LV size, so a caption that gives only an EF stays unknown. Structured values cannot fill
+# a gap here, or two identical captions could get different flags from a fact neither of them states.
+required_for_normal:
+  lv: [lv_function, lv_size]
+  rv: [rv_function, rv_size]
+  la: [la_size]
+  mitral: [mitral_appearance]
+  aortic: [aortic_appearance]
+  tricuspid: [tricuspid_appearance]
+  pulmonic: [pulmonic_appearance]
+  aorta: [aorta_size]
+  ivc: [ivc_size]
+  pericardium: [pericardial_effusion]
+
+# A valve device (prosthesis, homograft, clip, annuloplasty ring, valvuloplasty) in a caption: abnormal, or unknown to leave such captions out of
+# the normal and abnormal groups alike. Abnormal: a device does not look like a native valve, and soft positives among
+# abnormal captions keep similar devices together.
+device_present: abnormal
+
+# Choices made in the wording rules (`data/radar_normality.py`), recorded here so that one file lists them all.
+#   Unknown: septal bulge, small LV, LVOT size, repaired VSD, stated ischemic heart disease, pacing lead in the RV,
+#     an aortic valve described only as tricuspid, a GLS value with no wording (the guideline gives no universal limit),
+#     and any clause comparing with an earlier study, since what it mentions may no longer hold.
+#   Abnormal: abnormal septal motion whatever its cause, SAM, D-shaped LV, stated cardiomyopathy, reduced GLS in words.
+#   Neutral: epicardial fat and pleural effusion. The caption must still state the pericardial effusion to be normal.
+#   Kept in the caption: valve function and central venous pressure, which B-mode motion and the IVC can ground.
+#   A valve's appearance: denying one finding states it only when the clause names the valve. `Valve mitrale non
+#     calcifiée` does, `Pas de végétation` alone does not.
+#   Strain: no value sets a flag, but a GLS under 16 % in absolute value cannot stand beside a normal claim.
+#   B-mode in a Doppler statement: what it rests on stays as written (`sur dilatation de l'anneau`), a finding glued to
+#   the Doppler noun takes the valve for noun (`Valve aortique calcifiée`), and the grade goes. A denial, a doubt on the
+#   noun and a chamber do not come back, and only a plain statement leaves what it rests on: a doubt, a condition or an
+#   unknown word on the statement takes the finding with it. A past procedure stays without its date only if no word
+#   follows the date: any word may say it never happened, and the segment leaves whole, with any name or place in it.
+#   A singular `normale` after a removed pressure covers subjects that have no state of their own, only after an
+#   explicit `et` and only on a bare list of subjects. A clinician should confirm this reading of the singular.
+#   A segment that is only a doubt (`Calcifiée, à confirmer`) puts its whole clause in doubt, and so does a sign at the
+#   end of a clause (`Épanchement -`) or a normal and an abnormal state with no subject of their own.
+#   A procedure or a device goes with its clause if anything beside it was lost: it may have said it never happened.
+#   A plural denial takes the list before it (`Calcification, sténose absentes`). A state on a note says nothing of the
+#   structure (`Graisse épicardique normale`).
+#   Open for a clinician: one named part of the aorta (`Aorte ascendante normale`) counts for the whole aorta.
+#   Left out with their clause, as no clip of this study can show them: dates, years and named colleagues.
+
+# Empty until the policy is approved. To approve: review the cutoffs, build the caption table, run the audit, then
+# fill in the fields below. Approval covers exactly these rules and this policy: `digest` is the policy_digest the
+# audit report states, and any later change to the rules or to this file, other than this block, voids the approval
+# and the policy no longer loads until it is approved again.
+#   approval:
+#     by: names of the reviewers
+#     on: <date>
+#     audit_report: audit_report.json
+#     digest: <policy_digest>
+approval: null

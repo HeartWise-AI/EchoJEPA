@@ -1,6 +1,6 @@
 # RADAR caption review: instructions for reviewers (v1)
 
-Version: `radar-caption-ontology-v2`, with column review v4 and view/type review v2.
+Version: `radar-caption-ontology-v2`, with column review v5 and view/type review v2.
 The field names and choices below match the English labels shown in Labelbox.
 
 ## What you review
@@ -43,8 +43,8 @@ The terms used below:
    completed** and submit: nothing else is read.
 3. Check the prefilled view and acquisition mode, correcting either value directly when needed; a PSAX clip has no
    prefilled view, so choose its level (questions 2 and 3).
-4. Untick the prefilled structures the clip does not show and, for a subcostal clip, check its subtype (questions 4
-   and 5).
+4. Check the subtype for a subcostal clip. Untick structures not shown and explicitly tick newly visible structures
+   after changing the view or subtype (questions 4 and 5).
 5. Go through the prefilled findings one by one: supported, incorrect or cannot assess (question 6).
 6. Look for an important visible finding the candidate leaves out (question 7), and for a statement of the caption
    outside its findings (question 8).
@@ -59,15 +59,15 @@ this clip does not support; an answer you leave unchanged is your confirmation.
 <!-- BEGIN GENERATED: column_form -->
 | # | Question | Id | Required | Answers |
 |---|---|---|---|---|
-| 1 | Is this clip uninterpretable? | `uninterpretable` | yes | `no` No, it can be interpreted; `yes` Yes, nothing in it can be judged → Why? (a reason below) |
-| 2 | View (prefilled - correct if needed) | `view` | yes | one of the 24 views |
-| 3 | Acquisition mode (prefilled - correct if needed) | `modality` | yes | `bmode` B-mode; `color_flow` Color Doppler; `spectral` Spectral Doppler; `m_mode` M-mode; `mixed` Mixed / analysis acquisition; `unresolved` Unresolved |
-| 4 | Structures visible in this clip, even partly (prefilled: untick any not visible) | `visible_targets` | no | `lv` LV; `rv` RV; `la` LA; `ra` RA; `ivs` Interventricular septum; `ias` Interatrial septum; `mitral` Mitral valve; `tricuspid` Tricuspid valve; `aortic` Aortic valve; `pulmonic` Pulmonic valve; `papillary_muscles` Papillary muscles; `chordae` Chordae; `lvot` LVOT; `rvot` RVOT; `pulmonary_artery` Proximal pulmonary artery; `aorta_root` Aortic root; `aorta_ascending` Ascending aorta; `aorta_arch` Aortic arch; `aorta_descending` Descending aorta; `pericardium` Pericardium; `ivc` IVC; `hepatic_veins` Hepatic veins |
-| 5 | Subcostal subtype (required for subcostal clips) | `subcostal_level` | yes | `not_applicable` Not applicable (not subcostal); `unresolved` Cannot tell the subtype; `four_chamber` Subcostal four-chamber; `ivc` Subcostal IVC / hepatic veins |
-| 6 | Prefilled findings — confirm or correct selected columns | `review_columns` | no | the prefilled columns, each: Proposed value (original retained in context) (one of the column's values) + Confirm this finding (`yes` Supported in this input; `no` Incorrect / should not be here → Why should it not be here? (an error reason) + Correction (`remove` Remove this claim, or one of the column's values); `cannot_assess` Cannot assess → Why can it not be assessed? (an assessment limitation)) |
-| 7 | Important visible finding missing from the candidate? | `missing_information` | yes | `no` No; `yes` Yes → Select missing columns and values (any column the view carries, each: Missing visible value (one of the column's values) + Visible in this input? (`yes` Yes; `cannot_assess` Cannot assess)) |
-| 8 | Additional statement that should not be here? | `unsupported_information` | yes | `no` No; `yes` Yes → Select offending columns / statements (any column or statement type, each: Why should this statement not be here? (an error reason); a statement type also needs Copy the offending statement (free text)) |
-| 9 | Original caption (for reference only; edits are ignored) | `candidate_caption` | no | free text |
+| 1 | Is this clip uninterpretable? | `uninterpretable` | yes | `no` Interpret this clip: answer the fields below; `yes` Nothing can be judged: give a reason |
+| 2 | View (prefilled - correct if needed) | `view` | yes, asked only when interpretable | one of the 24 views |
+| 3 | Acquisition mode (prefilled - correct if needed) | `modality` | yes, asked only when interpretable | `bmode` B-mode; `color_flow` Color Doppler; `spectral` Spectral Doppler; `m_mode` M-mode; `mixed` Mixed / analysis acquisition; `unresolved` Unresolved |
+| 4 | Structures visible in this clip, even partly (prefilled: untick any not visible) | `visible_targets` | no, asked only when interpretable | `lv` LV; `rv` RV; `la` LA; `ra` RA; `ivs` Interventricular septum; `ias` Interatrial septum; `mitral` Mitral valve; `tricuspid` Tricuspid valve; `aortic` Aortic valve; `pulmonic` Pulmonic valve; `papillary_muscles` Papillary muscles; `chordae` Chordae; `lvot` LVOT; `rvot` RVOT; `pulmonary_artery` Proximal pulmonary artery; `aorta_root` Aortic root; `aorta_ascending` Ascending aorta; `aorta_arch` Aortic arch; `aorta_descending` Descending aorta; `pericardium` Pericardium; `ivc` IVC; `hepatic_veins` Hepatic veins |
+| 5 | Subcostal subtype (required for subcostal clips) | `subcostal_level` | yes, asked only when interpretable | `not_applicable` Not applicable (not subcostal); `unresolved` Cannot tell the subtype; `four_chamber` Subcostal four-chamber; `ivc` Subcostal IVC / hepatic veins |
+| 6 | Prefilled findings — confirm or correct selected columns | `review_columns` | no, asked only when interpretable | the prefilled columns, each: Proposed value (original retained in context) (one of the column's values) + Confirm this finding (`yes` Supported in this input; `no` Incorrect / should not be here → Why should it not be here? (an error reason) + Correction (`remove` Remove this claim, or one of the column's values); `cannot_assess` Cannot assess → Why can it not be assessed? (an assessment limitation)) |
+| 7 | Important visible finding missing from the candidate? | `missing_information` | yes, asked only when interpretable | `no` No; `yes` Yes → Select missing columns and values (any column the view carries, each: Missing visible value (one of the column's values) + Visible in this input? (`yes` Yes; `cannot_assess` Cannot assess)) |
+| 8 | Additional statement that should not be here? | `unsupported_information` | yes, asked only when interpretable | `no` No; `yes` Yes → Select offending columns / statements (any column or statement type, each: Why should this statement not be here? (an error reason); a statement type also needs Copy the offending statement (free text)) |
+| 9 | Original caption (for reference only; edits are ignored) | `candidate_caption` | no, asked only when interpretable | free text |
 | 10 | Comments (no patient details) | `comments` | no | free text |
 | 11 | I reviewed this input, checked the proposed values and structures, and confirmed or corrected the suggestions. | `review_completed` | yes | `yes` Review completed |
 <!-- END GENERATED: column_form -->
@@ -172,9 +172,8 @@ EF, stenosis severity, filling pressures or pulmonary hypertension.
 #### Structures
 
 **Structures visible in this clip** is prefilled with every structure of the view (of its subtype, for a subcostal
-clip). A tick means visible, even partly: untick only a structure that is not in the clip at all. Do not tick a
-structure that is not prefilled. Each view's structures are fixed, so that the same structures can be given to
-the clips nobody reviews; how often each is unticked shows which ones a view really shows.
+clip). A tick means visible, even partly: untick only a structure that is not in the clip at all. After a view or subtype change, tick newly available structures only when you actually see them. The
+scorer does not add structures automatically. View eligibility is a prior, never confirmation of visibility.
 
 Only the findings about a ticked structure count. Some structures have no findings yet (the septa, the LVOT and RVOT,
 the proximal pulmonary artery, the papillary muscles, the chordae, the hepatic veins, the descending aorta): for
@@ -185,7 +184,8 @@ A structure only partly in the image, too cut off to judge, is **Cannot assess**
 input".
 
 When you untick a structure, resolve each of its findings: mark it **Incorrect** and remove the claim, or tick the
-structure again. Nothing changes your answers for you, and the form cannot catch this as you submit, so a finding left
+structure again. The form hides questions that do not apply to an uninterpretable clip; it does not resolve conflicting visibility
+and finding answers. The form cannot catch those conflicts as you submit, so a finding left
 supported on an unticked structure sends the review back. **Incorrect** here means this clip does not support the
 statement, not that the patient does not have the finding.
 
@@ -198,30 +198,35 @@ the RV and the pericardium are not judged there, only the valves, the root and t
 
 #### LV wall thickness
 
-Thickening in different places has different causes, so each has its own answer: "Thick septum with normal LV wall
-thickness elsewhere" when the septum alone is thick, "Thickened LV posterior wall" when the posterior wall alone is, and
-"Increased LV wall thickness" when the walls are thick together. Correct one to another if the clip shows it. The first
-is claimed only in the views that list the septum (A4C, A5C, PLAX, `PSAX_BASAL`, and their zoomed and deep forms); the
-second only in PLAX, A3C and `PSAX_BASAL` clips, which show that wall.
+Record only what is visible: "Septal thickening" and "Posterior-wall thickening" do not assert that other walls
+are normal. "Generalized thickening of visualized walls" requires a collective wall finding. A report describing
+only the septum, even as diffusely thickened, cannot supply generalized thickening or a finding in A2C. Posterior-wall
+measurements are study context only; their presence never establishes normality elsewhere. Do not infer a cause.
 
-A basal septal bulge is a separate finding, "Focal basal septal thickening (septal bulge)": a localized thickening, not
-a thick septum.
+These visual categories map to `lv_wall_thickening_distribution`, not the canonical report-level LVH diagnosis or
+grade (`lv_wall_thickness`). LV mass and geometry, including concentric remodeling, remain separate assessments.
+
+A basal septal bulge is focal basal septal prominence compared with the adjacent mid septum. Confirm it only when
+both regions can be compared adequately at end-diastole; otherwise choose **Cannot assess**. This is localized
+septal thickening. It neither diagnoses nor excludes HCM, LVOT obstruction or global LVH. No single thickness cutoff
+is imposed. Septal findings are permitted in A3C and LV-focused A4C when the septum is actually visible.
 
 #### PSAX level, PLAX zoomed on the aortic valve and subcostal subtype
 
 A PSAX clip opens with no view, because the view classifier does not give the slice level: choose `PSAX_BASAL`
 (mitral level), `PSAX_MID` (papillary level) or `PSAX_APICAL`. A clip at the aortic valve is a `PSAX_AV` clip. When you
 cannot tell the level, choose `PSAX`. The RV and chamber size are not judged at the PSAX levels. LV wall thickness is judged
-at `PSAX_BASAL` only, the mitral valve at `PSAX_BASAL` and `PSAX_MID`, and the papillary muscles, the chordae and the mid
-wall segments at `PSAX_MID` only. These structures of a level are not prefilled and you do not tick them: they come
-with the view you choose.
+at `PSAX_BASAL` only, mitral leaflet/device/jet findings at `PSAX_BASAL` only, and the papillary muscles, chordae and mid
+wall segments at `PSAX_MID`. Tick the newly available structures you can actually see after choosing a level. A fixed
+papillary-level slice does not show mitral leaflet morphology or an atrial regurgitant jet. For a sweep crossing levels,
+request separate level-specific clips or leave the level unresolved; do not assume every structure is demonstrated.
 
 A `PLAX_ZOOM` clip zoomed on the aortic valve is a `PLAX_ZOOM_AV` clip: correct the view. Only the aortic valve, LVOT,
 aortic root and ascending aorta are judged there, and the prefilled findings about anything else leave the caption
 without an answer from you.
 
 For a subcostal clip, the four-chamber subtype and its structures are prefilled: switch an IVC sweep to "Subcostal IVC
-/ hepatic veins", which brings the IVC and the hepatic veins, and mark the prefilled chamber findings incorrect ("Wrong
+/ hepatic veins", then explicitly tick the IVC and hepatic veins only if visible, and mark the prefilled chamber findings incorrect ("Wrong
 view / target"). IVC and chamber findings never mix.
 
 For every other view, keep "Not applicable". When you correct the view to or from subcostal, correct the subtype too.
@@ -244,7 +249,8 @@ the reason, and copy the statement when the form asks.
 
 Answer "Yes" to question 1 only when nothing in the clip can be judged: artifacts or poor image quality throughout, no
 identifiable cardiac structure, or not a cardiac ultrasound acquisition. Give the reason; with "Other", say why in
-**Comments**. The other answers are then not read, and you need not change them.
+**Comments**. The form hides the view, acquisition mode, structures and finding questions. Give only the reason, any needed
+comment and **Review completed**; no view is required, including for a PSAX candidate.
 
 If only some findings cannot be judged, the clip is interpretable: use **Cannot assess** for those.
 
@@ -276,7 +282,6 @@ A review is returned for correction when:
   on every view);
 - a finding is left supported, or given a corrected value, on a structure you unticked;
 - question 8 is "Yes" without a column or statement type and its reason, or names a finding you left supported;
-- the view or the acquisition mode is answered "No" but left as proposed, or changed without answering "No";
 - a prefilled finding is unticked, or its proposed value changed;
 - a finding ticked in question 6 without being prefilled is not marked supported, or is also added under question 7;
 - a subcostal clip has no subtype, or a clip of another view has one;
@@ -317,12 +322,12 @@ The clips are synthetic, described in words.
 - **Clip (synthetic):** Parasternal long-axis B-mode loop: the posterior pericardium is clearly seen, with no fluid around the heart.
 - **Proposed:** `PLAX`, B-mode
 - **Prefilled findings:** `pericardial_effusion` Present
-- **Candidate caption:** "Pericardial effusion is present."
+- **Candidate caption:** "Pericardial effusion is visualized in this clip."
 - **What the reviewer changes:**
   - Pericardial effusion, Confirm this finding: **Incorrect / should not be here**
   - Pericardial effusion, Why should it not be here? **Contradicted by visible evidence**
   - Pericardial effusion, Correction: **Not demonstrated**
-- **Rebuilt caption:** "No pericardial effusion."
+- **Rebuilt caption:** "No pericardial effusion is visualized in this clip."
 - **Why:** The clip shows the pericardium well and no effusion: the prefilled finding is contradicted. Because this clip can show an effusion, the correction can say none is demonstrated; if it could not, remove the claim instead.
 
 ### 4. Missing finding
