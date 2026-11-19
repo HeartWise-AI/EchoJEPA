@@ -543,16 +543,31 @@ class LabelboxUploadApi:
     def _rows_in_labelbox(self, workspace: Workspace, rows: Sequence[Row]) -> dict[str, Any]:
         """{global key: data row} of the rows Labelbox has; a key in a dataset other than its form's stops the run."""
         ids = self._lookup([row.global_key for row in rows])
-        found = {}
+        found, ghosts = {}, []
         for row in rows:
             if row.global_key not in ids:
                 continue
-            data_row = self._read_data_row(ids[row.global_key])
+            # A key the lookup still maps to a row Labelbox cannot read, or to a row with no dataset, is a creation
+            # that failed half way (2026-11-19, after Labelbox could not read a clip): the clip is uploaded again.
+            try:
+                data_row = self._read_data_row(ids[row.global_key])
+            except Exception as exc:
+                if type(exc).__name__ != "ResourceNotFoundError":
+                    raise
+                ghosts.append(row.global_key)
+                continue
             if data_row.global_key != row.global_key:
                 raise UploadError("Labelbox's lookup gave a global key the data row of another.")
-            if data_row.dataset().uid != workspace.datasets[row.form].uid:
+            dataset = data_row.dataset()
+            if dataset is None:
+                ghosts.append(row.global_key)
+                continue
+            if dataset.uid != workspace.datasets[row.form].uid:
                 raise UploadError("A global key of this folder belongs to another dataset.")
             found[row.global_key] = data_row
+        if ghosts:
+            print(f"{len(ghosts)} keys Labelbox looks up but cannot read (a half-made row), uploaded again: "
+                  f"{', '.join(ghosts)}", file=sys.stderr)
         return found
 
     def existing_global_keys(self, workspace: Workspace, rows: Sequence[Row]) -> set[str]:

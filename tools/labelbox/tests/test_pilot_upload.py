@@ -1529,6 +1529,27 @@ class LaterBatchTests(unittest.TestCase):
         with self.assertRaises(StepFailed):
             api.existing_global_keys(workspace, plan.rows)
 
+    def test_a_half_made_row_counts_as_absent_and_is_uploaded_again(self):
+        class ResourceNotFoundError(Exception):  # the SDK's, as the uploader sees it: by name.
+            pass
+
+        client, _, _, api = self.client(grown_view_form())
+        with tempfile.TemporaryDirectory() as folder:
+            plan = self.later_plan(folder)
+        workspace = api.ensure_workspace([VIEW_REVIEW], create=False)
+        kept, gone = plan.rows[0].global_key, plan.rows[1].global_key
+        client.rows[kept] = SimpleNamespace(dataset=lambda: client.datasets[0])
+        client.rows[gone] = SimpleNamespace(dataset=lambda: None)  # no dataset: a row made half way.
+        self.assertEqual(api.existing_global_keys(workspace, plan.rows), {kept})
+        read = client.get_data_row
+        client.get_data_row = lambda uid: (_ for _ in ()).throw(ResourceNotFoundError(uid)) if uid == gone else read(uid)
+        with redirect_stderr(io.StringIO()) as err:
+            self.assertEqual(api.existing_global_keys(workspace, plan.rows), {kept})
+        self.assertIn(gone, err.getvalue())
+        client.get_data_row = lambda uid: (_ for _ in ()).throw(KeyError(uid)) if uid == gone else read(uid)
+        with self.assertRaises(StepFailed):  # any other failed read still stops the run.
+            api.existing_global_keys(workspace, plan.rows)
+
     @unittest.skipUnless(importlib.util.find_spec("labelbox"), "Labelbox SDK not installed")
     def test_the_first_batchs_import_is_left_alone(self):
         created, deleted = [], []
