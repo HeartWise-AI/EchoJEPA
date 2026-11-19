@@ -28,6 +28,7 @@ CHECKOUT = bool(COLUMN_REVIEW_ROOT) and os.path.isfile(
     os.path.join(COLUMN_REVIEW_ROOT, "tools", "labelbox", "column_review.py"))
 EF, LVIDD = POLICY.ef["column"], "LVID Diastole (2D)"
 LV, PERI = "Left ventricule findings", "Pericardium findings"
+TRICUSPID, TR, PR = "Tricuspid valve findings", "Referring TR Grade", "Referring PR Grade"
 
 
 @unittest.skipUnless(CHECKOUT, "COLUMN_REVIEW_ROOT does not name a column review checkout")
@@ -133,6 +134,91 @@ class TestMergedCaptions(unittest.TestCase):
                                                 "ivc"), {})
         self.assertEqual(merged.extra_sentences([{**claim, "value": "abnormal"}], "lv"), {})
 
+    def test_valve_procedures_are_written(self):
+        pulmonic, tricuspid = "Pulmonary valve findings", "Tricuspid valve findings"
+        row, _ = self.row("pulmonic", {pulmonic: "Homogreffe pulmonaire (procédure de Ross)."}, views=("PSAX_AV",))
+        self.assertEqual(row["caption"], "Pulmonic valve homograft is present.")
+        self.assertEqual(self.sources(row)["pulmonic_homograft"], ("present", "parser"))
+        self.assertEqual(row["normality"], "abnormal")
+        row, _ = self.row("tricuspid", {tricuspid: "Statut post-plastie tricuspidienne chirurgicale. "
+                                                   "Trace d'insuffisance tricuspidienne."})
+        self.assertEqual(row["caption"], "Status post surgical tricuspid valve repair.")    # the jet is Doppler
+        self.assertEqual(row["normality"], "abnormal")
+        row, _ = self.row("tricuspid", {tricuspid: "Valve tricuspide de structure normale. "
+                                                   "Statut post-plastie tricuspidienne chirurgicale en 2015."})
+        self.assertIn("Status post surgical tricuspid valve repair.", row["caption"])
+
+    def test_a_denied_doubtful_or_other_valve_procedure_writes_nothing(self):
+        pulmonic, tricuspid = "Pulmonary valve findings", "Tricuspid valve findings"
+        row, _ = self.row("pulmonic", {pulmonic: "Pas d'homogreffe pulmonaire."}, views=("PSAX_AV",))
+        self.assertTrue(row is None or "homograft" not in row["caption"])
+        for text in ("Statut post-plastie tricuspidienne chirurgicale?",
+                     "Statut post-plastie mitrale chirurgicale.",
+                     "Statut post-plastie tricuspidienne chirurgicale probable."):
+            row, _ = self.row("tricuspid", {tricuspid: text})
+            self.assertTrue(row is None or "repair" not in row["caption"], text)
+        self.assertEqual(merged.procedure_sentences("Homogreffe pulmonaire.", {}, "pulmonic"), {})   # no device
+        self.assertEqual(merged.procedure_sentences("Homogreffe.", {"lv_device": "device"}, "lv"), {})
+
+    def default_row(self, structure, report, views=("A4C", "PSAX_AV"), year=2020):
+        entry = next(s for s in ROUTING.trained if s.name == structure)
+        return merged.merged_row("S1", entry, report, set(views) & set(entry.views), POLICY, self.spec, self.cr,
+                                 LIMITS, regurgitation_default_from=year)
+
+    def test_regurgitation_default_is_off_unless_asked(self):
+        report = {merged.YEAR_COLUMN: 2022, "Referring TR Grade": "0", "Tricuspid valve findings": ""}
+        self.assertIsNone(self.row("tricuspid", report)[0])
+        row, dropped = self.default_row("tricuspid", report)
+        self.assertEqual(dropped, [])
+        self.assertEqual(row["caption"], "No tricuspid regurgitation.")
+        self.assertEqual(self.sources(row), {"tricuspid_regurgitation": ("none", "default")})
+        self.assertEqual(row["normality"], "unknown")             # a default, not a reading of the text
+        self.assertEqual((row["from_prefill"], row["from_parser"], row["from_ef"]), (0, 0, 0))
+        row, _ = self.default_row("pulmonic", {merged.YEAR_COLUMN: "2021", "Referring PR Grade": None,
+                                               merged.CONCLUSION_COLUMN: "Valve aortique tricuspide."})
+        self.assertEqual(row["caption"], "No pulmonic regurgitation.")
+        row, _ = self.default_row("tricuspid", {merged.YEAR_COLUMN: 2021.0, "Referring TR Grade": float("nan"),
+                                                merged.CONCLUSION_COLUMN: "Valve aortique tricuspide."})
+        self.assertEqual(row["caption"], "No tricuspid regurgitation.")   # three aortic cusps name no tricuspid
+
+    def test_regurgitation_default_needs_every_source_silent(self):
+        tricuspid = next(s for s in ROUTING.trained if s.name == "tricuspid")
+        base = {merged.YEAR_COLUMN: 2022, "Referring TR Grade": "0.0", "Tricuspid valve findings": ""}
+        cases = {"before_year": {merged.YEAR_COLUMN: 2019}, "no_year": {merged.YEAR_COLUMN: None},
+                 "grade_trace": {"Referring TR Grade": "0.5"}, "grade_regurgitation": {"Referring TR Grade": "2"},
+                 "grade_unreadable": {"Referring TR Grade": "n/a"},
+                 "cell_filled": {"Tricuspid valve findings": "Insuffisance tricuspidienne légère."},
+                 "named_in_conclusion": {merged.CONCLUSION_COLUMN: "IT modérée."}}
+        self.assertIsNone(merged.regurgitation_default(base, tricuspid, 2020))
+        for reason, change in cases.items():
+            report = {**base, **change}
+            self.assertEqual(merged.regurgitation_default(report, tricuspid, 2020), reason)
+            row, _ = self.default_row("tricuspid", report)
+            self.assertIsNone(row, reason)        # the Doppler-only cell leaves no caption either
+        mitral = next(s for s in ROUTING.trained if s.name == "mitral")
+        self.assertEqual(merged.regurgitation_default(base, mitral, 2020), "not_a_default_valve")
+        self.assertIsNone(self.default_row("mitral", {**base, "Mitral valve findings": ""})[0])
+
+    def test_regurgitation_default_never_changes_a_caption(self):
+        text = "Valve tricuspide de structure normale."
+        report = {merged.YEAR_COLUMN: 2022, "Referring TR Grade": "0", "Tricuspid valve findings": text}
+        self.assertEqual(self.default_row("tricuspid", report)[0], self.row("tricuspid", report)[0])
+
+    def test_regurgitation_default_reasons_are_counted(self):
+        reports = pd.DataFrame([
+            {"study_id": "S1", merged.YEAR_COLUMN: 2022, "Referring TR Grade": "0", "Referring PR Grade": "0.5"},
+            {"study_id": "S2", merged.YEAR_COLUMN: 2015, "Referring TR Grade": "0", "Referring PR Grade": "0"}])
+        clips = pd.DataFrame({"study_id": ["S1", "S2"], "view": ["PSAX_AV", "PSAX_AV"]})
+        table, _ = merged.build_tables(reports, clips, ROUTING, POLICY, self.spec, self.cr, LIMITS)
+        self.assertFalse(table.structure.isin(["tricuspid", "pulmonic"]).any())
+        reasons = {}
+        table, _ = merged.build_tables(reports, clips, ROUTING, POLICY, self.spec, self.cr, LIMITS,
+                                       regurgitation_default_from=2020, default_reasons=reasons)
+        valves = table[table.structure.isin(["tricuspid", "pulmonic"])]
+        self.assertEqual(list(zip(valves.study_id, valves.caption)), [("S1", "No tricuspid regurgitation.")])
+        self.assertEqual(dict(reasons["tricuspid"]), {"written": 1, "before_year": 1})
+        self.assertEqual(dict(reasons["pulmonic"]), {"grade_trace": 1, "before_year": 1})
+
     def test_an_enlarged_left_atrium_is_written_as_dilated(self):
         row, _ = self.row("la", {"Left atrial findings": "Volume indexé légèrement augmenté."})
         if row is not None and "la_size" in self.sources(row):
@@ -153,6 +239,149 @@ class TestMergedCaptions(unittest.TestCase):
         self.assertTrue(set(table.normality) <= {"normal", "abnormal", "unknown"})
         self.assertTrue((table.caption.str.len() > 0).all())
         self.assertEqual(table.caption_id.dtype.kind, "i")
+
+    def graded_tables(self, reports, bmode, color, valves=("tricuspid", "pulmonic"), default_from=None):
+        clips = pd.DataFrame(bmode, columns=["study_id", "view"])
+        color = pd.DataFrame(color, columns=["study_id", "view"])
+        reasons = {}
+        table, _ = merged.build_tables(pd.DataFrame(reports), clips, ROUTING, POLICY, self.spec, self.cr, LIMITS,
+                                       regurgitation_default_from=default_from, default_reasons={},
+                                       grade_valves=valves, color_clips=color, grade_reasons=reasons)
+        return table, {name: dict(counter) for name, counter in reasons.items()}
+
+    def test_graded_rows_are_off_by_default_and_leave_bmode_rows_unchanged(self):
+        reports = [{"study_id": "S1", TRICUSPID: "Valve tricuspide de structure normale.", TR: "2",
+                    merged.CONCLUSION_COLUMN: "", PERI: "Pas d'épanchement péricardique."}]
+        bmode = [("S1", "A4C"), ("S1", "PLAX")]
+        clips = pd.DataFrame(bmode, columns=["study_id", "view"])
+        off, _ = merged.build_tables(pd.DataFrame(reports), clips, ROUTING, POLICY, self.spec, self.cr, LIMITS)
+        self.assertEqual(list(off.columns), list(merged.COLUMNS))       # no scope column when off
+        on, reasons = self.graded_tables(reports, bmode, [("S1", "A4C")])
+        self.assertEqual(list(on.columns), [*merged.COLUMNS, "scope"])
+        bmode_rows = on[on.scope == "bmode"].drop(columns="scope").reset_index(drop=True)
+        pd.testing.assert_frame_equal(bmode_rows, off.reset_index(drop=True))
+        graded = on[on.scope == merged.COLOR_FLOW]
+        self.assertEqual(list(graded.structure), ["tricuspid"])
+        row = graded.iloc[0]
+        bmode_caption = off.set_index("structure").caption["tricuspid"]
+        self.assertEqual(row.caption, bmode_caption + " Moderate tricuspid regurgitation.")
+        self.assertEqual(self.sources(row)["tricuspid_regurgitation"], ("moderate", "grade"))
+        self.assertEqual(row.normality, "abnormal")
+        self.assertEqual(reasons, {"tricuspid": {"written": 1}})        # no PSAX_AV clip: pulmonic has no row
+
+    def test_no_colour_clip_writes_no_graded_row(self):
+        reports = [{"study_id": "S1", TRICUSPID: "", TR: "2", PR: "1", merged.CONCLUSION_COLUMN: ""}]
+        table, reasons = self.graded_tables(reports, [("S1", "A4C"), ("S1", "PSAX_AV")], [("S1", "PLAX")])
+        self.assertFalse((table.scope == merged.COLOR_FLOW).any())
+        self.assertEqual(reasons, {"tricuspid": {"no_color_clip": 1}, "pulmonic": {"no_color_clip": 1}})
+
+    def test_a_colour_only_valve_gets_the_graded_sentence_alone(self):
+        reports = [{"study_id": "S1", "Pulmonary valve findings": "", PR: "1", merged.CONCLUSION_COLUMN: ""}]
+        table, reasons = self.graded_tables(reports, [("S1", "A4C")], [("S1", "PSAX_AV")], valves=("pulmonic",))
+        rows = table[table.structure == "pulmonic"]
+        self.assertEqual(list(zip(rows.scope, rows.caption)), [(merged.COLOR_FLOW, "Mild pulmonic regurgitation.")])
+        self.assertEqual(rows.iloc[0].normality, "abnormal")
+        self.assertEqual(reasons, {"pulmonic": {"written": 1}})
+
+    def test_the_valve_list_is_a_parameter(self):
+        reports = [{"study_id": "S1", TRICUSPID: "", TR: "1", PR: "1", "Referring MR Grade": "0",
+                    "Mitral valve findings": "", merged.CONCLUSION_COLUMN: ""}]
+        color = [("S1", "A4C"), ("S1", "PSAX_AV")]
+        table, reasons = self.graded_tables(reports, [("S1", "A4C")], color, valves=("pulmonic",))
+        self.assertEqual(list(table[table.scope == merged.COLOR_FLOW].structure), ["pulmonic"])
+        self.assertEqual(set(reasons), {"pulmonic"})
+        table, _ = self.graded_tables(reports, [("S1", "A4C")], color, valves=("mitral",))
+        self.assertEqual(list(table[table.scope == merged.COLOR_FLOW].caption), ["No mitral regurgitation."])
+        self.assertEqual(merged.parse_args(["--column-review-root", "x", "--reports", "r", "--pacs", "p", "--clips",
+                                            "c", "--splits", "s", "--out-dir", "o"]).regurgitation_grade_valves, None)
+
+    def test_the_graded_sentence_takes_the_place_of_the_default(self):
+        reports = [{"study_id": "S1", merged.YEAR_COLUMN: 2022, TRICUSPID: "", TR: "0",
+                    merged.CONCLUSION_COLUMN: ""}]
+        table, _ = self.graded_tables(reports, [("S1", "A4C")], [("S1", "A4C")], valves=("tricuspid",),
+                                      default_from=2020)
+        rows = table[table.structure == "tricuspid"].set_index("scope").caption
+        self.assertEqual(rows["bmode"], "No tricuspid regurgitation.")
+        self.assertEqual(rows[merged.COLOR_FLOW], "No tricuspid regurgitation.")     # once, from the grade
+        graded = table[(table.structure == "tricuspid") & (table.scope == merged.COLOR_FLOW)].iloc[0]
+        self.assertEqual(self.sources(graded), {"tricuspid_regurgitation": ("none", "grade")})
+
+
+class TestRegurgitationGrade(unittest.TestCase):
+    """The graded regurgitation sentence's rule (`regurgitation_grade`) on synthetic report cells."""
+
+    tricuspid = next(s for s in ROUTING.trained if s.name == "tricuspid")
+    pulmonic = next(s for s in ROUTING.trained if s.name == "pulmonic")
+
+    def grade(self, cell, code, conclusion="", structure=None, has_color=True):
+        structure = structure or self.tricuspid
+        column = merged.GRADE_COLUMNS[structure.name]
+        report = {structure.report_column: cell, column: code, merged.CONCLUSION_COLUMN: conclusion}
+        return merged.regurgitation_grade(report, structure, has_color)
+
+    def test_the_words_are_the_ontology_s(self):
+        import yaml
+        with open(os.path.join(REPO, "configs", "radar", "radar-caption-ontology-v2.yaml"), encoding="utf-8") as f:
+            scale = yaml.safe_load(f)["scales"]["regurgitation"]
+        self.assertEqual(list(merged.GRADE_LABELS), scale["values"])
+        self.assertEqual(merged.GRADE_LABELS, scale["labels"]["en"])
+        self.assertTrue(set(merged.GRADE_CODES.values()) <= set(scale["values"]))
+        self.assertEqual(merged.grade_sentence("tricuspid", "moderate_to_severe"),
+                         "Moderate to severe tricuspid regurgitation.")
+        self.assertEqual(merged.grade_sentence("pulmonic", "none"), "No pulmonic regurgitation.")
+
+    def test_each_blocking_reason(self):
+        cases = {
+            "no_color_clip": dict(cell="", code="2", has_color=False),
+            "grade_missing": dict(cell="", code=None),
+            "grade_unreadable": dict(cell="", code="1.5"),
+            "text_uncertain": dict(cell="Insuffisance tricuspidienne probablement modérée.", code="2"),
+            "text_conflict": dict(cell="Insuffisance tricuspidienne sévère.", code="2"),
+            "trace_not_in_text": dict(cell="", code="0.5"),
+        }
+        for reason, case in cases.items():
+            self.assertEqual(self.grade(**case), (reason, None), reason)
+        self.assertEqual(self.grade("", float("nan")), ("grade_missing", None))
+        self.assertEqual(self.grade("", "Trace"), ("grade_unreadable", None))       # words are not read
+        self.assertEqual(self.grade("", "2"),
+                         ("written", ("Moderate tricuspid regurgitation.", "abnormal", "moderate")))
+
+    def test_trace_needs_the_text_to_agree(self):
+        written = ("written", ("Trace tricuspid regurgitation.", "normal", "trace"))
+        self.assertEqual(self.grade("Trace d'insuffisance tricuspidienne.", "0.5"), written)
+        self.assertEqual(self.grade("Valve fine.", "0.5", conclusion="IT minime."), written)
+        self.assertEqual(self.grade("Insuffisance tricuspidienne légère.", "0.5"), ("text_conflict", None))
+        self.assertEqual(self.grade("Insuffisance tricuspidienne.", "0.5"), ("trace_not_in_text", None))
+        self.assertEqual(self.grade("Trace d'insuffisance tricuspidienne.", "1"), ("text_conflict", None))
+
+    def test_agreement_is_the_same_ontology_grade(self):
+        self.assertEqual(self.grade("Insuffisance tricuspidienne modérée à sévère.", "3")[0], "written")
+        self.assertEqual(self.grade("Insuffisance tricuspidienne légère à modérée.", "1")[0], "text_conflict")
+        self.assertEqual(self.grade("Insuffisance tricuspidienne légère à modérée.", "2")[0], "text_conflict")
+        self.assertEqual(self.grade("Pas d'insuffisance tricuspidienne.", "0")[0], "written")
+        self.assertEqual(self.grade("Pas d'insuffisance tricuspidienne.", "1")[0], "text_conflict")
+        self.assertEqual(self.grade("Insuffisance tricuspidienne.", "0")[0], "text_conflict")
+        self.assertEqual(self.grade("Insuffisance tricuspidienne.", "1")[0], "written")   # no grade, no conflict
+        self.assertEqual(self.grade("IT légère. IT modérée.", "1")[0], "text_conflict")   # two grades
+        self.assertEqual(self.grade("Valve tricuspide normale.", "4")[0], "written")       # text silent
+
+    def test_other_valves_and_other_words_are_not_read(self):
+        self.assertEqual(self.grade("", "2", conclusion="IM sévère, IT modérée.")[0], "written")
+        self.assertEqual(self.grade("", "2", conclusion="Insuffisance aortique sévère.")[0], "written")
+        self.assertEqual(self.grade("", "2", conclusion="Insuffisance sévère.")[0], "written")   # no valve named
+        self.assertEqual(self.grade("IT légère, HTAP sévère.", "1")[0], "written")
+        self.assertEqual(self.grade("Pas de sténose, insuffisance légère.", "1")[0], "written")
+        self.assertEqual(self.grade("", "1", conclusion="IM et IT sévères.")[0], "text_conflict")
+        self.assertEqual(self.grade("", "1", conclusion="Insuffisance mitrale et tricuspidienne sévères.")[0],
+                         "text_conflict")
+        self.assertEqual(self.grade("Insuffisance pulmonaire légère.", "1", structure=self.pulmonic)[0], "written")
+        self.assertEqual(self.grade("", "1", conclusion="IP modérée.", structure=self.pulmonic)[0], "text_conflict")
+
+    def test_unmapped_hedged_or_earlier_statements_are_uncertain(self):
+        for cell in ("Insuffisance tricuspidienne discrète.", "IT 2/4.", "IT légère, voire modérée.",
+                     "IT légère ou modérée.", "IT modérée? ", "IT non évaluée.",
+                     "IT légère, modérée à l'examen précédent.", "IT légère, FEVG possiblement réduite."):
+            self.assertEqual(self.grade(cell, "1")[0], "text_uncertain", cell)
 
 
 if __name__ == "__main__":
