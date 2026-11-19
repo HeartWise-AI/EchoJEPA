@@ -230,6 +230,88 @@ class TestVideoStudyDataset(unittest.TestCase):
         ds.num_videos = 4
         self.assertEqual(len(set(ds.select(paths, ["A4C"] * 22, "study"))), 4)
 
+    def test_balanced_sampling_without_filler_families_draws_the_same_bags_as_before(self):
+        def before(rng, families, size):
+            # select()'s view_balanced branch as it was before filler_families existed.
+            buckets = {}
+            for index, family in enumerate(families):
+                buckets.setdefault(family, []).append(index)
+            for bucket in buckets.values():
+                rng.shuffle(bucket)
+            chosen = []
+            while len(chosen) < min(size, len(families)):
+                active = [family for family, bucket in buckets.items() if bucket]
+                rng.shuffle(active)
+                for family in active:
+                    chosen.append(buckets[family].pop())
+                    if len(chosen) == min(size, len(families)):
+                        break
+            rng.shuffle(chosen)
+            return chosen
+
+        import hashlib
+        draw = random.Random(5)
+        names = ["A4C", "A2C", "PLAX", "PSAX", "OTHER", "SUBCOSTAL"]
+        for training in (False, True):
+            ds = self.dataset(training=training, view_column="view", sampling_mode="view_balanced", eval_seed=3)
+            for case in range(200):
+                families = [draw.choice(names[:draw.randint(1, 6)]) for _ in range(draw.randint(1, 40))]
+                paths = [f"{i}.mp4" for i in range(len(families))]
+                ds.num_videos, ds.eval_bag_index = draw.randint(1, 15), case % 3
+                if training:
+                    random.seed(case)
+                    got = ds.select(paths, families, f"s{case}")
+                    random.seed(case)
+                    want = before(random, families, ds.num_videos)
+                else:
+                    got = ds.select(paths, families, f"s{case}")
+                    digest = hashlib.sha256(f"3:{case % 3}:s{case}".encode()).digest()
+                    want = before(random.Random(int.from_bytes(digest[:8], "big")), families, ds.num_videos)
+                self.assertEqual(got, want)
+
+    def test_filler_families_only_take_slots_the_round_robin_leaves(self):
+        ds = self.dataset(training=False, view_column="view", sampling_mode="view_balanced", filler_families=["A2C"])
+        self.assertEqual(ds.filler_families, {"A2C"})
+        families = ["A4C"] * 5 + ["PLAX"] * 2 + ["OTHER"] * 10 + ["SUBCOSTAL"] * 3
+        paths = [f"{i}.mp4" for i in range(len(families))]
+        ds.filler_families = frozenset({"OTHER"})
+        plain = self.dataset(training=False, view_column="view", sampling_mode="view_balanced")
+        for bag in range(20):
+            ds.eval_bag_index = plain.eval_bag_index = bag
+            for size, other in ((6, 0), (10, 0), (12, 2), (25, 10)):
+                ds.num_videos = plain.num_videos = size
+                chosen = ds.select(paths, families, "study")
+                self.assertEqual(len(set(chosen)), min(size, len(paths)))
+                self.assertEqual(sum(families[i] == "OTHER" for i in chosen), other, (bag, size))
+                self.assertEqual(chosen, ds.select(paths, families, "study"))  # seeded: same bag again
+            # The named families are still covered round-robin: with 6 slots, each of the 3 gets 2.
+            ds.num_videos = 6
+            counts = {f: sum(families[i] == f for i in ds.select(paths, families, "study")) for f in ("A4C", "PLAX")}
+            self.assertEqual(counts, {"A4C": 2, "PLAX": 2})
+            # Without the option, OTHER takes part in the round-robin from the first round.
+            plain.num_videos = 4
+            self.assertEqual(sum(families[i] == "OTHER" for i in plain.select(paths, families, "study")), 1)
+        # Several filler families share the leftover slots round-robin; a study of fillers only still fills.
+        ds.filler_families = frozenset({"OTHER", "X"})
+        ds.num_videos = 4
+        fillers = ["OTHER"] * 3 + ["X"] * 3
+        chosen = ds.select(paths[:6], fillers, "study")
+        self.assertEqual(len(set(chosen)), 4)
+        self.assertEqual(sorted(fillers[i] for i in chosen), ["OTHER", "OTHER", "X", "X"])
+
+    def test_filler_families_are_checked(self):
+        balanced = dict(view_column="view", sampling_mode="view_balanced")
+        with self.assertRaisesRegex(ValueError, "only used by sampling_mode: view_balanced"):
+            self.dataset(training=False, view_column="view", sampling_mode="random", filler_families=["A2C"])
+        for bad in ("A2C", [], [""], [None]):
+            with self.assertRaisesRegex(ValueError, "nonempty list"):
+                self.dataset(training=False, filler_families=bad, **balanced)
+        # A family no video has after view_family_map (here the map spells it `Other2`) is a spelling error.
+        with self.assertRaisesRegex(ValueError, r"\['Other'\] match no video"):
+            self.dataset(training=False, filler_families=["Other"], view_family_map={"A2C": "Other2"}, **balanced)
+        ds = self.dataset(training=False, filler_families=["Other2"], view_family_map={"A2C": "Other2"}, **balanced)
+        self.assertEqual(ds.filler_families, {"Other2"})
+
     def test_probability_and_type_metadata_follow_sampling_and_padding(self):
         table = self.table.copy()
         table["p4"] = np.where(table.view == "A4C", 0.8, 0.1)
