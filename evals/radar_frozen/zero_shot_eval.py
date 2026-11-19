@@ -645,7 +645,8 @@ def evaluate(config, checkpoint, clips, labels, out_dir, prompts=DEFAULT_PROMPTS
             i = study_ids.index(study)
             record["tasks"][name] = explain_task(task, z[:, i, s], has_clip[:, i, s], encoded, temperature, pooling,
                                                  keep, per_bag[:, i], pooled[i], prediction[i], label[i],
-                                                 top_k=top_k, readout=regression_readout, log_prior=log_prior)
+                                                 top_k=top_k, readout=regression_readout, log_prior=log_prior,
+                                                 batch=(z[:, :, s], i))
 
     report["summary"] = summary(report["tasks"])
     os.makedirs(out_dir, exist_ok=True)
@@ -748,10 +749,13 @@ def _sims(z, embeddings):
 
 
 def explain_task(task, z, supported, encoded, temperature, pooling, keep, per_bag, pooled, prediction, label,
-                 top_k=None, readout="top_fraction", log_prior=None):
+                 top_k=None, readout="top_fraction", log_prior=None, batch=None):
     """Everything that produced one task's prediction for one study. z [bags, P]: the study's structure embedding
     in each bag; per_bag [bags] or [bags, G]: the scorer's output per bag (as in `evaluate`). For the softmax
-    regression read-out, `selected` are the most probable prompts that together hold half the probability."""
+    regression read-out, `selected` are the most probable prompts that together hold half the probability.
+    batch: (the bags' embeddings of every study scored together [bags, N, P], this study's row), so that a
+    regression's similarities come from the same product as the scorer's: a one-row product can differ in the
+    last bits and pick another prompt from a near tie."""
     out = {"mode": task.mode, "structure": task.structure, "target": task.target,
            "label": label, "prediction": prediction, "per_bag_output": per_bag.double().tolist(),
            "bags_supported": [bool(x) for x in supported], "bags": []}
@@ -766,7 +770,8 @@ def explain_task(task, z, supported, encoded, temperature, pooling, keep, per_ba
                         f" + log prior) (T={temperature:.4g}, prior: {prior}); study value = mean over the "
                         "supporting bags")
         for b in range(z.shape[0]):
-            sims = torch.as_tensor(_sims(z[b:b + 1], encoded["prompts"])[0], dtype=torch.float64)
+            sims = torch.as_tensor(_sims(z[b:b + 1], encoded["prompts"])[0] if batch is None
+                                   else _sims(batch[0][b], encoded["prompts"])[batch[1]], dtype=torch.float64)
             logits = sims / temperature + (0.0 if log_prior is None else log_prior)
             probability = torch.softmax(logits, dim=-1)
             order = probability.argsort(descending=True)
@@ -785,7 +790,8 @@ def explain_task(task, z, supported, encoded, temperature, pooling, keep, per_ba
                    rule=f"value = median of the values of the top {top} of {len(values)} prompts by cosine "
                         f"similarity ({kept}); study value = mean over the supporting bags")
         for b in range(z.shape[0]):
-            sims = torch.as_tensor(_sims(z[b:b + 1], encoded["prompts"])[0])
+            sims = torch.as_tensor(_sims(z[b:b + 1], encoded["prompts"])[0] if batch is None
+                                   else _sims(batch[0][b], encoded["prompts"])[batch[1]])
             best = sims.topk(top).indices.tolist()
             out["bags"].append({"similarities": sims.tolist(), "logits": (sims / temperature).tolist(),
                                 "selected": best, "selected_values": [values[j] for j in best],

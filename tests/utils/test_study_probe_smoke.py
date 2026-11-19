@@ -6,6 +6,8 @@ video), a tiny V-JEPA 2.1 encoder, two epochs with two probes, a resume, and the
 with the same seed, it gives the same probe and the same numbers."""
 
 import contextlib
+import copy
+import hashlib
 import json
 import os
 import pickle
@@ -406,9 +408,12 @@ class TestStudyProbeSmoke(QuietLogs):
         predictions = pd.read_csv(os.path.join(folder, "val_predictions.csv"))
         self.assertIn("lvef_bag_std", predictions)
         self.assertIn("as_present_bag_std", predictions)
+        # filler_families is fingerprinted only when set: runs made before it existed keep their fingerprints.
+        self.assertNotIn("filler_families", result["training_fingerprint"]["settings"]["data"])
         # Resume must reject changes in view conditioning, sampling, queries or local geometry.
         import copy
         for section, key, value in (("classifier", "view_dropout", 0.3), ("data", "eval_seed", 14),
+                                    ("data", "filler_families", ["A2C"]),
                                     ("classifier", "query_mode", "shared"),
                                     ("classifier", "local_use_rope", False)):
             changed = copy.deepcopy(cfg)
@@ -443,22 +448,25 @@ class TestStudyProbeSmoke(QuietLogs):
 
         def spy(*args, **kwargs):
             dataset = real_dataset(*args, **kwargs)
-            built.append((dataset.training, dataset.selection, dataset.eval_seed))
+            built.append((dataset.training, dataset.selection, dataset.eval_seed, dataset.filler_families))
             return dataset
 
         with open(os.path.join(folder, "val_metrics.json")) as f:
             own = json.load(f)
         for name, bags, num_bags, expected, selection in (
-                ("one-bag", {"num_bags": 1}, 1, ["num_bags"], ("view_balanced", 13)),
+                ("one-bag", {"num_bags": 1}, 1, ["num_bags"], ("view_balanced", 13, frozenset())),
                 ("random", {"sampling_mode": "random", "eval_seed": 0}, 2, ["eval_seed", "sampling_mode"],
-                 ("seeded_random", 0)),
-                ("fixed", {"sampling_mode": "fixed", "num_bags": 1}, 1, ["num_bags", "sampling_mode"], ("fixed", 13))):
+                 ("seeded_random", 0, frozenset())),
+                ("fixed", {"sampling_mode": "fixed", "num_bags": 1}, 1, ["num_bags", "sampling_mode"],
+                 ("fixed", 13, frozenset())),
+                ("filler", {"filler_families": ["A2C"]}, 2, ["filler_families"],
+                 ("view_balanced", 13, frozenset({"A2C"})))):
             out = os.path.join(self.tmp, f"rescore-{name}")
             built.clear()
             with self.on_cpu(), mock.patch.object(probe, "VideoStudyDataset", side_effect=spy):
                 probe.main(dict(cfg, val_only=True, rescore={"out": out, **bags}))
             self.assertEqual({b[1:] for b in built if not b[0]}, {selection})
-            self.assertEqual({b[1:] for b in built if b[0]}, {("view_balanced", 13)})
+            self.assertEqual({b[1:] for b in built if b[0]}, {("view_balanced", 13, frozenset())})
             with open(os.path.join(out, "val_metrics.json")) as f:
                 result = json.load(f)
             self.assertTrue(np.isfinite(result["val"]["score"]))
@@ -483,6 +491,9 @@ class TestStudyProbeSmoke(QuietLogs):
                                                         "num_videos": 2}}, ValueError),
                    (cfg, {"val_only": True, "rescore": {"out": os.path.join(self.tmp, "rescore-x"),
                                                         "sampling_mode": "fixed"}}, ValueError),
+                   (cfg, {"val_only": True, "rescore": {"out": os.path.join(self.tmp, "rescore-x"),
+                                                        "sampling_mode": "random", "filler_families": ["A2C"]}},
+                    ValueError),
                    (cfg, {"test_only": True, "rescore": {"out": os.path.join(self.tmp, "rescore-y")}}, ValueError),
                    (cfg, {"val_only": True, "rescore": {"out": os.path.join(folder, "inside")}}, ValueError),
                    (cfg, {"val_only": True, "rescore": {"out": "relative"}}, ValueError))
@@ -518,6 +529,76 @@ class TestStudyProbeSmoke(QuietLogs):
         self.assertTrue(os.path.isfile(os.path.join(failed, "val_metrics.json")))
         self.assertEqual(os.listdir(late), [])
         self.assertEqual(digests(), before)
+        self.check_external_rescore(cfg, folder, spy, built)
+        self.assertEqual(digests(), before)
+
+    def check_external_rescore(self, cfg, folder, spy, built):
+        """`rescore.manifest` scores studies from elsewhere in place of validation, into a new folder. Here the
+        validation videos under other study and patient ids, with one head's target absent everywhere."""
+        manifest = pd.read_csv(cfg["experiment"]["data"]["data_filename"], dtype=str)
+        external = manifest[manifest.split == "val"].drop(columns="split").copy()
+        external["study_id"], external["patient_id"] = "ext-" + external.study_id, "ext-" + external.patient_id
+        external["as_present"] = None
+        external_path = os.path.join(self.tmp, "external.csv")
+        external.to_csv(external_path, index=False)
+        out = os.path.join(self.tmp, "rescore-external")
+        with self.on_cpu():
+            probe.main(dict(cfg, val_only=True, rescore={"out": out, "manifest": external_path}))
+        self.assertEqual(sorted(os.listdir(out)), ["external_metrics.json", "external_predictions.csv"])
+        with open(os.path.join(out, "external_metrics.json")) as f:
+            result = json.load(f)
+        self.assertNotIn("val", result)
+        self.assertEqual(result["rescore"]["run_folder"], folder)
+        self.assertEqual(result["rescore"]["external_manifest"]["file"], "external.csv")
+        self.assertEqual(result["rescore"]["external_manifest"]["rows"], len(external))
+        self.assertEqual(result["rescore"]["external_manifest"]["studies"], external.study_id.nunique())
+        self.assertEqual(result["rescore"]["external_manifest"]["manifest_studies"], external.study_id.nunique())
+        with open(external_path, "rb") as f:
+            self.assertEqual(result["rescore"]["external_manifest"]["sha256"], hashlib.sha256(f.read()).hexdigest())
+        self.assertEqual(result["rescore"]["changed"], [])
+        self.assertEqual(result["external"]["heads"]["as_present"]["n"], 0)
+        self.assertEqual(result["external"]["num_bags"], 2)  # the run's validation bags
+        # Bags are seeded by study id, so the predictions differ from validation's; every study is scored.
+        scored = pd.read_csv(os.path.join(out, "external_predictions.csv"), dtype={"study_id": str})
+        validation = pd.read_csv(os.path.join(folder, "val_predictions.csv"), dtype={"study_id": str})
+        self.assertEqual(sorted(scored.study_id), sorted("ext-" + validation.study_id))
+        self.assertTrue(np.isfinite(scored.lvef_prediction).all())
+        self.assertTrue(np.isfinite(result["external"]["heads"]["lvef"]["mae"]))
+        with self.on_cpu(), self.assertRaisesRegex(FileExistsError, "already exists"):
+            probe.main(dict(cfg, val_only=True, rescore={"out": out, "manifest": external_path}))
+        # The rescore's bag keys apply to the external studies as to validation; training keeps the run's bags.
+        bagged = os.path.join(self.tmp, "rescore-external-random")
+        built.clear()
+        with self.on_cpu(), mock.patch.object(probe, "VideoStudyDataset", side_effect=spy):
+            probe.main(dict(cfg, val_only=True, rescore={"out": bagged, "manifest": external_path,
+                                                         "sampling_mode": "random", "eval_seed": 0, "num_bags": 1}))
+        # Validation (only checked for overlap) keeps the run's bags; the external studies get the rescore's.
+        self.assertEqual([b[1:] for b in built if not b[0]],
+                         [("view_balanced", 13, frozenset()), ("seeded_random", 0, frozenset())])
+        self.assertEqual({b[1:] for b in built if b[0]}, {("view_balanced", 13, frozenset())})
+        with open(os.path.join(bagged, "external_metrics.json")) as f:
+            bagged_result = json.load(f)
+        self.assertEqual(bagged_result["rescore"]["changed"], ["eval_seed", "num_bags", "sampling_mode"])
+        # One bag was scored, not the run's two: no bag count recorded, no bag spread in the predictions.
+        self.assertNotIn("num_bags", bagged_result["external"])
+        self.assertNotIn("lvef_bag_std", pd.read_csv(os.path.join(bagged, "external_predictions.csv")))
+        # Refused, with nothing written: a manifest sharing a study or a patient with the probe's own splits, a
+        # relative path, and a manifest without `rescore.out`.
+        for column in ("study_id", "patient_id"):
+            leaked = external.copy()
+            leaked[column] = leaked[column].str.removeprefix("ext-")
+            leaked_path = os.path.join(self.tmp, f"external-leak-{column}.csv")
+            leaked.to_csv(leaked_path, index=False)
+            leak_out = os.path.join(self.tmp, f"rescore-leak-{column}")
+            with self.on_cpu(), self.assertRaisesRegex(ValueError, "in both"):
+                probe.main(dict(cfg, val_only=True, rescore={"out": leak_out, "manifest": leaked_path}))
+            self.assertFalse(os.path.lexists(leak_out))
+        with self.on_cpu(), self.assertRaisesRegex(ValueError, "absolute path"):
+            probe.main(dict(cfg, val_only=True, rescore={"out": os.path.join(self.tmp, "rescore-rel"),
+                                                         "manifest": "external.csv"}))
+        with self.on_cpu(), self.assertRaisesRegex(ValueError, "rescore.out"):
+            probe.main(dict(cfg, val_only=True, rescore={"manifest": external_path}))
+        self.assertFalse(os.path.lexists(os.path.join(self.tmp, "rescore-rel")))
 
     def test_a_run_trained_with_fixed_bags_can_be_rescored_with_random_ones(self):
         cfg = self.config(os.path.join(self.tmp, "fixed-bags"))
@@ -533,6 +614,31 @@ class TestStudyProbeSmoke(QuietLogs):
         self.assertEqual(result["val"]["num_bags"], 2)
         self.assertEqual(result["run_info"]["splits"]["train"]["selection"], probe.SELECTION["fixed"])
         self.assertEqual(result["run_info"]["splits"]["val"]["selection"], probe.SELECTION["seeded_random"])
+
+    def test_a_run_trained_with_filler_families_can_be_rescored_without_them(self):
+        cfg = self.config(os.path.join(self.tmp, "filler-run"))
+        cfg["experiment"]["data"].update(sampling_mode="view_balanced", filler_families=["A2C"])
+        with self.on_cpu():
+            probe.main(dict(cfg))
+        # Random bags need the run's filler families removed; left in, the dataset refuses them.
+        with self.on_cpu(), self.assertRaisesRegex(ValueError, "filler_families"):
+            probe.main(dict(cfg, val_only=True, rescore={"out": os.path.join(self.tmp, "rescore-filler-x"),
+                                                         "sampling_mode": "random"}))
+        self.assertFalse(os.path.lexists(os.path.join(self.tmp, "rescore-filler-x")))
+        for name, bags, changed, selection in (
+                ("random", {"sampling_mode": "random", "filler_families": None}, ["filler_families", "sampling_mode"],
+                 probe.SELECTION["seeded_random"]),
+                ("view-balanced", {"filler_families": None}, ["filler_families"], probe.SELECTION["view_balanced"])):
+            out = os.path.join(self.tmp, f"rescore-filler-{name}")
+            with self.on_cpu():
+                probe.main(dict(cfg, val_only=True, rescore={"out": out, **bags}))
+            with open(os.path.join(out, "val_metrics.json")) as f:
+                result = json.load(f)
+            self.assertEqual(result["rescore"]["changed"], changed)
+            self.assertEqual(result["rescore"]["run_bags"]["filler_families"], ["A2C"])
+            self.assertIsNone(result["rescore"]["bags"]["filler_families"])
+            self.assertEqual(result["training_fingerprint"]["settings"]["data"]["filler_families"], ["A2C"])
+            self.assertEqual(result["run_info"]["splits"]["val"]["selection"], selection)
 
     def test_flat_study_rope_trains_resumes_and_is_fingerprinted_only_when_on(self):
         cfg = self.config(os.path.join(self.tmp, "flat-rope"))

@@ -587,7 +587,7 @@ def line_art(component):
     total = int(rest.sum())
     for _ in range(12):
         found = cv2.HoughLines(rest, 1, np.pi / 360, STRAIGHT_PX)
-        if found is None:
+        if found is None or len(found) == 0:  # OpenCV 5.1 returns an empty array, older versions None
             break
         rho, theta = found[0][0]
         ys, xs = np.nonzero(rest)

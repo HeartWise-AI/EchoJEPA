@@ -1,5 +1,6 @@
 # Test runtime and tools for static checking.
 pyarrow
+matplotlib  # tools/radar/render_zero_shot_video.py and its test
 black == 26.10.1
 flake8 == 7.0.0
 isort == 5.13.2
