@@ -136,6 +136,13 @@ class Target:
     # Whether the form in Labelbox may hold more than the committed one: options added to a question, or project
     # instructions attached, in Labelbox after the upload. Every committed option must still be there, unchanged.
     form_may_grow: bool = False
+    # Whether the dataset's description may hold text added after the committed one in Labelbox (the reviewers'
+    # annotation guide link, 2026-11-12). The committed text must still open it; a storage integration is still refused.
+    description_may_grow: bool = False
+
+    def dataset_description_ok(self, description: str | None) -> bool:
+        return description == DATASET_DESCRIPTION or (
+            self.description_may_grow and isinstance(description, str) and description.startswith(DATASET_DESCRIPTION))
 
 
 FORMS = (COLUMN_REVIEW, VIEW_TYPE_REVIEW, VIEW_REVIEW)
@@ -156,9 +163,10 @@ WORKSPACES = {
                                  view_type_review.build_form),
     },
     "view_relabel": {
-        # The reviewers' form gained view options in Labelbox after the first batch (see `form_may_grow`).
+        # The reviewers' form gained view options, and the dataset's description a guide link, in Labelbox after the
+        # first batch (see `form_may_grow` and `description_may_grow`).
         VIEW_REVIEW: Target("RADAR View Relabelling", "RADAR View Relabelling Dataset", view_review.FORM_NAME,
-                            view_review.build_form, form_may_grow=True),
+                            view_review.build_form, form_may_grow=True, description_may_grow=True),
     },
 }
 
@@ -452,7 +460,7 @@ class LabelboxUploadApi:
                 if project.media_type != self.media_type or project.description != PROJECT_DESCRIPTION:
                     raise UploadError(f"The project {target.project_name!r} is not a pilot video project made by "
                                       "create_pilot_project.py.")
-                if datasets_checked and (dataset.description != DATASET_DESCRIPTION
+                if datasets_checked and (not target.dataset_description_ok(dataset.description)
                                          or dataset.iam_integration() is not None):
                     raise UploadError(f"The dataset {target.dataset_name!r} is not an unconnected pilot dataset made "
                                       "by create_pilot_project.py.")

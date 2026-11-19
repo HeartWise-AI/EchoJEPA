@@ -1482,6 +1482,33 @@ class LaterBatchTests(unittest.TestCase):
         with self.assertRaisesRegex(UploadError, "differs from the committed form"):
             sdk_api(client).ensure_workspace(FORMS, create=True)
 
+    def test_the_view_relabelling_dataset_may_carry_an_added_guide_link(self):
+        guide = DATASET_DESCRIPTION + " Annotation guide: https://example.invalid/guide - PDF in the project."
+        client, _, _, api = self.client(grown_view_form())
+        client.datasets[0] = fake_dataset(self.TARGET.dataset_name, guide)
+        api.ensure_workspace([VIEW_REVIEW], create=True)
+        self.assertEqual(client.created, [])
+        for description in ("Someone else's. " + DATASET_DESCRIPTION, "someone else's", "", None):
+            client, _, _, api = self.client(grown_view_form())
+            client.datasets[0] = fake_dataset(self.TARGET.dataset_name, description)
+            with self.assertRaisesRegex(UploadError, "not an unconnected pilot dataset"):
+                api.ensure_workspace([VIEW_REVIEW], create=True)
+        client, _, _, api = self.client(grown_view_form())
+        connected = fake_dataset(self.TARGET.dataset_name, guide)
+        connected.iam_integration = lambda: SimpleNamespace(name="bucket")
+        client.datasets[0] = connected
+        with self.assertRaisesRegex(UploadError, "not an unconnected pilot dataset"):
+            api.ensure_workspace([VIEW_REVIEW], create=True)
+
+    def test_only_the_view_relabelling_dataset_description_may_grow(self):
+        self.assertTrue(self.TARGET.description_may_grow)
+        self.assertFalse(any(target.description_may_grow for name, workspace in WORKSPACES.items()
+                             if name != "view_relabel" for target in workspace.values()))
+        grown = FakeClient(datasets=[fake_dataset(t.dataset_name, DATASET_DESCRIPTION + " Guide: x.")
+                                     for t in TARGETS.values()])
+        with self.assertRaisesRegex(UploadError, "not an unconnected pilot dataset"):
+            sdk_api(grown).ensure_workspace(FORMS, create=True)
+
     def test_a_data_row_read_that_fails_is_read_again(self):
         client, _, _, api = self.client(grown_view_form())
         with tempfile.TemporaryDirectory() as folder:
