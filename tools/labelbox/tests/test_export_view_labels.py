@@ -25,6 +25,7 @@ from tools.labelbox.export_view_labels import (
     labels_csv,
     main,
     read_picked,
+    read_picked_lists,
     summary_lines,
 )
 from tools.labelbox import view_review
@@ -144,7 +145,7 @@ class RefusalTests(TempDirTest):
             build_rows(rows, self.picked)
 
     def test_a_clip_picked_clips_does_not_list(self):
-        self.refused([*export_of(), exported(key("9"))], "does not list")
+        self.refused([*export_of(), exported(key("9"))], "do not list")
 
     def test_a_picked_clip_missing_from_the_export(self):
         self.refused(export_of()[1:], "lacks 1 picked clips")
@@ -186,6 +187,93 @@ class RefusalTests(TempDirTest):
         self.picked_path.write_text(text.replace(VIEW_KEY_PREFIX, "radar-pilot-"), encoding="utf-8")
         with self.assertRaisesRegex(ExportError, "view relabelling key"):
             read_picked(self.picked_path)
+
+
+class BatchTests(TempDirTest):
+    """The project holds several batches, each with its own picked_clips.csv: the export is checked against their
+    union and each row names its batch."""
+
+    FIRST = {char: CASES[char] for char in "abcdef"}
+    SECOND = {char: CASES[char] for char in "1234"}
+
+    def setUp(self):
+        super().setUp()
+        self.first = write_picked(self.folder / "first.csv", self.FIRST)
+        self.second = write_picked(self.folder / "second.csv", self.SECOND)
+
+    def test_rows_name_their_batch_in_list_order(self):
+        picked = read_picked_lists([self.first, self.second])
+        rows = build_rows(list(reversed(export_of())), picked)
+        self.assertEqual([row["global_key"] for row in rows], [key(char) for char in "abcdef1234"])
+        self.assertEqual([row["batch"] for row in rows], [1] * 6 + [2] * 4)
+        rows = {row["global_key"]: row for row in rows}
+        for char, (_view, _labels, _workflow, want) in CASES.items():
+            row = rows[key(char)]
+            self.assertEqual((row["human_view"], row["label_status"], row["n_labels"]), want, char)
+
+    def test_one_list_is_batch_one(self):
+        self.assertEqual({clip["batch"] for clip in read_picked(self.picked_path).values()}, {1})
+        self.assertEqual({row["batch"] for row in build_rows(export_of(), self.picked)}, {1})
+
+    def test_an_export_of_both_batches_needs_both_lists(self):
+        with self.assertRaisesRegex(ExportError, "do not list.*missing from --picked"):
+            build_rows(export_of(), read_picked_lists([self.first]))
+
+    def test_every_listed_clip_of_a_later_batch_must_be_exported(self):
+        rows = [row for row in export_of() if row["data_row"]["global_key"] != key("3")]
+        with self.assertRaisesRegex(ExportError, "lacks 1 picked clips"):
+            build_rows(rows, read_picked_lists([self.first, self.second]))
+
+    def test_a_clip_in_two_lists_is_refused(self):
+        overlap = write_picked(self.folder / "overlap.csv", {"a": CASES["a"], **self.SECOND})
+        with self.assertRaisesRegex(ExportError, "1 clips of list 2 .* also in list 1"):
+            read_picked_lists([self.first, overlap])
+        with self.assertRaisesRegex(ExportError, "also in list 1"):
+            read_picked_lists([self.first, self.first])
+        with self.assertRaisesRegex(ExportError, "at least one"):
+            read_picked_lists([])
+
+    def test_a_list_with_its_own_batch_column_is_refused(self):
+        with open(self.first, encoding="utf-8") as f:
+            text = f.read().splitlines()
+        text = [text[0] + ",batch"] + [line + ",7" for line in text[1:]]
+        self.first.write_text("\n".join(text) + "\n", encoding="utf-8")
+        with self.assertRaisesRegex(ExportError, "has a `batch` column"):
+            read_picked(self.first)
+
+    def run_main(self, *args, api=None, environ=None):
+        out, err = io.StringIO(), io.StringIO()
+        with redirect_stdout(out), redirect_stderr(err):
+            code = main(list(args), environ={"LABELBOX_API_KEY": "key"} if environ is None else environ,
+                        api_factory=lambda _key: api)
+        return code, out.getvalue(), err.getvalue()
+
+    def test_main_takes_several_lists_live_and_from_a_kept_export(self):
+        out = self.folder / "labels.csv"
+        code, printed, err = self.run_main("--picked", str(self.first), str(self.second), "--out", str(out),
+                                           api=FakeApi(export_of()))
+        self.assertEqual(code, 0, err)
+        rows = list(csv.DictReader(io.StringIO(out.read_text())))
+        self.assertEqual(tuple(rows[0]), COLUMNS)
+        self.assertEqual([row["batch"] for row in rows], ["1"] * 6 + ["2"] * 4)
+        self.assertEqual([row["workflow_status"] for row in rows],
+                         ["DONE", "IN_REVIEW", "DONE", "TO_LABEL", "IN_REVIEW", "IN_REWORK",
+                          "TO_LABEL", "DONE", "DONE", "DONE"])
+        self.assertIn(f"batch 1: {self.first} (6 clips)", printed)
+        self.assertIn(f"batch 2: {self.second} (4 clips)", printed)
+        self.assertIn("  batch 1: 6 clips, done 3, unlabelled 1, skipped 1, in_rework 1", printed)
+        self.assertIn("  batch 2: 4 clips, done 2, in_rework 1, conflict 1", printed)
+        again = self.folder / "again.csv"
+        code, _, _ = self.run_main("--picked", str(self.first), str(self.second), "--out", str(again),
+                                   "--from-export", str(kept_export_path(out)), environ={})
+        self.assertEqual((code, again.read_text()), (0, out.read_text()))
+        # The kept export holds both batches: batch 1's list alone is refused, and nothing is written.
+        alone = self.folder / "alone.csv"
+        code, _, err = self.run_main("--picked", str(self.first), "--out", str(alone),
+                                     "--from-export", str(kept_export_path(out)), environ={})
+        self.assertEqual(code, 1)
+        self.assertIn("missing from --picked", err)
+        self.assertFalse(alone.exists())
 
 
 class CsvTests(TempDirTest):

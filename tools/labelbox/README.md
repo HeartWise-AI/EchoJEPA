@@ -302,13 +302,18 @@ clip screen, then `prepare`.
   `picked_clips.csv` in the `draw` folder maps each key to its clip, and stays there.
 - **Training labels.** `export_view_labels.py` exports the project with each row's
   workflow status and writes one row per picked clip (its clip, predicted view,
-  answer and `label_status`: done, unlabelled, skipped, in_rework or conflict),
-  keeping the export next to it; its header describes the columns. `--from-export`
-  writes the labels again from a kept export, without a request:
+  answer, `label_status`: done, unlabelled, skipped, in_rework or conflict, and
+  its workflow status, so `done` rows still in review show), keeping the export
+  next to it; its header describes the columns. When the project holds several
+  batches, give each batch's `picked_clips.csv` to `--picked`, batch 1 first:
+  the export must match their union, and the `batch` column says which list each
+  row came from (1 = the first). `--from-export` writes the labels again from a
+  kept export, without a request:
 
   ```bash
   UV_PROJECT_ENVIRONMENT=$HOME/.venvs/echojepa-labelbox uv run --frozen --only-group labelbox \
-    python -m tools.labelbox.export_view_labels --picked DRAW/picked_clips.csv --out LABELS/view_labels.csv
+    python -m tools.labelbox.export_view_labels --picked DRAW1/picked_clips.csv DRAW2/picked_clips.csv \
+    --out LABELS/view_labels.csv
   ```
 
 ## Data and credential safety

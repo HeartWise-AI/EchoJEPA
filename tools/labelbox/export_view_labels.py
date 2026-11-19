@@ -1,9 +1,11 @@
 """Export the view relabelling project's answers as one row per clip, for training the view classifier.
 
-    python -m tools.labelbox.export_view_labels --picked PICKED --out OUT                       # export, then write OUT
-    python -m tools.labelbox.export_view_labels --picked PICKED --out OUT --from-export KEPT   # no Labelbox request
+    python -m tools.labelbox.export_view_labels --picked PICKED... --out OUT                     # export, write OUT
+    python -m tools.labelbox.export_view_labels --picked PICKED... --out OUT --from-export KEPT   # no Labelbox request
 
-PICKED is the `picked_clips.csv` of the `data/view_relabel.py draw` folder. Run in the Labelbox environment. The export
+PICKED is the `picked_clips.csv` of a `data/view_relabel.py draw` folder, one per batch uploaded to the project, in
+batch order (batch 1 first): the project holds their union. Every exported clip must be in one list, every listed clip
+must be exported once, and no clip may be in two lists. Run in the Labelbox environment. The export
 checks that the project `RADAR View Relabelling` uses the form `DeepECHO view review v1`, exports every row with its
 workflow status and each label's details, and keeps the export unchanged next to OUT (`<OUT name>.export.ndjson`),
 private, because it holds reviewers' names and comments. The form may have been edited in Labelbox since it was
@@ -21,6 +23,9 @@ OUT has one row per picked clip, with the columns of COLUMNS:
   `in_rework`, the row is in Rework, or back in the labelling queue with an answered label.
 - `n_labels`: the labels that answer the view (skips are not counted).
 - `labelled_at`: when the latest of those labels was created (of the skips, for a skipped row), in UTC.
+- `batch`: which `--picked` list holds the clip, 1-based in the order given (1 = the first list).
+- `workflow_status`: the row's step in the project's workflow, TO_LABEL, IN_REVIEW, IN_REWORK or DONE (a `done` row
+  still IN_REVIEW is submitted but not approved).
 
 Nothing about reviewers or their comments is written. The console shows counts and the opaque keys of the clips with a
 comment, which may report identifying text, so that someone reads it in Labelbox.
@@ -58,7 +63,7 @@ from tools.labelbox.pilot_upload import (
 )
 
 COLUMNS = ("global_key", "patient_id", "study_id", "video_path", "acq_category", "predicted_view", "human_view",
-           "label_status", "n_labels", "labelled_at")
+           "label_status", "n_labels", "labelled_at", "batch", "workflow_status")
 STATUSES = ("done", "unlabelled", "skipped", "in_rework", "conflict")
 UNSURE = "UNSURE"
 PICKED_COLUMNS = ("global_key", "patient_id", "study_id", "video_path", "acq_category", "view")
@@ -112,15 +117,32 @@ def form_changes(views: Mapping[str, str]) -> list[str]:
     return lines
 
 
-def read_picked(path: Path) -> dict[str, dict[str, str]]:
-    """{global key: clip} of `picked_clips.csv`, in its order."""
+def read_picked(path: Path, batch: int = 1) -> dict[str, dict[str, Any]]:
+    """{global key: clip} of one `picked_clips.csv`, in its order; each clip carries `batch`."""
     rows = _read_csv(path)
     if not rows or set(PICKED_COLUMNS) - set(rows[0]):
         raise ExportError(f"{path.name} needs the columns {', '.join(PICKED_COLUMNS)}.")
+    if "batch" in rows[0]:
+        raise ExportError(f"{path.name} has a `batch` column: the batch is the list's place in --picked.")
     keys = [row["global_key"] for row in rows]
     if len(keys) != len(set(keys)) or not all(VIEW_RELABEL.global_key.fullmatch(key) for key in keys):
         raise ExportError(f"{path.name} must list each clip once, under a view relabelling key ({VIEW_RELABEL.name}).")
-    return {row["global_key"]: row for row in rows}
+    return {row["global_key"]: {**row, "batch": batch} for row in rows}
+
+
+def read_picked_lists(paths: Sequence[Path]) -> dict[str, dict[str, Any]]:
+    """{global key: clip} of several `picked_clips.csv`, one per batch of the project, batch 1 first: their union, in
+    list order then each list's order. A clip in two lists is refused."""
+    if not paths:
+        raise ExportError("Name at least one picked_clips.csv.")
+    picked: dict[str, dict[str, Any]] = {}
+    for batch, path in enumerate(paths, start=1):
+        clips = read_picked(path, batch)
+        if shared := [key for key in clips if key in picked]:
+            raise ExportError(f"{len(shared)} clips of list {batch} ({path}) are also in list "
+                              f"{picked[shared[0]]['batch']} ({shared[0]}, ...): each clip belongs to one batch.")
+        picked.update(clips)
+    return picked
 
 
 def _workflow_status(entry: Mapping[str, Any], key: str) -> str:
@@ -203,7 +225,7 @@ def clip_labels(entry: Mapping[str, Any], key: str, views: Mapping[str, str]) ->
 
 def build_rows(exported: Sequence[Mapping[str, Any]], picked: Mapping[str, Mapping[str, str]],
                views: Mapping[str, str] | None = None) -> list[dict[str, Any]]:
-    """One record per picked clip, in picked order: COLUMNS, plus `workflow_status` and `comment` for the summary.
+    """One record per picked clip, in picked order: COLUMNS, plus `comment` for the summary.
     The export must be of the view relabelling project and hold every picked clip, and nothing else, once. `views` are
     the view options of the form as it is in Labelbox (the committed form's by default)."""
     views = view_review.view_choices() if views is None else views
@@ -223,15 +245,15 @@ def build_rows(exported: Sequence[Mapping[str, Any]], picked: Mapping[str, Mappi
         entries[key] = entry
     unknown = sorted(set(entries) - set(picked))
     if unknown:
-        raise ExportError(f"The export holds {len(unknown)} clips picked_clips.csv does not list ({unknown[0]}, ...): "
-                          "is it the picked_clips.csv of this upload?")
+        raise ExportError(f"The export holds {len(unknown)} clips the picked lists do not list ({unknown[0]}, ...): "
+                          "is a batch's picked_clips.csv missing from --picked?")
     missing = [key for key in picked if key not in entries]
     if missing:
         raise ExportError(f"The export lacks {len(missing)} picked clips ({missing[0]}, ...): it is not the whole "
                           f"{TARGET.project_name!r} project.")
     return [{"global_key": key, "patient_id": clip["patient_id"], "study_id": clip["study_id"],
              "video_path": clip["video_path"], "acq_category": clip["acq_category"], "predicted_view": clip["view"],
-             **clip_labels(entries[key], key, views)} for key, clip in picked.items()]
+             **clip_labels(entries[key], key, views), "batch": clip["batch"]} for key, clip in picked.items()]
 
 
 def labels_csv(records: Sequence[Mapping[str, Any]]) -> str:
@@ -251,8 +273,13 @@ def summary_lines(records: Sequence[Mapping[str, Any]]) -> list[str]:
     """Counts per status and per answer, predicted against human per predicted class, and the clips with a comment."""
     done = [r for r in records if r["label_status"] == "done"]
     lines = [f"clips: {len(records)}",
-             f"label_status: {_counts(Counter(r['label_status'] for r in records), STATUSES)}",
-             f"  done by workflow status: {_counts(Counter(r['workflow_status'] for r in done))}",
+             f"label_status: {_counts(Counter(r['label_status'] for r in records), STATUSES)}"]
+    batches = sorted({r["batch"] for r in records})
+    if len(batches) > 1:
+        lines += [f"  batch {batch}: {sum(r['batch'] == batch for r in records)} clips, "
+                  f"{_counts(Counter(r['label_status'] for r in records if r['batch'] == batch), STATUSES)}"
+                  for batch in batches]
+    lines += [f"  done by workflow status: {_counts(Counter(r['workflow_status'] for r in done))}",
              f"human_view (done): {_counts(Counter(r['human_view'] for r in done))}",
              "predicted vs human (done rows; agree = the answer is the predicted class):",
              f"  {'predicted':<14}{'clips':>6}{'done':>6}{'agree':>7}{'unsure':>8}{'other':>7}  other answers"]
@@ -314,7 +341,8 @@ def _quiet() -> Iterator[None]:
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--picked", type=Path, required=True, help="picked_clips.csv of the view relabelling draw")
+    parser.add_argument("--picked", type=Path, nargs="+", required=True, metavar="PICKED",
+                        help="picked_clips.csv of each view relabelling batch in the project, batch 1 first")
     parser.add_argument("--out", type=Path, required=True, help="the labels CSV to write, outside the repository")
     parser.add_argument("--from-export", type=Path, metavar="KEPT",
                         help="write the labels from an export this script kept, without a Labelbox request")
@@ -326,7 +354,7 @@ def main(argv: Sequence[str] | None = None, *, environ: Mapping[str, str] = os.e
     args = _parser().parse_args(argv)
     kept = kept_export_path(args.out)
     try:
-        picked = read_picked(args.picked)
+        picked = read_picked_lists(args.picked)
         check_outputs(args.out, keep_export=args.from_export is None)
         if args.from_export is not None:
             exported, source = read_kept_export(args.from_export), args.from_export
@@ -363,6 +391,8 @@ def main(argv: Sequence[str] | None = None, *, environ: Mapping[str, str] = os.e
     _write_private(args.out, labels_csv(records))
     print(f"labels written: {args.out}")
     print(f"from export: {source} ({len(exported)} rows, sha256 {sha256(source)})")
+    for batch, path in enumerate(args.picked, start=1):
+        print(f"batch {batch}: {path} ({sum(r['batch'] == batch for r in records)} clips)")
     if form is None:
         print("form: none kept next to the export; answers checked against the committed form")
     for line in changes or ["form: view options as committed"]:
