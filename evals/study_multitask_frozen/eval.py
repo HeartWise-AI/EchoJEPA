@@ -191,6 +191,10 @@ def main(args_eval, resume_preempt=False):
         "sampling_mode", "eval_seed", "view_family_map", "filler_families", "view_probability_columns",
         "acquisition_column", "acquisition_labels_map", "patient_column") if k in args_data}
     data_options.setdefault("eval_seed", 0)  # identical evaluation bags across training seeds
+    # Exact-rate clips (src/datasets/utils/frame_sampling.py): passed and recorded only when on, so the fingerprints
+    # of runs made without it stay as they were.
+    if args_data.get("fractional_frame_step"):
+        data_options["fractional_frame_step"] = True
     bag_options = shared_bag_options(args_data, seed)
 
     # -- ENCODER FINE-TUNING: the top `trainable_blocks` transformer blocks (and the final norm)

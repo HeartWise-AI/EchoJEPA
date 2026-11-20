@@ -35,6 +35,7 @@ from app.vjepa.transforms import DEFAULT_NORMALIZE, make_transforms
 from app.vjepa.utils import init_opt, init_video_model, load_checkpoint, grad_norm
 from app.vjepa.loss import jepa_loss
 from src.datasets.data_manager import init_data
+from src.datasets.utils import frame_sampling
 from src.masks.multiseq_multiblock3d import MaskCollator
 from src.utils.distributed import (
     any_rank_failed,
@@ -153,6 +154,9 @@ def main(args, resume_preempt=False):
     batch_size = cfgs_data.get("batch_size")
     tubelet_size = cfgs_data.get("tubelet_size")
     fps = cfgs_data.get("fps")
+    fractional_frame_step = cfgs_data.get("fractional_frame_step", False)  # exact-rate clips; off by default
+    # Saved in every checkpoint; a resume with other settings is refused (frame_sampling.check_resume).
+    clip_sampling = frame_sampling.sampling_record(fps, fractional_frame_step)
     crop_size = cfgs_data.get("crop_size", 224)
     patch_size = cfgs_data.get("patch_size")
     pin_mem = cfgs_data.get("pin_mem", False)
@@ -289,6 +293,7 @@ def main(args, resume_preempt=False):
         collator=mask_collator,
         num_workers=num_workers,
         pin_mem=pin_mem,
+        fractional_frame_step=fractional_frame_step,
         log_dir=None,
     )
 
@@ -408,6 +413,7 @@ def main(args, resume_preempt=False):
                 target_encoder=target_encoder,
                 opt=optimizer,
                 scaler=scaler,
+                clip_sampling=clip_sampling,
             )
             logger.info(f"SUCCESS: Loaded checkpoint from {load_path}")
             # Only set to resume after a checkpoint has actually loaded successfully.
@@ -465,6 +471,7 @@ def main(args, resume_preempt=False):
             "lr": lr,
             "itr": itr,
             "wandb_run_id": effective_wandb_run_id,
+            frame_sampling.CHECKPOINT_KEY: clip_sampling,
         }
 
         try:
@@ -601,6 +608,7 @@ def main(args, resume_preempt=False):
                                 collator=mask_collator,
                                 num_workers=num_workers,
                                 pin_mem=pin_mem,
+                                fractional_frame_step=fractional_frame_step,
                                 log_dir=None,
                             )
                             unsupervised_sampler.set_epoch(epoch)

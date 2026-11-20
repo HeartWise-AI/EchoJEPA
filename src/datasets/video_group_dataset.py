@@ -15,6 +15,7 @@ import torch
 from torch.utils.data import Dataset
 from decord import VideoReader, cpu
 
+from src.datasets.utils import frame_sampling
 from src.datasets.utils.color_order import fix_legacy_colors
 from src.datasets.utils.dataloader import MonitoredDataset, NondeterministicDataLoader
 from src.datasets.utils.weighted_sampler import DistributedWeightedSampler
@@ -67,7 +68,8 @@ def make_videogroupdataset(
     training=False,                 # <<< NEW
     miss_augment_prob=0.0,          # <<< NEW
     min_present=1,                  # <<< NEW
-    split_name="train"
+    split_name="train",
+    fractional_frame_step=False,    # exact-rate frame steps (src/datasets/utils/frame_sampling.py); off by default
 ):
     ds = VideoGroupDataset(
         data_paths=data_paths,
@@ -87,7 +89,8 @@ def make_videogroupdataset(
         training=training,                # <<< pass through
         miss_augment_prob=miss_augment_prob,
         min_present=min_present,
-        split_name=split_name
+        split_name=split_name,
+        fractional_frame_step=fractional_frame_step,
     )
     
     # Mark the split (used by MISS augmentation)
@@ -168,7 +171,8 @@ class VideoGroupDataset(Dataset):
         training=False, 
         miss_augment_prob=0.0, 
         min_present=1,
-        split_name="train"
+        split_name="train",
+        fractional_frame_step=False,
     ):
         super().__init__()
     
@@ -216,6 +220,7 @@ class VideoGroupDataset(Dataset):
         self.duration = duration
         self.fps = fps
         self.num_clips_per_video = num_clips_per_video
+        self.fractional_frame_step = bool(fractional_frame_step)
         self.random_clip_sampling = random_clip_sampling
         self.allow_clip_overlap = allow_clip_overlap
         self.filter_short_videos = filter_short_videos
@@ -418,6 +423,8 @@ class VideoGroupDataset(Dataset):
         vr = self._open_vr(sample_uri)
         if vr is None:
             return [], None
+        if self.fractional_frame_step:
+            return self._fractional_multi(vr, sample_uri, fpc, k)
     
         # --- derive stride and window size ---
         fstp = self.frame_step
@@ -482,6 +489,31 @@ class VideoGroupDataset(Dataset):
             offset += fpc
     
         return clips, per_clip_inds
+
+    def _fractional_multi(self, vr, sample_uri, fpc, k):
+        """`_loadvideo_decord_multi` with a fractional frame step (`fractional_frame_step`): K contiguous clips at
+        the exact rate asked for; past the video's end the last frame is repeated, as without it. Training
+        (`training` and `random_clip_sampling`) starts at a random frame where all K clips fit; evaluation at
+        frame 0. A video without a usable frame rate is read frame by frame, as the single-clip loader does."""
+        video_fps = None
+        if (self.duration is not None) or (self.fps is not None):
+            try:
+                video_fps = float(vr.get_avg_fps())
+            except Exception as e:
+                logger.warning(f"FPS unavailable: {type(e).__name__}.")
+                video_fps = float("nan")
+            if not (math.isfinite(video_fps) and video_fps > 0):
+                warnings.warn(f"Unusable FPS {video_fps}: sampling every frame.")
+        step = frame_sampling.native_step(video_fps, fpc, frame_step=self.frame_step, fps=self.fps,
+                                          duration=self.duration)
+        V = len(vr)
+        if V == 0:
+            return [], None
+        random_start = bool(self._is_training and self.random_clip_sampling)
+        per_clip_inds = frame_sampling.contiguous_indices(V, fpc, k, step, random_start=random_start)
+        frames_all = vr.get_batch(np.concatenate(per_clip_inds)).asnumpy()
+        frames_all = fix_legacy_colors(frames_all, sample_uri, "RGB")  # legacy YBR swap (utils/color_order.py)
+        return [frames_all[i * fpc:(i + 1) * fpc] for i in range(k)], per_clip_inds
 
 
 

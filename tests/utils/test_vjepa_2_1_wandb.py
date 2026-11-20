@@ -2,7 +2,8 @@
 
 """The V-JEPA 2.1 trainer's wandb logging, on CPU with a fake wandb: what one short run logs,
 that private environment capture is disabled, that a restart reattaches to its run, and that a
-cooldown starting from `anneal_ckpt` opens a new one."""
+cooldown starting from `anneal_ckpt` opens a new one. Also that a restart refuses a checkpoint
+trained with other clip sampling (`fps`, `fractional_frame_step`)."""
 
 import os
 import tempfile
@@ -88,7 +89,8 @@ def cooldown_config(folder, anneal_ckpt):
     return cfg
 
 
-class TestTrainerWandb(QuietLogs):
+class TrainerOnCpu(QuietLogs):
+    """Runs the trainer on CPU in one gloo process, with a fake wandb."""
 
     @classmethod
     def setUpClass(cls):
@@ -118,6 +120,9 @@ class TestTrainerWandb(QuietLogs):
                 mock.patch("torch.cuda.max_memory_allocated", return_value=0):
             train.main(cfg)
         return self.wandb.runs[-1] if self.wandb.runs else None
+
+
+class TestTrainerWandb(TrainerOnCpu):
 
     def test_the_run_config_holds_no_path(self):
         cfg = config(os.path.join(self.tmp, "pretrain"))
@@ -234,6 +239,42 @@ class TestTrainerWandb(QuietLogs):
         self.assertEqual(self.wandb.calls, [])
         saved = torch.load(os.path.join(folder, "latest.pth.tar"), map_location="cpu", weights_only=False)
         self.assertIsNone(saved["wandb_run_id"])
+
+
+class TestTrainerClipSamplingResume(TrainerOnCpu):
+    """A checkpoint records its clip sampling (`fps`, `fractional_frame_step`); a resume with other settings is
+    refused, and a checkpoint without the record resumes only with the option off."""
+
+    def latest(self, folder):
+        return os.path.join(folder, "latest.pth.tar")
+
+    def sampling_config(self, folder, epochs, fractional=False, fps=None):
+        cfg = config(folder, epochs=epochs, wandb=False)
+        cfg["data"]["fractional_frame_step"] = fractional
+        if fps is not None:
+            cfg["data"]["fps"] = fps
+        return cfg
+
+    def test_resume_records_and_checks_the_clip_sampling(self):
+        folder = os.path.join(self.tmp, "pretrain")
+        self.run_trainer(self.sampling_config(folder, 1))
+        saved = torch.load(self.latest(folder), map_location="cpu", weights_only=False)
+        self.assertEqual(saved["clip_sampling"], {"fps": 8, "fractional_frame_step": False})
+        for changed in (dict(fractional=True), dict(fps=12)):
+            with self.assertRaisesRegex(ValueError, "clip sampling"):
+                self.run_trainer(self.sampling_config(folder, 2, **changed))
+        self.run_trainer(self.sampling_config(folder, 2))  # the same settings resume
+        self.assertEqual(torch.load(self.latest(folder), map_location="cpu", weights_only=False)["epoch"], 2)
+
+    def test_resume_of_a_checkpoint_without_the_record(self):
+        folder = os.path.join(self.tmp, "pretrain")
+        self.run_trainer(self.sampling_config(folder, 1))
+        saved = torch.load(self.latest(folder), map_location="cpu", weights_only=False)
+        del saved["clip_sampling"]  # as checkpoints written before the record
+        torch.save(saved, self.latest(folder))
+        with self.assertRaisesRegex(ValueError, "fractional_frame_step"):
+            self.run_trainer(self.sampling_config(folder, 2, fractional=True))
+        self.run_trainer(self.sampling_config(folder, 2))  # option off: resumes as before
 
 
 if __name__ == "__main__":

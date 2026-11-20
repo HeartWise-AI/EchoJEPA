@@ -186,6 +186,12 @@ def main(args_eval, resume_preempt=False):
     frames_per_clip = args_data.get("frames_per_clip", 16)
     frame_step = args_data.get("frame_step", 4)
     duration = args_data.get("clip_duration", None)
+    # `fps` (or `clip_duration`) replaces `frame_step`; `fractional_frame_step` samples at the exact rate
+    # (docs/frame_sampling.md). Both off by default, so configs without them read the same frames.
+    fps = args_data.get("fps")
+    if fps is not None or duration is not None:
+        frame_step = None
+    fractional_frame_step = bool(args_data.get("fractional_frame_step", False))
     num_views_per_segment = args_data.get("num_views_per_segment", 1)
     normalization = args_data.get("normalization", None)
 
@@ -318,6 +324,8 @@ def main(args_eval, resume_preempt=False):
         frames_per_clip=frames_per_clip,
         frame_step=frame_step,
         eval_duration=duration,
+        fps=fps,
+        fractional_frame_step=fractional_frame_step,
         num_segments=num_segments,
         num_views_per_segment=1,
         num_clips_per_video=num_clips_per_video,
@@ -341,6 +349,8 @@ def main(args_eval, resume_preempt=False):
         frame_step=frame_step,
         num_segments=num_segments,
         eval_duration=duration,
+        fps=fps,
+        fractional_frame_step=fractional_frame_step,
         num_views_per_segment=num_views_per_segment,
         num_clips_per_video=num_clips_per_video,
         allow_segment_overlap=True,
@@ -1055,7 +1065,9 @@ def make_dataloader(
     normalization=None,
     miss_augment_prob=0.0,
     min_present=1,
-    split_name="train"
+    split_name="train",
+    fps=None,
+    fractional_frame_step=False,
 ):
     if normalization is None:
         normalization = DEFAULT_NORMALIZATION
@@ -1105,6 +1117,8 @@ def make_dataloader(
         clip_len=frames_per_clip,
         frame_sample_rate=frame_step,
         duration=eval_duration,
+        fps=fps,
+        fractional_frame_step=fractional_frame_step,
         num_clips=num_segments,
         num_clips_per_video=num_clips_per_video,  # NEW: pass through  
         allow_clip_overlap=allow_segment_overlap,
