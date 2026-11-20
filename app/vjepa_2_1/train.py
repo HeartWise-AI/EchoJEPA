@@ -531,6 +531,8 @@ def main(args, resume_preempt=False):
         # startup overhead each time.
         persistent_workers=cfgs_data.get("persistent_workers", False),
         in_order=cfgs_data.get("in_order", True),
+        # Exact-rate clips (src/datasets/utils/frame_sampling.py); off by default so older runs reproduce.
+        fractional_frame_step=cfgs_data.get("fractional_frame_step", False),
         log_dir=None,
     )
     try:

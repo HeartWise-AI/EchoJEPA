@@ -153,6 +153,7 @@ def main(args, resume_preempt=False):
     batch_size = cfgs_data.get("batch_size")
     tubelet_size = cfgs_data.get("tubelet_size")
     fps = cfgs_data.get("fps")
+    fractional_frame_step = cfgs_data.get("fractional_frame_step", False)  # exact-rate clips; off by default
     crop_size = cfgs_data.get("crop_size", 224)
     patch_size = cfgs_data.get("patch_size")
     pin_mem = cfgs_data.get("pin_mem", False)
@@ -289,6 +290,7 @@ def main(args, resume_preempt=False):
         collator=mask_collator,
         num_workers=num_workers,
         pin_mem=pin_mem,
+        fractional_frame_step=fractional_frame_step,
         log_dir=None,
     )
 
@@ -601,6 +603,7 @@ def main(args, resume_preempt=False):
                                 collator=mask_collator,
                                 num_workers=num_workers,
                                 pin_mem=pin_mem,
+                                fractional_frame_step=fractional_frame_step,
                                 log_dir=None,
                             )
                             unsupervised_sampler.set_epoch(epoch)

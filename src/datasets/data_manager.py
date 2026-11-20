@@ -43,7 +43,8 @@ def init_data(
     img_size=336,
     miss_augment_prob=0.0,          # <<< NEW
     min_present=1,                  # <<< NEW
-    split_name="train"
+    split_name="train",
+    fractional_frame_step=False,    # exact-rate frame steps (src/datasets/utils/frame_sampling.py); off by default
 ):
     if data.lower() == "imagenet":
         from src.datasets.imagenet1k import make_imagenet1k
@@ -93,6 +94,7 @@ def init_data(
             deterministic=deterministic,
             log_dir=log_dir,
             in_order=in_order,
+            fractional_frame_step=fractional_frame_step,
         )
 
     elif data.lower() == "videogroupdataset":  
@@ -104,6 +106,7 @@ def init_data(
             group_size=num_clips,  # num_segments from config  
             frames_per_clip=clip_len,  
             frame_step=frame_sample_rate,  
+            fps=fps,
             num_clips_per_video=num_clips_per_video,  # NEW  
             random_clip_sampling=random_clip_sampling,  
             allow_clip_overlap=allow_clip_overlap,  
@@ -121,7 +124,8 @@ def init_data(
             training=training,                 # <<< NEW
             miss_augment_prob=miss_augment_prob,          # <<< NEW
             min_present=min_present,                  # <<< NEW
-            split_name=split_name
+            split_name=split_name,
+            fractional_frame_step=fractional_frame_step,
         )
 
     return (data_loader, dist_sampler)

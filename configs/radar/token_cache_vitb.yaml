@@ -24,6 +24,8 @@ encoder:
 data:
   frames_per_clip: 16
   frame_step: 2
+  # fps: 12                    # instead of frame_step: a target frame rate (as the probe the tokens are for)
+  # fractional_frame_step: true  # with fps: the exact rate, not a whole step (docs/frame_sampling.md)
   resolution: 224
   normalization: null      # ImageNet mean and std, as the probe
 

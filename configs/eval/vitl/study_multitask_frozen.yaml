@@ -55,7 +55,9 @@ experiment:
     min_videos: 1                                 # studies with fewer videos are left out.
     num_clips_per_video: 1                        # clips per video (each of `frames_per_clip` frames).
     frames_per_clip: 16
-    frame_step: 2
+    frame_step: 2                                 # whole frame step; `fps` (or `clip_duration`) replaces it.
+    # fps: 12                                     # target frame rate instead of frame_step.
+    # fractional_frame_step: true                 # with fps: the exact rate (docs/frame_sampling.md).
     resolution: 224
 
   # The encoder stays frozen with `trainable_blocks: 0`. Otherwise its top `trainable_blocks`

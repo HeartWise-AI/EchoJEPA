@@ -87,10 +87,11 @@ def read_split(args_data, split):
 
 
 def make_clip_loader(frames_per_clip, frame_step=None, duration=None, fps=None, num_clips_per_video=1,
-                     random_clip_sampling=True, filter_long_videos=int(10**9)):
+                     random_clip_sampling=True, filter_long_videos=int(10**9), fractional_frame_step=False):
     """A `VideoDataset` without samples, used for its clip sampler only: `loadvideo_decord(path, fpc)`
     reads `num_clips_per_video` clips, pads short videos with black frames (clip index -1) and hides
-    decoder output that could name the file."""
+    decoder output that could name the file. `fractional_frame_step` samples at the exact `fps`
+    (src/datasets/utils/frame_sampling.py)."""
     return VideoDataset(
         data_paths=[],
         frames_per_clip=frames_per_clip,
@@ -101,6 +102,7 @@ def make_clip_loader(frames_per_clip, frame_step=None, duration=None, fps=None, 
         random_clip_sampling=random_clip_sampling,
         allow_clip_overlap=True,
         filter_long_videos=filter_long_videos,
+        fractional_frame_step=fractional_frame_step,
     )
 
 
@@ -237,6 +239,7 @@ class VideoStudyDataset(torch.utils.data.Dataset):
         patient_column="patient_id",
         routing=None,
         seed=0,
+        fractional_frame_step=False,
     ):
         if num_videos < 1:
             raise ValueError("`num_videos` must be at least 1.")
@@ -334,7 +337,8 @@ class VideoStudyDataset(torch.utils.data.Dataset):
                              "(after view_family_map, views and min_videos).")
         self.transform = transform
         self.loader = make_clip_loader(frames_per_clip, frame_step, duration, fps, num_clips_per_video,
-                                       random_clip_sampling=self.training, filter_long_videos=filter_long_videos)
+                                       random_clip_sampling=self.training, filter_long_videos=filter_long_videos,
+                                       fractional_frame_step=fractional_frame_step)
         logger.info(f"Loaded {len(self.studies)} studies ({sum(len(s[1]) for s in self.studies)} videos); "
                     f"{self.num_videos} slots x {self.num_clips_per_video} clips, selection: {self.selection}.")
 
