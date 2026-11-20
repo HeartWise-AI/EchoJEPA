@@ -45,7 +45,7 @@ import yaml
 
 from evals.view_classifier import classes as vc
 from evals.view_classifier import train as vt
-from evals.view_classifier.io import read_run_inputs, run_dir
+from evals.view_classifier.io import check_colour_fix, read_run_inputs, run_dir
 
 POOLINGS = ("mean", "mean_std", "time", "space2", "space4")
 READOUTS = ("logistic", "ncm", "knn")
@@ -294,6 +294,8 @@ def main(argv=None):
               f"{float((oof.y == np.asarray(oof[[f'p_{c}' for c in classes]]).argmax(1)).mean()):.3f}")
         return
     a = cfg[args.arm]
+    with open(os.path.join(cfg["paths"]["token_cache"], "meta.json")) as f:
+        check_colour_fix(cfg, json.load(f))
     readout = a.get("readout", "logistic")
     grid = grid_from_config(a)
     modes = sorted({s.get("pooling", "mean") for s in grid})

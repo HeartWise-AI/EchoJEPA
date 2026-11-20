@@ -13,6 +13,10 @@ classifier's `PSAX` cannot say which level, and its `PLAX_ZOOM` cannot tell a zo
 The label project's live form has six more options than `view_review_v1.json` (`FORM_EXTRAS`, with the parent each is
 given here). A run's class list and parents come from its config (`from_config`): a `classes` mapping
 {new class: old parent}, in output order; without one, `NEW_CLASSES` and `PARENT`.
+
+A config may also merge label names into its classes (`label_merge`, {label: class}, read by `label_merge`): a merged
+name is not an output of the model; its labels count as the target class wherever labels are read (the export, the
+folds table, the pseudo-labels), and its form option is accepted. Without `label_merge` nothing is merged.
 """
 
 import json
@@ -121,14 +125,18 @@ def form_classes(path):
     return tuple(str(o["value"]) for o in views[0].get("options", []) if str(o["value"]).lower() != UNSURE)
 
 
-def check_against_form(names, form_path):
-    """Raise when the live form offers a view the run's class list lacks (its labels could not be used); return the
-    run's classes the form does not offer (kept as outputs, but no reviewer can give them)."""
+def check_against_form(names, form_path, merge=None):
+    """Raise when the live form offers a view the run's class list lacks and `merge` does not map (its labels could
+    not be used); return the run's classes the form does not offer (kept as outputs, but no reviewer can give
+    them)."""
     offered = form_classes(form_path)
-    missing = [c for c in offered if c not in names]
+    merge = merge or {}
+    missing = [c for c in offered if c not in names and c not in merge]
     if missing:
-        raise ValueError(f"The label form offers views the config's `classes` lacks: {missing}. Add them with a parent.")
-    return [c for c in names if c not in offered]
+        raise ValueError(f"The label form offers views the config's `classes` lacks: {missing}. Add them with a parent "
+                         "or merge them (`label_merge`).")
+    given = set(offered) | {merge[c] for c in offered if c in merge}
+    return [c for c in names if c not in given]
 
 
 def from_config(cfg):
@@ -144,3 +152,27 @@ def from_config(cfg):
         raise ValueError("`unsure` is not a class.")
     check_classes(OLD_CLASSES, names, parent)
     return names, parent
+
+
+def label_merge(cfg, names=None):
+    """{label name: class} of a config's `label_merge` (empty without one), checked against its class list: every
+    target is a class, no merged name is itself a class, and no target is merged again."""
+    merge = cfg.get("label_merge") if isinstance(cfg, dict) else None
+    if not merge:
+        return {}
+    if not isinstance(merge, dict):
+        raise ValueError("`label_merge` must map each merged label name to one of the config's classes.")
+    names = from_config(cfg)[0] if names is None else names
+    merge = {canonical(k): canonical(v) for k, v in merge.items()}
+    bad_target = sorted(v for v in merge.values() if v not in names)
+    if bad_target:
+        raise ValueError(f"`label_merge` targets that are not classes: {bad_target}.")
+    bad_source = sorted(k for k in merge if k in names or k.lower() == UNSURE or not k)
+    if bad_source:
+        raise ValueError(f"`label_merge` names that are classes (or unsure / empty): {bad_source}.")
+    return merge
+
+
+def merge_labels(labels, merge):
+    """Label names with `merge` applied (a name not in `merge` is kept)."""
+    return [merge.get(n, n) for n in labels]

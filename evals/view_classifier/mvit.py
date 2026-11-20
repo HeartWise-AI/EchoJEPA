@@ -51,7 +51,7 @@ import yaml
 
 from evals.view_classifier import classes as vc
 from evals.view_classifier import train as vt
-from evals.view_classifier.io import read_run_inputs, run_dir
+from evals.view_classifier.io import check_colour_fix, read_run_inputs, run_dir
 from evals.view_classifier.labels import file_sha256
 
 ARM = "arm_b"
@@ -220,8 +220,11 @@ def random_crop(x, scale_min, generator):
 def echoprime_read(path, frames=16, frame_step=2):
     """uint8 [n, H, W, 3] RGB: frames 0, frame_step, ... of the first frames * frame_step of the video that exist
     (n <= frames), or None when it cannot be decoded. The window is decoded in order and then subsampled, as
-    `preprocess_variants` reads it. Decoder output, which could name the file, is discarded."""
+    `preprocess_variants` reads it. The legacy YBR colour swap of the archive's MP4 files is undone as the dataset
+    loader undoes it (`src.datasets.utils.color_order.fix_legacy_colors`: only for paths that need it, and not when
+    ECHOJEPA_LEGACY_YBR_FIX=0). Decoder output, which could name the file, is discarded."""
     from decord import VideoReader, cpu
+    from src.datasets.utils import color_order
     from src.datasets.video_dataset import _native_stderr_discarded
     try:
         with _native_stderr_discarded():
@@ -229,9 +232,10 @@ def echoprime_read(path, frames=16, frame_step=2):
             n = min(len(vr), frames * frame_step)
             if n == 0:
                 return None
-            return vr.get_batch(list(range(n))).asnumpy()[::frame_step][:frames]
+            buffer = vr.get_batch(list(range(n))).asnumpy()[::frame_step][:frames]
     except Exception:
         return None
+    return color_order.fix_legacy_colors(buffer, path, "RGB")
 
 
 def pad_frames(clip, frames):
@@ -342,7 +346,8 @@ def zero_shot(cfg, device, workers):
     model = load_original(paths["view_classifier"], b.get("weights_sha256")).to(device).eval()
     record = {"clips": len(pool), "decoded": len(row), "unreadable": len(failed), "decode_seconds": decode_seconds,
               "decode_clips_per_s": len(row) / max(decode_seconds, 1e-9), "decode_workers": workers,
-              "preprocessing": preprocessing, "frame_read": frame_read, "orders": {}}
+              "preprocessing": preprocessing, "frame_read": frame_read, "legacy_ybr_fix": check_colour_fix(cfg),
+              "orders": {}}
     keep = pool[pool.video_path.isin(row)].reset_index(drop=True)
     for order in ("rgb", "bgr"):
         probs, seconds = [], 0.0
@@ -381,6 +386,7 @@ def main(argv=None):
     with open(args.config) as f:
         cfg = yaml.safe_load(f)
     device = torch.device(args.device)
+    check_colour_fix(cfg)
     if args.stage == "zeroshot":
         return zero_shot(cfg, device, args.workers)
     if args.pseudo is None:

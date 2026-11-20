@@ -127,7 +127,7 @@ def collect(cfg):
     classes, parent = vc.from_config(cfg)
     with open(os.path.join(p["inputs"], "archive_counts.json")) as f:
         archive = json.load(f)["all_splits"]
-    labels = with_targets(read_folds(p["folds"], classes), parent, archive)
+    labels = with_targets(read_folds(p["folds"], classes, vc.label_merge(cfg, classes)), parent, archive)
     evaluated = evaluated_classes(labels, classes, parent, int(r.get("min_class_support", 10)))
     col = Collector(r, evaluated)
     for (arm, pseudo), oof in find_runs(p["runs"]).items():

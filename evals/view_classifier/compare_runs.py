@@ -3,7 +3,11 @@
 """Two or more snapshots of the comparison side by side: the same labels and folds, another input (e.g. s1 vs s2).
 
 Each snapshot is one config (its `paths.runs`). Every snapshot must score the same labelled clips with the same folds
-(checked), so their out-of-fold predictions are paired clip by clip. Outputs, in `--out`:
+(checked), so their out-of-fold predictions are paired clip by clip. The last config's class list is the one scored:
+when it merges label names into its classes (`label_merge`, e.g. a later snapshot with fewer views), an earlier
+snapshot's labels are merged the same way and its probabilities of a merged class are added to the target class before
+scoring, so the snapshots are compared on the same classes (`paired_across_snapshots.csv`: `earlier_merged`). Each
+snapshot's own report (`summary_side_by_side.csv`) stays on its own classes. Outputs, in `--out`:
 
 - `summary_side_by_side.csv`: every snapshot's `report/summary.csv` rows (step 07 run for each config first), with a
   `snapshot` column (the name of its runs folder);
@@ -46,49 +50,86 @@ def oof_runs(runs_dir):
     return found
 
 
+def target_classes(configs):
+    """(classes, parents, label merge) of the last config: the class list every snapshot is scored on."""
+    classes, parent = vc.from_config(configs[-1])
+    return classes, parent, vc.label_merge(configs[-1], classes)
+
+
+def class_map(cfg, configs):
+    """(this config's classes, the target class each one counts as): the target's `label_merge` applied, refused
+    when a class is neither a target class nor merged into one."""
+    target, _, merge = target_classes(configs)
+    classes, _ = vc.from_config(cfg)
+    mapped = vc.merge_labels(classes, merge)
+    lost = sorted(c for c, m in zip(classes, mapped) if m not in target)
+    if lost:
+        raise ValueError(f"{snapshot_name(cfg)} has classes the last snapshot neither has nor merges: {lost}.")
+    return classes, mapped
+
+
 def same_labels(configs):
-    """The labels table of the first config, after checking that every config has the same classes, clips, labels
-    and folds."""
+    """The labels table (y under the last config's classes), after checking that every config has the same clips,
+    labels (after the last config's merge) and folds, and classes that map onto the last config's."""
+    target, parent, merge = target_classes(configs)
     first = None
     for cfg in configs:
-        classes, parent = vc.from_config(cfg)
-        labels = read_folds(cfg["paths"]["folds"], classes)[["clip_id", "y", "fold"]]
+        classes, _ = class_map(cfg, configs)
+        labels = read_folds(cfg["paths"]["folds"], classes, vc.label_merge(cfg, classes))[["clip_id", "label", "fold"]]
+        labels["label"] = vc.merge_labels(labels.label, merge)
+        labels["y"] = labels.label.map({c: i for i, c in enumerate(target)})
+        if labels.y.isna().any():
+            raise ValueError(f"{snapshot_name(cfg)} has labels outside the last snapshot's classes.")
+        labels = labels.assign(y=labels.y.astype(int))[["clip_id", "y", "fold"]]
         labels = labels.sort_values("clip_id").reset_index(drop=True)
-        key = (tuple(classes), tuple(parent[c] for c in classes))
         if first is None:
-            first = (key, labels)
-        elif key != first[0] or not labels.equals(first[1]):
-            raise ValueError(f"{snapshot_name(cfg)} has other classes, labels or folds than "
+            first = labels
+        elif not labels.equals(first):
+            raise ValueError(f"{snapshot_name(cfg)} has other clips, labels or folds than "
                              f"{snapshot_name(configs[0])}: its predictions cannot be paired.")
-    return first[1]
+    return first
 
 
-def predictions(labels, oof, classes, parent):
-    """(new-class argmax, old-class argmax) per labelled clip, in the labels' order."""
+def to_target(probs, classes, mapped, target):
+    """Probabilities [N, len(classes)] -> [N, len(target)]: each class's probability added to the class it counts as."""
+    out = np.zeros((len(probs), len(target)))
+    for j, m in enumerate(mapped):
+        out[:, target.index(m)] += probs[:, j]
+    return out
+
+
+def predictions(labels, oof, classes, parent, mapped=None, target=None):
+    """(new-class argmax, old-class argmax) per labelled clip, in the labels' order. With `mapped` and `target`, the
+    run's probabilities over `classes` are first summed onto `target` (`to_target`); `parent` is then the target's."""
     t = labels[["clip_id"]].merge(oof, on="clip_id", how="left", validate="one_to_one")
     probs = t[[f"p_{c}" for c in classes]].to_numpy(dtype=float)
     if np.isnan(probs).any():
         raise ValueError("A run does not predict every labelled clip.")
+    if target is not None:
+        probs, classes = to_target(probs, classes, mapped, target), target
     old = vm.collapse_probabilities(probs, classes, parent, vc.OLD_CLASSES)
     return probs.argmax(axis=1), old.argmax(axis=1)
 
 
 def paired_rows(configs, labels, samples, seed):
-    classes, parent = vc.from_config(configs[0])
+    classes, parent, _ = target_classes(configs)
+    maps = [class_map(c, configs) for c in configs]
     y_new = labels.y.to_numpy()
     y_old = np.asarray([vc.OLD_CLASSES.index(parent[classes[i]]) for i in y_new])
     runs = [(snapshot_name(c), oof_runs(c["paths"]["runs"])) for c in configs]
+    merged = [tuple(own) != tuple(classes) for own, _ in maps]
     rows = []
     for i, (name_a, runs_a) in enumerate(runs):
-        for name_b, runs_b in runs[i + 1:]:
+        for j, (name_b, runs_b) in enumerate(runs[i + 1:], start=i + 1):
             for key in sorted(set(runs_a) & set(runs_b)):
-                new_a, old_a = predictions(labels, runs_a[key], classes, parent)
-                new_b, old_b = predictions(labels, runs_b[key], classes, parent)
+                new_a, old_a = predictions(labels, runs_a[key], maps[i][0], parent, maps[i][1], classes)
+                new_b, old_b = predictions(labels, runs_b[key], maps[j][0], parent, maps[j][1], classes)
                 for granularity, truth, a, b, n in (("new", y_new, new_a, new_b, len(classes)),
                                                     ("old", y_old, old_a, old_b, len(vc.OLD_CLASSES))):
                     d = vm.paired_difference(truth, b, a, n, samples, seed)     # later snapshot minus earlier
                     rows.append({"arm": key[0], "pseudo": key[1], "granularity": granularity,
-                                 "later": name_b, "earlier": name_a,
+                                 "later": name_b, "earlier": name_a, "earlier_merged": merged[i],
+                                 "later_merged": merged[j],
                                  "accuracy_later": vm.accuracy(truth, b), "accuracy_earlier": vm.accuracy(truth, a),
                                  **d})
     return pd.DataFrame(rows)
@@ -117,6 +158,11 @@ def markdown(summary, pairs):
              "Same labels, folds and selection rule; only what the snapshot's config changes (e.g. the input). "
              "Pooled out-of-fold predictions; 95% bootstrap intervals over clips.", "",
              "## All clips", ""]
+    if not pairs.empty and (pairs.earlier_merged.any() or pairs.later_merged.any()):
+        lines[2:2] = ["The paired differences are scored on the last snapshot's classes: the labels and the "
+                      "probabilities of an earlier snapshot's merged classes were added to their target class first "
+                      "(the last config's `label_merge`). The side-by-side rows are each snapshot's own report, on "
+                      "its own classes.", ""]
     head = summary[summary.subset == "all"].sort_values(["granularity", "arm", "pseudo", "snapshot"])
     cols = ["snapshot", "arm", "pseudo", "granularity", "n"] + [c for c in HEADLINE if c in head.columns]
     lines.append("| " + " | ".join(cols) + " |")

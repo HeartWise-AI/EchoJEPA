@@ -20,6 +20,7 @@ subset of its tokens, a different one at every step; evaluation uses all tokens)
 """
 
 import argparse
+import json
 import os
 
 import numpy as np
@@ -28,7 +29,7 @@ import yaml
 
 from evals.view_classifier import classes as vc
 from evals.view_classifier import train as vt
-from evals.view_classifier.io import read_run_inputs, run_dir
+from evals.view_classifier.io import check_colour_fix, read_run_inputs, run_dir
 
 ARM = "arm_a"
 
@@ -122,6 +123,8 @@ def main(argv=None):
               f"{float((oof.y == np.asarray(oof[[f'p_{c}' for c in classes]]).argmax(1)).mean()):.3f}")
         return
     a = cfg[name]
+    with open(os.path.join(cfg["paths"]["token_cache"], "meta.json")) as f:
+        check_colour_fix(cfg, json.load(f))
     ids = list(labels.clip_id) + ([] if pseudo is None else list(pseudo.clip_id))
     data, row = load_tokens(cfg["paths"]["token_cache"], ids, a.get("encoder_sha256"),
                             tuple(a.get("token_grid", (8, 14, 14))), int(a.get("embed_dim", 768)))

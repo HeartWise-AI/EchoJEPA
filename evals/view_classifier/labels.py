@@ -38,11 +38,12 @@ def file_sha256(path):
     return h.hexdigest()
 
 
-def read_labels(table, new_classes=vc.NEW_CLASSES, aliases=None, batches=None):
+def read_labels(table, new_classes=vc.NEW_CLASSES, aliases=None, batches=None, merge=None):
     """(usable labels, drop counts). `table` is a DataFrame or a CSV path. Usable rows get `label` (the class name)
     and `y` (its index in `new_classes`). Drop counts: a DataFrame with `reason` and `n`, zero rows included.
     `batches` (a list of batch numbers, or None for every row): keep only rows whose `batch` is listed; the others
-    are dropped first, as `other_batch`. The checks of statuses, keys and views still cover every row."""
+    are dropped first, as `other_batch`. The checks of statuses, keys and views still cover every row. `merge`
+    ({label name: class}, `classes.label_merge`) turns a merged name into its class first."""
     labels = pd.read_csv(table, dtype=str, keep_default_na=False) if isinstance(table, str) else table.copy()
     missing = [c for c in LABEL_COLUMNS if c not in labels.columns]
     if missing:
@@ -54,6 +55,8 @@ def read_labels(table, new_classes=vc.NEW_CLASSES, aliases=None, batches=None):
     if unknown_status:
         raise ValueError(f"Unknown label_status values {unknown_status}.")
     view = labels.human_view.map(lambda v: vc.canonical(v, aliases))
+    if merge:
+        view = view.map(lambda v: merge.get(v, v))
     done = status == "done"
     known = view.isin(new_classes) | view.isin(["", vc.UNSURE])
     bad = sorted(set(view[done & ~known]))

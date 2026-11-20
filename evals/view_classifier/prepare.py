@@ -123,11 +123,12 @@ def usable_labels(cfg):
     classes, _ = vc.from_config(cfg)
     if not os.path.exists(p["labels"]):
         raise FileNotFoundError("The label export is missing.")
+    merge = vc.label_merge(cfg, classes)
     if p.get("form"):
-        unused = vc.check_against_form(classes, p["form"])
+        unused = vc.check_against_form(classes, p["form"], merge)
         if unused:
             print(f"note: classes the label form does not offer (never a label): {unused}")
-    usable, drops = vl.read_labels(p["labels"], classes, batches=cfg.get("label_batches"))
+    usable, drops = vl.read_labels(p["labels"], classes, batches=cfg.get("label_batches"), merge=merge)
     pool_path = os.path.join(p["inputs"], "pool_clips.csv")
     pool_clips = pd.read_csv(pool_path if os.path.exists(pool_path) else p["pool"], dtype=str)
     usable = vl.check_against_pool(usable, pool_clips)

@@ -358,9 +358,11 @@ def normalize_padded(x, n_real, channel_order):
 # Decoding (workers) and scoring.
 
 def decode_frames(path, max_frames=0):
-    """Every frame (or the first `max_frames`) of a video as uint8 [T, H, W, 3] RGB, or None. Decoder output, which
-    could name the file, is discarded."""
+    """Every frame (or the first `max_frames`) of a video as uint8 [T, H, W, 3] RGB, or None; the legacy YBR colour
+    swap undone as the dataset loader does (`color_order.fix_legacy_colors`, off with ECHOJEPA_LEGACY_YBR_FIX=0).
+    Decoder output, which could name the file, is discarded."""
     from decord import VideoReader, cpu
+    from src.datasets.utils import color_order
     from src.datasets.video_dataset import _native_stderr_discarded
     try:
         with _native_stderr_discarded():
@@ -368,15 +370,18 @@ def decode_frames(path, max_frames=0):
             n = len(vr) if not max_frames else min(len(vr), max_frames)
             if n == 0:
                 return None
-            return vr.get_batch(list(range(n))).asnumpy()
+            frames = vr.get_batch(list(range(n))).asnumpy()
     except Exception:
         return None
+    return color_order.fix_legacy_colors(frames, path, "RGB")
 
 
 def decode_frames_cv2(path, max_frames=WINDOW):
-    """The first `max_frames` frames (0 = all) as OpenCV decodes them, uint8 [T, H, W, 3] RGB, or None. Decoder output,
-    which could name the file, is discarded."""
+    """The first `max_frames` frames (0 = all) as OpenCV decodes them, uint8 [T, H, W, 3] RGB, or None. OpenCV gives
+    BGR: each frame is turned to RGB first, then the legacy YBR colour swap is undone in RGB order, as for
+    `decode_frames`. Decoder output, which could name the file, is discarded."""
     import cv2
+    from src.datasets.utils import color_order
     from src.datasets.video_dataset import _native_stderr_discarded
     try:
         with _native_stderr_discarded():
@@ -388,9 +393,10 @@ def decode_frames_cv2(path, max_frames=WINDOW):
                     break
                 out.append(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
             cap.release()
-        return np.stack(out) if out else None
+        frames = np.stack(out) if out else None
     except Exception:
         return None
+    return color_order.fix_legacy_colors(frames, path, "RGB")
 
 
 class VariantClips(torch.utils.data.Dataset):
@@ -461,7 +467,9 @@ def summarize(table, archive_view, archive_probs=None, acq=None, human_parent=No
 
 @torch.no_grad()
 def run(cfg, device, workers=8, variants=FIRST_ROUND, out=None, limit=None, max_frames=0, batch=16):
+    from evals.view_classifier.io import check_colour_fix
     paths, b = cfg["paths"], cfg[mvit.ARM]
+    check_colour_fix(cfg)
     out = out or os.path.join(paths["runs"], mvit.ARM, "zeroshot_variants")
     if os.path.exists(os.path.join(out, "summary.csv")):
         raise FileExistsError(f"{out} already holds a summary.csv: name another --out (results are never replaced).")

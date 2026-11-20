@@ -13,7 +13,10 @@ the repository's `video_transforms.Resize`, which on decoded frames is `cv2.resi
 so a 636 x 434 or 1016 x 708 frame aliases at 224 x 224), `bicubic_aa` or `bilinear_aa` (`torch.nn.functional.
 interpolate` with antialiasing on the uint8 frames, rounded back to uint8). `bicubic_aa` is the closest to the videos
 EchoJEPA was pretrained on, which ffmpeg's `scale=224:224` made (bicubic, filtered when downscaling). A non-default
-resize is recorded in the transform name (`eval_full_squash_bicubic_aa`). The encoder
+resize is recorded in the transform name (`eval_full_squash_bicubic_aa`). Clips are read by the dataset loader, which
+undoes the legacy YBR colour swap of the archive's MP4 files unless ECHOJEPA_LEGACY_YBR_FIX=0
+(`src.datasets.utils.color_order`); whether the fix was on is recorded in the provenance (`legacy_ybr_fix`), so
+chunks decoded both ways never merge into one cache. The encoder
 is the probe's (`evals.video_classification_frozen.models.init_module`), run without gradients. One clip gives
 `prod(token_grid)` tokens, stored by `src.datasets.radar_token_cache`.
 
@@ -55,6 +58,7 @@ import torch
 import yaml
 
 from src.datasets.radar_study_dataset import file_sha256, read_table
+from src.datasets.utils import color_order
 from src.datasets.radar_token_cache import TokenCache, TokenCacheWriter
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -130,6 +134,7 @@ def provenance(config, args, n_clips, n_excluded):
         "exclude_sha256": sorted(file_sha256(e) for e in args.exclude),
         "clips": n_clips, "excluded": n_excluded, "chunks": args.chunks,
         "builder_sha256": file_sha256(os.path.abspath(__file__)), "commit": _commit(),
+        "legacy_ybr_fix": color_order._enabled(),
     }
     return json.loads(json.dumps(record))    # as meta.json gives it back (tuples become lists)
 
