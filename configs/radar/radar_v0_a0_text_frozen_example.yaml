@@ -1,0 +1,66 @@
+# RADAR v0, arm A0, with a frozen caption encoder (MedGemma 1.5 4B language model) and cached caption features.
+# The same run as radar_v0_a1_text_frozen_example.yaml except loss.use_exact: false; the notes on the weights, the
+# one-off caption encoding and its cost are in that file. A0 and A1 can share `data.text_cache_dir`: the features
+# depend only on the text settings, not on the arm.
+
+device: auto
+data:
+  cache_dir: <runs>/cache_train_p0
+  clips: <runs>/clips_p0_train.csv
+  captions: <captions>/captions.csv
+  text_cache_dir: <runs>/text_features
+  split: train
+  num_clips: 12
+  selection: view_balanced
+  acquisition_classes:
+  - bmode
+  - color_flow
+  normal_fraction: 1.0
+model:
+  token_grid:
+  - 8
+  - 14
+  - 14
+  embed_dim: 768
+  depth: 2
+  num_heads: 12
+  mlp_ratio: 4.0
+  proj_dim: 256
+text:
+  backbone: hf_pretrained
+  name: <models>/medgemma-1.5-4b-it
+  revision: <commit>
+  max_length: 512
+  max_overlength_fraction: 0.01
+  frozen: true
+  pooling: last
+  layer: -1
+  template: 'This sentence : "{}" means in one word:"'
+  dtype: bfloat16
+  head: mlp
+  head_hidden_dim: 1024
+  input_norm: true
+loss:
+  use_exact: false                             # A0
+  use_normal: false
+  use_abnormal_teacher: false
+  init_temperature: 0.07
+  temperature_bounds:
+  - 0.001
+  - 0.5
+optimization:
+  epochs: 30
+  global_batch: 48
+  lr: 0.0001
+  text_lr: 0.0001
+  min_lr: 1.0e-06
+  weight_decay: 0.05
+  warmup_fraction: 0.05
+  seed: 0
+  amp: bf16
+  num_workers: 6
+  worker_start_method: spawn
+meta:
+  wandb_project: <project>
+  wandb_entity: <entity>
+  wandb_run_name: radar-v0-a0-medgemma-frozen-seed0

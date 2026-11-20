@@ -1723,6 +1723,7 @@ class TestPolicy(unittest.TestCase):
         self.root = tempfile.mkdtemp()
         with open(rn.DEFAULT_POLICY, encoding="utf-8") as f:
             self.raw = yaml.safe_load(f)
+        self.raw["approval"] = None                     # the shipped rules, unapproved: the tests change them
 
     def tearDown(self):
         shutil.rmtree(self.root, ignore_errors=True)
@@ -1733,9 +1734,10 @@ class TestPolicy(unittest.TestCase):
             yaml.safe_dump(raw, f)
         return path
 
-    def test_the_shipped_policy_is_provisional_and_covers_every_trained_structure(self):
-        self.assertEqual(POLICY.status, "provisional")
-        self.assertIsNone(POLICY.approval)
+    def test_the_shipped_policy_is_approved_for_exactly_its_rules_and_covers_every_trained_structure(self):
+        self.assertEqual(POLICY.status, "approved")
+        self.assertEqual(POLICY.approval["digest"], POLICY.digest)   # load_policy refuses a stale approval
+        self.assertEqual(rn.load_policy(self.write(self.raw)).status, "provisional")   # without its approval block
         self.assertEqual(POLICY.scope, "bmode")
         self.assertEqual(set(POLICY.required), set(rn.GRAMMARS))
 

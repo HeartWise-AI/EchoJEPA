@@ -1,0 +1,85 @@
+# RADAR v0, arm A1, with a frozen caption encoder (MedGemma 1.5 4B language model) and cached caption features.
+# Replace the <...> paths. Every key is described in the module docstring of evals/radar_frozen/train.py; the frozen
+# path in src/models/radar/frozen_text.py. A0 is the same config with loss.use_exact: false
+# (radar_v0_a0_text_frozen_example.yaml).
+#
+# Weights (gated: accept the Health AI Developer Foundations terms on the model page with a Hugging Face account
+# first), downloaded once into a local folder outside the repository, at a pinned revision:
+#
+#   hf download google/medgemma-1.5-4b-it --revision <commit> --local-dir <models>/medgemma-1.5-4b-it
+#
+# about 8.6 GB (two safetensors shards). `name` points at that folder; the feature key then holds the sha256 of the
+# folder's files, so other weights never reuse these features. Only the language model is loaded (the vision tower
+# is dropped). For a frozen BiomedBERT control, point `name` at the BiomedBERT folder and drop `dtype` (see
+# text_pubmedbert_example.yaml for that folder).
+#
+# One-off caption encoding, before the first step (rank 0, then the others read the cache file):
+# - measured with the BiomedBERT control on the merged v3 English table (1,024 distinct captions): 1 s to load,
+#   4 s to encode, 1.8 GiB peak GPU memory, 0.3 s to reload from the cache file (3 MB);
+# - MedGemma 1.5 4B (not measured: the weights are gated): about 8.6 GB of bfloat16 weights to read and hold on the
+#   GPU during the encoding only (17 GB in float32), and seconds of compute for about a thousand short captions;
+#   the model is released before training starts, and the cache file is about 1,024 x 2,560 floats (10 MB).
+# Zero-shot prompts go through the same store: unseen prompts load the model once at evaluation, are encoded and
+# added to the cache file.
+
+device: auto
+data:
+  cache_dir: <runs>/cache_train_p0             # the EchoJEPA token cache
+  clips: <runs>/clips_p0_train.csv
+  captions: <captions>/captions.csv            # English captions
+  text_cache_dir: <runs>/text_features         # cached caption features; a path only, outside the fingerprint
+  split: train
+  num_clips: 12
+  selection: view_balanced
+  acquisition_classes:
+  - bmode
+  - color_flow
+  normal_fraction: 1.0
+model:
+  token_grid:
+  - 8
+  - 14
+  - 14
+  embed_dim: 768
+  depth: 2
+  num_heads: 12
+  mlp_ratio: 4.0
+  proj_dim: 256
+text:
+  backbone: hf_pretrained
+  name: <models>/medgemma-1.5-4b-it            # the local folder written above
+  revision: <commit>                           # the commit downloaded; ignored for a local folder (its files are hashed)
+  max_length: 512                              # captions longer than this are left out (fit_captions); 128K context
+  max_overlength_fraction: 0.01
+  frozen: true
+  pooling: last                                # mean | last | cls | pooler; last token of the template below
+  layer: -1                                    # hidden-state index (-1 = last layer)
+  template: 'This sentence : "{}" means in one word:"'   # mean pooling or no template loses negation (encoder check)
+  dtype: bfloat16                              # the checkpoint's dtype; float32 needs about 17 GB during encoding
+  head: mlp                                    # mlp (default): LayerNorm, Linear(H, 1024), GELU, Linear(1024, 256)
+  head_hidden_dim: 1024
+  input_norm: true                             # LayerNorm on the frozen features (decoder hidden states have outliers)
+loss:
+  use_exact: true                              # A1
+  use_normal: false
+  use_abnormal_teacher: false
+  init_temperature: 0.07
+  temperature_bounds:
+  - 0.001
+  - 0.5
+optimization:
+  epochs: 30
+  global_batch: 48
+  lr: 0.0001
+  text_lr: 0.0001                              # the head only, trained from scratch: the vision side's rate, not 1e-5
+  min_lr: 1.0e-06
+  weight_decay: 0.05
+  warmup_fraction: 0.05
+  seed: 0
+  amp: bf16
+  num_workers: 6
+  worker_start_method: spawn
+meta:
+  wandb_project: <project>
+  wandb_entity: <entity>
+  wandb_run_name: radar-v0-a1-medgemma-frozen-seed0
