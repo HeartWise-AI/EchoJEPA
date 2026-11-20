@@ -5,6 +5,7 @@ review checkout in `COLUMN_REVIEW_ROOT`): prefill sentences, findings dropped by
 wall segment summary, the flag, and a table the RADAR dataset accepts. The EF sentence's reading of the text and its
 choice of source need no checkout."""
 
+import dataclasses
 import json
 import os
 import sys
@@ -100,9 +101,9 @@ class TestMergedCaptions(unittest.TestCase):
         cls.cr, cls.spec = cmp.load_column_review(COLUMN_REVIEW_ROOT)
         cmp.index_columns(cls.spec)
 
-    def row(self, structure, report, views=("A4C", "PLAX"), **options):
+    def row(self, structure, report, views=("A4C", "PLAX"), policy=POLICY, **options):
         entry = next(s for s in ROUTING.trained if s.name == structure)
-        return merged.merged_row("S1", entry, report, set(views) & set(entry.views), POLICY, self.spec, self.cr,
+        return merged.merged_row("S1", entry, report, set(views) & set(entry.views), policy, self.spec, self.cr,
                                  LIMITS, **options)
 
     def sources(self, row):
@@ -116,7 +117,18 @@ class TestMergedCaptions(unittest.TestCase):
         self.assertIn("LV systolic function appears normal.", row["caption"])
         self.assertEqual(self.sources(row)["lv_size"], ("normal", "prefill_text"))
         self.assertNotRegex(row["caption"], r"\d")                 # no EF number, no measurement
-        self.assertEqual(row["normality_status"], "provisional")
+        self.assertEqual(row["normality_status"], POLICY.status)
+
+    def test_rows_carry_the_policy_status(self):
+        report = {LV: "Ventricule gauche non dilaté. Fonction systolique normale.", LVIDD: 4.8, EF: 60.0}
+        approved = dataclasses.replace(POLICY, status="approved",
+                                       approval={"by": "test", "on": "2026-01-01", "digest": POLICY.digest})
+        provisional = dataclasses.replace(POLICY, status="provisional", approval=None)
+        for policy in (approved, provisional):
+            with self.subTest(status=policy.status):
+                row, _ = self.row("lv", report, policy=policy)
+                self.assertEqual(row["normality_status"], policy.status)
+                self.assertEqual(row["policy_digest"], POLICY.digest)
 
     def test_a_contradicted_finding_is_dropped_and_listed(self):
         row, dropped = self.row("lv", {LV: "Ventricule gauche non dilaté. Fonction systolique normale.",

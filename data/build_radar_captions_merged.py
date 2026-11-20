@@ -41,7 +41,8 @@ comparison tool.
 
 `normality` is `abnormal` when a kept sentence is abnormal or names a device, `normal` when every sentence is normal
 and the parser's own flag for the report text is normal, else `unknown`; the EF sentence (item 7) is left out of it.
-It is PROVISIONAL (`normality_status`), so the loss arms that read it (A2, A3) refuse this table. `sources` lists,
+`normality_status` is the policy's status: while the policy is provisional, the loss arms that read the flags (A2,
+A3) refuse this table; under an approved policy (its `approval` block) the rows say `approved`. `sources` lists,
 per sentence, the column, the value and where it came from (prefill_text, prefill_code, parser, ef_band, default,
 grade, ef_text, ef_conclusion, ef_structured): categories and the EF value only, no report text. `dropped.csv` lists
 the prefill findings left out and why.
@@ -562,7 +563,7 @@ def caption_row(study_id, name, kept, flag, policy, spec):
                  "normal" if sides == {"normal"} and flag == "normal" else "unknown")
     sources = [kept[c][3] for c in columns]
     return {"study_id": study_id, "structure": name, "caption": caption, "caption_id": rc.caption_id(caption),
-            "normality": normality, "normality_status": "provisional", "policy_digest": policy.digest,
+            "normality": normality, "normality_status": policy.status, "policy_digest": policy.digest,
             "sentences": len(texts), "from_prefill": sum(s.startswith("prefill") for s in sources),
             "from_parser": sources.count("parser"), "from_ef": sources.count("ef_band"),
             "sources": json.dumps([[c, kept[c][2], kept[c][3]] for c in columns])}
@@ -730,7 +731,7 @@ def main(argv=None):
                      lambda temporary: dropped.to_csv(temporary, index=False))
     info = {"builder": "merged", "language": "en", "split": args.split, "studies_in_split": len(studies),
             "studies_linked": int(linked.study_id.nunique()), "patients": patients, "rows": len(captions),
-            "policy_status": "provisional", "policy_digest": policy.digest, "rule_version": policy.rule_version,
+            "policy_status": policy.status, "policy_digest": policy.digest, "rule_version": policy.rule_version,
             "flags": {k: int(v) for k, v in captions.normality.value_counts().items()},
             "rows_per_structure": {k: int(v) for k, v in captions.structure.value_counts().items()},
             "sentences": {"prefill": int(captions.from_prefill.sum()), "parser": int(captions.from_parser.sum()),
