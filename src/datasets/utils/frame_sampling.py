@@ -81,3 +81,46 @@ def clip_indices(num_frames, frames_per_clip, step, *, num_clips=1, random_start
         indices = np.clip(indices, 0, num_frames - 1).astype(np.int64)
         out.append((indices, int(n_real)))
     return out
+
+
+def contiguous_indices(num_frames, frames_per_clip, num_clips, step, *, random_start=False, rng=np.random):
+    """[indices [frames_per_clip] int64] of `num_clips` back-to-back clips (the group loader's layout): clip i
+    starts where clip i-1 would have taken its next frame, all at `step`. In training (`random_start`) the first
+    clip starts at a random whole frame among the positions where all clips fit; otherwise, or when they do not
+    fit, at frame 0. Indices past the video's end repeat its last frame."""
+    if num_frames < 1:
+        raise ValueError("A video needs at least one frame.")
+    offsets = _offsets(step, num_clips * frames_per_clip)
+    last = int(offsets[-1])
+    start = rng.randint(0, num_frames - last) if (random_start and num_frames > last) else 0
+    indices = np.clip(start + offsets, 0, num_frames - 1).astype(np.int64)
+    return [indices[i * frames_per_clip:(i + 1) * frames_per_clip] for i in range(num_clips)]
+
+
+# Pretraining checkpoints record the clip sampling they were trained with under this key, so that a resume cannot
+# silently switch between whole and fractional frame steps, or change the frame rate.
+CHECKPOINT_KEY = "clip_sampling"
+
+
+def sampling_record(fps=None, fractional_frame_step=False):
+    """The clip-sampling settings a pretraining checkpoint records."""
+    return {"fps": fps, "fractional_frame_step": bool(fractional_frame_step)}
+
+
+def check_resume(checkpoint, current, path="the checkpoint"):
+    """Refuse to resume `checkpoint` (a dict) with other clip-sampling settings than it was trained with.
+    `current` is this run's `sampling_record`. A checkpoint without a record was written before the option
+    existed, with whole frame steps: it resumes only when this run keeps `fractional_frame_step` off."""
+    saved = checkpoint.get(CHECKPOINT_KEY)
+    if saved is None:
+        if current["fractional_frame_step"]:
+            raise ValueError(
+                f"{path} records no clip sampling, so it was trained with whole frame steps; it cannot be resumed "
+                "with `fractional_frame_step: true`. Resume it with the option off, or start a new run from its "
+                "weights only.")
+        return
+    saved = sampling_record(saved.get("fps"), saved.get("fractional_frame_step", False))
+    if saved != current:
+        raise ValueError(
+            f"{path} was trained with clip sampling {saved} and this run asks for {current}. Resume it with the "
+            "same `fps` and `fractional_frame_step`, or start a new run from its weights only.")

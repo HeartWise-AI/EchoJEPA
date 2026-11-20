@@ -106,6 +106,7 @@ def init_data(
             group_size=num_clips,  # num_segments from config  
             frames_per_clip=clip_len,  
             frame_step=frame_sample_rate,  
+            duration=duration,
             fps=fps,
             num_clips_per_video=num_clips_per_video,  # NEW  
             random_clip_sampling=random_clip_sampling,  

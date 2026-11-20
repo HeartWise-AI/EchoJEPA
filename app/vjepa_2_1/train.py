@@ -39,6 +39,7 @@ from app.vjepa_2_1.utils import (
     token_validity,
 )
 from src.datasets.data_manager import init_data
+from src.datasets.utils import frame_sampling
 from src.masks.multiseq_multiblock3d import MaskCollator
 from src.masks.utils import apply_masks
 from src.utils.distributed import any_rank_failed, global_sample_weighted_means, init_distributed
@@ -243,6 +244,10 @@ def main(args, resume_preempt=False):
     batch_size = cfgs_data.get("batch_size")
     tubelet_size = cfgs_data.get("tubelet_size")
     fps = cfgs_data.get("fps")
+    # Exact-rate clips (src/datasets/utils/frame_sampling.py); off by default so older runs reproduce.
+    fractional_frame_step = cfgs_data.get("fractional_frame_step", False)
+    # Saved in every checkpoint; a resume with other settings is refused (frame_sampling.check_resume).
+    clip_sampling = frame_sampling.sampling_record(fps, fractional_frame_step)
     crop_size = cfgs_data.get("crop_size", 224)
     patch_size = cfgs_data.get("patch_size")
     grid_size = crop_size // patch_size
@@ -531,8 +536,7 @@ def main(args, resume_preempt=False):
         # startup overhead each time.
         persistent_workers=cfgs_data.get("persistent_workers", False),
         in_order=cfgs_data.get("in_order", True),
-        # Exact-rate clips (src/datasets/utils/frame_sampling.py); off by default so older runs reproduce.
-        fractional_frame_step=cfgs_data.get("fractional_frame_step", False),
+        fractional_frame_step=fractional_frame_step,
         log_dir=None,
     )
     try:
@@ -617,6 +621,7 @@ def main(args, resume_preempt=False):
             opt=optimizer,
             scaler=scaler,
             is_anneal=is_anneal and not resume_anneal,
+            clip_sampling=clip_sampling,
         )
         resuming_training = not is_anneal or resume_anneal
         if not is_anneal or resume_anneal:
@@ -640,6 +645,7 @@ def main(args, resume_preempt=False):
                 "world_size": world_size,
                 "lr": lr,
                 "wandb_run_id": effective_wandb_run_id,
+                frame_sampling.CHECKPOINT_KEY: clip_sampling,
             }
             _atomic_torch_save(save_dict, path)
 

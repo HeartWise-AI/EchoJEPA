@@ -31,17 +31,22 @@ indices byte for byte), so earlier runs reproduce. The code is in `src/datasets/
 
 ## Config keys
 
-Set both keys together. `fps` replaces `frame_step` (a `frame_step` left in the probe or cache config is ignored
-when `fps` is set).
+Set both keys together. `fps` (or `clip_duration`) replaces `frame_step` (a `frame_step` left in the probe or cache
+config is ignored when `fps` or `clip_duration` is set).
 
 | Use | Where | Keys |
 | --- | --- | --- |
 | Pretraining (`app/vjepa_2_1`, `app/vjepa`) | `data:` | `fps: 12`, `fractional_frame_step: true` |
 | Study probe (`evals/study_multitask_frozen`) | `experiment.data:` | `fps: 12`, `fractional_frame_step: true` (drop `frame_step`) |
 | Frozen clip probe (`evals/video_classification_frozen`) | `experiment.data:` | `fps: 12`, `fractional_frame_step: true` (drop `frame_step`) |
+| Multi-view probe (`evals/video_classification_frozen_multi`) | `experiment.data:` | `fps: 12`, `fractional_frame_step: true` (drop `frame_step`) |
 | RADAR token cache (`evals/radar_frozen/build_token_cache.py`) | `data:` | `fps: 12`, `fractional_frame_step: true` (drop `frame_step`) |
 
-The group loader (`dataset_type: videogroupdataset`) honours the same keys.
+The group loader (`dataset_type: videogroupdataset`) honours the same keys. It reads its `num_clips_per_video`
+clips back to back, each starting where the previous one would have taken its next frame. With the option on,
+training (`training` and `random_clip_sampling`) starts them at a random frame where all of them fit, evaluation at
+frame 0, and a video without a usable frame rate is read frame by frame. Past the video's end the last frame is
+repeated, as without the option. Without the option the group loader still always starts at frame 0.
 
 ## What changes when it is on
 
@@ -51,6 +56,9 @@ The group loader (`dataset_type: videogroupdataset`) honours the same keys.
   not merge.
 - **Probe fingerprints change** when the option is on (the probes record `fps` and `fractional_frame_step` only when
   set), so a probe trained without it cannot be resumed or tested with it, and the reverse.
+- **Pretraining checkpoints record their clip sampling** (`fps` and `fractional_frame_step`, key
+  `clip_sampling`), and a resume with other settings is refused. A checkpoint written before the record resumes only
+  with the option off; to switch an existing run to the option, start a new run from its weights.
 - **Encoder and probe should agree.** An encoder pretrained at 12 fps should be probed, and its token cache built,
   at 12 fps with the same option.
 - The manifest builder's `needs_padding` flag (`data/build_manifests.py`) still uses the whole-step rule.

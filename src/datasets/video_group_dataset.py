@@ -491,25 +491,26 @@ class VideoGroupDataset(Dataset):
         return clips, per_clip_inds
 
     def _fractional_multi(self, vr, sample_uri, fpc, k):
-        """`_loadvideo_decord_multi` with a fractional frame step (`fractional_frame_step`): K contiguous clips
-        from frame 0 at the exact rate asked for; past the video's end the last frame is repeated, as without it."""
+        """`_loadvideo_decord_multi` with a fractional frame step (`fractional_frame_step`): K contiguous clips at
+        the exact rate asked for; past the video's end the last frame is repeated, as without it. Training
+        (`training` and `random_clip_sampling`) starts at a random frame where all K clips fit; evaluation at
+        frame 0. A video without a usable frame rate is read frame by frame, as the single-clip loader does."""
         video_fps = None
         if (self.duration is not None) or (self.fps is not None):
             try:
                 video_fps = float(vr.get_avg_fps())
             except Exception as e:
-                logger.warning(f"fps read failed: {e}")
-                return [], None
+                logger.warning(f"FPS unavailable: {type(e).__name__}.")
+                video_fps = float("nan")
             if not (math.isfinite(video_fps) and video_fps > 0):
-                return [], None
+                warnings.warn(f"Unusable FPS {video_fps}: sampling every frame.")
         step = frame_sampling.native_step(video_fps, fpc, frame_step=self.frame_step, fps=self.fps,
                                           duration=self.duration)
         V = len(vr)
         if V == 0:
             return [], None
-        # Clip i starts where clip i-1 would have taken its next frame.
-        offsets = np.floor(np.arange(k * fpc) * step + 0.5).astype(np.int64)
-        per_clip_inds = [np.clip(offsets[i * fpc:(i + 1) * fpc], 0, V - 1) for i in range(k)]
+        random_start = bool(self._is_training and self.random_clip_sampling)
+        per_clip_inds = frame_sampling.contiguous_indices(V, fpc, k, step, random_start=random_start)
         frames_all = vr.get_batch(np.concatenate(per_clip_inds)).asnumpy()
         frames_all = fix_legacy_colors(frames_all, sample_uri, "RGB")  # legacy YBR swap (utils/color_order.py)
         return [frames_all[i * fpc:(i + 1) * fpc] for i in range(k)], per_clip_inds

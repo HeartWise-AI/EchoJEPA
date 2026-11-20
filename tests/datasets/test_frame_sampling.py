@@ -2,15 +2,21 @@
 
 """Fractional frame steps (`fractional_frame_step`, src/datasets/utils/frame_sampling.py): the index rule for
 various native frame rates, lengths and targets; the default (whole-step) sampler unchanged, byte for byte; the
-padding share at 12 fps against 8 fps; and the option reaching every loader that samples frames."""
+padding share at 12 fps against 8 fps; the option reaching every loader that samples frames and every probe that
+builds one; and pretraining resumes refused when the clip sampling changed."""
 
 import hashlib
+import importlib
 import os
+import sys
 import tempfile
 import types
 import unittest
+import warnings
+from unittest import mock
 
 import numpy as np
+import torch
 
 from src.datasets.utils import frame_sampling as fs
 from src.datasets.video_dataset import VideoDataset
@@ -49,9 +55,25 @@ class Reader:
         return types.SimpleNamespace(asnumpy=lambda: frames.copy())
 
 
+class NoFpsReader(Reader):
+    """A decoder whose frame rate cannot be read."""
+
+    def get_avg_fps(self):
+        raise RuntimeError("no frame rate")
+
+
 def video_dataset(**kw):
     kw.setdefault("allow_clip_overlap", False)
     return VideoDataset(data_paths=[], frames_per_clip=FPC, **kw)
+
+
+def group_dataset(reader, fps=12, training=False, random_clip_sampling=True, fractional_frame_step=True):
+    """A VideoGroupDataset without a table, reading every clip from `reader`."""
+    ds = VideoGroupDataset.__new__(VideoGroupDataset)
+    ds.frame_step, ds.fps, ds.duration, ds.fractional_frame_step = None, fps, None, fractional_frame_step
+    ds._is_training, ds.random_clip_sampling = training, random_clip_sampling
+    ds._open_vr = lambda uri: reader
+    return ds
 
 
 class TestIndexRule(unittest.TestCase):
@@ -124,6 +146,24 @@ class TestIndexRule(unittest.TestCase):
         (a, na), (b, nb) = fs.clip_indices(40, FPC, step, num_clips=2, allow_clip_overlap=True)
         self.assertEqual((na, nb), (FPC, FPC))
         self.assertEqual((a[0], b[-1]), (0, 39))  # starts spread over the video
+
+    def test_contiguous_clips_keep_the_rate_and_start_anywhere_that_fits_in_training(self):
+        step, k = 2.5, 2
+        layout = np.floor(np.arange(k * FPC) * step + 0.5).astype(np.int64)
+        last = int(layout[-1])
+        n = last + 1 + 20
+        evaluation = np.concatenate(fs.contiguous_indices(n, FPC, k, step))
+        self.assertEqual(evaluation.tolist(), layout.tolist())
+        np.random.seed(0)
+        starts = set()
+        for _ in range(400):
+            both = np.concatenate(fs.contiguous_indices(n, FPC, k, step, random_start=True))
+            self.assertEqual((both - both[0]).tolist(), layout.tolist())  # same spacing, clips back to back
+            starts.add(int(both[0]))
+        self.assertEqual(starts, set(range(21)))
+        # Too short for both clips: from frame 0, the last frame repeated past the end.
+        short = np.concatenate(fs.contiguous_indices(40, FPC, k, step, random_start=True))
+        self.assertEqual(short.tolist(), np.minimum(layout, 39).tolist())
 
     def test_rejects_a_step_below_one(self):
         with self.assertRaises(ValueError):
@@ -233,13 +273,57 @@ class TestLoaders(unittest.TestCase):
         self.assertEqual(int((np.asarray(clip_indices[0]) == -1).sum()), 1)
 
     def test_group_dataset_contiguous_clips(self):
-        ds = VideoGroupDataset.__new__(VideoGroupDataset)
-        ds.frame_step, ds.fps, ds.duration, ds.fractional_frame_step = None, 12, None, True
-        ds._open_vr = lambda uri: Reader(200, 30.0)
-        clips, indices = ds._loadvideo_decord_multi("clip.mp4", FPC, 2)
+        clips, indices = group_dataset(Reader(200, 30.0))._loadvideo_decord_multi("clip.mp4", FPC, 2)
         both = np.concatenate(indices)
         self.assertEqual(both.tolist(), np.floor(np.arange(2 * FPC) * 2.5 + 0.5).astype(int).tolist())
         self.assertEqual([c.shape[0] for c in clips], [FPC, FPC])
+
+    def test_group_dataset_reads_frame_by_frame_without_a_usable_frame_rate(self):
+        # As the single-clip loader: the clip is read, not dropped or replaced by black frames.
+        for reader in (NoFpsReader(100, None), Reader(100, float("nan")), Reader(100, 0.0), Reader(100, -5.0),
+                       Reader(100, float("inf"))):
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                clips, indices = group_dataset(reader)._loadvideo_decord_multi("clip.mp4", FPC, 2)
+            self.assertEqual(np.concatenate(indices).tolist(), list(range(2 * FPC)))
+            self.assertTrue(all(c.min() > 0 for c in clips))  # real frames, never black
+
+    def test_group_dataset_present_view_keeps_its_frames_when_the_frame_rate_is_unreadable(self):
+        ds = group_dataset(NoFpsReader(100, None))
+        ds.view_cols, ds.frames_per_clip, ds.num_clips_per_video = ["view_0"], FPC, 1
+        ds.img_size, ds.miss_augment_prob, ds.transform = 4, 0.0, None
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            segs, _, indices, present = ds._get_item_row({"view_0": "clip.mp4", "label": 0})
+        self.assertTrue(bool(present[0]))
+        self.assertEqual(indices[0].tolist(), list(range(FPC)))
+        self.assertGreater(segs[0].min(), 0)
+
+    def test_group_dataset_training_draws_a_start_and_evaluation_starts_at_zero(self):
+        layout = np.floor(np.arange(2 * FPC) * 2.5 + 0.5).astype(np.int64)
+        reader = Reader(200, 30.0)
+        np.random.seed(1)
+        for training, random_clip_sampling in ((False, True), (False, False), (True, False)):
+            ds = group_dataset(reader, training=training, random_clip_sampling=random_clip_sampling)
+            for _ in range(5):
+                _, indices = ds._loadvideo_decord_multi("clip.mp4", FPC, 2)
+                self.assertEqual(np.concatenate(indices).tolist(), layout.tolist())
+        ds = group_dataset(reader, training=True)
+        starts = set()
+        for _ in range(100):
+            _, indices = ds._loadvideo_decord_multi("clip.mp4", FPC, 2)
+            both = np.concatenate(indices)
+            self.assertEqual((both - both[0]).tolist(), layout.tolist())  # fractional, contiguous
+            self.assertLess(both[-1], 200)
+            starts.add(int(both[0]))
+        self.assertGreater(len(starts), 30)
+        self.assertLessEqual(max(starts), 200 - 1 - int(layout[-1]))
+
+    def test_group_dataset_default_ignores_the_training_flag(self):
+        # Without the option the group loader keeps reading from frame 0, as it always has.
+        ds = group_dataset(Reader(200, 30.0), fps=8, training=True, fractional_frame_step=False)
+        _, indices = ds._loadvideo_decord_multi("clip.mp4", FPC, 1)
+        self.assertEqual(indices[0].tolist(), list(range(0, 3 * FPC, 3)))
 
     def test_token_cache_timing_and_provenance(self):
         from evals.radar_frozen import build_token_cache as btc
@@ -254,14 +338,170 @@ class TestLoaders(unittest.TestCase):
                 with open(path, "w") as f:
                     f.write("x")
             args = types.SimpleNamespace(clips=clips, split="train", exclude=[], chunks=4)
-            config = {"encoder": {"checkpoint": checkpoint}, "cache": {}, "data": {"frame_step": 2}}
-            data = btc.provenance(config, args, 1, 0)["data"]
-            # A config without the new keys keeps the record of caches written before them.
-            self.assertEqual(set(data), {"frames_per_clip", "frame_step", "resolution", "normalization",
-                                         "clip_sampling", "transform"})
+            # A config without the new keys (or with the option off) keeps the record of caches written before
+            # them, key for key and value for value.
+            for data_section, frame_step in (({"frame_step": 2}, 2), ({}, 2), ({"frame_step": 3}, 3),
+                                             ({"frame_step": 3, "fractional_frame_step": False}, 3)):
+                config = {"encoder": {"checkpoint": checkpoint}, "cache": {}, "data": data_section}
+                self.assertEqual(btc.provenance(config, args, 1, 0)["data"], {
+                    "frames_per_clip": 16, "frame_step": frame_step, "resolution": 224,
+                    "normalization": [list(v) for v in btc.DEFAULT_NORMALIZATION],
+                    "clip_sampling": "first_window", "transform": "eval"})
             config["data"] = {"fps": 12, "fractional_frame_step": True}
             data = btc.provenance(config, args, 1, 0)["data"]
             self.assertEqual((data["fps"], data["frame_step"], data["fractional_frame_step"]), (12, None, True))
+
+
+
+class TestProbeEntryPoints(unittest.TestCase):
+    """`fps`, `clip_duration` and `fractional_frame_step` reach the loaders of every probe."""
+
+    def test_init_data_forwards_the_timing_to_the_group_loader(self):
+        from src.datasets import data_manager
+        from src.datasets import video_group_dataset as vgd
+
+        with mock.patch.object(vgd, "make_videogroupdataset", return_value=(None, "loader", "sampler")) as make:
+            data_manager.init_data(batch_size=1, data="VideoGroupDataset", root_path=["x.csv"], clip_len=FPC,
+                                   duration=2.0, fps=None, fractional_frame_step=True)
+        kwargs = make.call_args.kwargs
+        self.assertEqual((kwargs["duration"], kwargs["fps"], kwargs["frame_step"], kwargs["fractional_frame_step"]),
+                         (2.0, None, None, True))
+
+    def test_frozen_probe_make_dataloader(self):
+        from evals.video_classification_frozen import eval as probe
+
+        with mock.patch.object(probe, "init_data", return_value=("loader", "sampler")) as init:
+            probe.make_dataloader(root_path=["x.csv"], batch_size=1, world_size=1, rank=0, frame_step=None,
+                                  fps=12, fractional_frame_step=True)
+        self.assertEqual({k: init.call_args.kwargs[k] for k in ("frame_sample_rate", "fps", "fractional_frame_step")},
+                         {"frame_sample_rate": None, "fps": 12, "fractional_frame_step": True})
+
+
+def import_multi_probe():
+    """The multi-view probe sits one folder deeper than its own imports name; alias them so it imports. It also
+    points `tempfile` at its own folder when imported, which is undone here."""
+    base = "evals.video_classification_frozen_multi.video_classification_frozen_multi"
+    aliases = {f"evals.video_classification_frozen_multi.{name}": importlib.import_module(f"{base}.{name}")
+               for name in ("models", "utils")}
+    saved_tempdir, saved_env = tempfile.tempdir, os.environ.get("TMPDIR")
+    try:
+        with mock.patch.dict(sys.modules, aliases):
+            return importlib.import_module(f"{base}.eval")
+    finally:
+        tempfile.tempdir = saved_tempdir
+        if saved_env is None:
+            os.environ.pop("TMPDIR", None)
+        else:
+            os.environ["TMPDIR"] = saved_env
+
+
+class Stop(Exception):
+    pass
+
+
+class TestMultiViewProbe(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.probe = import_multi_probe()
+
+    def test_make_dataloader_forwards_the_timing(self):
+        with mock.patch.object(self.probe, "init_data", return_value=("loader", "sampler")) as init:
+            self.probe.make_dataloader(root_path=["x.csv"], batch_size=1, world_size=1, rank=0, frame_step=None,
+                                       fps=12, fractional_frame_step=True)
+        kwargs = init.call_args.kwargs
+        self.assertEqual((kwargs["frame_sample_rate"], kwargs["fps"], kwargs["fractional_frame_step"]),
+                         (None, 12, True))
+
+    def loader_options(self, data):
+        """The options `main` gives its training loader for the config's `experiment.data`."""
+        with tempfile.TemporaryDirectory() as tmp:
+            args = {"folder": tmp, "num_workers": 0,
+                    "model_kwargs": {"checkpoint": None, "module_name": "x", "pretrain_kwargs": {},
+                                     "wrapper_kwargs": {}},
+                    "experiment": {
+                        "classifier": {"num_heads": 1, "num_probe_blocks": 1},
+                        "data": {"dataset_train": "train.csv", "dataset_val": "val.csv", "num_classes": 2,
+                                 "frames_per_clip": FPC, **data},
+                        "optimization": {"batch_size": 1, "num_epochs": 1, "use_bfloat16": False,
+                                         "multihead_kwargs": [{"lr": 0.1, "warmup": 0}]}}}
+            with mock.patch.object(self.probe, "init_module", return_value=types.SimpleNamespace(embed_dim=8)), \
+                    mock.patch.object(self.probe, "init_distributed", return_value=(1, 0)), \
+                    mock.patch.object(self.probe.mp, "set_start_method"), \
+                    mock.patch("torch.cuda.is_available", return_value=False), \
+                    mock.patch.object(self.probe, "make_dataloader", side_effect=Stop) as make, \
+                    mock.patch("builtins.print"):
+                with self.assertRaises(Stop):
+                    self.probe.main(args)
+        return make.call_args.kwargs
+
+    def test_main_reads_fps_and_the_option(self):
+        kwargs = self.loader_options({"frame_step": 2, "fps": 12, "fractional_frame_step": True})
+        self.assertEqual((kwargs["frame_step"], kwargs["fps"], kwargs["fractional_frame_step"]), (None, 12, True))
+        kwargs = self.loader_options({"frame_step": 2, "clip_duration": 2.0})
+        self.assertEqual((kwargs["frame_step"], kwargs["eval_duration"], kwargs["fps"]), (None, 2.0, None))
+
+    def test_main_default_is_unchanged(self):
+        kwargs = self.loader_options({"frame_step": 2})
+        self.assertEqual((kwargs["frame_step"], kwargs["eval_duration"], kwargs["fps"],
+                          kwargs["fractional_frame_step"]), (2, None, None, False))
+
+
+class TestResumeCheck(unittest.TestCase):
+    OFF, ON = fs.sampling_record(8, False), fs.sampling_record(12, True)
+
+    def test_same_settings_resume(self):
+        for current in (self.OFF, self.ON):
+            fs.check_resume({fs.CHECKPOINT_KEY: dict(current)}, current)
+
+    def test_other_settings_are_refused(self):
+        for saved, current in ((self.OFF, self.ON), (self.ON, self.OFF), (self.OFF, fs.sampling_record(12, False)),
+                               (self.ON, fs.sampling_record(8, True))):
+            with self.assertRaisesRegex(ValueError, "clip sampling"):
+                fs.check_resume({fs.CHECKPOINT_KEY: saved}, current)
+
+    def test_a_checkpoint_without_a_record_resumes_only_with_the_option_off(self):
+        fs.check_resume({}, self.OFF)
+        fs.check_resume({}, fs.sampling_record(None, False))
+        with self.assertRaisesRegex(ValueError, "fractional_frame_step"):
+            fs.check_resume({}, self.ON)
+
+    def checkpoint(self, tmp, record):
+        torch.manual_seed(0)
+        models = [torch.nn.Linear(2, 2) for _ in range(3)]
+        opt = torch.optim.SGD(models[0].parameters(), lr=0.1)
+        saved = {"encoder": models[0].state_dict(), "predictor": models[1].state_dict(),
+                 "target_encoder": models[2].state_dict(), "opt": opt.state_dict(), "scaler": None, "epoch": 3}
+        if record is not None:
+            saved[fs.CHECKPOINT_KEY] = record
+        path = os.path.join(tmp, "latest.pt")
+        torch.save(saved, path)
+        return path, models, opt
+
+    def test_load_checkpoint_of_both_trainers(self):
+        from app.vjepa import utils as v1
+        from app.vjepa_2_1 import utils as v21
+
+        for load in (v1.load_checkpoint, v21.load_checkpoint):
+            for record, current, refused in ((self.OFF, self.OFF, False), (self.OFF, self.ON, True),
+                                             (None, self.OFF, False), (None, self.ON, True),
+                                             (self.ON, self.ON, False), (self.ON, self.OFF, True)):
+                with tempfile.TemporaryDirectory() as tmp, mock.patch("builtins.print"):
+                    path, models, opt = self.checkpoint(tmp, record)
+                    call = lambda: load(r_path=path, encoder=models[0], predictor=models[1],
+                                        target_encoder=models[2], opt=opt, scaler=None, clip_sampling=current)
+                    if refused:
+                        with self.assertRaises(ValueError):
+                            call()
+                    else:
+                        call()
+
+    def test_a_cooldown_from_anneal_ckpt_is_not_a_resume(self):
+        from app.vjepa_2_1 import utils as v21
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path, models, opt = self.checkpoint(tmp, self.OFF)
+            v21.load_checkpoint(r_path=path, encoder=models[0], predictor=models[1], target_encoder=models[2],
+                                opt=opt, scaler=None, is_anneal=True, clip_sampling=self.ON)
 
 
 if __name__ == "__main__":

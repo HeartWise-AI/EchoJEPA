@@ -233,9 +233,10 @@ def main(args_eval, resume_preempt=False):
     frames_per_clip = args_data.get("frames_per_clip", 16)
     frame_step = args_data.get("frame_step", 4)
     duration = args_data.get("clip_duration", None)
-    # `fps` replaces `frame_step`; `fractional_frame_step` samples at the exact rate (docs/frame_sampling.md).
+    # `fps` (or `clip_duration`) replaces `frame_step`; `fractional_frame_step` samples at the exact rate
+    # (docs/frame_sampling.md).
     fps = args_data.get("fps")
-    if fps is not None:
+    if fps is not None or duration is not None:
         frame_step = None
     fractional_frame_step = bool(args_data.get("fractional_frame_step", False))
     num_views_per_segment = args_data.get("num_views_per_segment", 1)
