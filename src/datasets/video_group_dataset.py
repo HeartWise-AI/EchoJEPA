@@ -15,6 +15,7 @@ import torch
 from torch.utils.data import Dataset
 from decord import VideoReader, cpu
 
+from src.datasets.utils.color_order import fix_legacy_colors
 from src.datasets.utils.dataloader import MonitoredDataset, NondeterministicDataLoader
 from src.datasets.utils.weighted_sampler import DistributedWeightedSampler
 
@@ -472,6 +473,7 @@ class VideoGroupDataset(Dataset):
         # --- single batched fetch and split ---
         all_inds = np.concatenate(per_clip_inds, axis=0)
         frames_all = vr.get_batch(all_inds).asnumpy()  # [sum_k fpc, H, W, 3]
+        frames_all = fix_legacy_colors(frames_all, sample_uri, "RGB")  # legacy YBR swap (utils/color_order.py)
     
         clips = []
         offset = 0
