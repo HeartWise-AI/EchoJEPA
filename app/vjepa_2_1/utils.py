@@ -182,21 +182,42 @@ def load_checkpoint(
     )
 
 
-def load_pretrained_weights(r_path, encoder, predictor, target_encoder):
+def _load_matching_shapes(model, state, name):
+    """Load the tensors whose name and shape match; keep the model's fresh initialization for the rest."""
+    own = model.state_dict()
+    matched = {k: v for k, v in state.items() if k in own and own[k].shape == v.shape}
+    fresh = sorted(k for k in own if k not in matched)
+    unused = sorted(k for k in state if k not in matched)
+    model.load_state_dict(matched, strict=False)
+    logger.info(f"Loaded {len(matched)}/{len(own)} {name} tensors by name and shape; "
+                f"freshly initialized: {fresh}; checkpoint tensors not used: {unused}.")
+    if not matched:
+        raise RuntimeError(f"No {name} tensor matched the checkpoint.")
+
+
+def load_pretrained_weights(r_path, encoder, predictor, target_encoder, encoder_key="encoder",
+                            partial_predictor=False):
     """Initialize model weights from another run. Loads encoder, predictor, and
     target encoder weights strictly while keeping the optimizer and schedule fresh.
     Call before wrapping models in DDP.
 
     Args:
         r_path: path to the source checkpoint.
+        encoder_key: checkpoint entry that seeds the online encoder (`encoder`, or the EMA
+            entry so that student and teacher start from the same released weights).
+        partial_predictor: load only the predictor tensors whose shapes match. Needed when the
+            source predictor was trained for another target (e.g. Meta's ViT-L distilled from
+            ViT-G predicts 1664-d ViT-G features, while deep self-supervision needs 4 x 1024).
     """
     logger.info(f"Initialising weights from {r_path}")
     # Load the checkpoint into CPU memory first rather than immediately putting everything
     # onto the GPU, which is safer (avoid suddenly allocating GPU memory while loading).
     checkpoint = robust_checkpoint_loader(r_path, map_location=torch.device("cpu"))
     ema_key = "target_encoder" if "target_encoder" in checkpoint else "ema_encoder"
+    if encoder_key == "ema":
+        encoder_key = ema_key
     for name, key, model in (
-        ("encoder", "encoder", encoder),
+        ("encoder", encoder_key, encoder),
         ("predictor", "predictor", predictor),
         ("target_encoder", ema_key, target_encoder),
     ):
@@ -207,6 +228,9 @@ def load_pretrained_weights(r_path, encoder, predictor, target_encoder):
             )
         # Remove the `module.` prefix from DDP-wrapped model.
         state = {k.removeprefix("module."): v for k, v in checkpoint[key].items()}
+        if name == "predictor" and partial_predictor:
+            _load_matching_shapes(model, state, name)
+            continue
         try:
             # `strict=True`: the source checkpoint and the destination model must match exactly.
             model.load_state_dict(state, strict=True)

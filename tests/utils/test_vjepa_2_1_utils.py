@@ -477,6 +477,25 @@ class TestLoadPretrainedWeights(QuietLogs):
         with self.assertRaisesRegex(RuntimeError, "`predictor` does not match .* `n_output_distillation`"):
             load_pretrained_weights(path, encoder, predictor, tiny_model(1)[0])
 
+    def test_ema_key_seeds_the_online_encoder_too(self):
+        ema = tiny_model(1)[0]
+        path = self.checkpoint("ema_both.pt", ema_key="ema_encoder", ema=ema)
+        encoder, predictor = tiny_model(1)
+        target = tiny_model(1)[0]
+        load_pretrained_weights(path, encoder, predictor, target, encoder_key="ema")
+        self.assert_loaded(encoder, ema)
+        self.assert_loaded(target, ema)
+
+    def test_partial_predictor_loads_the_trunk_and_keeps_fresh_output_heads(self):
+        source = tiny_model(1)
+        path = self.checkpoint("one_level.pt", source=source)
+        encoder, predictor = tiny_model(4)
+        fresh_proj = predictor.state_dict()["backbone.predictor_proj.weight"].clone()
+        load_pretrained_weights(path, encoder, predictor, tiny_model(4)[0], partial_predictor=True)
+        got, src = predictor.state_dict(), source[1].state_dict()
+        self.assertTrue(torch.equal(got["backbone.predictor_blocks.0.attn.qkv.weight"], src["backbone.predictor_blocks.0.attn.qkv.weight"]))
+        self.assertTrue(torch.equal(got["backbone.predictor_proj.weight"], fresh_proj))
+
     def test_a_missing_tensor_fails_instead_of_being_skipped(self):
         path = self.checkpoint("partial.pt")
         ckpt = torch.load(path)

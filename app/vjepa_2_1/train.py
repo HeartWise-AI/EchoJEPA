@@ -198,6 +198,10 @@ def main(args, resume_preempt=False):
             "Set `meta.init_checkpoint` (weights only, fresh optimizer and schedule) or "
             "`meta.read_checkpoint` (full resume of a run), not both."
         )
+    # Which checkpoint entry seeds the online encoder (`encoder` or `ema`), and whether the
+    # predictor may be loaded partially (only tensors whose shapes match).
+    init_encoder_key = cfgs_meta.get("init_encoder_key", "encoder")
+    init_predictor_partial = cfgs_meta.get("init_predictor_partial", False)
     seed = cfgs_meta.get("seed", _GLOBAL_SEED)
     save_every_freq = cfgs_meta.get("save_every_freq", -1)
     skip_batches = cfgs_meta.get("skip_batches", -1)
@@ -366,6 +370,10 @@ def main(args, resume_preempt=False):
     # Maximum combined gradient norm for the encoder and predictor.
     # `null` disables gradient clipping (upstream); otherwise larger gradients are scaled down to this value.
     clip_grad = cfgs_opt.get("clip_grad", None)
+    # Predictor warm-up: for the first `freeze_encoder_iters` global steps the online encoder
+    # receives no update (its gradients are dropped), so a freshly initialized predictor head
+    # cannot push large gradients into pretrained encoder weights. 0 disables it.
+    freeze_encoder_iters = int(cfgs_opt.get("freeze_encoder_iters", 0))
     if clip_grad is not None and not float(clip_grad) > 0:
         raise ValueError(f"optimization.clip_grad must be a positive number or null, got {clip_grad!r}.")
     # ----------------------------------------------------------------------- #
@@ -533,7 +541,14 @@ def main(args, resume_preempt=False):
                 "`init_checkpoint` and `is_anneal` cannot both be set; cooldown runs must start from `anneal_ckpt`."
             )
         if load_path is None:
-            load_pretrained_weights(init_checkpoint, encoder, predictor, target_encoder)
+            load_pretrained_weights(
+                init_checkpoint,
+                encoder,
+                predictor,
+                target_encoder,
+                encoder_key=init_encoder_key,
+                partial_predictor=init_predictor_partial,
+            )
         else:
             logger.info(f"Resuming from {load_path}; init_checkpoint {init_checkpoint} not used.")
 
@@ -998,6 +1013,10 @@ def main(args, resume_preempt=False):
                     _grad_norm = grad_norm(encoder, predictor)
                     if clip_grad is not None:
                         clip_grads_with_norm_(trained_params, clip_grad, _grad_norm)
+                    if epoch * ipe + itr < freeze_encoder_iters:
+                        # AdamW skips parameters without a gradient: no update, no weight decay.
+                        for p in encoder.parameters():
+                            p.grad = None
                     if mixed_precision:
                         scaler.step(optimizer)
                         scaler.update()
@@ -1140,6 +1159,7 @@ def main(args, resume_preempt=False):
                 ):
                     logger.info(
                         "[%d, %5d] loss: %.3f "
+                        "[pred: %.4f ctx: %.4f lambda: %.2f] "
                         "masks: %s "
                         "[wd: %.2e] [lr: %.2e] "
                         "[valid: %.2f] "
@@ -1153,6 +1173,9 @@ def main(args, resume_preempt=False):
                             epoch + 1,
                             itr,
                             loss_meter.avg,
+                            loss_pred,
+                            loss_context,
+                            lambda_value_step,
                             "["
                             + ", ".join(
                                 [
