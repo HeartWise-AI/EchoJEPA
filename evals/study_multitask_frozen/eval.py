@@ -285,10 +285,9 @@ def main(args_eval, resume_preempt=False):
     torch.manual_seed(seed)
 
     # -- DATA
-    transform_kwargs = dict(random_horizontal_flip=False, random_resize_aspect_ratio=(0.75, 4 / 3),
-                            random_resize_scale=(0.08, 1.0), reprob=0.25, auto_augment=True, motion_shift=False,
-                            crop_size=resolution, num_views_per_clip=1,
-                            normalize=normalization or DEFAULT_NORMALIZATION)
+    transform_kwargs = dict(random_horizontal_flip=False, motion_shift=False, crop_size=resolution,
+                            num_views_per_clip=1, normalize=normalization or DEFAULT_NORMALIZATION,
+                            **augmentation_options(args_data.get("augmentation")))
 
     def make_dataset(split, training, table=None):
         options, shuffle = data_options, shuffle_videos
@@ -321,6 +320,7 @@ def main(args_eval, resume_preempt=False):
     val_dataset = make_dataset("val", training=False)
     check_disjoint({"train": train_dataset, "val": val_dataset})
     normalization_targets = target_normalization(specs, train_dataset.targets, args_classifier)
+    resolve_class_weights(specs, train_dataset.targets, args_classifier)
     train_sampler = torch.utils.data.distributed.DistributedSampler(
         train_dataset, num_replicas=world_size, rank=rank, shuffle=True, drop_last=PROTOCOL["train"]["drop_last"])
     train_loader = torch.utils.data.DataLoader(
@@ -398,7 +398,10 @@ def main(args_eval, resume_preempt=False):
                  "num_videos": num_videos, "shuffle_videos": shuffle_videos,
                  "num_clips_per_video": num_clips_per_video, "frames_per_clip": frames_per_clip,
                  "frame_step": frame_step, "clip_duration": duration, "fps": fps, "resolution": resolution,
-                 "normalization": normalization, "min_videos": min_videos, **data_options},
+                 "normalization": normalization, "min_videos": min_videos, **data_options,
+                 # only when set, so the fingerprints of configs without it stay as they were.
+                 **({"augmentation": augmentation_options(args_data["augmentation"])}
+                    if args_data.get("augmentation") is not None else {})},
         "evaluation": {"num_bags": num_eval_bags},
         "optimization": {"batch_size": batch_size, "num_epochs": num_epochs, "use_bfloat16": use_bfloat16,
                          "multihead_kwargs": args_opt["multihead_kwargs"],
@@ -696,6 +699,86 @@ def check_disjoint(datasets):
                 raise ValueError(f"The {a} and {b} splits must both carry patient ids to check patient overlap.")
             if pa & pb:
                 raise ValueError(f"{len(pa & pb)} patients are in both the {a} and the {b} split.")
+
+
+# The training augmentation of the probe before it was configurable (ImageNet video-classification style:
+# crops down to 8% of the frame, RandAugment with inversion, solarization and colour changes, random erasing).
+# Configs without `experiment.data.augmentation` keep it, so their runs and fingerprints stay as they were.
+LEGACY_AUGMENTATION = {"random_resize_scale": (0.08, 1.0), "random_resize_aspect_ratio": (0.75, 4 / 3),
+                       "reprob": 0.25, "auto_augment": True}
+
+
+def augmentation_options(augmentation):
+    """The training-transform options of `experiment.data.augmentation` ({random_resize_scale: [lo, hi],
+    random_resize_aspect_ratio: [lo, hi], reprob, auto_augment}), missing keys from `LEGACY_AUGMENTATION`.
+    Evaluation always resizes and centre-crops; these only shape training reads."""
+    if augmentation is None:
+        return dict(LEGACY_AUGMENTATION)
+    if not isinstance(augmentation, dict):
+        raise ValueError("`experiment.data.augmentation` is a mapping of training-transform options.")
+    unknown = sorted(set(augmentation) - set(LEGACY_AUGMENTATION))
+    if unknown:
+        raise ValueError(f"`experiment.data.augmentation` has unknown keys {unknown}; "
+                         f"known: {sorted(LEGACY_AUGMENTATION)}.")
+    out = dict(LEGACY_AUGMENTATION)
+    for key in ("random_resize_scale", "random_resize_aspect_ratio"):
+        if key in augmentation:
+            lo, hi = (float(v) for v in augmentation[key])
+            if not 0 < lo <= hi or (key == "random_resize_scale" and hi > 1):
+                raise ValueError(f"`augmentation.{key}` must be [lo, hi] with 0 < lo <= hi"
+                                 f"{' <= 1' if key == 'random_resize_scale' else ''}, not {augmentation[key]!r}.")
+            out[key] = (lo, hi)
+    if "reprob" in augmentation:
+        out["reprob"] = float(augmentation["reprob"])
+        if not 0 <= out["reprob"] <= 1:
+            raise ValueError("`augmentation.reprob` is a probability in [0, 1].")
+    if "auto_augment" in augmentation:
+        if not isinstance(augmentation["auto_augment"], bool):
+            raise ValueError("`augmentation.auto_augment` is true or false.")
+        out["auto_augment"] = augmentation["auto_augment"]
+    return out
+
+
+def resolve_class_weights(specs, train_targets, args_classifier):
+    """Add `class_weight` to the specs of the heads `experiment.classifier.class_weights` names, in place.
+
+    `class_weights` is `auto` (every binary and classification head) or {head: auto | value}: a binary head's
+    value is its BCE `pos_weight`, a classification head's a list with one weight per class. `auto` is the
+    inverse prevalence on the train split (binary: negatives / positives; classification: largest class count
+    / class count), capped at `class_weight_cap` (default 10) so a head with a handful of positives does not
+    dominate. Heads not named keep unweighted losses and their specs (and fingerprints) unchanged."""
+    config = args_classifier.get("class_weights")
+    if config is None:
+        return
+    cap = float(args_classifier.get("class_weight_cap", 10.0))
+    if not cap >= 1:
+        raise ValueError("`class_weight_cap` must be at least 1.")
+    weighted = [n for n, s in specs.items() if s["task"] != "regression"]
+    if config == "auto":
+        config = {name: "auto" for name in weighted}
+    if not isinstance(config, dict):
+        raise ValueError("`experiment.classifier.class_weights` is `auto` or {head: auto | value}.")
+    for name, value in config.items():
+        if name not in specs:
+            raise ValueError(f"`class_weights` names head {name!r} that `target_label` does not list.")
+        spec = specs[name]
+        if spec["task"] == "regression":
+            raise ValueError(f"`class_weights.{name}`: regression heads take no class weights.")
+        if value == "auto":
+            values = train_targets[:, list(specs).index(name)]
+            values = values[np.isfinite(values)].astype(int)
+            counts = np.bincount(values, minlength=2 if spec["task"] == "binary" else spec["outputs"])
+            if spec["task"] == "binary":
+                weight = [min(cap, counts[0] / counts[1]) if counts[1] else 1.0]
+            else:
+                weight = [min(cap, counts.max() / c) if c else 1.0 for c in counts]
+            weight = [round(max(1.0, float(w)), 4) for w in weight]
+        else:
+            weight = [float(v) for v in (value if isinstance(value, (list, tuple)) else [value])]
+        expected = 1 if spec["task"] == "binary" else spec["outputs"]
+        if len(weight) != expected or not all(np.isfinite(w) and w > 0 for w in weight):
+            raise ValueError(f"`class_weights.{name}` needs {expected} positive weight(s), not {value!r}.")
+        spec["class_weight"] = weight
 
 
 def target_normalization(specs, train_targets, args_classifier):
