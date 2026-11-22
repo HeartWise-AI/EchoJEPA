@@ -10,7 +10,8 @@
 #   class_weights      inverse-prevalence class weights on every binary and 3-class head (capped at 10),
 #                      so rare findings (tricuspid, pulmonic, stenosis) weigh more (Robert, 11-19).
 #   other_filler       view-balanced bags fill with OTHER clips only after every view family has a slot.
-# Control `finetune_top4` is `all` plus the top 4 of ViT-B's 12 encoder blocks trained (lr 6.4e-6).
+# Controls (each `all` plus one change, from DeepCORO_CLIP): `finetune_top4` trains the top 4 of ViT-B's 12 encoder
+# blocks (lr 6.4e-6, 1.5-epoch warmup, layer-wise decay 0.75); `pooler_lr_x5`; `hybrid_pooling`.
 # One probe setting for every variant (the fine-tuned control needs one, and the sweep compares variants on the
 # same optimizer). Select on validation, then score the selected variant once on the test split
 # (`test_only: true`) before quoting numbers: validation picks both the epoch and the variant.
@@ -53,7 +54,7 @@ defaults:
 
 factors:
   echo_augmentation:
-    experiment.data.augmentation:
+    experiment.data.augmentation: &echo_augmentation
       random_resize_scale: [0.5, 1.0]
       random_resize_aspect_ratio: [0.9, 1.1]
       reprob: 0.0
@@ -64,14 +65,26 @@ factors:
   other_filler:
     experiment.data.filler_families: [OTHER]
 
+# Each control is `all` plus one change (DeepCORO_CLIP's recipe, 11-22).
 controls:
-  finetune_top4:
-    experiment.data.augmentation:
-      random_resize_scale: [0.5, 1.0]
-      random_resize_aspect_ratio: [0.9, 1.1]
-      reprob: 0.0
-      auto_augment: false
+  finetune_top4:                                  # top 4 blocks, 1.5-epoch warmup from 0, layer-wise decay 0.75
+    experiment.data.augmentation: *echo_augmentation
     experiment.classifier.class_weights: auto
     experiment.classifier.class_weight_cap: 10.0
     experiment.data.filler_families: [OTHER]
     experiment.encoder.trainable_blocks: 4
+    experiment.encoder.start_lr: 0.0
+    experiment.encoder.warmup: 1.5
+    experiment.encoder.layer_decay: 0.75
+  pooler_lr_x5:                                   # pooling layers at 5x the heads' learning rate
+    experiment.data.augmentation: *echo_augmentation
+    experiment.classifier.class_weights: auto
+    experiment.classifier.class_weight_cap: 10.0
+    experiment.data.filler_families: [OTHER]
+    experiment.classifier.pooler_lr_scale: 5.0
+  hybrid_pooling:                                 # attentive pooler + gated attention over videos
+    experiment.data.augmentation: *echo_augmentation
+    experiment.classifier.class_weights: auto
+    experiment.classifier.class_weight_cap: 10.0
+    experiment.data.filler_families: [OTHER]
+    experiment.classifier.hybrid_attention: true

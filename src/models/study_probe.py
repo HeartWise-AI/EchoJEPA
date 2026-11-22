@@ -111,7 +111,7 @@ class StudyProbe(nn.Module):
                  dropout=0.0, use_activation_checkpointing=True, num_view_classes=0,
                  query_mode="shared", task_groups=None, view_dropout=0.0, num_acquisition_classes=0,
                  local_depth=1, local_num_queries=4, local_use_rope=False, token_grid=None,
-                 num_clips_per_video=1, study_use_rope=False):
+                 num_clips_per_video=1, study_use_rope=False, hybrid_attention=False):
         super().__init__()
         if pooling_mode not in POOLING_MODES:
             raise ValueError(f"`pooling_mode` is one of {POOLING_MODES}, not {pooling_mode!r}.")
@@ -146,6 +146,13 @@ class StudyProbe(nn.Module):
         if study_use_rope and token_grid is None:
             raise ValueError("study_use_rope needs the token_grid (T, H, W) of one clip.")
         self.study_use_rope = bool(study_use_rope)
+        # Hybrid pooling (DeepCORO_CLIP's attention + CLS pooling): the attentive pooler's study vector joined
+        # with gated attention over the videos' mean tokens, projected back to `embed_dim`.
+        if hybrid_attention and (pooling_mode != "attentive" or query_mode != "shared"):
+            raise ValueError("hybrid_attention requires attentive pooling with query_mode: shared.")
+        self.hybrid = (nn.ModuleDict({"attention": GatedAttention(embed_dim, attention_hidden, dropout),
+                                      "project": nn.Linear(2 * embed_dim, embed_dim)})
+                       if hybrid_attention else None)
         # One learned embedding per view class, added to every token of a video of that view, plus
         # one for a padded slot (index `num_view_classes`), as DeepCORO_CLIP's view embeddings.
         self.num_view_classes = int(num_view_classes)
@@ -240,6 +247,10 @@ class StudyProbe(nn.Module):
                     raise ValueError(f"{per_video} tokens per video are not whole clips of {clip_tokens} tokens.")
                 positions = torch.arange(N * per_video, device=tokens.device) % clip_tokens
             pooled = self.pooler(tokens, key_padding_mask=key_padding_mask, positions=positions)
+            if self.hybrid is not None:
+                videos = tokens.reshape(B, N, per_video, D).mean(dim=2)
+                attended, _ = self.hybrid["attention"](videos, video_mask)
+                return self.hybrid["project"](torch.cat([pooled.squeeze(1), attended.to(pooled.dtype)], dim=-1))
             return pooled.squeeze(1) if self.query_mode == "shared" else pooled
         videos = tokens.reshape(B, N, per_video, D).mean(dim=2)  # [B, N, D]
         mask = video_mask.to(videos.dtype).unsqueeze(-1)

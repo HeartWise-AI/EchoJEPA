@@ -348,6 +348,22 @@ the clip summaries before study attention.
   with the top 4 encoder blocks trained. Select on validation, then score the chosen variant once with
   `test_only: true`.
 
+## Brought over from DeepCORO_CLIP (11-22)
+
+- **Test reporting.** `test_only` now adds `test_operating_points`: each binary head's Youden threshold fixed on
+  validation, with the test's sensitivity, specificity, PPV and NPV at it. It also adds `test_intervals`: study-bootstrap 95%
+  intervals of MAE and Pearson r (regression) and AUROC (binary, classification). `evaluation.bootstrap` sets the
+  number of resamples (default 1000; 0 turns it off).
+- **Encoder fine-tuning.** `experiment.encoder.layer_decay` (e.g. 0.75): the top trainable block at the encoder
+  learning rate, each block below it at that times `layer_decay`. Use it with `experiment.encoder.warmup` (epochs) and
+  `start_lr: 0`. DeepCORO_CLIP warms up over about 7% of steps.
+- **`experiment.classifier.pooler_lr_scale`**: the pooling layers' learning rate as a multiple of the heads'
+  (DeepCORO_CLIP's attention_lr / head_lr, about 5-10x).
+- **`experiment.classifier.hybrid_attention: true`** (attentive pooling, shared query): the attentive pooler's
+  study vector is joined with gated attention over the videos' mean tokens, then projected back (DeepCORO_CLIP's
+  attention + CLS pooling).
+- All of them are off by default and recorded in the fingerprint only when set. The v3 sweep tests each one as a control.
+
 ## Sweep
 
 [`configs/sweeps/study_probe.yaml`](../configs/sweeps/study_probe.yaml) defines a controlled

@@ -50,8 +50,8 @@ class TestStudySweep(unittest.TestCase):
         runs = expand(self.base, spec)
         variants = list(dict.fromkeys(m["variant"] for _, m in runs))
         self.assertEqual(variants, ["baseline", "echo_augmentation", "class_weights", "other_filler", "all",
-                                    "finetune_top4"])
-        self.assertEqual(len(runs), 6 * len(spec["seeds"]))
+                                    "finetune_top4", "pooler_lr_x5", "hybrid_pooling"])
+        self.assertEqual(len(runs), 8 * len(spec["seeds"]))
         by_variant = {m["variant"]: c for c, m in runs}
         baseline, tuned = by_variant["baseline"], by_variant["finetune_top4"]
         self.assertNotIn("augmentation", baseline["experiment"]["data"])
@@ -61,6 +61,10 @@ class TestStudySweep(unittest.TestCase):
         self.assertEqual(by_variant["all"]["experiment"]["data"]["augmentation"]["random_resize_scale"], [0.5, 1.0])
         self.assertEqual(by_variant["all"]["experiment"]["classifier"]["class_weights"], "auto")
         self.assertEqual(tuned["experiment"]["encoder"]["trainable_blocks"], 4)
+        self.assertEqual((tuned["experiment"]["encoder"]["warmup"], tuned["experiment"]["encoder"]["layer_decay"]),
+                         (1.5, 0.75))
+        self.assertEqual(by_variant["pooler_lr_x5"]["experiment"]["classifier"]["pooler_lr_scale"], 5.0)
+        self.assertTrue(by_variant["hybrid_pooling"]["experiment"]["classifier"]["hybrid_attention"])
         self.assertEqual(baseline["experiment"]["encoder"]["trainable_blocks"], 0)
 
     def test_ablation_and_factorial_cover_each_factor_and_preserve_protocol(self):
