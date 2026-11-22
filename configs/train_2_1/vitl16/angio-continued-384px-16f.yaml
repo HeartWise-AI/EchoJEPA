@@ -12,18 +12,19 @@
 # Objective: V-JEPA 2.1 dense loss on masked AND visible (context) tokens, deep supervision over layers 5/11/17/23,
 # EMA teacher. Data: the EchoJEPA angiography SSL pool minus every DeepCoro val/test patient.
 # 2 GPUs (cuda:1, cuda:3). Schedule sized from the smoke-test throughput (see prereg section 6).
+# RUN 2 (2026-11-21, prereg Amendment 1): run 1 partially collapsed; anti-collapse changes marked `run 2` below.
 
 app: vjepa_2_1
 nodes: 1
 tasks_per_node: 2
 cpus_per_task: 24
 mem_per_gpu: 48G
-folder: /media/data1/models/VJEPA2_1/angio384_run1
+folder: /media/data1/models/VJEPA2_1/angio384_run2
 
 data:
   dataset_type: VideoDataset
   datasets:
-  - /media/data1/models/VJEPA2_1/angio384_run1/data/train_videos_excl_valtest.csv
+  - /media/data1/models/VJEPA2_1/angio384_run2/data/train_videos_excl_valtest.csv
   # No `datasets_weights`: each pass is a shuffle of the list.
   batch_size: 16           # per GPU (smoke test: 22.7 GB max allocated, 3.2 s/iter on one GPU)
   crop_size: 384
@@ -94,7 +95,9 @@ meta:
   init_checkpoint: /media/data1/models/VJEPA2_1/vjepa2_1_vitl_dist_vitG_384/vjepa2_1_vitl_dist_vitG_384.pt
   init_encoder_key: ema
   init_predictor_partial: true
-  save_every_freq: 12      # keep e{N}.pth.tar every 12 epochs (~11 h); latest.pth.tar every epoch (~55 min)
+  save_every_freq: -1      # latest.pth.tar every epoch (~55 min); kept snapshots below
+  # Run 2 (prereg Amendment 1): kept e{N}.pth.tar at 2k, 5k, 10k steps, every 10% after, plus e32 (35%: decision probe).
+  save_at_epochs: [2, 5, 10, 18, 27, 32, 36, 45, 54, 63, 72, 81]
   seed: 239
   use_sdpa: true
 
@@ -118,23 +121,31 @@ model:
   zero_init_mask_tokens: true
   lambda_value_vid: 0.5
   lambda_progressive: true
-  lambda_start_iter: 500   # upstream 15k-30k ramp, shortened for a 90k-step run
-  lambda_end_iter: 2000
+  # Run 2: upstream ramp. Run 1 used 500-2,000 and partially collapsed (prereg Amendment 1).
+  lambda_start_iter: 15000
+  lambda_end_iter: 30000
 
 optimization:
   is_anneal: false
   ipe: 1000
   ipe_scale: 1.0
-  ema:
-  - 0.99925
-  - 0.99925
+  ema:                     # run 2: slower teacher, linear 0.9999 -> 1.0 over the run (run 1: 0.99925 fixed)
+  - 0.9999
+  - 1.0
   weight_decay: 0.04
   final_weight_decay: 0.04
   clip_grad: 10.0          # safety for the fresh predictor heads (upstream: null)
-  freeze_encoder_iters: 300
+  freeze_encoder_iters: 2000   # run 2: predictor-only warm-up 2k steps (run 1: 300)
+  # Run 2 anti-collapse anchor: frozen copy of Meta's released encoder (init_checkpoint, `ema_encoder`) on each GPU;
+  # 1 - cosine between online and anchor context tokens, per level (layer-normed), weight 1.0 from the unfreeze
+  # (step 2,000) decaying linearly to 0.1 at step 90,000.
+  anchor:
+    weight: 1.0
+    final_weight: 0.1
+  collapse_log_freq: 100       # teacher clip cosine / effective rank in train.log every 100 steps
   # Lab linear-scaling rule (EchoJEPA configs): 5.25e-4 x global_batch / 3072; global batch 32 -> 5.47e-6.
   start_lr: 5.5e-7
   lr: 5.47e-6
   final_lr: 1.0e-7         # cosine decay over the whole run (no separate cool-down: already at 384 px)
-  warmup: 2                # epochs = 2,000 steps (includes the 300-step encoder freeze)
+  warmup: 4                # epochs = 4,000 steps; run 2: the encoder (frozen to 2k) meets a still-rising lr
   epochs: 90               # x ipe 1000 = 90,000 steps x 32 clips = 2.88M clips (~7 passes over 412k videos)

@@ -244,6 +244,57 @@ def load_pretrained_weights(r_path, encoder, predictor, target_encoder, encoder_
     del checkpoint
 
 
+def load_frozen_anchor(r_path, model, encoder_key="ema"):
+    """Load the released encoder into `model` and freeze it, as a fixed anchor for continued
+    pretraining (the online encoder is pulled towards its features so it cannot drift into a
+    collapsed solution). Loaded from `r_path` itself, so it is the same on a fresh start and on
+    a resume (where the online encoder comes from `latest.pth.tar`)."""
+    checkpoint = robust_checkpoint_loader(r_path, map_location=torch.device("cpu"))
+    if encoder_key == "ema":
+        encoder_key = "target_encoder" if "target_encoder" in checkpoint else "ema_encoder"
+    state = {k.removeprefix("module."): v for k, v in checkpoint[encoder_key].items()}
+    model.load_state_dict(state, strict=True)
+    del checkpoint
+    model.eval()
+    for p in model.parameters():
+        p.requires_grad = False
+    logger.info(f"Frozen anchor encoder loaded from `{encoder_key}` of {r_path}, strict.")
+    return model
+
+
+def anchor_loss(z, a, embed_dim, valid=None):
+    """Feature-distillation anchor: mean (1 - cosine) between the online encoder's context
+    tokens `z` and the frozen anchor's tokens `a` for the same visible tokens, per output level
+    (each level layer-normed, as the JEPA targets). Same nesting as the encoder output
+    (list per clip length of list per mask of [B, N, levels * embed_dim]).
+
+    `valid`: matching token-validity weights ([B, N, 1], same nesting) or None (every token counts).
+    """
+    loss, n = 0.0, 0
+    for i, (zi, ai) in enumerate(zip(z, a)):
+        for j, (zij, aij) in enumerate(zip(zi, ai)):
+            levels = zij.size(-1) // embed_dim
+            zl = F.layer_norm(zij.float().unflatten(-1, (levels, embed_dim)), (embed_dim,))
+            al = F.layer_norm(aij.float().unflatten(-1, (levels, embed_dim)), (embed_dim,))
+            dist = 1.0 - F.cosine_similarity(zl, al, dim=-1)  # [B, N, levels]
+            if valid is None:
+                loss = loss + dist.mean()
+            else:
+                w = valid[i][j].float()  # [B, N, 1]
+                loss = loss + (dist * w).sum() / (w.sum() * levels).clamp(min=1)
+            n += 1
+    return loss / max(n, 1)
+
+
+def anchor_weight(step, weight, final_weight, start_iter, total_iters):
+    """Anchor weight: 0 before `start_iter` (encoder frozen, nothing to anchor), then linear
+    decay from `weight` at `start_iter` to `final_weight` at `total_iters`, held after."""
+    if weight <= 0 or step < start_iter:
+        return 0.0
+    t = min(1.0, (step - start_iter) / max(1, total_iters - start_iter))
+    return float(weight + t * (final_weight - weight))
+
+
 def select_load_path(latest_path, load_model, r_file, is_anneal, resume_anneal, anneal_ckpt):
     """Select the checkpoint to load. Annealing always loads a checkpoint; normal training may
     start fresh.

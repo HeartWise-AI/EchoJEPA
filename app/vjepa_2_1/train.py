@@ -28,7 +28,10 @@ from app.vjepa_2_1.models.utils.modules import Lambda_LinearWarmupHold
 from app.vjepa_2_1.transforms import make_transforms
 from app.vjepa_2_1.utils import (
     clip_grads_with_norm_,
+    anchor_loss,
+    anchor_weight,
     feature_spread,
+    load_frozen_anchor,
     init_opt,
     init_video_model,
     load_checkpoint,
@@ -204,6 +207,8 @@ def main(args, resume_preempt=False):
     init_predictor_partial = cfgs_meta.get("init_predictor_partial", False)
     seed = cfgs_meta.get("seed", _GLOBAL_SEED)
     save_every_freq = cfgs_meta.get("save_every_freq", -1)
+    # Extra kept snapshots `e<N>.pth.tar` after these epochs (e.g. early probes), besides `save_every_freq`.
+    save_at_epochs = {int(e) for e in (cfgs_meta.get("save_at_epochs", None) or [])}
     skip_batches = cfgs_meta.get("skip_batches", -1)
     use_sdpa = cfgs_meta.get("use_sdpa", False)
     sync_gc = cfgs_meta.get("sync_gc", False)
@@ -374,6 +379,16 @@ def main(args, resume_preempt=False):
     # receives no update (its gradients are dropped), so a freshly initialized predictor head
     # cannot push large gradients into pretrained encoder weights. 0 disables it.
     freeze_encoder_iters = int(cfgs_opt.get("freeze_encoder_iters", 0))
+    # Anti-collapse anchor (continued pretraining): a frozen copy of the released encoder
+    # (`meta.init_checkpoint`); the online encoder's context tokens are pulled towards its
+    # features with weight `weight`, decaying linearly to `final_weight` at the end of the run,
+    # starting when the encoder unfreezes. `weight: 0` (default) disables it.
+    cfgs_anchor = cfgs_opt.get("anchor", None) or {}
+    anchor_w0 = float(cfgs_anchor.get("weight", 0.0))
+    anchor_w1 = float(cfgs_anchor.get("final_weight", anchor_w0))
+    # Feature-collapse metrics of the EMA teacher (clip cosine, effective rank) written to the
+    # train log every `collapse_log_freq` steps (0: only with wandb).
+    collapse_log_freq = int(cfgs_opt.get("collapse_log_freq", 0))
     if clip_grad is not None and not float(clip_grad) > 0:
         raise ValueError(f"optimization.clip_grad must be a positive number or null, got {clip_grad!r}.")
     # ----------------------------------------------------------------------- #
@@ -534,6 +549,11 @@ def main(args, resume_preempt=False):
     )
     target_encoder = copy.deepcopy(encoder)
     embed_dim_encoder = encoder.backbone.embed_dim
+    anchor_encoder = None
+    if anchor_w0 > 0:
+        if init_checkpoint is None:
+            raise ValueError("`optimization.anchor` needs `meta.init_checkpoint` (the encoder to anchor to).")
+        anchor_encoder = load_frozen_anchor(init_checkpoint, copy.deepcopy(encoder), encoder_key=init_encoder_key)
 
     if init_checkpoint is not None:
         if is_anneal:
@@ -894,7 +914,7 @@ def main(args, resume_preempt=False):
 
                         if predict_all:
                             z_context = normalize_nested(z_context, embed_dim)
-                    return z_pred, z_context
+                    return z_pred, z_context, z
 
                 def loss_fn(z, h, masks_to_apply, cls_loss, d_weights, valid):
                     if cls_loss:
@@ -942,7 +962,7 @@ def main(args, resume_preempt=False):
                 # Step 1. Forward
                 with torch.cuda.amp.autocast(dtype=dtype, enabled=mixed_precision):
                     h = forward_target(clips)
-                    z_pred, z_context = forward_context(clips)
+                    z_pred, z_context, z_enc = forward_context(clips)
                     loss = 0
                     loss_pred = loss_fn(
                         z_pred,
@@ -978,9 +998,24 @@ def main(args, resume_preempt=False):
                             lambda_value_step = lambda_value
                         loss += loss_context * lambda_value_step
 
-                # Measure how different the target encoder’s clip representations are from one another,
-                # but only compute this metric on steps that are being logged.
-                spread = feature_spread(h, valid) if log_step else (float("nan"), float("nan"))
+                    # Anti-collapse anchor on the visible tokens the online encoder saw.
+                    loss_anchor, anchor_w_step = None, 0.0
+                    if anchor_encoder is not None:
+                        anchor_w_step = anchor_weight(
+                            epoch * ipe + itr, anchor_w0, anchor_w1, freeze_encoder_iters, ipe * num_epochs
+                        )
+                        if anchor_w_step > 0:
+                            with torch.no_grad():
+                                a = anchor_encoder(clips, masks_enc, gram_mode=False, training_mode=True)
+                            v_enc = [apply_masks(vi, mi, concat=False) for vi, mi in zip(valid, masks_enc)]
+                            loss_anchor = anchor_loss(z_enc, a, embed_dim_encoder, valid=v_enc)
+                            loss += loss_anchor * anchor_w_step
+
+                # Measure how different the target encoder’s clip representations are from one another
+                # (last output level = final encoder layer, as the probe), only on logged steps.
+                spread_step = log_step or (collapse_log_freq > 0 and itr % collapse_log_freq == 0)
+                h_last = [hi[:, :, -embed_dim_encoder:] for hi in h]
+                spread = feature_spread(h_last, valid) if spread_step else (float("nan"), float("nan"))
 
                 _raise_if_non_finite_loss(loss, device)
 
@@ -1049,6 +1084,8 @@ def main(args, resume_preempt=False):
                     float("nan") if _grad_norm is None else float(_grad_norm),
                     m,
                     spread,
+                    float("nan") if loss_anchor is None else float(loss_anchor.detach()),
+                    anchor_w_step,
                 )
 
             (
@@ -1062,7 +1099,20 @@ def main(args, resume_preempt=False):
                 _grad_norm,
                 _ema_m,
                 (clip_cosine, effective_rank),
+                loss_anchor,
+                anchor_w_step,
             ), gpu_etime_ms = gpu_timer(train_step)
+            if collapse_log_freq > 0 and itr % collapse_log_freq == 0:
+                # Same step on every rank, so the reduction is safe. Per-GPU batch metrics, averaged.
+                (c_cos, _), (c_rank, _) = global_sample_weighted_means(
+                    [clip_cosine, effective_rank], [1, 1], device=device
+                )
+                logger.info(
+                    "[collapse] step %d clip_cosine %.4f effective_rank %.2f (per-GPU batch of %d clips, "
+                    "teacher last level) anchor %.4f x %.3f ema %.6f lambda %.3f"
+                    % (epoch * ipe + itr, c_cos, c_rank, batch_size, loss_anchor, anchor_w_step, _ema_m,
+                       lambda_value_step)
+                )
             if not np.isnan(_grad_norm):        # `NaN` when the step was skipped
                 grad_norm_max = _grad_norm if np.isnan(grad_norm_max) else max(grad_norm_max, _grad_norm)
                 clipped_steps += int(clip_grad is not None and _grad_norm > clip_grad)
@@ -1204,7 +1254,7 @@ def main(args, resume_preempt=False):
         logger.info("avg. loss %.3f" % loss_meter.avg)
         if (epoch + 1) % CHECKPOINT_FREQ == 0 or epoch == (num_epochs - 1):
             save_checkpoint(epoch + 1, latest_path)
-            if save_every_freq > 0 and (epoch + 1) % save_every_freq == 0:
+            if (save_every_freq > 0 and (epoch + 1) % save_every_freq == 0) or (epoch + 1) in save_at_epochs:
                 # Named after the epoch count stored inside; upstream used the 0-based index.
                 save_every_file = f"e{epoch + 1}.pth.tar"
                 save_every_path = os.path.join(folder, save_every_file)
