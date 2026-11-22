@@ -290,9 +290,13 @@ def head_loss(spec, output, target):
         else:
             value = F.l1_loss(output.squeeze(-1), target, reduction="sum")
     elif task == "binary":
-        value = F.binary_cross_entropy_with_logits(output.squeeze(-1), target, reduction="sum")
+        # `class_weight` (set by the probe's `class_weights`): the positives' weight, for rare findings.
+        pos_weight = (output.new_tensor(spec["class_weight"]) if spec.get("class_weight") is not None else None)
+        value = F.binary_cross_entropy_with_logits(output.squeeze(-1), target, reduction="sum",
+                                                   pos_weight=pos_weight)
     else:
-        value = F.cross_entropy(output, target.long(), reduction="sum")
+        weight = output.new_tensor(spec["class_weight"]) if spec.get("class_weight") is not None else None
+        value = F.cross_entropy(output, target.long(), weight=weight, reduction="sum")
     return value, count
 
 

@@ -330,6 +330,24 @@ The hard view column still controls sampling. Acquisition embeddings are separat
 and not dropped with the view signal. Hierarchical pooling adds both metadata embeddings to
 the clip summaries before study attention.
 
+## Training augmentation and class weights
+
+- **`experiment.data.augmentation`** sets the probe's training transform: `random_resize_scale`,
+  `random_resize_aspect_ratio`, `reprob` and `auto_augment`. Left out, it is the legacy ImageNet-style setting:
+  crops down to 8% of the frame, aspect 0.75-1.33, RandAugment (with inversion, solarize and colour changes) and
+  25% random erasing. Evaluation always resizes and centre-crops, so small training crops read the heart at
+  another mm-per-pixel scale than evaluation, which adds noise to every size head, and the colour operations
+  change the Doppler jets. The pretraining-matched setting is `{random_resize_scale: [0.5, 1.0],
+  random_resize_aspect_ratio: [0.9, 1.1], reprob: 0.0, auto_augment: false}`.
+- **`experiment.classifier.class_weights`**: `auto` weighs every binary and 3-class head by inverse prevalence on
+  the train split (binary `pos_weight` = negatives / positives; classes = largest count / class count), capped at
+  `class_weight_cap` (default 10). Or give `{head: auto | value | [one value per class]}`. Rare findings
+  (tricuspid, pulmonic, stenosis) then weigh more. Heads not named keep unweighted losses.
+- Both are recorded in the run's fingerprint only when set, so earlier runs resume as they were.
+- `configs/sweeps/study_probe_v3.yaml` tests both, plus OTHER as filler only, from v2's best probe, and a control
+  with the top 4 encoder blocks trained. Select on validation, then score the chosen variant once with
+  `test_only: true`.
+
 ## Sweep
 
 [`configs/sweeps/study_probe.yaml`](../configs/sweeps/study_probe.yaml) defines a controlled
