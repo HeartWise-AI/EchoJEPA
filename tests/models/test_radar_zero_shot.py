@@ -7,6 +7,7 @@ import os
 import tempfile
 import unittest
 
+import numpy as np
 import torch
 import torch.nn.functional as F
 
@@ -17,8 +18,11 @@ from src.models.radar.zero_shot import (
     encode_prompts,
     load_prompt_tasks,
     pool,
+    regression_count,
     regression_estimate,
+    regression_log_prior,
     regression_prompts,
+    regression_softmax,
 )
 
 PROMPTS = os.path.join(os.path.dirname(__file__), "..", "..", "configs", "radar", "prompts_v0.yaml")
@@ -65,7 +69,6 @@ class TestPromptFile(unittest.TestCase):
             self.addCleanup(os.remove, path)
             with self.subTest(key), self.assertRaisesRegex(ValueError, key):
                 load_prompt_tasks(path)
-
 
     def test_the_target_is_the_task_name_unless_the_file_names_a_column(self):
         path = write("tasks:\n  a: {mode: binary, structure: lv, label_sources: [x], negative_sources: [y]}\n"
@@ -135,6 +138,20 @@ class TestScorers(unittest.TestCase):
         with self.assertRaises(ValueError):
             regression_estimate(z, prompts, values, keep=0.0)
 
+    def test_regression_top_k_keeps_a_fixed_number_of_prompts_instead_of_the_fraction(self):
+        values = list(range(10))
+        prompts = torch.eye(10)                                      # prompt v is axis v
+        z = F.normalize(torch.tensor([[0.6, 0, 0, 0, 0, 0, 0.7, 0.5, 1.0, 0.8]]), dim=-1)  # ranked 8, 9, 6, 0, 7
+        self.assertEqual(regression_estimate(z, prompts, values, top_k=1).item(), 8.0)      # the number one
+        self.assertEqual(regression_estimate(z, prompts, values, top_k=5).item(), 7.0)      # median of 8, 9, 6, 0, 7
+        # top_k replaces keep; without it the default fraction (0.2 of 10: values 8, 9) is unchanged
+        self.assertEqual(regression_estimate(z, prompts, values, keep=0.5, top_k=1).item(), 8.0)
+        self.assertEqual(regression_estimate(z, prompts, values).item(), 8.0)
+        self.assertEqual((regression_count(440), regression_count(440, top_k=5)), (88, 5))
+        for bad in (0, 11, 2.0, True):
+            with self.subTest(top_k=bad), self.assertRaisesRegex(ValueError, "top_k"):
+                regression_estimate(z, prompts, values, top_k=bad)
+
     def test_regression_with_several_templates_repeats_each_value(self):
         pairs = regression_prompts(["a <#>", "b <#>"], 0, 3)
         values = [v for v, _ in pairs]
@@ -143,6 +160,68 @@ class TestScorers(unittest.TestCase):
         estimate = regression_estimate(z, prompts, values, keep=0.25)
         self.assertEqual(estimate.shape, (1,))
         self.assertEqual(estimate.item(), 2.0)
+
+
+class TestSoftmaxReadout(unittest.TestCase):
+
+    def test_softmax_read_out_is_the_expected_value_at_the_temperature(self):
+        values = [10.0, 20.0, 30.0, 40.0]
+        prompts = torch.eye(4)                                       # prompt k is axis k
+        z = F.normalize(torch.tensor([[0.1, 0.2, 0.9, 0.3], [0.5, 0.5, 0.5, 0.5]]), dim=-1)
+        for temperature in (0.05, 0.3):
+            weights = torch.softmax(z.double() / temperature, dim=-1)
+            expected = weights @ torch.tensor(values, dtype=torch.float64)
+            got = regression_softmax(z, prompts, values, temperature)
+            self.assertEqual(got.dtype, torch.float64)
+            torch.testing.assert_close(got, expected)
+        self.assertAlmostEqual(regression_softmax(z, prompts, values, 1e-4)[0].item(), 30.0, places=6)  # the best
+        self.assertAlmostEqual(regression_softmax(z, prompts, values, 0.07)[1].item(), 25.0, places=6)  # all equal
+        self.assertAlmostEqual(regression_softmax(z, prompts, values, 1e4)[0].item(), 25.0, places=3)  # flat: mean
+        with self.assertRaisesRegex(ValueError, "One value"):
+            regression_softmax(z, prompts, values[:-1], 0.07)
+        with self.assertRaisesRegex(ValueError, "temperature"):
+            regression_softmax(z, prompts, values, 0.0)
+
+    def test_a_log_prior_moves_the_read_out_towards_the_values_it_favours(self):
+        values = [10.0, 20.0, 30.0, 40.0]
+        prompts = torch.eye(4)
+        z = F.normalize(torch.tensor([[0.5, 0.5, 0.5, 0.5]]), dim=-1)
+        flat = regression_softmax(z, prompts, values, 0.07)
+        torch.testing.assert_close(regression_softmax(z, prompts, values, 0.07, torch.zeros(4)), flat)
+        torch.testing.assert_close(regression_softmax(z, prompts, values, 0.07, torch.full((4,), 3.0)), flat)
+        prior = torch.log(torch.tensor([1.0, 1.0, 1.0, 5.0], dtype=torch.float64))
+        self.assertAlmostEqual(regression_softmax(z, prompts, values, 0.07, prior).item(), 32.5)   # (10+20+30+200)/8
+        only = torch.tensor([float("-inf"), 0.0, float("-inf"), float("-inf")])
+        self.assertEqual(regression_softmax(z, prompts, values, 0.07, only).item(), 20.0)
+        with self.assertRaisesRegex(ValueError, "no prompt"):
+            regression_softmax(z, prompts, values, 0.07, torch.full((4,), float("-inf")))
+        with self.assertRaisesRegex(ValueError, "per prompt"):
+            regression_softmax(z, prompts, values, 0.07, torch.zeros(3))
+
+    def test_the_log_prior_gives_each_value_bin_its_training_share_however_many_prompts_it_holds(self):
+        # bins of 5 from 10: [10, 15) holds three prompts (two share the value 11), [15, 20) none, [20, 25) one
+        values = [10, 11, 11, 20]
+        labels = [12.0, 21.0, 22.0, 24.0, float("nan")]                     # a missing label is skipped
+        log_prior, info = regression_log_prior(values, labels)
+        self.assertEqual(info["bin_edges"], [10.0, 15.0, 20.0, 25.0])
+        self.assertEqual(info["pool_count"], [3, 0, 1])
+        self.assertEqual(info["label_share"], [0.25, 0.0, 0.75])
+        self.assertEqual(info["training_labels"], 4)
+        weight = torch.exp(log_prior)
+        self.assertAlmostEqual(weight.mean().item(), 1.0)                   # scaled to mean 1
+        torch.testing.assert_close(weight / weight.sum(), torch.tensor([0.25 / 3] * 3 + [0.75], dtype=torch.float64))
+        # labels beyond the pool's bins count in the end bins; a bin without training labels is left out (-inf)
+        log_prior, info = regression_log_prior(values, [0.0, 3.0, 99.0])
+        self.assertEqual(info["label_share"], [2 / 3, 0.0, 1 / 3])
+        log_prior, _ = regression_log_prior(values, [12.0])
+        self.assertTrue(torch.isinf(log_prior[3]) and torch.isfinite(log_prior[:3]).all())
+        # equal shares per prompt make no difference to the read-out
+        uniform, _ = regression_log_prior([10, 20, 30], [11.0, 21.0, 31.0])
+        torch.testing.assert_close(uniform, torch.zeros(3, dtype=torch.float64))
+        for bad in ([], [float("nan")]):
+            with self.assertRaisesRegex(ValueError, "training label"):
+                regression_log_prior(values, bad)
+        self.assertTrue(np.isfinite(info["bin_width"]))
 
 
 class TestEncodePrompts(unittest.TestCase):

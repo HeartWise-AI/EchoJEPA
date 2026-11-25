@@ -24,6 +24,8 @@ caption text (`src/models/radar/severity.py`). Config: `severity_weights: true` 
 overrides some of them (`{severe: 4.0}`). The run writes `severity_weights.json` (rows per grade and structure); each
 weighted structure's step stats carry `mean_weight`. The key is part of the fingerprint when set. The merged
 builder's `normality` is provisional: with this option on, A0/A1 runs lean on it although they otherwise do not.
+Training refuses the option with `data.view_prefix`: the prefix changes the caption ids the weights are looked up by,
+so every caption would silently get weight 1.
 
 ## Validation monitoring (`validation`)
 
@@ -41,3 +43,9 @@ validated), `num_bags` (1), `eval_seed` (0), `batch_size` (32), `recall_k` ([1, 
 (`configs/radar/prompts_v0.yaml`). Clips only (a stills run is validated on its clips). Under DDP the other ranks
 wait at the epoch barrier, so a large validation split should use `every` > 1 or a subset to stay within the process
 group timeout.
+
+With a frozen caption encoder (`text.frozen`), rank 0 encodes the validation captions and the binary prompts into the
+caption feature store right after the training captions and before the store is sealed, so the passes never run the
+text model. The training captions keep the same store rows on every rank. Training refuses `validation` with
+`data.view_prefix`, because the gallery and the prompts are scored without the view prefix that the training captions
+carry.

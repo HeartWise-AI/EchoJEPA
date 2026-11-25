@@ -1723,6 +1723,7 @@ class TestPolicy(unittest.TestCase):
         self.root = tempfile.mkdtemp()
         with open(rn.DEFAULT_POLICY, encoding="utf-8") as f:
             self.raw = yaml.safe_load(f)
+        self.raw["approval"] = None                     # the shipped rules, unapproved: the tests change them
 
     def tearDown(self):
         shutil.rmtree(self.root, ignore_errors=True)
@@ -1734,8 +1735,12 @@ class TestPolicy(unittest.TestCase):
         return path
 
     def test_the_shipped_policy_is_provisional_and_covers_every_trained_structure(self):
+        # Provisional until a second reviewer confirms the cutoffs and the manual-sample audit (the file's header).
         self.assertEqual(POLICY.status, "provisional")
         self.assertIsNone(POLICY.approval)
+        approved = {**self.raw, "approval": {"by": "test", "on": "January 2026", "audit_report": "audit_report.json",
+                                             "digest": POLICY.digest}}
+        self.assertEqual(rn.load_policy(self.write(approved)).status, "approved")   # an approval for exactly its rules
         self.assertEqual(POLICY.scope, "bmode")
         self.assertEqual(set(POLICY.required), set(rn.GRAMMARS))
 

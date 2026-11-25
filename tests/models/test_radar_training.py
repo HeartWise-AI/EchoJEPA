@@ -487,8 +487,13 @@ class TestRadarTraining(unittest.TestCase):
                 radar_train.check_normality_approved(table, loss, policy)
         with self.assertRaisesRegex(ValueError, "data.normality_policy"):
             radar_train.check_normality_approved(captions, loss, None)
+        with open(SHIPPED_POLICY, encoding="utf-8") as f:
+            unapproved = {**yaml.safe_load(f), "approval": None}
+        provisional = os.path.join(self.root, "provisional.yaml")
+        with open(provisional, "w", encoding="utf-8") as f:
+            yaml.safe_dump(unapproved, f)
         with self.assertRaisesRegex(ValueError, "not approved"):
-            radar_train.check_normality_approved(captions, loss, SHIPPED_POLICY)
+            radar_train.check_normality_approved(captions, loss, provisional)
 
     def test_a_stale_approval_is_refused(self):
         with open(self.paths["normality_policy"], encoding="utf-8") as f:

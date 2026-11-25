@@ -83,7 +83,7 @@ class TestBuildTable(unittest.TestCase):
         self.assertEqual(sorted(s for _, s in table.index), ["lv", "pericardium"])    # mitral: nothing B-mode is left
         lv = table.loc[("S1", "lv")]
         self.assertEqual(lv.caption, "VG non dilaté. Fonction systolique normale. FEVG estimée visuellement : 60 %.")
-        self.assertEqual((lv.normality, lv.ef_status, lv.normality_status), ("normal", "appended", "provisional"))
+        self.assertEqual((lv.normality, lv.ef_status, lv.normality_status), ("normal", "appended", POLICY.status))
         self.assertEqual(lv.caption_id, rc.caption_id(lv.caption))
         self.assertEqual(lv.policy_digest, POLICY.digest)
         self.assertEqual(table.loc[("S1", "pericardium")].normality, "normal")
@@ -350,7 +350,7 @@ class TestCommandLine(unittest.TestCase):
         self.assertEqual(audit.table_problems(table, POLICY), {})
         with open(os.path.join(out, "build_info.json"), encoding="utf-8") as f:
             info = json.load(f)
-        self.assertEqual((info["split"], info["rows"], info["policy_status"]), ("train", 2, "provisional"))
+        self.assertEqual((info["split"], info["rows"], info["policy_status"]), ("train", 2, POLICY.status))
         self.assertEqual(sorted(info), ["captions_sha256", "clips_sha256", "excluded", "exclusions_sha256", "flags",
                                         "pacs_sha256", "patients", "policy_digest", "policy_status", "reports_sha256",
                                         "routing_sha256", "rows", "rule_version", "split", "splits_sha256",

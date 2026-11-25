@@ -106,7 +106,7 @@ class TestCoverage(AuditCase):
         lv = report["structures"]["lv"]
         self.assertEqual(lv["conflicts"], {"text_structured": 3})
         self.assertEqual(lv["identical_captions_with_different_flags"], 1)    # size conflict in 3 of 10
-        self.assertEqual(report["policy_status"], "provisional")
+        self.assertEqual(report["policy_status"], POLICY.status)
 
     def test_the_funnel_follows_the_training_bags(self):
         root = tempfile.mkdtemp(dir=self.root)

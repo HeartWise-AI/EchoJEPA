@@ -11,7 +11,9 @@
 - thresholds come from a tuning split or are 0.5, never from the reported split;
 - every refusal of the module docstring;
 - intervals resample the groups of a label column on request;
-- W&B receives scalars and settings, and no study identifier.
+- W&B receives scalars and settings, and no study identifier;
+- the softmax regression read-out changes only the regression task, its prior is built from the training split's
+  labels only (refused otherwise), and the default read-out is what it was; regression tasks get stratified metrics.
 
 The synthetic tokens are random, so no metric value means anything here: the tests check the bookkeeping.
 """
@@ -327,6 +329,21 @@ class TestZeroShotEval(unittest.TestCase):
                 self.assertEqual(len(bag["selected"]), ef["top_k"])
                 self.assertAlmostEqual(bag["value"], float(torch.tensor(bag["selected_values"]).median()), places=5)
 
+    def test_top_k_changes_only_the_regression_read_out_and_is_reported(self):
+        self.assertIsNone(self.report["top_k"])                              # default: the keep fraction
+        report = self.run_eval("top1", top_k=1, dump_studies=["V03"])
+        self.assertEqual(report["top_k"], 1)
+        frame = pd.read_csv(os.path.join(self.root, "top1", "predictions.csv"), dtype={"study_id": str})
+        for name in PROMPTS:
+            if name != "ef":
+                pd.testing.assert_frame_equal(self.rows(name, frame), self.rows(name))
+        ef = strict_json(os.path.join(self.root, "top1", "explain_V03.json"))["tasks"]["ef"]
+        self.assertEqual(ef["top_k"], 1)
+        self.assertIn("top_k=1", ef["rule"])
+        best = [bag["selected_values"][0] for bag in ef["bags"]]
+        self.assertTrue(all(len(bag["selected"]) == 1 for bag in ef["bags"]))
+        self.assertAlmostEqual(self.rows("ef", frame).loc["V03"].prediction, np.mean(best), places=5)
+
     def test_the_run_is_reproducible_and_pooling_and_seed_change_what_they_should(self):
         again = self.run_eval("again")
         self.assertEqual(again, self.report)
@@ -337,6 +354,126 @@ class TestZeroShotEval(unittest.TestCase):
         self.assertEqual(other["bags"]["seed"], 5)
         self.assertNotEqual(other["bags"], self.report["bags"])
         self.assertEqual(other["bootstrap"]["seed"], 1)
+
+    # ---- regression read-out ------------------------------------------------------------------------------------
+
+    def test_the_default_read_out_is_unchanged_and_only_adds_the_stratified_report(self):
+        self.assertEqual((self.report["regression_readout"], self.report["regression_prior"]), ("top_fraction", None))
+        explicit = self.run_eval("explicit_default", regression_readout="top_fraction", regression_prior=None)
+        self.assertEqual(explicit, self.report)
+        for name in ("predictions.csv", "metrics.json", "thresholds.json"):
+            with open(os.path.join(self.root, "val", name), "rb") as a, \
+                    open(os.path.join(self.root, "explicit_default", name), "rb") as b:
+                self.assertEqual(a.read(), b.read(), name)
+        ef = self.report["tasks"]["ef"]
+        self.assertEqual(set(ef), {"mode", "structure", "target", "coverage", "metrics", "intervals", "stratified"})
+        self.assertEqual(set(ef["metrics"]), {"n", "mae", "rmse", "r2", "pearson_r", "bias"})
+        for name in ("effusion", "av_stenosis"):
+            self.assertNotIn("stratified", self.report["tasks"][name])
+
+    def test_regression_tasks_report_slope_r_and_errors_by_label_range(self):
+        ef = self.report["tasks"]["ef"]
+        rows = self.rows("ef")
+        rows = rows[rows.prediction_supported & rows.label.notna()]
+        y, p = rows.label.to_numpy(), rows.prediction.to_numpy()
+        expected = zs.stratified_regression(y, p, zs.LABEL_RANGES["lvef"])     # from the csv: rounding only
+        for key in ("n", "slope", "pearson_r", "range_balanced_mae"):
+            self.assertAlmostEqual(ef["stratified"][key], expected[key], places=9)
+        for name, entry in expected["ranges"].items():
+            for key, value in entry.items():
+                if value is None:
+                    self.assertIsNone(ef["stratified"]["ranges"][name][key])
+                else:
+                    self.assertAlmostEqual(ef["stratified"]["ranges"][name][key], value, places=9)
+        self.assertEqual(ef["stratified"]["n"], ef["metrics"]["n"])
+        self.assertAlmostEqual(ef["stratified"]["pearson_r"], ef["metrics"]["pearson_r"], places=9)
+        self.assertEqual(sum(r["n"] for r in ef["stratified"]["ranges"].values()), ef["metrics"]["n"])
+        self.assertEqual(list(ef["stratified"]["ranges"]), ["<40", "40-49", "50-59", ">=60"])
+
+    def test_stratified_metrics_by_hand(self):
+        label = np.array([30.0, 45.0, 49.9, 50.0, 70.0, 80.0])
+        prediction = np.array([40.0, 45.0, 48.9, 55.0, 60.0, 70.0])
+        out = zs.stratified_regression(label, prediction, zs.LABEL_RANGES["lvef"])
+        self.assertEqual(out["n"], 6)
+        self.assertAlmostEqual(out["slope"], np.polyfit(label, prediction, 1)[0])
+        self.assertAlmostEqual(out["pearson_r"], np.corrcoef(label, prediction)[0, 1])
+        ranges = out["ranges"]
+        self.assertEqual({k: r["n"] for k, r in ranges.items()}, {"<40": 1, "40-49": 2, "50-59": 1, ">=60": 2})
+        self.assertEqual((ranges["<40"]["mae"], ranges["<40"]["bias"]), (10.0, 10.0))
+        self.assertAlmostEqual(ranges["40-49"]["mae"], 0.5)
+        self.assertAlmostEqual(ranges["40-49"]["bias"], -0.5)
+        self.assertEqual((ranges[">=60"]["mae"], ranges[">=60"]["bias"]), (10.0, -10.0))
+        self.assertEqual((ranges["50-59"]["low"], ranges["50-59"]["high"]), (50.0, 60.0))
+        self.assertAlmostEqual(out["range_balanced_mae"], (10.0 + 0.5 + 5.0 + 10.0) / 4)
+        empty = zs.stratified_regression(np.array([45.0]), np.array([44.0]), zs.LABEL_RANGES["lvef"])
+        self.assertEqual((empty["slope"], empty["pearson_r"], empty["ranges"]["<40"]["mae"]), (None, None, None))
+        self.assertEqual(empty["range_balanced_mae"], 1.0)
+        self.assertEqual(zs.stratified_regression(label, prediction)["ranges"], {})     # a target without ranges
+
+    def test_the_softmax_read_out_changes_only_the_regression_task(self):
+        report = self.run_eval("softmax", regression_readout="softmax", dump_studies=["V03"])
+        self.assertEqual((report["regression_readout"], report["regression_prior"]), ("softmax", None))
+        frame = pd.read_csv(os.path.join(self.root, "softmax", "predictions.csv"), dtype={"study_id": str})
+        for name in PROMPTS:
+            if name != "ef":
+                pd.testing.assert_frame_equal(self.rows(name, frame), self.rows(name))
+                self.assertEqual(report["tasks"][name], self.report["tasks"][name])
+        self.assertEqual(report["summary"], self.report["summary"])          # the binary AUROCs are untouched
+        ef = strict_json(os.path.join(self.root, "softmax", "explain_V03.json"))["tasks"]["ef"]
+        self.assertEqual(ef["readout"], "softmax")
+        values = torch.tensor(ef["values"], dtype=torch.float64)
+        for bag in ef["bags"]:
+            probability = torch.tensor(bag["probabilities"], dtype=torch.float64)
+            self.assertAlmostEqual(probability.sum().item(), 1.0, places=9)
+            self.assertAlmostEqual(bag["value"], (probability @ values).item(), places=4)
+            self.assertGreaterEqual(probability[bag["selected"]].sum().item(), 0.5)
+        row = self.rows("ef", frame).loc["V03"]
+        self.assertAlmostEqual(row.prediction, np.mean([bag["value"] for bag in ef["bags"]]), places=5)
+        self.assertNotEqual(row.prediction, self.rows("ef").loc["V03"].prediction)
+        rows = self.rows("ef", frame)
+        self.assertTrue(rows.prediction[rows.prediction_supported].between(5, 90).all())
+
+    def test_the_prior_comes_from_the_training_split_labels_only(self):
+        report = self.run_eval("prior", regression_readout="softmax", regression_prior=self.labels)
+        train_studies = set(read_table(self.paths["clips"]).study_id)
+        prior = report["regression_prior"]
+        self.assertEqual((prior["split"], prior["studies"]), ("train", len(train_studies)))
+        self.assertEqual(prior["labels_sha256"], report["labels_sha256"])
+        task = report["tasks"]["ef"]["prior"]
+        self.assertEqual(task["training_labels"], len(train_studies))
+        # every training study has LVEF 50, so the prior keeps the prompts of the bin [50, 55) only
+        self.assertEqual([s for s in task["label_share"] if s], [1.0])
+        rows = self.rows("ef", pd.read_csv(os.path.join(self.root, "prior", "predictions.csv"),
+                                           dtype={"study_id": str}))
+        self.assertTrue(rows.prediction[rows.prediction_supported].between(50, 54).all())
+        self.assertEqual(report["summary"], self.report["summary"])
+        # validation labels of the label table are never read: changing them changes nothing in the prior
+        changed = self.label_frame.copy()
+        changed.loc[[f"V{i:02d}" for i in range(N_VAL)], "lvef"] = 10
+        other = os.path.join(self.root, "labels_val_changed.csv")
+        changed.to_csv(other)
+        again = self.run_eval("prior_again", regression_readout="softmax", regression_prior=other)
+        self.assertEqual(again["tasks"]["ef"]["prior"], task)
+
+    def test_the_prior_and_read_out_options_are_refused_where_they_do_not_apply(self):
+        train = {"clips": self.paths["clips"], "split": "train", "cache_dir": None, "allow_training_studies": True}
+        with self.assertRaisesRegex(ValueError, "regression prior would read"):
+            self.run_eval("refused", regression_readout="softmax", regression_prior=self.labels, **train)
+        moved = dict(self.config, data=dict(self.config["data"], clips=self.clips))     # not the training table
+        with self.assertRaisesRegex(ValueError, "cannot be restricted to the training split"):
+            self.run_eval("refused", config=moved, allow_training_studies=True, regression_readout="softmax",
+                          regression_prior=self.labels)
+        with self.assertRaisesRegex(ValueError, "softmax regression read-out only"):
+            self.run_eval("refused", regression_prior=self.labels)
+        with self.assertRaisesRegex(ValueError, "top_fraction regression read-out only"):
+            self.run_eval("refused", regression_readout="softmax", top_k=3)
+        with self.assertRaisesRegex(ValueError, "regression_readout must be"):
+            self.run_eval("refused", regression_readout="mean")
+        no_regression = self.write_prompts("binary_only.yaml", {"effusion": PROMPTS["effusion"]})
+        with self.assertRaisesRegex(ValueError, "no regression task"):
+            self.run_eval("refused", prompts=no_regression, regression_readout="softmax",
+                          regression_prior=self.labels)
+        self.assertFalse(os.path.exists(os.path.join(self.root, "refused")))
 
     # ---- thresholds ---------------------------------------------------------------------------------------------
 
@@ -539,6 +676,15 @@ class TestZeroShotEval(unittest.TestCase):
         summary = json.loads(printed.getvalue())
         self.assertEqual(summary["ef"]["n"], self.report["tasks"]["ef"]["metrics"]["n"])
         self.assertNotIn("V00", printed.getvalue())
+        common = ["--config", config, "--checkpoint", self.checkpoint, "--clips", self.clips, "--split", "val",
+                  "--cache_dir", self.cache_dir, "--labels", self.labels, "--prompts", self.prompts, "--samples", "40",
+                  "--regression_readout", "softmax"]
+        with redirect_stdout(io.StringIO()):
+            zs.main(common + ["--out_dir", os.path.join(self.root, "cli_prior"), "--regression_prior", self.labels])
+            zs.main(common + ["--out_dir", os.path.join(self.root, "cli_none"), "--regression_prior", "none"])
+        expected = self.run_eval("cli_prior_api", regression_readout="softmax", regression_prior=self.labels)
+        self.assertEqual(strict_json(os.path.join(self.root, "cli_prior", "metrics.json")), expected)
+        self.assertIsNone(strict_json(os.path.join(self.root, "cli_none", "metrics.json"))["regression_prior"])
 
     def test_the_shipped_prompt_file_is_scored(self):
         """Every task of the shipped file is scored once the label table holds its column, with that column's codes."""

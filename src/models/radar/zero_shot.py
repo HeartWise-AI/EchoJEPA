@@ -12,11 +12,15 @@ Three prompt modes, as in the prompt files of the two reference papers:
   prediction being the argmax or the expectation of the grade values (`categorical_probabilities`).
 - `regression` (EchoCLIP, Methods): a template with a `<#>` slot is filled with every value of a range, the prompts are
   encoded, the values are ranked by similarity, and the median of the best `keep` fraction (0.2 in EchoCLIP) is the
-  estimate (`regression_estimate`). EchoCLIP does this per frame and then pools; here one study embedding per
-  structure is scored. A regression task may instead list whole prompts with one `values` entry each and no slot:
-  EchoCLIP-R's "sampled prompts", real captions of training studies whose label is the value (up to ten per value
-  there), because short single-phrase prompts were out of distribution for an encoder trained on whole reports.
-  `evals/radar_frozen/mine_prompts.py` writes such a file.
+  estimate (`regression_estimate`; `top_k` keeps a fixed number of prompts instead, e.g. 1 or 5). EchoCLIP does this
+  per frame and then pools; here one study embedding per structure is scored. A regression task may instead list whole
+  prompts with one `values` entry each and no slot: EchoCLIP-R's "sampled prompts", real captions of training studies
+  whose label is the value (up to ten per value there), because short single-phrase prompts were out of distribution
+  for an encoder trained on whole reports. `evals/radar_frozen/mine_prompts.py` writes such a file.
+  The `softmax` read-out (`regression_softmax`) is an option to the median: the expected value of the prompts' values
+  under the softmax of the similarities at the temperature, optionally with a log prior over the prompts
+  (`regression_log_prior`) that makes the pool's value distribution that of the training split's labels. That prior
+  reads training labels, so a read-out using it is no longer strictly label-free.
 
 `PromptTask` reads one task of a prompt file (`configs/radar/prompts_v0.yaml`). `held_out` prompts (EchoCLIP's
 `testers`) are never used to choose settings, only to report. `target` names the column of a study-level label table
@@ -31,12 +35,15 @@ embeddings [M, P] from the caption encoder (`encode_prompts`). Everything is com
 
 from dataclasses import dataclass, field
 
+import numpy as np
 import torch
 import torch.nn.functional as F
 import yaml
 
 MODES = ("binary", "categorical", "regression")
 SLOT = "<#>"
+REGRESSION_READOUTS = ("top_fraction", "softmax")
+PRIOR_BIN_WIDTH = 5.0
 
 
 @dataclass(frozen=True)
@@ -152,16 +159,81 @@ def categorical_probabilities(z, grade_sets, temperature):
     return F.softmax(z.float() @ centres.T / float(temperature), dim=-1)
 
 
-def regression_estimate(z, prompt_embeddings, values, keep=0.2):
-    """Value estimate [N]: the median of the `keep` fraction of values whose prompts are most similar to each row.
-
-    prompt_embeddings [M, P] and values [M] come from `regression_prompts` (a value may appear once per template)."""
+def regression_count(prompts, keep=0.2, top_k=None):
+    """How many of the `prompts` best-ranked prompts the regression read-out keeps: `top_k` when given (a fixed
+    count, e.g. 1 for the single most similar prompt), otherwise the `keep` fraction, rounded, at least one."""
+    if top_k is not None:
+        if isinstance(top_k, bool) or not isinstance(top_k, int) or not 1 <= top_k <= prompts:
+            raise ValueError(f"top_k must be an integer in [1, {prompts}], got {top_k!r}.")
+        return top_k
     if not 0.0 < keep <= 1.0:
         raise ValueError("keep must be in (0, 1].")
+    return max(1, int(round(keep * prompts)))
+
+
+def regression_estimate(z, prompt_embeddings, values, keep=0.2, top_k=None):
+    """Value estimate [N]: the median of the values of the prompts most similar to each row, keeping the `keep`
+    fraction of the prompts, or the `top_k` best when given (`regression_count`). An even count takes the lower of
+    the two middle values (`torch.median`).
+
+    prompt_embeddings [M, P] and values [M] come from `regression_prompts` (a value may appear once per template)."""
     values = torch.as_tensor(values, dtype=torch.float32)
     if prompt_embeddings.shape[0] != values.shape[0]:
         raise ValueError("One value per prompt embedding.")
+    top = regression_count(values.shape[0], keep, top_k)
     sims = z.float() @ prompt_embeddings.float().T                      # [N, M]
-    top = max(1, int(round(keep * values.shape[0])))
     best = sims.topk(top, dim=-1).indices                              # [N, top]
     return values[best].median(dim=-1).values
+
+
+def regression_softmax(z, prompt_embeddings, values, temperature, log_prior=None):
+    """Value estimate [N] (float64): the expected value of the prompts' values under the softmax over the prompts of
+    similarity / temperature, plus `log_prior` [M] (natural log of a weight per prompt, -inf to leave a prompt out)
+    when given. Without a prior every prompt counts once, so a value that more prompts carry weighs more."""
+    values = torch.as_tensor(values, dtype=torch.float64)
+    if prompt_embeddings.shape[0] != values.shape[0]:
+        raise ValueError("One value per prompt embedding.")
+    if not float(temperature) > 0.0:
+        raise ValueError("temperature must be positive.")
+    logits = (z.float() @ prompt_embeddings.float().T).double() / float(temperature)        # [N, M]
+    if log_prior is not None:
+        log_prior = torch.as_tensor(log_prior, dtype=torch.float64)
+        if log_prior.shape != values.shape:
+            raise ValueError("One log prior weight per prompt.")
+        if not torch.isfinite(log_prior).any():
+            raise ValueError("The log prior leaves no prompt.")
+        logits = logits + log_prior
+    return F.softmax(logits, dim=-1) @ values
+
+
+def regression_log_prior(values, training_labels, bin_width=PRIOR_BIN_WIDTH):
+    """Log weight [M] (float64) per prompt that gives each value bin of the pool the share of the training labels
+    falling in it, and the histogram it was built from.
+
+    Bins are `bin_width` wide, from the pool's lowest value rounded down to a multiple of the width, to past its
+    highest value. A prompt's weight is its bin's share of the training labels divided by the number of pool prompts in
+    that bin, so a bin's total weight is its label share however many prompts (and repeated values) it holds. Labels
+    outside the bins count in the end bins; a bin no training label falls in gets weight 0 (log -inf: its prompts are
+    left out); training label share in a bin without prompts is dropped. Weights are scaled to mean 1, which does not
+    change a softmax. `training_labels` must be the training split's labels only; missing (NaN) labels are skipped."""
+    values = np.asarray(values, dtype=float)
+    labels = np.asarray(training_labels, dtype=float)
+    labels = labels[np.isfinite(labels)]
+    if values.ndim != 1 or values.size == 0 or not np.isfinite(values).all():
+        raise ValueError("values must be finite numbers, one per prompt.")
+    if labels.size == 0:
+        raise ValueError("The prior needs at least one training label.")
+    if not bin_width > 0:
+        raise ValueError("bin_width must be positive.")
+    edges = np.arange(np.floor(values.min() / bin_width) * bin_width, values.max() + bin_width + 0.01, bin_width)
+    bins = np.clip(np.digitize(values, edges) - 1, 0, len(edges) - 2)
+    pool_count = np.bincount(bins, minlength=len(edges) - 1).astype(float)
+    share = np.histogram(np.clip(labels, edges[0], edges[-1] - 1e-6), edges)[0] / labels.size
+    weight = share[bins] / pool_count[bins]
+    if not (weight > 0).any():
+        raise ValueError("No training label falls in a bin that holds a prompt.")
+    weight = weight / weight.mean()
+    with np.errstate(divide="ignore"):
+        log_prior = torch.from_numpy(np.log(weight))
+    return log_prior, {"bin_width": float(bin_width), "bin_edges": edges.tolist(), "label_share": share.tolist(),
+                       "pool_count": pool_count.astype(int).tolist(), "training_labels": int(labels.size)}
