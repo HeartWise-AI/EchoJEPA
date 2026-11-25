@@ -6,7 +6,7 @@
 # scratch arm, so initialization is the only experimental difference.
 #
 # Trains on `train.csv` only with the dense predict-all loss.
-# Budget: 13 x 300 = 3,900 steps, followed by a 900-step cooldown.
+# Schedule: 13 x 300 = 3,900 steps, followed by a 900-step cooldown.
 # See `docs/pretraining_baseline.md` for checkpoint checks and launch commands.
 
 app: vjepa_2_1
@@ -28,10 +28,16 @@ data:
   dataset_fpcs:
   - 16
   fps: 8                   # 16 frames at 8 fps = 2 s, as EchoJEPA.
+  # Short videos: `black` pads with black frames left out of the loss (the baseline); `loop`
+  # repeats the clip's own real frames from its start instead. See docs/temporal_padding.md.
+  temporal_padding: black
   tubelet_size: 2
   num_workers: 16
   persistent_workers: true
   in_order: false          # workers hand over batches as they finish; NAS stalls no longer block the step.
+  # Seconds without any batch before the loader raises; the trainer retries 5 times, then stops
+  # (default 900, rationale in src/datasets/video_dataset.py; 0 waits forever).
+  loader_timeout: 900
   pin_mem: true
 
 data_aug:
@@ -84,7 +90,7 @@ mask:
 meta:
   # Weights & Biases. Unset `wandb_project` to disable all wandb logging.
   wandb_project: null
-  wandb_entity: mhi_ai
+  wandb_entity: null  # set your W&B entity together with wandb_project
   # wandb_run_name: null
   # No input clips are uploaded: #13 requires visual examples to be reviewed and anonymized first.
   num_log_videos: 0         # opt in with a positive value only after clips are reviewed and anonymized.

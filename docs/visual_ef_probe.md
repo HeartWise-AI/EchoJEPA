@@ -101,3 +101,23 @@ refuses a probe whose `best.pt` is not that epoch.
 | [`tests/utils/test_probe_wandb.py`](../tests/utils/test_probe_wandb.py) | What each epoch logs, the run record, no path in the config (relative paths included), the privacy settings, resume, the normalization required and checked against `probe_info.json`. |
 | [`tests/utils/test_probe_smoke.py`](../tests/utils/test_probe_smoke.py) | End to end on a small fixture of real videos: manifests, the video loader, two epochs and the test. Two runs with the same seed give the same probe and numbers, and so does a run interrupted after its first epoch and resumed. Evaluation reads the same frames every time; training drops a last incomplete batch, evaluation keeps every video; a training manifest without a full batch is refused. |
 | [`tests/data/test_make_probe_manifests.py`](../tests/data/test_make_probe_manifests.py) | View selection, z-scoring, exclusion counts, the patient-leakage check, the video index. |
+
+## Validation-only scoring
+
+A comparison that must stay on validation, such as the temporal-padding ablation (two encoders
+compared by per-study validation MAE with a paired study-level bootstrap), takes the selected
+probe's validation predictions from a separate command that never opens the test split. The
+`--test_only` step writes `val_predictions.csv` only while it scores the test split.
+
+```bash
+python -m evals.video_classification_frozen.score_validation --fname <probe config> --devices cuda:0 \
+    [--out <dir>] [--overwrite] [--tolerance 0.01]
+```
+
+| | |
+|---|---|
+| Refuses | `OVERRIDE_*` environment variables (the config file must describe the probe as trained; `evals.main` command-line overrides are not taken either); a probe that has not finished, or whose `best.pt` is missing or not the selected epoch (the `--test_only` rule); a fingerprint other than `best.pt`'s, except the number of GPUs and the test manifest's checksum, which is not checked because the file is never read; outputs that exist, unless `--overwrite`; an output folder inside the repository. |
+| Scores | The head `--test_only` takes (the lowest `val_acc_per_head` of `best.pt`), on every validation video once (`score_videos`). A video that fails to load is counted, not replaced. No test dataset is built. |
+| Check | The recomputed per-study and per-video validation MAE of that head must equal those `best.pt` stored within `--tolerance` EF points (default 0.01); the difference is reported. A larger difference stops the command before anything is written: these would not be the predictions the probe was selected on (a video that loaded during training and fails now, or, on GPU, bfloat16 under another number of GPUs; score with the number the probe was trained with). |
+| Outputs | In the probe's folder, or `--out`: `val_selected_predictions.csv` (`video_path`, `study_id`, `label`, `prediction`, in EF points; **identifies patients: stays with the data**) and `val_selected_metrics.json` (epoch, head and its name, SHA-256 of `best.pt` and of the encoder, per-study and per-video metrics with the validation threshold as in the `val` block of `test_metrics.json`, numbers of studies, videos and failed videos, the failed manifest rows, the stored-score check, the numbers of GPUs). Nothing is sent to wandb. |
+| Tests | [`tests/utils/test_probe_score_validation.py`](../tests/utils/test_probe_score_validation.py): the epoch, head, validation predictions and metrics of the test step; per-study outputs on hand-built predictions; the stored-score check; refusals (another encoder, setting, normalization or validation manifest, an unfinished probe, a missing or unselected `best.pt`, existing outputs, an output inside the repository, environment overrides); the number of GPUs allowed to differ; a test manifest that is missing, or that must not be opened. |

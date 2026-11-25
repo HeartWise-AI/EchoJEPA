@@ -18,6 +18,13 @@ caption for s), the targets follow the released RADAR implementation (damo-radar
 The same Q serves both directions, as released. Variants: `use_exact` (E), `use_normal` (N),
 `use_abnormal_teacher` (W_abn); with all three off the targets are the identity (CLIP InfoNCE).
 
+Severity weights (`set_caption_weights`, off by default; `loss.severity_weights` in training): each row's
+cross-entropy, in both directions, is weighted by its caption's severity weight w_i (`src/models/radar/severity.py`),
+and the mean over rows becomes the weighted mean sum_i w_i CE_i / sum_i w_i, as DeepCORO_CLIP's importance-weighted
+multi-positive InfoNCE does. Q is unchanged; abnormal and severe captions weigh more than normal ones in the
+structure's loss, and its stats hold `mean_weight` (the mean w_i of its rows). Without weights nothing of this
+runs and the loss is bit for bit the unweighted one.
+
 Similarities, targets and cross-entropies are computed in float32 with autocast disabled: under bfloat16 the
 logits at a small temperature lose most of their precision.
 
@@ -65,6 +72,7 @@ import torch.distributed as dist
 import torch.nn as nn
 import torch.nn.functional as F
 
+from src.models.radar.severity import CaptionWeights
 from src.utils.distributed import AllGather
 
 
@@ -204,6 +212,19 @@ def contrastive_loss(z, t, Q, tau):
         return (i2t + t2i) / 2
 
 
+def weighted_contrastive_loss(z, t, Q, tau, row_weight):
+    """`contrastive_loss` with the weighted mean over rows (`row_weight` [n], severity weights) instead of the mean;
+    row i of either direction is pair i, so both directions share the weights."""
+    with torch.autocast(device_type=z.device.type, enabled=False):
+        tau = tau.float() if torch.is_tensor(tau) else float(tau)
+        logits = z.float() @ t.float().T / tau
+        Q = Q.float()
+        w = row_weight.float() / row_weight.float().sum()
+        i2t = -(w * (Q * F.log_softmax(logits, dim=-1)).sum(-1)).sum()
+        t2i = -(w * (Q * F.log_softmax(logits.T, dim=-1)).sum(-1)).sum()
+        return (i2t + t2i) / 2
+
+
 def _distributed():
     return dist.is_available() and dist.is_initialized() and dist.get_world_size() > 1
 
@@ -252,6 +273,12 @@ class StructureContrastiveLoss(nn.Module):
         self.min_pairs = min_pairs
         self.temperature_bounds = tuple(temperature_bounds)
         self.temperature = nn.Parameter(torch.tensor(float(init_temperature)))
+        self.caption_weights = None     # severity weights, `set_caption_weights`
+
+    def set_caption_weights(self, weights):
+        """Turn on severity weights: {caption_id: weight} (`severity.caption_weights`), or None to turn them off.
+        Not a buffer: every rank derives the same table from the caption table, and DDP would broadcast a buffer."""
+        self.caption_weights = None if weights is None else CaptionWeights(weights)
 
     def effective_temperature(self):
         """The temperature used in the loss: the parameter clamped to the bounds, without changing it in place."""
@@ -359,7 +386,12 @@ class StructureContrastiveLoss(nn.Module):
             if torch.allclose(Q, torch.full_like(Q, 1.0 / n)):
                 stat["skipped"] = "uniform_targets"
                 continue
-            loss_s = contrastive_loss(z_all[idx, s], t_all[idx, s], Q, tau)
+            if self.caption_weights is None:
+                loss_s = contrastive_loss(z_all[idx, s], t_all[idx, s], Q, tau)
+            else:
+                weight_s = self.caption_weights(ids_s)
+                loss_s = weighted_contrastive_loss(z_all[idx, s], t_all[idx, s], Q, tau, weight_s)
+                stat["mean_weight"] = float(weight_s.mean())
             stat["loss"] = float(loss_s.detach())
             loss = loss + loss_s
         return loss, stats

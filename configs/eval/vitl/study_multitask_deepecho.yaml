@@ -65,6 +65,10 @@ experiment:
     frames_per_clip: 16
     frame_step: 2
     resolution: 224
+    # Training augmentation; left out = the legacy ImageNet-style one (crops down to 8%, RandAugment, 25%
+    # erasing). configs/sweeps/study_probe_v3.yaml tests the pretraining-matched setting:
+    # augmentation: {random_resize_scale: [0.5, 1.0], random_resize_aspect_ratio: [0.9, 1.1], reprob: 0.0,
+    #                auto_augment: false}
 
   encoder:
     trainable_blocks: 0                           # frozen first; then e.g. 8 (ViT-B) or 20 (ViT-L).
@@ -192,6 +196,8 @@ experiment:
       reduced_ef_40: 2.0
       lv_systolic_function: 2.0
     head_dropout: {}                              # default 0.0.
+    # class_weights: auto                         # inverse prevalence on train for every binary/3-class head,
+    # class_weight_cap: 10.0                      # capped; or {head: auto | value | [per-class values]}.
     target_mean: null                             # z-scored from the train split.
     target_std: null
 

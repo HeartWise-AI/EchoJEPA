@@ -91,6 +91,21 @@ head's side inputs among data.stills.cond_columns; default all), visual (false: 
 measurement regression (`src/models/radar/heads.py`). They need a routing registry with still routing
 (`configs/radar/radar_routing_v1.yaml`). A step contributes when a structure or a measurement target does. See
 docs/radar/RADAR_stills_integration.md.
+
+Severity weights (optional, off when absent): `loss.severity_weights`, true (normal 1, mild 1.5, moderate 2.5, severe
+3, ungraded abnormal 1.5, unknown 1) or a mapping that updates those weights, weights each row of the structure loss by
+its caption's grade, read from the caption table's `normality` and `sources` columns (`src/models/radar/severity.py`,
+`src/models/radar/loss.py`). The grades counted per structure go to `severity_weights.json`. Being a loss key, it is
+in the fingerprint when set. Refused with data.view_prefix, which changes the caption ids the weights are keyed by.
+
+Validation monitoring (optional, off when absent; run control, outside the fingerprint): the `validation` section
+(`evals/radar_frozen/val_monitor.py`) runs on rank 0 after each epoch's checkpoint, on the cached tokens of a
+validation split: video -> caption Recall@k, MRR and median rank per structure with de-duplicated captions, and, with
+`validation.labels`, the zero-shot AUROC of the binary prompt tasks. Results go to `validation.jsonl` (one line per
+validated epoch, trimmed on resume like `epochs.jsonl`) and to W&B under `val/`. It selects no checkpoint and leaves
+the training random streams as they were. With text.frozen, its captions and prompts are encoded on rank 0 before
+the caption feature store is sealed. Refused with data.view_prefix (it scores captions without the prefix). See
+docs/radar/RADAR_severity_and_validation.md.
 """
 
 import argparse
@@ -138,7 +153,7 @@ CHECKPOINT = "latest.pt"
 PROTOCOL_VERSION = 2   # bump when a code change alters what a given config trains
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 RUN_CONTROL = {"optimization": ("num_workers", "worker_start_method")}   # keys that do not change what is trained
-RUN_CONTROL_SECTIONS = ("meta",)                                         # whole sections that do not either
+RUN_CONTROL_SECTIONS = ("meta", "validation")                           # whole sections that do not either
 WORKER_START_METHODS = ("spawn", "forkserver")
 AMP_MODES = ("none", "bf16")
 
@@ -423,14 +438,18 @@ def structure_summary(contributing, skips, steps):
     return out
 
 
-def prepare_caption_features(tokenizer, captions, device, rank, world_size, texts=None):
+def prepare_caption_features(tokenizer, captions, device, rank, world_size, texts=None, extra_texts=None):
     """Frozen caption encoder: encode every distinct training caption once (and the empty caption of structures
     without one), then seal the store, so no step ever runs the text model. Rank 0 encodes first and writes the
     cache file; the other ranks then read it (or encode for themselves without `data.text_cache_dir`). `texts`:
-    the captions as bags hold them, when they differ from the table's (data.view_prefix)."""
+    the captions as bags hold them, when they differ from the table's (data.view_prefix). `extra_texts`: texts
+    only rank 0 reads after training starts (the `validation` captions and prompts), encoded on rank 0 after the
+    training captions, so the training captions keep the same store rows on every rank."""
     texts = sorted(set(captions["caption"] if texts is None else texts)) + [""]
     if rank == 0:
         tokenizer.prepare(texts, device)
+        if extra_texts:
+            tokenizer.prepare(sorted(set(extra_texts)), device)
     if world_size > 1:
         dist.barrier()
         if rank != 0:
@@ -530,6 +549,12 @@ def train(config, out_dir, resume=True, stop_after_epoch=None, allow_code_change
                          "To change it, point data.routing at another registry.")
     routing = load_routing(data.get("routing") or DEFAULT_ROUTING)
     phrases = view_phrases(data, routing)
+    if phrases and config.get("loss", {}).get("severity_weights"):
+        raise ValueError("loss.severity_weights reads weights by the builder's caption ids; data.view_prefix changes "
+                         "them, so every caption would get weight 1.")
+    if phrases and config.get("validation"):
+        raise ValueError("validation scores the captions without their view prefix; it cannot validate a run with "
+                         "data.view_prefix.")
     m = config["model"]
     cache = TokenCache(data["cache_dir"], token_grid=m["token_grid"], embed_dim=m["embed_dim"])
     split = data.get("split", "train")
@@ -572,11 +597,23 @@ def train(config, out_dir, resume=True, stop_after_epoch=None, allow_code_change
         if rank == 0:
             with open(os.path.join(out_dir, "soft_ef_coverage.json"), "w") as f:
                 json.dump(soft_coverage, f, indent=2, sort_keys=True)
+    validator = None
+    if config.get("validation") and rank == 0:
+        from evals.radar_frozen.val_monitor import Validator
+        validator = Validator(config["validation"], config, routing, device)
     if config["text"].get("frozen"):
         prepare_caption_features(tokenizer, captions, device, rank, world_size,
-                                 dataset.prefixed_texts() if phrases else None)
+                                 dataset.prefixed_texts() if phrases else None,
+                                 extra_texts=validator.texts() if validator is not None else None)
     optimizer = torch.optim.AdamW(param_groups(model, opt), lr=opt["lr"])
     check_optimizer_coverage(model, optimizer)
+    if config.get("loss", {}).get("severity_weights"):
+        from src.models.radar.severity import caption_weights
+        weights, severity_coverage = caption_weights(captions, config["loss"]["severity_weights"])
+        model.loss.set_caption_weights(weights)
+        if rank == 0:
+            with open(os.path.join(out_dir, "severity_weights.json"), "w") as f:
+                json.dump(severity_coverage, f, indent=2, sort_keys=True)
     wrapped = model
     if world_size > 1:
         wrapped = DistributedDataParallel(model, device_ids=[device.index] if device.type == "cuda" else None)
@@ -629,6 +666,8 @@ def train(config, out_dir, resume=True, stop_after_epoch=None, allow_code_change
                     os.remove(stale)
         _keep_jsonl(os.path.join(out_dir, "log.jsonl"), resumed_at and (lambda r: r["step"] < resumed_at[0]))
         _keep_jsonl(os.path.join(out_dir, "epochs.jsonl"), resumed_at and (lambda r: r["epoch"] < resumed_at[1]))
+        _keep_jsonl(os.path.join(out_dir, "validation.jsonl"),
+                    resumed_at and (lambda r: r["epoch"] < resumed_at[1]))
         if start_epoch:
             with open(os.path.join(out_dir, "resumes.jsonl"), "a") as f:
                 f.write(json.dumps({"epoch": start_epoch, "step": step, "checkpoint_code_sha256": state["code_sha256"],
@@ -682,6 +721,12 @@ def train(config, out_dir, resume=True, stop_after_epoch=None, allow_code_change
                          "optimizer_steps": optimizer_steps, "skipped_steps": skipped, "fingerprint": record,
                          "code_sha256": code, "world_size": world_size, "device_type": device.type, "rng": rng,
                          "wandb_run_id": wandb_id})
+        if validator is not None and validator.due(epoch, last_epoch):
+            from evals.radar_frozen.val_monitor import scalars as val_scalars
+            report = {"epoch": epoch, "step": step, **validator.run(model, tokenizer)}
+            with open(os.path.join(out_dir, "validation.jsonl"), "a") as f:
+                f.write(json.dumps(report) + "\n")
+            log_scalars(wandb_run, val_scalars(report), step=step)
         if world_size > 1:
             dist.barrier()
     finish_wandb(wandb_run)

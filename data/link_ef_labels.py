@@ -31,6 +31,10 @@ def parse_args():
     p.add_argument("--report-patient-col", default="Dossier")
     p.add_argument("--report-accession-col", default="AccessionNumber")
     p.add_argument("--report-label-col", default="Visually Estimated EF")
+    p.add_argument("--valid-range", type=float, nargs=2, metavar=("MIN", "MAX"),
+                   help="Keep labels with MIN <= value <= MAX (e.g. `5 150` for RVSP in mmHg) instead of the "
+                        "EF rule (0, 100]; values outside are dropped and counted.")
+    p.add_argument("--label-name", help="Output label column (default: `labels.value` of the config).")
     p.add_argument("--pacs-accession-col", default="AccessionNumber")
     p.add_argument("--pacs-study-col", default="StudyInstanceUID")
     p.add_argument("--pacs-patient-col", default="PatientID")
@@ -42,6 +46,18 @@ def parse_args():
                    help="Also require each video path to end in `<patient>/<study>/<file>`.")
     p.add_argument("--batch-size", type=int, default=500_000, help="Parquet streaming batch size.")
     return p.parse_args()
+
+
+def parse_range(raw, low, high):
+    """Like `parse_labels`, for a label with a closed plausible range [low, high] instead of the EF
+    rule: numbers outside it become `NaN`, and each dropping reason is counted.
+    """
+    text = raw.astype("string").str.strip()
+    empty = text.isna() | (text == "")
+    value = pd.to_numeric(text.mask(empty), errors="coerce").astype(float)
+    dropped = {"empty": int(empty.sum()), "invalid": int((~empty & value.isna()).sum()),
+               f"below_{low:g}": int((value < low).sum()), f"above_{high:g}": int((value > high).sum())}
+    return value.where((value >= low) & (value <= high)), dropped
 
 
 def unique_or_drop(df, key, cols, what):
@@ -177,10 +193,19 @@ def main():
     ).rename(columns={args.report_patient_col: "report_patient", args.report_accession_col: "accession",
                       args.report_label_col: "label"})
     n0 = len(reports)
-    # Convert EF to numeric and removing missing/nonsensical EF values.
-    label, dropped = parse_labels(reports.label)
+    # Convert the label to numbers and drop missing/implausible values: EF in (0, 100] by default,
+    # or the closed `--valid-range` for another label such as RVSP.
+    if args.valid_range:
+        low, high = args.valid_range
+        if not low < high:
+            raise ValueError(f"--valid-range needs MIN < MAX, got {low} {high}.")
+        label, dropped = parse_range(reports.label, low, high)
+        rule = f"in [{low:g}, {high:g}]"
+    else:
+        label, dropped = parse_labels(reports.label)
+        rule = "an EF in (0, 100]"
     reports = reports.assign(label=label).dropna(subset=["label"])
-    print(f"[labels] {n0} report rows -> {len(reports)} with an EF in (0, 100]; dropped "
+    print(f"[labels] {n0} report rows -> {len(reports)} with {rule}; dropped "
           + ", ".join(f"{n} {why}" for why, n in dropped.items()))
 
     # Read PACS index.
@@ -200,7 +225,8 @@ def main():
     # Link report -> PACS -> video metadata. And verify patient and study-date consistency.
     labels = link(reports, pacs, videos, args.min_id_agreement, args.check_path_layout)
     # Rename columns to the format expected.
-    labels = labels.rename(columns={"study_id": cfg["labels"]["study_id"], "label": cfg["labels"]["value"]})
+    name = args.label_name or cfg["labels"]["value"]
+    labels = labels.rename(columns={"study_id": cfg["labels"]["study_id"], "label": name})
 
     # Save output files and print how many studies/patients/EF labels survived.
     os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
@@ -208,7 +234,7 @@ def main():
         labels.to_parquet(args.out, index=False)
     else:
         labels.to_csv(args.out, index=False)
-    value = labels[cfg["labels"]["value"]]
+    value = labels[name]
     print(f"\n[out]    {args.out}: {len(labels)} studies, {labels.patient_id.nunique()} patients, "
           f"label {value.mean():.2f}+-{value.std():.2f}.")
 

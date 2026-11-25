@@ -174,6 +174,12 @@ def main(args_eval, resume_preempt=False):
     if not region and args_classifier.get("region") is not None:
         raise ValueError("`experiment.classifier.region` is read only with `pooling_mode: region`.")
     num_heads = int(args_classifier.get("num_heads", 16))
+    # The pooling layers' learning rate as a multiple of the heads' (null: the same), as DeepCORO_CLIP's attention_lr.
+    pooler_lr_scale = args_classifier.get("pooler_lr_scale")
+    if pooler_lr_scale is not None and not float(pooler_lr_scale) > 0:
+        raise ValueError("`experiment.classifier.pooler_lr_scale` must be positive.")
+    if pooler_lr_scale is not None and region:
+        raise ValueError("`pooler_lr_scale` is for the study probe; region pooling holds the encoder in its probe.")
     num_probe_blocks = int(args_classifier.get("num_probe_blocks", 4))
     attention_hidden = int(args_classifier.get("attention_hidden", 256))
     probe_dropout = float(args_classifier.get("dropout", 0.0))
@@ -199,6 +205,10 @@ def main(args_eval, resume_preempt=False):
     trainable_blocks = int(args_encoder.get("trainable_blocks", 0))
     if trainable_blocks < 0:
         raise ValueError("`experiment.encoder.trainable_blocks` must not be negative.")
+    # Layer-wise learning-rate decay over the trainable blocks (null: one learning rate), as in BEiT/DeepCORO.
+    layer_decay = args_encoder.get("layer_decay")
+    if layer_decay is not None and not 0 < float(layer_decay) <= 1:
+        raise ValueError("`experiment.encoder.layer_decay` must be in (0, 1].")
     encoder_opt_kwargs = None
     if trainable_blocks:
         encoder_opt_kwargs = dict(
@@ -285,10 +295,9 @@ def main(args_eval, resume_preempt=False):
     torch.manual_seed(seed)
 
     # -- DATA
-    transform_kwargs = dict(random_horizontal_flip=False, random_resize_aspect_ratio=(0.75, 4 / 3),
-                            random_resize_scale=(0.08, 1.0), reprob=0.25, auto_augment=True, motion_shift=False,
-                            crop_size=resolution, num_views_per_clip=1,
-                            normalize=normalization or DEFAULT_NORMALIZATION)
+    transform_kwargs = dict(random_horizontal_flip=False, motion_shift=False, crop_size=resolution,
+                            num_views_per_clip=1, normalize=normalization or DEFAULT_NORMALIZATION,
+                            **augmentation_options(args_data.get("augmentation")))
 
     def make_dataset(split, training, table=None):
         options, shuffle = data_options, shuffle_videos
@@ -321,6 +330,7 @@ def main(args_eval, resume_preempt=False):
     val_dataset = make_dataset("val", training=False)
     check_disjoint({"train": train_dataset, "val": val_dataset})
     normalization_targets = target_normalization(specs, train_dataset.targets, args_classifier)
+    resolve_class_weights(specs, train_dataset.targets, args_classifier)
     train_sampler = torch.utils.data.distributed.DistributedSampler(
         train_dataset, num_replicas=world_size, rank=rank, shuffle=True, drop_last=PROTOCOL["train"]["drop_last"])
     train_loader = torch.utils.data.DataLoader(
@@ -360,14 +370,17 @@ def main(args_eval, resume_preempt=False):
                 f"{f' and {num_view_classes} view classes' if num_view_classes else ''}")
     if use_ddp:
         probes = [DistributedDataParallel(p, static_graph=True) for p in probes]
-    optimizers, schedulers, wd_schedulers = init_opt(probes, opt_kwargs, ipe, num_epochs)
+    optimizers, schedulers, wd_schedulers = init_opt(probes, opt_kwargs, ipe, num_epochs,
+                                                     lr_groups=lambda p: probe_lr_groups(p, pooler_lr_scale))
 
     trainable = unfreeze_top_blocks(encoder, trainable_blocks)
     encoder_module = encoder
     if trainable:
         if use_ddp:
             encoder = DistributedDataParallel(encoder, static_graph=True)
-        enc_opt, enc_sched, enc_wd = init_opt([encoder], [encoder_opt_kwargs], ipe, num_epochs)
+        enc_opt, enc_sched, enc_wd = init_opt(
+            [encoder], [encoder_opt_kwargs], ipe, num_epochs,
+            lr_groups=lambda e: encoder_lr_groups(e, trainable_blocks, layer_decay))
         optimizers += enc_opt
         schedulers += enc_sched
         wd_schedulers += enc_wd
@@ -391,18 +404,23 @@ def main(args_eval, resume_preempt=False):
         "classifier": {"pooling_mode": pooling_mode, "num_heads": num_heads, "num_probe_blocks": num_probe_blocks,
                        "attention_hidden": attention_hidden, "dropout": probe_dropout, "heads": specs,
                        "labels_map": labels_map, "use_view_embedding": use_view_embedding, **probe_settings},
-        "encoder_training": {"trainable_blocks": trainable_blocks, "optimization": encoder_opt_kwargs},
+        "encoder_training": {"trainable_blocks": trainable_blocks, "optimization": encoder_opt_kwargs,
+                             **({"layer_decay": float(layer_decay)} if layer_decay is not None else {})},
         "data": {"split_column": split_column, "path_column": path_column, "group_column": group_column,
                  "view_column": view_column, "views": list(views) if views else None,
                  "view_labels_map": view_labels_map,
                  "num_videos": num_videos, "shuffle_videos": shuffle_videos,
                  "num_clips_per_video": num_clips_per_video, "frames_per_clip": frames_per_clip,
                  "frame_step": frame_step, "clip_duration": duration, "fps": fps, "resolution": resolution,
-                 "normalization": normalization, "min_videos": min_videos, **data_options},
+                 "normalization": normalization, "min_videos": min_videos, **data_options,
+                 # only when set, so the fingerprints of configs without it stay as they were.
+                 **({"augmentation": augmentation_options(args_data["augmentation"])}
+                    if args_data.get("augmentation") is not None else {})},
         "evaluation": {"num_bags": num_eval_bags},
         "optimization": {"batch_size": batch_size, "num_epochs": num_epochs, "use_bfloat16": use_bfloat16,
                          "multihead_kwargs": args_opt["multihead_kwargs"],
-                         **({} if clip_grad is None else {"clip_grad": clip_grad})},
+                         **({} if clip_grad is None else {"clip_grad": clip_grad}),
+                         **({"pooler_lr_scale": float(pooler_lr_scale)} if pooler_lr_scale is not None else {})},
         "selection": selection,
         "protocol": copy.deepcopy(PROTOCOL),
         "seed": seed,
@@ -490,7 +508,7 @@ def main(args_eval, resume_preempt=False):
                  selection_rule=selection_rule, run_info=run_info, wandb_run=wandb_run, step=num_epochs * ipe,
                  val_only=val_only, rescore_out=rescore_out,
                  rescore_bags=None if rescore_out is None else {"run": run_bags, "rescore": val_bags},
-                 external=external, **score_kwargs)
+                 external=external, bootstrap=int(args_evaluation.get("bootstrap", 1000)), **score_kwargs)
         finish_wandb(wandb_run)
         return
 
@@ -612,6 +630,8 @@ def study_probe_options(classifier, data, pretrained):
                    num_clips_per_video=int(data.get("num_clips_per_video", 1)))
     if study_use_rope:  # only when on, so the fingerprints of configs without it stay as they were
         options["study_use_rope"] = True
+    if classifier.get("hybrid_attention"):  # likewise
+        options["hybrid_attention"] = True
     return options
 
 
@@ -698,6 +718,86 @@ def check_disjoint(datasets):
                 raise ValueError(f"{len(pa & pb)} patients are in both the {a} and the {b} split.")
 
 
+# The training augmentation of the probe before it was configurable (ImageNet video-classification style:
+# crops down to 8% of the frame, RandAugment with inversion, solarization and colour changes, random erasing).
+# Configs without `experiment.data.augmentation` keep it, so their runs and fingerprints stay as they were.
+LEGACY_AUGMENTATION = {"random_resize_scale": (0.08, 1.0), "random_resize_aspect_ratio": (0.75, 4 / 3),
+                       "reprob": 0.25, "auto_augment": True}
+
+
+def augmentation_options(augmentation):
+    """The training-transform options of `experiment.data.augmentation` ({random_resize_scale: [lo, hi],
+    random_resize_aspect_ratio: [lo, hi], reprob, auto_augment}), missing keys from `LEGACY_AUGMENTATION`.
+    Evaluation always resizes and centre-crops; these only shape training reads."""
+    if augmentation is None:
+        return dict(LEGACY_AUGMENTATION)
+    if not isinstance(augmentation, dict):
+        raise ValueError("`experiment.data.augmentation` is a mapping of training-transform options.")
+    unknown = sorted(set(augmentation) - set(LEGACY_AUGMENTATION))
+    if unknown:
+        raise ValueError(f"`experiment.data.augmentation` has unknown keys {unknown}; "
+                         f"known: {sorted(LEGACY_AUGMENTATION)}.")
+    out = dict(LEGACY_AUGMENTATION)
+    for key in ("random_resize_scale", "random_resize_aspect_ratio"):
+        if key in augmentation:
+            lo, hi = (float(v) for v in augmentation[key])
+            if not 0 < lo <= hi or (key == "random_resize_scale" and hi > 1):
+                raise ValueError(f"`augmentation.{key}` must be [lo, hi] with 0 < lo <= hi"
+                                 f"{' <= 1' if key == 'random_resize_scale' else ''}, not {augmentation[key]!r}.")
+            out[key] = (lo, hi)
+    if "reprob" in augmentation:
+        out["reprob"] = float(augmentation["reprob"])
+        if not 0 <= out["reprob"] <= 1:
+            raise ValueError("`augmentation.reprob` is a probability in [0, 1].")
+    if "auto_augment" in augmentation:
+        if not isinstance(augmentation["auto_augment"], bool):
+            raise ValueError("`augmentation.auto_augment` is true or false.")
+        out["auto_augment"] = augmentation["auto_augment"]
+    return out
+
+
+def resolve_class_weights(specs, train_targets, args_classifier):
+    """Add `class_weight` to the specs of the heads `experiment.classifier.class_weights` names, in place.
+
+    `class_weights` is `auto` (every binary and classification head) or {head: auto | value}: a binary head's
+    value is its BCE `pos_weight`, a classification head's a list with one weight per class. `auto` is the
+    inverse prevalence on the train split (binary: negatives / positives; classification: largest class count
+    / class count), capped at `class_weight_cap` (default 10) so a head with a handful of positives does not
+    dominate. Heads not named keep unweighted losses and their specs (and fingerprints) unchanged."""
+    config = args_classifier.get("class_weights")
+    if config is None:
+        return
+    cap = float(args_classifier.get("class_weight_cap", 10.0))
+    if not cap >= 1:
+        raise ValueError("`class_weight_cap` must be at least 1.")
+    weighted = [n for n, s in specs.items() if s["task"] != "regression"]
+    if config == "auto":
+        config = {name: "auto" for name in weighted}
+    if not isinstance(config, dict):
+        raise ValueError("`experiment.classifier.class_weights` is `auto` or {head: auto | value}.")
+    for name, value in config.items():
+        if name not in specs:
+            raise ValueError(f"`class_weights` names head {name!r} that `target_label` does not list.")
+        spec = specs[name]
+        if spec["task"] == "regression":
+            raise ValueError(f"`class_weights.{name}`: regression heads take no class weights.")
+        if value == "auto":
+            values = train_targets[:, list(specs).index(name)]
+            values = values[np.isfinite(values)].astype(int)
+            counts = np.bincount(values, minlength=2 if spec["task"] == "binary" else spec["outputs"])
+            if spec["task"] == "binary":
+                weight = [min(cap, counts[0] / counts[1]) if counts[1] else 1.0]
+            else:
+                weight = [min(cap, counts.max() / c) if c else 1.0 for c in counts]
+            weight = [round(max(1.0, float(w)), 4) for w in weight]
+        else:
+            weight = [float(v) for v in (value if isinstance(value, (list, tuple)) else [value])]
+        expected = 1 if spec["task"] == "binary" else spec["outputs"]
+        if len(weight) != expected or not all(np.isfinite(w) and w > 0 for w in weight):
+            raise ValueError(f"`class_weights.{name}` needs {expected} positive weight(s), not {value!r}.")
+        spec["class_weight"] = weight
+
+
 def target_normalization(specs, train_targets, args_classifier):
     """{head: {mean, std}} for the regression heads: `experiment.classifier.target_mean` and
     `target_std` ({head: value}) when given, else the train split's statistics (population std)."""
@@ -752,15 +852,49 @@ def shared(rank, world_size, device, compute):
     return holder[0]
 
 
-def init_opt(probes, opt_kwargs, iterations_per_epoch, num_epochs):
+def probe_lr_groups(probe, pooler_lr_scale):
+    """[(parameters, lr scale)] of a probe: the pooling layers (everything but the heads) at `pooler_lr_scale`
+    times the heads' learning rate, as DeepCORO_CLIP's attention_lr / head_lr; one group when None."""
+    params = [p for p in probe.parameters() if p.requires_grad]
+    if pooler_lr_scale is None:
+        return [(params, 1.0)]
+    heads = {id(p) for p in getattr(probe, "module", probe).heads.parameters()}
+    return [([p for p in params if id(p) in heads], 1.0),
+            ([p for p in params if id(p) not in heads], float(pooler_lr_scale))]
+
+
+def encoder_lr_groups(encoder, trainable_blocks, layer_decay):
+    """[(parameters, lr scale)] of the encoder's trainable blocks: with `layer_decay` d, the top block (and the
+    output norm) at 1, the next at d, then d^2, ... (layer-wise learning-rate decay); one group when None."""
+    params = [p for p in encoder.parameters() if p.requires_grad]
+    if layer_decay is None:
+        return [(params, 1.0)]
+    vit = getattr(getattr(encoder, "module", encoder), "model", getattr(encoder, "module", encoder))
+    blocks = list(vit.blocks)[len(vit.blocks) - trainable_blocks:]
+    groups, seen = [], set()
+    for depth, block in enumerate(reversed(blocks)):
+        block_params = [p for p in block.parameters() if p.requires_grad]
+        seen.update(id(p) for p in block_params)
+        groups.append((block_params, float(layer_decay) ** depth))
+    rest = [p for p in params if id(p) not in seen]   # the output norm: with the top block
+    if rest:
+        groups[0] = (groups[0][0] + rest, 1.0)
+    return groups
+
+
+def init_opt(probes, opt_kwargs, iterations_per_epoch, num_epochs, lr_groups=None):
+    """One AdamW per probe (or encoder) with a warmup-cosine schedule. `lr_groups(module)` gives
+    [(parameters, lr scale)] param groups; by default all trainable parameters at scale 1."""
     optimizers, schedulers, wd_schedulers = [], [], []
     for probe, kwargs in zip(probes, opt_kwargs):
+        groups = lr_groups(probe) if lr_groups is not None else [([p for p in probe.parameters() if p.requires_grad], 1.0)]
         param_groups = [{
-            "params": [p for p in probe.parameters() if p.requires_grad],
+            "params": params,
             "mc_warmup_steps": int(kwargs["warmup"] * iterations_per_epoch),
-            "mc_start_lr": kwargs["start_lr"], "mc_ref_lr": kwargs["ref_lr"], "mc_final_lr": kwargs["final_lr"],
+            "mc_start_lr": kwargs["start_lr"] * scale, "mc_ref_lr": kwargs["ref_lr"] * scale,
+            "mc_final_lr": kwargs["final_lr"] * scale,
             "mc_ref_wd": kwargs["ref_wd"], "mc_final_wd": kwargs["final_wd"],
-        }]
+        } for params, scale in groups if params]
         optimizers.append(torch.optim.AdamW(param_groups))
         schedulers.append(WarmupCosineLRSchedule(optimizers[-1], T_max=int(num_epochs * iterations_per_epoch)))
         wd_schedulers.append(CosineWDSchedule(optimizers[-1], T_max=int(num_epochs * iterations_per_epoch)))
@@ -1257,10 +1391,98 @@ def publish_new_folder(path, files):
         raise
 
 
+def _head_values(scored, specs, normalization, name):
+    """(labels, score) of one head over the studies with a label: regression in the target's units, binary the
+    positive probability, classification the class probabilities [n, classes]."""
+    i = list(specs).index(name)
+    y, out = scored["targets"][:, i], scored["outputs"][name]
+    valid = np.isfinite(y) & np.isfinite(out).all(axis=1)
+    y, out = y[valid], out[valid]
+    task = specs[name]["task"]
+    if task == "regression":
+        return y, out[:, 0] * normalization[name]["std"] + normalization[name]["mean"]
+    if task == "binary":
+        return y, 1.0 / (1.0 + np.exp(-out[:, 0]))
+    prob = np.exp(out - out.max(axis=1, keepdims=True))
+    return y, prob / prob.sum(axis=1, keepdims=True)
+
+
+def youden_probability_threshold(labels, prob):
+    """The probability threshold (positive when prob >= t) that maximizes sensitivity + specificity - 1;
+    ties go to the threshold closest to 0.5. None when the labels hold one class."""
+    pos = np.asarray(labels) > 0.5
+    if not pos.any() or pos.all():
+        return None
+    u = np.unique(prob)
+    candidates = np.r_[(u[:-1] + u[1:]) / 2.0, u[-1] + 1e-6] if u.size > 1 else u
+    flagged = np.asarray(prob)[None, :] >= candidates[:, None]
+    j = (flagged & pos).sum(1) / pos.sum() + (~flagged & ~pos).sum(1) / (~pos).sum() - 1.0
+    ties = candidates[np.isclose(j, j.max())]
+    return float(ties[np.argmin(np.abs(ties - 0.5))])
+
+
+def operating_points(val_scored, test_scored, specs, normalization):
+    """Each binary head's Youden threshold chosen on validation, and the test's sensitivity, specificity,
+    PPV and NPV at it (the threshold is never tuned on test)."""
+    out = {}
+    for name, spec in specs.items():
+        if spec["task"] != "binary":
+            continue
+        threshold = youden_probability_threshold(*_head_values(val_scored, specs, normalization, name))
+        if threshold is None:
+            continue
+        y, prob = _head_values(test_scored, specs, normalization, name)
+        pos, flagged = y > 0.5, prob >= threshold
+        tp, fp = int((flagged & pos).sum()), int((flagged & ~pos).sum())
+        tn, fn = int((~flagged & ~pos).sum()), int((~flagged & pos).sum())
+        ratio = lambda a, b: float(a / (a + b)) if a + b else float("nan")
+        out[name] = {"threshold": threshold, "sensitivity": ratio(tp, fn), "specificity": ratio(tn, fp),
+                     "ppv": ratio(tp, fp), "npv": ratio(tn, fn), "tp": tp, "fp": fp, "tn": tn, "fn": fn}
+    return out
+
+
+def _bootstrap_metric(spec, y, score):
+    """The bootstrapped metric of one head: MAE and Pearson r (regression), AUROC (binary), mean one-vs-rest
+    AUROC over the classes present (classification)."""
+    if spec["task"] == "regression":
+        r = float(np.corrcoef(y, score)[0, 1]) if y.size > 1 and y.std() > 0 and score.std() > 0 else float("nan")
+        return {"mae": float(np.abs(score - y).mean()) if y.size else float("nan"), "pearson_r": r}
+    if spec["task"] == "binary":
+        return {"auroc": probe_metrics.auroc(y > 0.5, score)}
+    aurocs = [probe_metrics.auroc(y == c, score[:, c]) for c in sorted(set(y.astype(int).tolist()))]
+    aurocs = [a for a in aurocs if np.isfinite(a)]
+    return {"auroc": float(np.mean(aurocs)) if aurocs else float("nan")}
+
+
+def bootstrap_intervals(scored, specs, normalization, num_samples=1000, seed=0, level=0.95):
+    """95% percentile intervals of each head's main metrics, resampling the scored studies with replacement
+    (one study per draw; the cohort holds one study per patient, so this is a patient bootstrap there)."""
+    if num_samples <= 0:
+        return {}
+    rng = np.random.default_rng(seed)
+    n = len(scored["indices"])
+    draws = [rng.integers(0, n, n) for _ in range(num_samples)]
+    out = {}
+    for name, spec in specs.items():
+        i = list(specs).index(name)
+        y_all, out_all = scored["targets"][:, i], scored["outputs"][name]
+        samples = {}
+        for draw in draws:
+            sub = {"targets": y_all[draw][:, None], "outputs": {name: out_all[draw]}}
+            y, score = _head_values(sub, {name: spec}, normalization, name)
+            for k, v in _bootstrap_metric(spec, y, score).items():
+                samples.setdefault(k, []).append(v)
+        point = _bootstrap_metric(spec, *_head_values(scored, specs, normalization, name))
+        lo, hi = (1 - level) / 2 * 100, (1 + level) / 2 * 100
+        out[name] = {k: {"value": point[k], "low": float(np.nanpercentile(v, lo)), "high": float(np.nanpercentile(v, hi))}
+                     for k, v in samples.items() if np.isfinite(v).any()}
+    return out
+
+
 def run_test(folder, probes, probe_names, val_dataset, test_dataset, num_epochs, fingerprint, selection_rule, run_info,
              wandb_run, step, device, encoder, batch_size, num_workers, use_bfloat16, specs, normalization, rank,
              world_size, trainable=False, val_only=False, num_bags=1, rescore_out=None, rescore_bags=None,
-             external=None):
+             external=None, bootstrap=1000):
     """Score validation and optionally the test with the probe and epoch chosen on validation (`best.pt`, with
     its fine-tuned encoder when the encoder trained), and write `test_metrics.json`,
     `test_predictions.csv` and `val_predictions.csv`. The prediction files list study ids, which
@@ -1332,6 +1554,9 @@ def run_test(folder, probes, probe_names, val_dataset, test_dataset, num_epochs,
         result["rescore"] = rescored
     if not val_only:
         result["test"] = test
+        # Test only: thresholds fixed on validation, and study-bootstrap 95% intervals (`evaluation.bootstrap`).
+        result["test_operating_points"] = operating_points(val_scored, test_scored, specs, normalization)
+        result["test_intervals"] = bootstrap_intervals(test_scored, specs, normalization, num_samples=bootstrap)
     prefix = ("selected_val" if external is None else "external") if val_only else "test"
     filename = f"{name}_metrics.json" if val_only else "test_metrics.json"
     if rescore_out is None:
