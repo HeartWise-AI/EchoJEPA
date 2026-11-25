@@ -11,6 +11,10 @@
 - `tiny`: `TinyTextBackbone`, a small pure-PyTorch encoder that needs neither downloads nor transformers' torch
   support (tests, CPU smoke runs).
 
+With `frozen: true` the backbone is not trained: each distinct caption is encoded once into a cached feature and only
+a head is trained (`src/models/radar/frozen_text.py`); `build_text_encoder` and `build_tokenizer` then return its
+`FrozenTextEncoder` and `CachedTokenizer`, which keep the interfaces below.
+
 `MomentumTeacher` is RADAR's momentum text encoder: an exponential moving average of the student (backbone and
 projection), without gradients, updated once per optimizer step. Its features weight the abnormal-abnormal targets.
 
@@ -94,9 +98,11 @@ class TinyTextBackbone(nn.Module):
         positions = torch.arange(input_ids.shape[1], device=input_ids.device)
         x = self.token_embed(input_ids) + self.position_embed(positions)[None]
         padding = ~attention_mask.bool()
+        states = [x]
         for layer in self.encoder.layer:
             x = layer(x, src_key_padding_mask=padding)
-        return SimpleNamespace(last_hidden_state=x)
+            states.append(x)
+        return SimpleNamespace(last_hidden_state=x, hidden_states=tuple(states))
 
 
 class MomentumTeacher(nn.Module):
@@ -181,6 +187,9 @@ def _hf_config(cfg):
 
 def build_tokenizer(cfg):
     """The tokenizer of a text config, without its encoder."""
+    if cfg.get("frozen"):
+        from src.models.radar.frozen_text import build_frozen_tokenizer
+        return build_frozen_tokenizer(cfg)
     kind = cfg.get("backbone")
     if kind == "hf_pretrained":
         return HFTokenizer(cfg["name"], cfg["revision"], cfg.get("max_length", 256))
@@ -191,8 +200,12 @@ def build_tokenizer(cfg):
     raise ValueError(f"text backbone must be one of {TEXT_BACKBONES}, not {kind!r}.")
 
 
-def build_text_encoder(cfg, proj_dim):
-    """(TextEncoder, tokenizer) from a config: {backbone: hf_pretrained | hf_random | tiny, ...}."""
+def build_text_encoder(cfg, proj_dim, cache_dir=None):
+    """(TextEncoder, tokenizer) from a config: {backbone: hf_pretrained | hf_random | tiny, ...}. With `frozen: true`,
+    (FrozenTextEncoder, CachedTokenizer), their caption features kept under `cache_dir` when given."""
+    if cfg.get("frozen"):
+        from src.models.radar.frozen_text import build_frozen
+        return build_frozen(cfg, proj_dim, cache_dir)
     kind = cfg.get("backbone")
     trainable = cfg.get("trainable_layers")
     tokenizer = build_tokenizer(cfg)

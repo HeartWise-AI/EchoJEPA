@@ -127,6 +127,15 @@ class Validator:
             if self.tasks:
                 self.labels, _ = read_labels(section["labels"], self.tasks, self.study_ids)
 
+    def texts(self):
+        """Every text a pass may encode: the B-mode captions of the validation studies and the prompts of the binary
+        tasks. A frozen caption encoder needs them in its feature store before training seals it."""
+        out = {caption for (_, _, scope), (caption, _, _) in self.dataset.captions.items() if scope == "bmode"}
+        for task in self.tasks.values():
+            out.update(task.label_sources)
+            out.update(task.negative_sources)
+        return sorted(out)
+
     def due(self, epoch, last_epoch):
         """Whether the pass runs after zero-indexed `epoch` of a run whose last epoch is `last_epoch` - 1."""
         return (epoch + 1) % self.every == 0 or epoch + 1 == last_epoch

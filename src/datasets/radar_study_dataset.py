@@ -34,6 +34,14 @@ caption (B-mode and Doppler statements) when the study's bag holds a clip and a 
 only input is a still and that has no Doppler caption gets none: B-mode statements are never trained against stills
 alone.
 Without `stills`, `full` rows are never read and items are those of v0.
+
+View prefix (optional, `view_prefix`: a `src.models.radar.view_prefix.ViewPhrases`; clip-only runs): each caption
+slot holds the caption after the prefix naming the views of the bag's clips that feed the structure ("Apical
+four-chamber view. <caption>"), and its caption id is that of (prefix, caption), so exact-caption positives need the
+same views and the same caption. A structure that no clip of the bag feeds (never a trained row) keeps its caption
+unprefixed. `view_prefixes(index)` gives the prefixes of an item without reading its tokens (zero-shot prompts are
+prefixed with them) and `prefixed_texts()` every text an item can hold (a frozen caption encoder encodes them before
+training). Without it, items are unchanged.
 """
 
 import hashlib
@@ -47,6 +55,7 @@ import torch
 from src.datasets.radar_stills import STILL_ITEM_KEYS
 from src.datasets.study_bags import bag_record, check_study_ids, choose_bag, evaluation_rng, training_rng
 from src.models.radar.routing import evidence_scope, finding_scope
+from src.models.radar.view_prefix import prefixed, prefixed_caption_id
 
 NORMALITY = ("normal", "abnormal", "unknown")
 SCOPES = ("bmode", "full", "doppler")
@@ -56,7 +65,7 @@ class RadarStudyDataset(torch.utils.data.Dataset):
 
     def __init__(self, clips, captions, routing, cache, num_clips=12, selection="view_balanced", training=True,
                  seed=0, eval_seed=0, eval_bag_index=0, acquisition_classes=("bmode", "color_flow"),
-                 normal_fraction=1.0, stills=None):
+                 normal_fraction=1.0, stills=None, view_prefix=None):
         if not 0.0 < normal_fraction <= 1.0:
             raise ValueError(f"normal_fraction must be in (0, 1], got {normal_fraction}.")
         self.normal_fraction = float(normal_fraction)
@@ -82,6 +91,9 @@ class RadarStudyDataset(torch.utils.data.Dataset):
         if clips.clip_id.astype(str).duplicated().any():
             raise ValueError("A clip appears twice in the clip table.")
         self.stills = stills
+        if view_prefix is not None and stills is not None:
+            raise ValueError("view_prefix names the views of a bag's clips; it is defined for clip-only runs.")
+        self.view_prefix = view_prefix
         by_study = {study_id: sorted(zip(rows.clip_id.astype(str), rows.view.astype(str),
                                          rows.acquisition.astype(str)))
                     for study_id, rows in clips.groupby(clips.study_id.astype(str), sort=True)}
@@ -169,12 +181,56 @@ class RadarStudyDataset(torch.utils.data.Dataset):
         fields = self.routing.structure(name).supported_fields(self._still_tags(still, s))
         return evidence_scope(fields) if fields else None
 
+    def _choose(self, clips, rng):
+        """The bag: (clip_id, view, acquisition) of the chosen clips, in slot order."""
+        by_id = {clip[0]: clip for clip in clips}
+        return [by_id[c] for c in choose_bag([(c, v) for c, v, _ in clips], self.num_clips, self.selection, rng,
+                                             self.routing.view_families)]
+
+    def _prefixes(self, chosen, eligible):
+        """Per trained structure, the prefix naming the views of the bag's clips that feed it (`eligible` [S, C])."""
+        return [self.view_prefix.prefix(chosen[c][1] for c in range(len(chosen)) if bool(eligible[s, c]))
+                for s in range(len(self.structures))]
+
+    def view_prefixes(self, index):
+        """The view prefix of each trained structure in item `index`'s bag (this epoch, or this evaluation bag),
+        without reading tokens; "" for a structure that no clip of the bag feeds."""
+        if self.view_prefix is None:
+            raise ValueError("This dataset has no view_prefix.")
+        study_id, clips = self.studies[index]
+        chosen = self._choose(clips, self._rng(study_id))
+        view_ids = torch.full((self.num_clips,), -1, dtype=torch.long)
+        clip_valid = torch.zeros(self.num_clips, dtype=torch.bool)
+        for slot, (_, view, _) in enumerate(chosen):
+            view_ids[slot], clip_valid[slot] = self.routing.view_index(view), True
+        eligible = self.routing.clip_eligibility(view_ids[None], clip_valid[None], self.structures)[0]
+        return self._prefixes(chosen, eligible)
+
+    def prefixed_texts(self):
+        """Every caption text an item of this split can hold, in any epoch: each caption after every prefix its
+        study's bags can give the structure (`ViewPhrases.possible_prefixes`), and as written (the slot of a
+        structure that no clip of the bag feeds keeps its caption unprefixed; that row is never trained, but its
+        text is still tokenized)."""
+        if self.view_prefix is None:
+            raise ValueError("This dataset has no view_prefix.")
+        views = {name: self.routing.structure(name).views for name in self.structures}
+        texts = set()
+        for study_id, clips in self.studies:
+            clip_views = [v for _, v, _ in clips]
+            for name in self.structures:
+                entry = self.captions.get((study_id, name, "bmode"))
+                if entry is None:
+                    continue
+                texts.add(entry[0])
+                for prefix in self.view_prefix.possible_prefixes(clip_views, views[name], self.num_clips,
+                                                                 self.selection):
+                    texts.add(prefixed(prefix, entry[0]))
+        return texts
+
     def __getitem__(self, index):
         study_id, clips = self.studies[index]
-        by_id = {clip[0]: clip for clip in clips}
         rng = self._rng(study_id)
-        chosen = [by_id[c] for c in choose_bag([(c, v) for c, v, _ in clips], self.num_clips, self.selection,
-                                               rng, self.routing.view_families)]
+        chosen = self._choose(clips, rng)
         C, S = self.num_clips, len(self.structures)
         L, D = self.cache.shape
         tokens = torch.zeros(C, L, D)
@@ -190,6 +246,7 @@ class RadarStudyDataset(torch.utils.data.Dataset):
         eligible = self.routing.clip_eligibility(view_ids[None], clip_valid[None], self.structures)[0]
         still = self.stills.item(study_id, rng) if self.stills is not None else {}
         has_still = still["still_eligible"].any(dim=-1) if still else torch.zeros(S, dtype=torch.bool)
+        prefixes = self._prefixes(chosen, eligible) if self.view_prefix is not None else [""] * S
         texts, ids = [""] * S, torch.zeros(S, dtype=torch.long)
         has_caption = torch.zeros(S, dtype=torch.bool)
         normal, abnormal = torch.zeros(S, dtype=torch.bool), torch.zeros(S, dtype=torch.bool)
@@ -206,7 +263,7 @@ class RadarStudyDataset(torch.utils.data.Dataset):
             if entry is not None and self._left_out(study_id, name, entry[2]):
                 entry = None
             if entry is not None:
-                texts[s], ids[s] = entry[0], entry[1]
+                texts[s], ids[s] = prefixed(prefixes[s], entry[0]), prefixed_caption_id(entry[1], prefixes[s])
                 has_caption[s] = True
                 normal[s], abnormal[s] = entry[2] == "normal", entry[2] == "abnormal"
         return {"study_id": study_id, "clip_ids": [c for c, _, _ in chosen], "tokens": tokens,

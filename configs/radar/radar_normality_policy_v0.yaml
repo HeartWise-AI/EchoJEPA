@@ -162,7 +162,7 @@ device_present: abnormal
 # and the policy no longer loads until it is approved again.
 #   approval:
 #     by: names of the reviewers
-#     on: <date>
+#     "on": "<month year>"      (quoted: YAML reads a bare on as true; month only: full dates fail the privacy scan)
 #     audit_report: audit_report.json
 #     digest: <policy_digest>
 approval: null

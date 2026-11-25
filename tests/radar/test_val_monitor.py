@@ -117,6 +117,47 @@ class TestValidationMonitoring(unittest.TestCase):
         self.assertIn("val/retrieval/lv/recall@5", logged[0])
         self.assertIn("val/zero_shot/effusion/auroc", logged[0])
 
+    def test_frozen_caption_encoder_gets_the_validation_texts_before_sealing(self):
+        frozen = {"backbone": "tiny", "vocab_size": 200, "hidden_size": 16, "num_layers": 2, "num_heads": 2,
+                  "max_length": 32, "frozen": True, "pooling": "mean", "head": "mlp", "head_hidden_dim": 12}
+        base = {**copy.deepcopy(self.config), "text": frozen}
+        straight = radar_train.train(base, os.path.join(self.root, "frozen_straight"))
+        prompts = os.path.join(self.root, "unseen_prompts.yaml")          # worded unlike any training caption
+        with open(prompts, "w", encoding="utf-8") as f:
+            yaml.safe_dump({"tasks": {"effusion": {**PROMPTS["effusion"],
+                                                   "label_sources": ["Un épanchement péricardique est présent."],
+                                                   "negative_sources": ["Le péricarde est normal."]}}},
+                           f, allow_unicode=True)
+        out = os.path.join(self.root, "frozen_validated")
+        run = radar_train.train({**copy.deepcopy(base), "validation": {**self.section, "prompts": prompts}}, out)
+        self.assertEqual(run["losses"], straight["losses"])                          # training unchanged
+        self.assertEqual(run["fingerprint"], straight["fingerprint"])
+        records = lines(os.path.join(out, "validation.jsonl"))
+        self.assertEqual([r["epoch"] for r in records], [0, 1])
+        self.assertEqual(records[-1]["retrieval"]["lv"]["unique_captions"], 6)
+        self.assertIsNotNone(records[-1]["zero_shot_mean_auroc"])
+
+    def test_view_prefix_is_refused_with_validation_and_severity_weights(self):
+        prefixed = copy.deepcopy(self.config)
+        prefixed["data"]["view_prefix"] = True
+        with self.assertRaisesRegex(ValueError, "validation .*data.view_prefix"):
+            radar_train.train({**copy.deepcopy(prefixed), "validation": dict(self.section)},
+                              os.path.join(self.root, "prefix_validation"))
+        weighted = copy.deepcopy(prefixed)
+        weighted.setdefault("loss", {})["severity_weights"] = True
+        with self.assertRaisesRegex(ValueError, "severity_weights.*data.view_prefix"):
+            radar_train.train(weighted, os.path.join(self.root, "prefix_severity"))
+
+    def test_texts_cover_bmode_captions_and_binary_prompts(self):
+        from src.models.radar.routing import load_routing
+        validator = Validator(self.section, self.config, load_routing(), torch.device("cpu"))
+        texts = validator.texts()
+        captions = {c for (_, _, scope), (c, _, _) in validator.dataset.captions.items() if scope == "bmode"}
+        self.assertTrue(captions <= set(texts))
+        self.assertIn("Épanchement péricardique modéré.", texts)
+        self.assertIn("Pas d'épanchement péricardique.", texts)
+        self.assertNotIn("FEVG estimée visuellement : <#> %.", texts)                # regression tasks are not run
+
     def test_scalars_and_refusals(self):
         report = {"retrieval": {"lv": {"studies": 3, "recall@1": 0.5}}, "retrieval_mean": {"recall@1": 0.5},
                   "zero_shot": {"a": {"auroc": None}, "b": {"auroc": 0.7}}, "zero_shot_mean_auroc": 0.7}
