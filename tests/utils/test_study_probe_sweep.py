@@ -1,0 +1,207 @@
+"""Controlled sweep expansion, execution and selected-checkpoint summaries."""
+
+import copy
+import json
+from pathlib import Path
+import tempfile
+import unittest
+from unittest import mock
+
+import numpy as np
+import torch
+import yaml
+
+from evals.study_multitask_frozen.eval import aggregate_bags, check_disjoint, check_token_grid, evaluate, manifest_paths
+from evals.video_classification_frozen.modelcustom.vit_encoder_multiclip import ClipAggregation
+from src.models.radar.routing import load_routing
+from src.models.study_probe import head_specs
+from src.models.vision_transformer import VisionTransformer
+from tests.models.test_study_probe import CLASSIFIER
+from tools.study_probe_sweep import expand, generate, launch, summarize
+
+ROOT = Path(__file__).resolve().parents[2]
+
+
+class TestStudySweep(unittest.TestCase):
+    def setUp(self):
+        self.spec = yaml.safe_load((ROOT / "configs/sweeps/study_probe.yaml").read_text())
+        self.base = yaml.safe_load((ROOT / "configs/eval/vitl/study_multitask_deepecho.yaml").read_text())
+
+    def test_the_matched_baseline_is_one_registry_backed_run_per_seed(self):
+        spec = yaml.safe_load((ROOT / "configs/sweeps/radar_matched_baseline.yaml").read_text())
+        runs = expand(self.base, spec)
+        self.assertEqual([(m["variant"], m["seed"]) for _, m in runs], [("baseline", s) for s in spec["seeds"]])
+        data = runs[0][0]["experiment"]["data"]
+        self.assertEqual(data["sampling_mode"], "shared_bags")
+        self.assertTrue((ROOT / data["routing"]).exists())
+        self.assertNotIn("view_family_map", data)
+        self.assertEqual((data["num_clips_per_video"], data.get("views")), (1, None))
+        routing = load_routing(ROOT / data["routing"])
+        self.assertTrue(set(routing.view_classes) <= set(data["view_labels_map"]))
+
+    def test_the_earlier_sweep_stays_as_it_was(self):
+        defaults = self.spec["defaults"]
+        self.assertEqual(defaults["experiment.data.view_family_map"]["PSAX_AV"], "PSAX")
+        self.assertEqual(defaults["experiment.data.sampling_mode"], "random")
+        self.assertNotIn("experiment.data.routing", defaults)
+
+    def test_the_v3_sweep_tests_augmentation_class_weights_filler_and_a_finetuned_control(self):
+        spec = yaml.safe_load((ROOT / "configs/sweeps/study_probe_v3.yaml").read_text())
+        runs = expand(self.base, spec)
+        variants = list(dict.fromkeys(m["variant"] for _, m in runs))
+        self.assertEqual(variants, ["baseline", "echo_augmentation", "class_weights", "other_filler", "all",
+                                    "finetune_top4", "pooler_lr_x5", "hybrid_pooling"])
+        self.assertEqual(len(runs), 8 * len(spec["seeds"]))
+        by_variant = {m["variant"]: c for c, m in runs}
+        baseline, tuned = by_variant["baseline"], by_variant["finetune_top4"]
+        self.assertNotIn("augmentation", baseline["experiment"]["data"])
+        self.assertEqual(baseline["experiment"]["data"]["sampling_mode"], "view_balanced")
+        self.assertTrue(baseline["experiment"]["classifier"]["study_use_rope"])
+        self.assertEqual(len(baseline["experiment"]["optimization"]["multihead_kwargs"]), 1)
+        self.assertEqual(by_variant["all"]["experiment"]["data"]["augmentation"]["random_resize_scale"], [0.5, 1.0])
+        self.assertEqual(by_variant["all"]["experiment"]["classifier"]["class_weights"], "auto")
+        self.assertEqual(tuned["experiment"]["encoder"]["trainable_blocks"], 4)
+        self.assertEqual((tuned["experiment"]["encoder"]["warmup"], tuned["experiment"]["encoder"]["layer_decay"]),
+                         (1.5, 0.75))
+        self.assertEqual(by_variant["pooler_lr_x5"]["experiment"]["classifier"]["pooler_lr_scale"], 5.0)
+        self.assertTrue(by_variant["hybrid_pooling"]["experiment"]["classifier"]["hybrid_attention"])
+        self.assertEqual(baseline["experiment"]["encoder"]["trainable_blocks"], 0)
+
+    def test_ablation_and_factorial_cover_each_factor_and_preserve_protocol(self):
+        original = copy.deepcopy(self.base)
+        runs = expand(self.base, self.spec)
+        self.assertEqual(len(runs), 27)
+        self.assertEqual(len(expand(self.base, self.spec, "factorial")), 57)
+        self.assertEqual(self.base, original)
+        for config, entry in runs:
+            self.assertEqual(config["experiment"]["evaluation"], {"selection": "weighted_loss", "num_bags": 3})
+            self.assertEqual(config["experiment"]["data"]["eval_seed"], 1729)
+            self.assertEqual(config["meta"]["seed"], entry["seed"])
+            self.assertTrue(config["resume_checkpoint"])
+        baseline = next(c for c, e in runs if e["variant"] == "baseline")
+        self.assertEqual(baseline["experiment"]["classifier"]["query_mode"], "shared")
+        # The flat RoPE control is the baseline plus one key, after every earlier variant.
+        flat_rope = copy.deepcopy(next(c for c, e in runs if e["variant"] == "flat_rope" and e["seed"] == 0))
+        self.assertIs(flat_rope["experiment"]["classifier"].pop("study_use_rope"), True)
+        untagged = lambda config: {k: v for k, v in config.items() if k not in ("tag", "meta")}
+        self.assertEqual(untagged(flat_rope), untagged(baseline))
+        self.assertEqual([e["variant"] for _, e in runs][::3],
+                         ["baseline", "task_queries", "view_balanced", "view_conditioning", "hierarchical_rope", "all",
+                          "no_view", "hierarchy_no_rope", "flat_rope"])
+        all_four = next(c for c, e in runs if e["variant"] == "all")
+        self.assertEqual(all_four["experiment"]["classifier"]["query_mode"], "task")
+        self.assertTrue(all_four["experiment"]["classifier"]["local_use_rope"])
+        self.assertEqual(all_four["experiment"]["classifier"]["view_dropout"], 0.2)
+        self.assertEqual(all_four["experiment"]["data"]["sampling_mode"], "view_balanced")
+        bad = copy.deepcopy(self.spec)
+        bad["factors"]["task_queries"]["experiment.evaluation.selection"] = "lvef/mae"
+        with self.assertRaisesRegex(ValueError, "same selection"):
+            expand(self.base, bad)
+
+    def test_generation_launch_integrity_and_summary(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            checkpoint, data = tmp / "checkpoint.pt", tmp / "data.csv"
+            checkpoint.touch()
+            data.touch()
+            args = dict(spec_path=ROOT / "configs/sweeps/study_probe.yaml", output=tmp / "configs",
+                        checkpoint=checkpoint, data=data, folder=tmp / "results")
+            manifest_path, count = generate(**args)
+            self.assertEqual(count, 27)
+            self.assertEqual(generate(**args), (manifest_path, count))
+            with mock.patch("tools.study_probe_sweep.subprocess.run") as run:
+                launch(manifest_path, ["cuda:0"], index=0, dry_run=True)
+                run.assert_not_called()
+                launch(manifest_path, ["cuda:0"], index=0)
+                run.assert_called_once()
+                self.assertNotIn("--test_only", run.call_args.args[0])
+            manifest = json.loads(manifest_path.read_text())
+            for index, score in ((0, 2.0), (3, 1.5)):
+                entry = manifest["runs"][index]
+                path = Path(entry["result_dir"])
+                path.mkdir(parents=True, exist_ok=True)
+                (path / "val_metrics.json").write_text(json.dumps({
+                    "selected_on": "validation", "epoch": 2, "probe": 0,
+                    "val": {"score": score, "failed": 0, "heads": {"ef": {"mae": score}}}}))
+            summary = summarize(manifest_path, tmp / "summary")
+            self.assertEqual(len(summary["missing_run_indices"]), 25)
+            metric = summary["variants"]["task_queries"]["score"]
+            self.assertEqual(metric["paired_delta_mean"], -0.5)
+            self.assertEqual(metric["paired_delta_n"], 1)
+            config = Path(manifest["runs"][0]["config"])
+            config.write_text(config.read_text() + "# modified\n")
+            with self.assertRaisesRegex(ValueError, "config changed"):
+                launch(manifest_path, ["cuda:0"], index=0, dry_run=True)
+            with self.assertRaises(FileExistsError):
+                generate(**args)
+
+
+class TestStudyEvaluation(unittest.TestCase):
+    def setUp(self):
+        self.specs = head_specs(CLASSIFIER)
+        self.norm = {"lvef": {"mean": 50, "std": 10}}
+
+    def bag(self, offset=0):
+        return {"indices": np.array([0, 1]), "targets": np.array([[40, 0, 0], [60, 1, 1]]), "failed": [],
+                "outputs": {"lvef": np.array([[-1.0], [1.0]]) + offset,
+                            "as_present": np.array([[-2.0], [2.0]]) + offset,
+                            "severity": np.array([[2., 0., 0.], [0., 2., 0.]]) + offset}}
+
+    def test_bag_averaging_uses_probability_space_and_reports_clinical_units(self):
+        a, b = self.bag(), self.bag(2)
+        result = aggregate_bags([a, b], self.specs, self.norm)
+        np.testing.assert_allclose(result["outputs"]["lvef"], [[0], [2]])
+        np.testing.assert_allclose(result["prediction_std"]["lvef"], [[10], [10]])
+        expected = ((1 / (1 + np.exp(-a["outputs"]["as_present"])))
+                    + (1 / (1 + np.exp(-b["outputs"]["as_present"])))) / 2
+        np.testing.assert_allclose(1 / (1 + np.exp(-result["outputs"]["as_present"])), expected)
+        b["indices"] = np.array([0])
+        b["targets"] = b["targets"][:1]
+        b["outputs"] = {h: x[:1] for h, x in b["outputs"].items()}
+        b["failed"] = [1]
+        result = aggregate_bags([a, b], self.specs, self.norm)
+        self.assertEqual(result["indices"].tolist(), [0])
+        self.assertEqual(result["failed"], [1])
+
+    def test_nonfinite_output_cannot_be_selected_even_on_another_head(self):
+        for value in (float("nan"), float("inf"), -float("inf")):
+            bad = self.bag()
+            bad["outputs"]["as_present"][0, 0] = value
+            for scored in (bad, aggregate_bags([bad, self.bag()], self.specs, self.norm)):
+                result = evaluate(scored, self.specs, self.norm,
+                                  {"head": "lvef", "metric": "mae", "lower_is_better": True})
+                self.assertTrue(np.isnan(result["score"]))
+
+    def test_token_grid_must_match_the_loaded_encoder(self):
+        def encoder(patch, tubelet):
+            vit = VisionTransformer(img_size=32, num_frames=4, patch_size=patch, tubelet_size=tubelet, embed_dim=8,
+                                    depth=1, num_heads=2)
+            return ClipAggregation(vit, tubelet_size=tubelet).eval()
+
+        check_token_grid(encoder(16, 2), None, 4, 32, torch.device("cpu"))
+        check_token_grid(encoder(16, 2), (2, 2, 2), 4, 32, torch.device("cpu"))
+        with self.assertRaisesRegex(ValueError, "gives 32"):
+            check_token_grid(encoder(8, 2), (2, 2, 2), 4, 32, torch.device("cpu"))
+        with self.assertRaisesRegex(ValueError, "gives 4"):
+            check_token_grid(encoder(16, 4), (2, 2, 2), 4, 32, torch.device("cpu"))
+
+    def test_a_checkpoint_patch_embedding_of_another_shape_is_refused(self):
+        from evals.video_classification_frozen.modelcustom import vit_encoder_multiclip
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "ckpt.pt"
+            vit = VisionTransformer(img_size=32, num_frames=4, patch_size=8, embed_dim=192, depth=12, num_heads=3)
+            torch.save({"encoder": vit.state_dict()}, path)
+            kwargs = {"encoder": {"model_name": "vit_tiny", "checkpoint_key": "encoder", "patch_size": 16}}
+            with self.assertRaisesRegex(ValueError, "patch_embed"):
+                vit_encoder_multiclip.init_module(32, 4, str(path), kwargs, {})
+
+    def test_patient_overlap_and_no_test_manifest_in_training_fingerprint(self):
+        a = mock.Mock(study_ids=["s1"], patient_ids={"p1"})
+        b = mock.Mock(study_ids=["s2"], patient_ids={"p1"})
+        with self.assertRaisesRegex(ValueError, "patients"):
+            check_disjoint({"train": a, "val": b})
+        with self.assertRaisesRegex(ValueError, "carry patient ids"):
+            check_disjoint({"train": a, "val": mock.Mock(study_ids=["s2"], patient_ids=None)})
+        self.assertEqual(manifest_paths({"dataset_train": "train.csv", "dataset_val": "val.csv",
+                                         "dataset_test": "never-read.csv"}),
+                         {"train": "train.csv", "val": "val.csv"})

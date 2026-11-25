@@ -1,5 +1,5 @@
-"""RADAR: view-specific echo captions and a video-text contrastive training skeleton.
+"""RADAR: view-specific echo captions.
 
-The ontology, record, caption and coverage modules have no torch dependency so that the Labelbox tools
-(tools/labelbox/) can import them in a light environment. The model, data, loss and train modules need torch.
+The ontology module has no torch dependency so that the Labelbox tools (tools/labelbox/) can import it in a light
+environment.
 """

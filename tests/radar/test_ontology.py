@@ -1,11 +1,9 @@
 """The versioned concept ontology: shipped file validity, the validator's refusals and the relevance prior."""
 
 import copy
-import json
 import os
 import unittest
 
-import pandas as pd
 import yaml
 
 from app.radar.ontology import (
@@ -22,9 +20,6 @@ from app.radar.ontology import (
     validate_ontology,
 )
 
-ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-MODELCUSTOM = os.path.join(ROOT, "evals", "video_classification_frozen", "modelcustom")
-
 
 def raw():
     with open(DEFAULT_ONTOLOGY_PATH, encoding="utf-8") as f:
@@ -37,9 +32,9 @@ class TestShippedOntology(unittest.TestCase):
         cls.o = load_ontology()
 
     def test_version_size_and_kinds(self):
-        self.assertRegex(self.o.version, r"^\d+\.\d+\.\d+$")
-        self.assertEqual(self.o.tag, f"concepts_v0@{self.o.version}")
-        self.assertTrue(40 <= len(self.o.concepts) <= 50, len(self.o.concepts))
+        self.assertEqual(self.o.tag, "radar-caption-ontology-v2")
+        self.assertEqual(os.path.basename(DEFAULT_ONTOLOGY_PATH), f"{self.o.tag}.yaml")
+        self.assertTrue(50 <= len(self.o.concepts) <= 65, len(self.o.concepts))
         kinds = {c.kind for c in self.o.concepts.values()}
         self.assertEqual(kinds, {"structure_visibility", "finding"})
         self.assertEqual(len(self.o.sha256), 64)
@@ -50,18 +45,33 @@ class TestShippedOntology(unittest.TestCase):
         self.assertIn("severe", self.o.allowed_values("mitral_regurgitation"))
         self.assertEqual(self.o.allowed_values("mitral_valve_visible"), (True, False))
 
-    def test_related_tasks_exist_in_panecho_and_echoprime(self):
-        panecho = set(pd.read_pickle(os.path.join(MODELCUSTOM, "PanEcho", "content", "tasks.pkl")))
-        with open(os.path.join(MODELCUSTOM, "EchoPrime", "assets", "per_section.json")) as f:
-            echoprime = set(json.load(f))
-        named = {"panecho": set(), "echoprime": set()}
+    def test_the_medical_review_s_findings_and_priors(self):
+        self.assertEqual(self.o.concept("septal_bulge").kind, "finding")
+        self.assertIn("interventricular_septum", self.o.concept("septal_bulge").structures)
+        self.assertEqual(self.o.allowed_values("lv_wall_thickening_distribution"),
+                         ("not_increased", "septal_thickening", "posterior_wall_thickening", "whole_wall"))
+        self.assertNotIn("PLAX_ZOOM", self.o.concept("mechanical_circulatory_support").prior_views)
+        self.assertNotIn("PSAX", self.o.concept("pacing_lead").prior_views)
+
+    def test_view_taxonomy(self):
+        self.assertEqual(tuple(self.o.views), VIEWS)
+        self.assertEqual(self.o.views["A4C_ZOOM"].variant, "zoomed")
+        self.assertEqual(self.o.views["RVINF"].window, "parasternal")
+        self.assertEqual(self.o.view_group_of("A4C_LV"), ("apical_4c",))
+        self.assertEqual(self.o.view_group_of("OTHER"), ())
+        self.assertEqual(self.o.view_labels["fr"]["A4C"], "Coupe apicale 4 cavités")
         for c in self.o.concepts.values():
-            for source, tasks in c.related_tasks.items():
-                named[source].update(tasks)
-        self.assertLessEqual(named["panecho"], panecho)
-        self.assertLessEqual(named["echoprime"], echoprime)
-        # Every EchoPrime finding task is represented by some concept.
-        self.assertEqual(named["echoprime"], echoprime)
+            self.assertNotIn("OTHER", c.prior_views, c.id)  # the unclassified view carries no prior
+
+    def test_structure_taxonomy(self):
+        used = {s for c in self.o.concepts.values() for s in c.structures}
+        self.assertEqual(used, set(self.o.structures))  # every structure is used, every use is declared
+        self.assertEqual(self.o.visibility_concept("mitral_valve"), "mitral_valve_visible")
+        self.assertEqual(self.o.visibility_concept("left_ventricular_outflow_tract"), "lvot_visible")
+        for s in self.o.structures:  # every structure is one the column review asks about
+            self.assertIsNotNone(self.o.visibility_concept(s), s)
+        self.assertEqual(self.o.concept("pacing_lead").structures, ("right_atrium", "right_ventricle"))
+        self.assertIn("mitral_regurgitation", self.o.concepts_of_structure("mitral_valve"))
 
     def test_report_columns_cover_the_icm_export_fields(self):
         columns = {spec.get("name") for c in self.o.concepts.values() for spec in c.report_sources.get("columns", [])}
@@ -106,6 +116,12 @@ class TestShippedOntology(unittest.TestCase):
         self.assertEqual(self.o.value_label("mitral_regurgitation", "moderate", "fr"), "modérée")
         self.assertEqual(self.o.value_label("lv_ejection_fraction", 35.0, "en"), "35%")
 
+    def test_an_unranked_value_is_no_severity(self):
+        self.assertIn("indeterminate", self.o.allowed_values("lv_diastolic_function"))
+        self.assertEqual(self.o.severity_values("lv_diastolic_function"), ("normal", "grade_1", "grade_2", "grade_3"))
+        self.assertEqual(self.o.severity_values("mitral_regurgitation"), self.o.allowed_values("mitral_regurgitation"))
+        self.assertIsNone(self.o.severity_values("lv_ejection_fraction"))
+
     def test_normalize_keeps_offsets(self):
         text = "Insuffisance mitrale modérée, l’oreillette"
         self.assertEqual(len(normalize_text(text)), len(text))
@@ -124,15 +140,36 @@ class TestValidator(unittest.TestCase):
         validate_ontology(raw())
 
     def test_refusals(self):
-        self.refused(lambda d: d.update(version="v0"), "MAJOR.MINOR.PATCH")
-        self.refused(lambda d: d.pop("version"), "MAJOR.MINOR.PATCH")
+        self.refused(lambda d: d.update(version="v1"), "positive integer")
+        self.refused(lambda d: d.update(version="1.0.0"), "positive integer")
+        self.refused(lambda d: d.update(version=True), "positive integer")
+        self.refused(lambda d: d.pop("version"), "positive integer")
         self.refused(lambda d: d["concepts"].append(copy.deepcopy(d["concepts"][0])), "duplicate id")
         self.refused(lambda d: d["concepts"][0]["potentially_visible_in"][0]["views"].append("A6C"),
                      "neither a view nor a view group")
         self.refused(lambda d: d["concepts"][0]["potentially_visible_in"][0]["acquisitions"].append("doppler"),
                      "unknown acquisition")
-        self.refused(lambda d: d.update(views=d["views"][:-1]), "views must be exactly")
+        self.refused(lambda d: d["views"].pop("RVINF"), "views must be exactly")
+        self.refused(lambda d: d.update(views=dict(reversed(list(d["views"].items())))), "in that order")
+        self.refused(lambda d: d["views"]["A4C"].update(window="apex"), "window 'apex'")
+        self.refused(lambda d: d["views"]["A4C"]["description"].pop("fr"), "needs a fr label and description")
+        self.refused(lambda d: d["view_groups"]["apical_2c"].append("A4C"), "exactly one view group, not 2")
+        self.refused(lambda d: d["view_groups"]["apical_2c"].append("OTHER"), "belongs to no view group")
+        self.refused(lambda d: d["structures"]["aortic_root"].update(category="vessel"), "not in structure_categories")
 
+        def concept(d, cid):
+            return next(c for c in d["concepts"] if c["id"] == cid)
+
+        self.refused(lambda d: concept(d, "lv_size").update(structures=["left_heart"]), "unknown structures")
+        self.refused(lambda d: concept(d, "lv_size").update(structures=[]), "non-empty list")
+        self.refused(lambda d: concept(d, "lv_visible").update(structures=["left_ventricle", "left_atrium"]),
+                     "names exactly one structure")
+        self.refused(lambda d: concept(d, "la_visible").update(structures=["left_ventricle"]),
+                     "more than one visibility concept")
+        self.refused(lambda d: concept(d, "lv_size")["potentially_visible_in"][0]["views"].append("OTHER"),
+                     "OTHER is the unclassified view and carries no prior")
+
+    def test_concept_refusals(self):
         def spectral_prior_in_color(d):
             rvsp = next(c for c in d["concepts"] if c["id"] == "rv_systolic_pressure")
             rvsp["potentially_visible_in"][0]["acquisitions"].append("color_flow")
@@ -145,6 +182,8 @@ class TestValidator(unittest.TestCase):
 
         self.refused(bad_scale, "unknown scale")
         self.refused(lambda d: d["scales"]["stenosis"]["aliases"]["mild"].append("moderee"), "maps to both")
+        self.refused(lambda d: d["scales"]["stenosis"].update(unranked=["unknown"]), "unranked values must be values")
+        self.refused(lambda d: d["scales"]["stenosis"].update(unranked=["none"]), "other than negated_value")
         self.refused(lambda d: d["concepts"][0].update(kind="finding_maybe"), "kind")
 
 

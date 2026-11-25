@@ -1,8 +1,8 @@
 # Keep the default environment compatible with the CUDA 12.4 runtime used by
 # the project Docker image. Pilot runs have their own exact pins in
 # requirements-pilot.txt.
-torch>=2.5,<2.6
-torchvision>=0.20,<0.21
+torch>=2.15.0,<2.16
+torchvision>=0.29,<0.30
 tensorboard
 wandb
 moviepy
@@ -10,7 +10,7 @@ imageio>=2.28.1
 iopath
 pyyaml
 numpy
-opencv-python-headless
+opencv-python-headless == 5.0.0.93  # as uv.lock: the clip screen and still preprocessing are calibrated on its drawing and morphology
 submitit
 braceexpand
 webdataset
@@ -19,9 +19,9 @@ timm
 transformers
 peft
 decord
-# DICOM headers for the acquisition-mode index (data/scan_acquisition.py); never reads pixels.
-pydicom>=3.0,<3.1
 pandas
+pydicom>=3
+imageio-ffmpeg
 einops
 beartype
 psutil

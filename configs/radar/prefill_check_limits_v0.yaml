@@ -1,0 +1,69 @@
+# Limits for checking column review prefill findings against the report's measurements, version 0.
+#
+# Used by `data/compare_column_prefill.py` only. They decide when a measurement CONTRADICTS what the report text says,
+# so that the finding is dropped from a caption. They are not the caption flag cutoffs: those stay in
+# `radar_normality_policy_v0.yaml`, from the guidelines.
+#
+# How they were set: on the training split only, each report's text statement (normal or abnormal,
+# both readers agreeing, or one alone; disagreements left out) was set against its measurement, and a monotone
+# (isotonic) fit gave the share of abnormal statements at each value. `abnormal_up_to` is the highest value at which
+# at most 10% of this lab's statements are abnormal: an abnormal statement there is contradicted. `normal_from` is the
+# lowest value at which at least 90% are abnormal: a normal statement there is contradicted. Between the two, the
+# measurement neither confirms nor contradicts. Values rounded to two decimals; 95% bootstrap intervals in brackets. The
+# counts and fits are kept with the calibration outputs, outside the repository.
+#
+#   LV diameter in diastole: 5.20 [5.20, 5.31] / 5.98 [5.86, 5.99] (policy 5.2 / 5.8)
+#   LA volume index: 34.00 [33.98, 34.00] / 34.03 [34.03, 34.41] (policy 34 / 34; the text follows the
+#     index almost exactly)
+#   LA diameter, studies without an index: 3.08 [2.88, 3.36] / 4.95 [4.41, 5.34] (a weak relation: the lab
+#     sizes the atrium by volume)
+#   RV basal diameter: 4.05 [3.99, 4.10] / 4.96 [4.43, 5.00] (policy 4.1 / 4.1). It contradicts a normal
+#     RV only: the reports that call the RV dilated with a small basal diameter size it by area ("aire 30 cm2") or by
+#     eye, so a small diameter does not contradict them (`contradicts: normal_only`).
+#   Septum: 0.90 [0.90, 0.90] / 1.07 [1.03, 1.24] (policy 0.9 / 1.0)
+#   Posterior wall: 1.00 [1.00, 1.00] / 1.10 [1.10, 1.18] (policy 0.9 / 1.0)
+#
+# EF: the systolic grade the text states (diastolic dysfunction left out) against the visual EF, value by value. The
+# lab follows the ASE 2015 grading, with the men's and women's limits giving the grey zones: below, the grades an EF in
+# each range may carry. A stated grade outside them is one or more grades off (see the comparison tool for what is
+# kept). Only an EF in a range of one grade fills a missing LV function.
+#
+# `contradicts`: both (the default) or normal_only.
+#
+# Not checked in this version: IVC diameter, TAPSE, aortic diameters.
+
+schema: radar-prefill-check-limits
+version: 0
+
+measures:
+  lv_size:
+    sources:
+      - {column: LVID Diastole (2D), scale: 1, valid: [2, 10], abnormal_up_to: 5.20, normal_from: 5.98}
+  la_size:   # the index first; the diameter only when the index is missing
+    sources:
+      - {column: LA Volume Index (BP MOD) DuBois, scale: 1000, valid: [5, 200], abnormal_up_to: 34.00,
+         normal_from: 34.03}
+      - {column: LA Dimension, scale: 1, valid: [1.5, 9], abnormal_up_to: 3.08, normal_from: 4.95}
+  rv_size:
+    sources:
+      - {column: RV Basal Diastolic Dimension, scale: 1, valid: [1.5, 8], abnormal_up_to: 4.05, normal_from: 4.96,
+         contradicts: normal_only}
+
+walls:
+  septum: {column: IVS Diastole Thickness (2D), scale: 1, valid: [0.3, 3], abnormal_up_to: 0.90, normal_from: 1.07}
+  posterior: {column: LVIW Diastolic Thickness (2D), scale: 1, valid: [0.3, 3], abnormal_up_to: 1.00,
+              normal_from: 1.10}
+
+ef:
+  column: Visually Estimated EF
+  valid: [5, 90]
+  # [lowest EF, grades allowed], from the highest range down; grades: 0 normal, 1 mildly, 2 moderately, 3 severely
+  # reduced. Edges sit halfway between the integer values the lab writes.
+  ranges:
+    - [54.5, [0]]
+    - [51.5, [0, 1]]
+    - [44.5, [1]]
+    - [40.5, [1, 2]]
+    - [34.5, [2]]
+    - [29.5, [2, 3]]
+    - [0, [3]]

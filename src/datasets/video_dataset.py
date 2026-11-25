@@ -24,6 +24,7 @@ import torch
 import torchvision
 from decord import VideoReader, cpu
 
+from src.datasets.utils.color_order import fix_legacy_colors
 from src.datasets.utils.dataloader import ConcatIndices, MonitoredDataset, NondeterministicDataLoader
 from src.datasets.utils.weighted_sampler import DistributedWeightedSampler
 
@@ -565,7 +566,7 @@ class VideoDataset(torch.utils.data.Dataset):
                 logger.warning(f"Failed to load video: {type(e).__name__}.")
                 return [], None
 
-            return self._sample_from_vr(vr, fpc)
+            return self._sample_and_fix(vr, fpc, sample_uri)
 
         # --- S3 branch
         try:
@@ -601,7 +602,12 @@ class VideoDataset(torch.utils.data.Dataset):
             logger.warning(f"Failed to load video: {type(e).__name__}.")
             return [], None
 
-        return self._sample_from_vr(vr, fpc)
+        return self._sample_and_fix(vr, fpc, sample_uri)
+
+    def _sample_and_fix(self, vr, fpc, sample_uri):
+        """Sample clips, then undo the legacy YBR colour swap of MHI DeepEcho MP4s (src/datasets/utils/color_order.py)."""
+        buffer, clip_indices = self._sample_from_vr(vr, fpc)
+        return fix_legacy_colors(buffer, sample_uri, "RGB"), clip_indices
 
     # ---------- Sampling (shared by local & S3) ----------
     def _sample_from_vr(self, vr, fpc):

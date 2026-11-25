@@ -1,0 +1,211 @@
+# RADAR zero-shot prompts for parser findings that have NO label column yet (same schema as prompts_v0.yaml).
+#
+# The evaluation (evals/radar_frozen/zero_shot_eval.py) refuses this file until the label table holds a column for
+# every task: `target` is the task's own name. The labels could come from the parser's facts on the evaluation
+# split's captions or from the Labelbox column review; neither exists as a label table today.
+#
+# STATUS: PROVISIONAL, as prompts_v0.yaml: wording written from the parser's vocabulary (rules v15), checked against
+# the parser by tests/data/test_radar_prompts.py, not yet reviewed by a clinician and not mined from reports.
+
+tasks:
+  lv_wall_motion_abnormality:
+    mode: binary
+    structure: lv
+    parser_attribute: lv_wall_motion
+    label_sources:
+      - "Anomalies de la contractilité segmentaire du ventricule gauche."
+      - "Troubles de la cinétique segmentaire du ventricule gauche."
+      - "Hypokinésie segmentaire du ventricule gauche."
+      - "Akinésie apicale du ventricule gauche."
+    negative_sources:
+      - "Contractilité segmentaire du ventricule gauche normale."
+      - "Cinétique segmentaire normale."
+      - "Pas d'anomalie de la contractilité segmentaire du ventricule gauche."
+  lv_thrombus:
+    mode: binary
+    structure: lv
+    parser_attribute: lv_thrombus
+    label_sources:
+      - "Thrombus intracavitaire du ventricule gauche."
+      - "Thrombus apical du ventricule gauche."
+    negative_sources:
+      - "Pas de thrombus intracavitaire."
+      - "Absence de thrombus du ventricule gauche."
+  lv_aneurysm:
+    mode: binary
+    structure: lv
+    parser_attribute: lv_morphology
+    label_sources:
+      - "Anévrisme du ventricule gauche."
+      - "Anévrisme apical du ventricule gauche."
+    negative_sources:
+      - "Pas d'anévrisme du ventricule gauche."
+  mitral_calcification:
+    mode: binary
+    structure: mitral
+    parser_attribute: mitral_appearance
+    label_sources:
+      - "Valve mitrale calcifiée."
+      - "Calcifications de la valve mitrale."
+      - "Calcification de l'anneau mitral."
+    negative_sources:
+      - "Valve mitrale non calcifiée."
+      - "Valve mitrale de structure normale."
+      - "Valve mitrale d'aspect normal."
+      - "Valve mitrale de morphologie normale."
+  mitral_thickening:
+    mode: binary
+    structure: mitral
+    parser_attribute: mitral_appearance
+    label_sources:
+      - "Valve mitrale épaissie."
+      - "Valve mitrale remaniée."
+    negative_sources:
+      - "Valve mitrale non épaissie."
+      - "Valve mitrale de structure normale."
+      - "Valve mitrale d'aspect normal."
+      - "Valve mitrale de morphologie normale."
+  mitral_prolapse:
+    mode: binary
+    structure: mitral
+    parser_attribute: mitral_motion
+    label_sources:
+      - "Prolapsus de la valve mitrale."
+      - "Prolapsus du feuillet postérieur de la valve mitrale."
+    negative_sources:
+      - "Pas de prolapsus de la valve mitrale."
+  mitral_prosthesis:
+    mode: binary
+    structure: mitral
+    parser_attribute: mitral_device
+    label_sources:
+      - "Prothèse mitrale."
+      - "Bioprothèse mitrale."
+      - "Prothèse mécanique mitrale."
+    negative_sources:
+      - "Valve mitrale de structure normale."
+      - "Valve mitrale d'aspect normal."
+      - "Valve mitrale de morphologie normale."
+  aortic_valve_calcification:
+    mode: binary
+    structure: aortic
+    parser_attribute: aortic_appearance
+    label_sources:
+      - "Valve aortique calcifiée."
+      - "Calcifications de la valve aortique."
+    negative_sources:
+      - "Valve aortique non calcifiée."
+      - "Valve aortique de structure normale."
+      - "Valve aortique d'aspect normal."
+      - "Valve aortique de morphologie normale."
+  aortic_valve_sclerosis:
+    mode: binary
+    structure: aortic
+    parser_attribute: aortic_appearance
+    label_sources:
+      - "Valve aortique sclérosée."
+      - "Sclérose valvulaire aortique."
+    negative_sources:
+      - "Valve aortique de structure normale."
+      - "Valve aortique d'aspect normal."
+      - "Valve aortique de morphologie normale."
+  aortic_valve_thickening:
+    mode: binary
+    structure: aortic
+    parser_attribute: aortic_appearance
+    label_sources:
+      - "Valve aortique épaissie."
+    negative_sources:
+      - "Valve aortique non épaissie."
+      - "Valve aortique de structure normale."
+      - "Valve aortique d'aspect normal."
+      - "Valve aortique de morphologie normale."
+  bicuspid_aortic_valve:
+    mode: binary
+    structure: aortic
+    parser_attribute: aortic_cusps
+    label_sources:
+      - "Valve aortique bicuspide."
+      - "Bicuspidie aortique."
+    negative_sources:
+      - "Valve aortique tricuspide."
+  aortic_prosthesis:
+    mode: binary
+    structure: aortic
+    parser_attribute: aortic_device
+    label_sources:
+      - "Prothèse aortique."
+      - "Bioprothèse aortique."
+      - "Prothèse mécanique aortique."
+    negative_sources:
+      - "Valve aortique de structure normale."
+      - "Valve aortique d'aspect normal."
+      - "Valve aortique de morphologie normale."
+  tricuspid_valve_thickening:
+    mode: binary
+    structure: tricuspid
+    parser_attribute: tricuspid_appearance
+    label_sources:
+      - "Valve tricuspide épaissie."
+    negative_sources:
+      - "Valve tricuspide non épaissie."
+      - "Valve tricuspide de structure normale."
+      - "Valve tricuspide d'aspect normal."
+  pulmonic_valve_thickening:
+    mode: binary
+    structure: pulmonic
+    parser_attribute: pulmonic_appearance
+    label_sources:
+      - "Valve pulmonaire épaissie."
+    negative_sources:
+      - "Valve pulmonaire non épaissie."
+      - "Valve pulmonaire de structure normale."
+      - "Valve pulmonaire d'aspect normal."
+  aorta_dilated:
+    mode: binary
+    structure: aorta
+    parser_attribute: aorta_size
+    label_sources:
+      - "Aorte dilatée."
+      - "Aorte ascendante dilatée."
+      - "Dilatation de l'aorte ascendante."
+      - "Racine aortique dilatée."
+      - "Dilatation de la racine aortique."
+    negative_sources:
+      - "Aorte non dilatée."
+      - "Aorte de calibre normal."
+      - "Aorte ascendante non dilatée."
+      - "Aorte ascendante de calibre normal."
+      - "Racine aortique de dimension normale."
+  ivc_dilated:
+    mode: binary
+    structure: ivc
+    parser_attribute: ivc_size
+    label_sources:
+      - "Veine cave inférieure dilatée."
+    negative_sources:
+      - "Veine cave inférieure non dilatée."
+      - "Veine cave inférieure de calibre normal."
+      - "Veine cave inférieure de taille normale."
+  ivc_reduced_collapse:
+    mode: binary
+    structure: ivc
+    parser_attribute: ivc_collapse
+    label_sources:
+      - "Veine cave inférieure peu souple."
+      - "Veine cave inférieure : variations respiratoires diminuées."
+      - "Variations respiratoires diminuées de la veine cave inférieure."
+    negative_sources:
+      - "Veine cave inférieure souple."
+      - "Veine cave inférieure compliante."
+      - "Variations respiratoires normales de la veine cave inférieure."
+  pericardial_tamponade:
+    mode: binary
+    structure: pericardium
+    parser_attribute: pericardial_tamponade
+    label_sources:
+      - "Tamponnade."
+      - "Épanchement péricardique avec tamponnade."
+    negative_sources:
+      - "Pas de tamponnade."
+      - "Épanchement péricardique sans tamponnade."

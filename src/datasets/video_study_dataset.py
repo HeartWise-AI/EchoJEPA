@@ -1,0 +1,484 @@
+# src/datasets/video_study_dataset.py
+
+"""One item per study: a bag of its videos, DeepCORO_CLIP style.
+
+The manifest is a long CSV with one row per video (header required): a video path column, a
+group column (the study), the target columns, and optionally a view column and a split column.
+Each item returns a fixed number of video slots (`num_videos`), each holding
+`num_clips_per_video` clips of `frames_per_clip` frames:
+
+- training with `shuffle_videos`: a random subset of the study's videos, in random order, drawn
+  again every time the study is read, so an epoch sees another bag of the same study;
+- evaluation: deterministic random bags, seeded by study id, eval_seed and bag index;
+- `sampling_mode: view_balanced`: round-robin draws across the available view families; with
+  `filler_families` (e.g. [OTHER]), those families only fill the slots the round-robin leaves;
+- `sampling_mode: shared_bags`: the bags of `src.datasets.study_bags`, the ones RADAR reads: a matched baseline. The
+  routing registry gives the view families, and a bag depends only on the run's seed, the epoch and the study in
+  training, and on eval_seed, the bag index and the study in evaluation. The video path is the clip id, and the bag
+  comes from the manifest's view names, whatever `view_labels_map` makes of them;
+- `sampling_mode: fixed` (or `shuffle_videos: false` without a mode): legacy path-order bags.
+
+A study with fewer videos than slots is padded with black clips; `video_mask` says which slots are
+real. A video that fails to load is skipped and its slot padded; a study whose selected videos all
+fail returns `None`. In `shared_bags` a failed video stops the run instead: a skipped clip or a
+replaced study would no longer be the bag the run records. Targets are study-level: every row of a
+study must agree (missing values are allowed and masked in the loss). With a `view_column`, `views`
+keeps only some views and `view_labels_map` gives each slot its view class (for the probe's view
+embedding).
+"""
+
+import hashlib
+import logging
+import random
+
+import numpy as np
+import pandas as pd
+import torch
+
+from src.datasets.study_bags import bag_record, check_study_ids, choose_bag, evaluation_rng, training_rng
+from src.datasets.video_dataset import VideoDataset
+from src.models.radar.routing import load_routing
+
+logger = logging.getLogger()
+
+# How the videos of a study are chosen for one item.
+SELECTION = {
+    "random": "a random subset of the study's videos, in random order, redrawn at every read",
+    "fixed": "the first `num_videos` videos of the study in path order, every time",
+    "seeded_random": "a random bag seeded by eval_seed, bag index and study identity",
+    "view_balanced": "round-robin sampling across available view families; seeded during evaluation",
+    "shared_bags": "the bags RADAR reads: the routing registry's families, seeded by study and epoch or bag index",
+}
+
+
+def shared_bag_options(args_data, seed):
+    """The dataset's options for `sampling_mode: shared_bags`, none in any other mode."""
+    shared = args_data.get("sampling_mode") == "shared_bags"
+    if shared != bool(args_data.get("routing")):
+        raise ValueError("`experiment.data.routing` and `sampling_mode: shared_bags` go together.")
+    return {"routing": load_routing(args_data["routing"]), "seed": seed} if shared else {}
+
+
+def id_columns(args_data):
+    """{column: str} for the manifest's identifier columns (video, study, view, patient): read as
+    text, so a patient 0123 is never 123 and a study id has one type in every split's file."""
+    names = (args_data.get("datapoint_loc_label", "video_path"), args_data.get("groupby_column", "study_id"),
+             args_data.get("view_column"), args_data.get("patient_column", "patient_id"))
+    return {name: str for name in names if name}
+
+
+def read_split(args_data, split):
+    """The rows of `split` from the manifests `args_data` names: `data_filename` (one CSV with a
+    `split_column`) or `dataset_<split>` (one CSV per split). Identifier columns are read as text."""
+    path = args_data.get("data_filename")
+    if path:
+        table = pd.read_csv(path, dtype=id_columns(args_data))
+        column = args_data.get("split_column", "split")
+        if column not in table.columns:
+            raise ValueError(f"`data_filename` has no `{column}` column; set `experiment.data.split_column`.")
+        rows = table[table[column].astype(str) == split]
+        if rows.empty:
+            raise ValueError(f"`data_filename` has no row with {column} == {split!r}.")
+        return rows.reset_index(drop=True)
+    path = args_data.get(f"dataset_{split}")
+    if not path:
+        raise ValueError(f"Set `experiment.data.data_filename` (with a split column) or `experiment.data.dataset_{split}`.")
+    return pd.read_csv(path, dtype=id_columns(args_data))
+
+
+def make_clip_loader(frames_per_clip, frame_step=None, duration=None, fps=None, num_clips_per_video=1,
+                     random_clip_sampling=True, filter_long_videos=int(10**9)):
+    """A `VideoDataset` without samples, used for its clip sampler only: `loadvideo_decord(path, fpc)`
+    reads `num_clips_per_video` clips, pads short videos with black frames (clip index -1) and hides
+    decoder output that could name the file."""
+    return VideoDataset(
+        data_paths=[],
+        frames_per_clip=frames_per_clip,
+        frame_step=frame_step,
+        duration=duration,
+        fps=fps,
+        num_clips=num_clips_per_video,
+        random_clip_sampling=random_clip_sampling,
+        allow_clip_overlap=True,
+        filter_long_videos=filter_long_videos,
+    )
+
+
+def view_ids(values, view_labels_map):
+    """The view class of each video: `view_labels_map` ({view: int}) applied to the view column;
+    a view the map lacks takes its `Other` entry, or stops the run. Returns a list of ints."""
+    mapping = {str(k): int(v) for k, v in view_labels_map.items()}
+    if sorted(set(mapping.values())) != list(range(len(set(mapping.values())))):
+        raise ValueError("`view_labels_map` must number the view classes 0, 1, ..., without gaps.")
+    unknown = sorted({str(v) for v in values} - set(mapping))
+    if unknown and "Other" not in mapping:
+        raise ValueError(f"Views {unknown} are missing from `view_labels_map` (add them, or an `Other` class).")
+    return [mapping.get(str(v), mapping.get("Other")) for v in values]
+
+
+def group_studies(table, path_column, group_column, target_columns, view_column=None, views=None,
+                  labels_map=None, min_videos=1, view_labels_map=None):
+    """Group the manifest's rows into studies.
+
+    Returns a list of (study_id, [video paths in path order], targets[float, len(target_columns)],
+    [view class per video, or -1]). `views` keeps only the rows whose `view_column` is listed.
+    `labels_map` maps string labels of a target column to integers ({column: {label: int}});
+    `view_labels_map` maps the view column to view classes (`view_ids`). A study whose rows disagree
+    on a target stops the run; a study with fewer than `min_videos` videos is left out and counted.
+    """
+    for column in (path_column, group_column, *target_columns):
+        if column not in table.columns:
+            raise ValueError(f"The manifest has no `{column}` column; its columns are {list(table.columns)}.")
+    if (views or view_labels_map) and not (view_column and view_column in table.columns):
+        raise ValueError("`views` and `view_labels_map` need `experiment.data.view_column`, a column of the manifest.")
+
+    # Study-level targets, checked over every row of the study (the view filter comes after, so a
+    # conflicting value on a filtered-out video is still refused).
+    targets = table[list(target_columns)].copy()
+    for column in target_columns:
+        mapping = (labels_map or {}).get(column)
+        values = targets[column]
+        if not pd.api.types.is_numeric_dtype(values):  # object (pandas 2) or str (pandas 3) labels
+            if not mapping:
+                raise ValueError(f"Target `{column}` holds strings: map them to integers with `labels_map.{column}`.")
+            unknown = sorted(set(values.dropna().astype(str)) - set(map(str, mapping)))
+            if unknown:
+                raise ValueError(f"Target `{column}` has labels {unknown} missing from `labels_map.{column}`.")
+            values = values.map(lambda v: np.nan if pd.isna(v) else float(mapping[str(v)]))
+        targets[column] = pd.to_numeric(values, errors="raise").astype(float)
+    study_targets = {}
+    for study_id, index in table.groupby(group_column, sort=True).groups.items():
+        values = []
+        for column in target_columns:
+            distinct = targets.loc[index, column].dropna().unique()
+            if len(distinct) > 1:
+                raise ValueError(f"Study {study_id!r} has {len(distinct)} different values of `{column}`; "
+                                 "targets are per study.")
+            values.append(float(distinct[0]) if len(distinct) else np.nan)
+        study_targets[study_id] = np.asarray(values, dtype=np.float64)
+
+    rows = table
+    if views:
+        rows = rows[rows[view_column].astype(str).isin([str(v) for v in views])]
+    if rows.empty:
+        raise ValueError("The manifest keeps no video after the view filter.")
+    classes = pd.Series(view_ids(rows[view_column].tolist(), view_labels_map) if view_labels_map
+                        else [-1] * len(rows), index=rows.index)
+
+    studies, dropped = [], 0
+    for study_id, index in rows.groupby(group_column, sort=True).groups.items():
+        videos = sorted(zip((str(p) for p in rows.loc[index, path_column]), classes.loc[index].tolist()))
+        paths = [p for p, _ in videos]
+        if len(paths) != len(set(paths)):
+            raise ValueError(f"A study lists the same video more than once (study {study_id!r}).")
+        values = study_targets[study_id]
+        if len(paths) < min_videos:
+            dropped += 1
+            continue
+        studies.append((study_id, paths, values, [int(c) for _, c in videos]))
+    if dropped:
+        logger.info(f"Left out {dropped} studies with fewer than {min_videos} videos.")
+    if not studies:
+        raise ValueError("No study has enough videos.")
+    return studies
+
+
+def check_shared_bags(table, path_column, view_column, group_column, routing, view_family_map, views,
+                      num_clips_per_video):
+    """Refuse what would make `shared_bags` read other clips than RADAR, or use another family map."""
+    if routing is None:
+        raise ValueError("shared_bags needs the routing registry: set `experiment.data.routing`.")
+    if view_family_map:
+        raise ValueError("shared_bags takes its view families from the routing registry: remove `view_family_map`.")
+    if views:
+        raise ValueError("shared_bags reads every clip of the manifest: remove `views`, filter the manifest instead.")
+    if num_clips_per_video != 1:
+        raise ValueError("shared_bags reads one clip of each video: set `num_clips_per_video: 1`.")
+    if table[path_column].astype(str).duplicated().any():
+        raise ValueError("shared_bags needs each clip once in the manifest.")
+    check_study_ids(table[group_column])
+    unknown = sorted(set(table[view_column].astype(str)) - set(routing.view_classes))
+    if unknown:
+        raise ValueError(f"The manifest has views the routing registry does not know: {unknown}.")
+
+
+class VideoStudyDataset(torch.utils.data.Dataset):
+    """A split of studies, each read as `num_videos` video slots of `num_clips_per_video` clips."""
+
+    def __init__(
+        self,
+        table,
+        path_column="video_path",
+        group_column="study_id",
+        target_columns=(),
+        view_column=None,
+        views=None,
+        labels_map=None,
+        num_videos=8,
+        shuffle_videos=True,
+        training=False,
+        frames_per_clip=16,
+        frame_step=2,
+        duration=None,
+        fps=None,
+        num_clips_per_video=1,
+        transform=None,
+        min_videos=1,
+        filter_long_videos=int(10**9),
+        view_labels_map=None,
+        sampling_mode=None,
+        eval_seed=0,
+        eval_bag_index=0,
+        view_family_map=None,
+        filler_families=None,
+        view_probability_columns=None,
+        acquisition_column=None,
+        acquisition_labels_map=None,
+        patient_column="patient_id",
+        routing=None,
+        seed=0,
+    ):
+        if num_videos < 1:
+            raise ValueError("`num_videos` must be at least 1.")
+        self.studies = group_studies(table, path_column, group_column, list(target_columns), view_column, views,
+                                     labels_map, min_videos, view_labels_map)
+        self.target_columns = list(target_columns)
+        self.num_videos = int(num_videos)
+        self.num_clips_per_video = int(num_clips_per_video)
+        self.frames_per_clip = int(frames_per_clip)
+        self.training = bool(training)
+        mode = sampling_mode or ("random" if shuffle_videos else "fixed")
+        if mode not in ("random", "view_balanced", "fixed", "shared_bags"):
+            raise ValueError("sampling_mode must be random, view_balanced, shared_bags or fixed.")
+        if mode != "fixed" and not shuffle_videos:
+            raise ValueError(f"shuffle_videos: false contradicts sampling_mode: {mode}; use sampling_mode: fixed.")
+        self.selection = "seeded_random" if mode == "random" and not self.training else mode
+        self.eval_seed, self.eval_bag_index = int(eval_seed), int(eval_bag_index)
+        self.seed, self.epoch = int(seed), 0
+        self.routing_sha256 = routing.sha256 if routing else None
+        if mode in ("view_balanced", "shared_bags") and (not view_column or view_column not in table):
+            raise ValueError(f"{mode} sampling requires view_column in the manifest.")
+        if mode == "shared_bags":
+            check_shared_bags(table, path_column, view_column, group_column, routing, view_family_map, views,
+                              self.num_clips_per_video)
+            view_family_map = routing.view_families
+        # Families (after `view_family_map`) left out of the round-robin: they only fill the slots the
+        # other families leave empty. None keeps every family in the round-robin.
+        if filler_families is not None:
+            if mode != "view_balanced":
+                raise ValueError("filler_families is only used by sampling_mode: view_balanced.")
+            if (not isinstance(filler_families, list) or not filler_families
+                    or not all(isinstance(f, str) and f for f in filler_families)):
+                raise ValueError("filler_families must be a nonempty list of view family names.")
+            filler_families = frozenset(filler_families)
+        self.filler_families = filler_families or frozenset()
+        # Patient ids are mandatory: patient-disjoint splits are checked on every run.
+        if not patient_column or patient_column not in table:
+            raise ValueError(f"The manifest needs a patient id column ({patient_column!r}): patient-disjoint "
+                             "splits are checked on every run.")
+        patients = table.groupby(group_column)[patient_column]
+        if table[patient_column].isna().any() or (patients.nunique() != 1).any():
+            raise ValueError("Each study must have exactly one nonmissing patient id.")
+        self.patient_ids = set(patients.first().loc[self.study_ids].astype(str))
+        # Metadata follows the sorted video paths, independently of sampled slot order.
+        self.video_metadata = {}
+        self.view_probability_columns = view_probability_columns
+        self.acquisition_column = acquisition_column
+        probability_columns = None
+        if view_probability_columns:
+            if not view_labels_map:
+                raise ValueError("view_probability_columns needs view_labels_map.")
+            by_class = {}
+            for label, column in view_probability_columns.items():
+                if label not in view_labels_map or view_labels_map[label] in by_class:
+                    raise ValueError("view_probability_columns must name one label per unique view class.")
+                by_class[view_labels_map[label]] = column
+            if set(by_class) != set(view_labels_map.values()):
+                raise ValueError("view_probability_columns must cover every view class.")
+            probability_columns = [by_class[c] for c in range(len(by_class))]
+            if any(c not in table for c in probability_columns):
+                raise ValueError("A view probability column is missing from the manifest.")
+        if bool(acquisition_column) != bool(acquisition_labels_map):
+            raise ValueError("Set both acquisition_column and acquisition_labels_map.")
+        if acquisition_column and acquisition_column not in table:
+            raise ValueError("acquisition_column is missing from the manifest.")
+        acquisition = (view_ids(table[acquisition_column].tolist(), acquisition_labels_map)
+                       if acquisition_column else [-1] * len(table))
+        labels = (table[view_column].astype(str).tolist() if view_column and view_column in table
+                  else ["Other"] * len(table))
+        if view_labels_map and mode != "shared_bags":
+            # A view the map lacks is the `Other` class (`view_ids`): one family, not one per raw label. The map only
+            # numbers the view embedding of a shared bag, whose families are the registry's, by view name.
+            known = {str(k) for k in view_labels_map}
+            labels = [label if label in known else "Other" for label in labels]
+        probabilities = None
+        if probability_columns:
+            probabilities = table[probability_columns].to_numpy(dtype=float)
+            if (not np.isfinite(probabilities).all() or (probabilities < 0).any()
+                    or not np.isclose(probabilities.sum(axis=1), 1, atol=1e-4).all()):
+                raise ValueError("View probabilities must be finite, nonnegative and sum to one on every row.")
+            probabilities = probabilities.astype(np.float32)
+        for i, (study, path, label, acq) in enumerate(zip(table[group_column].tolist(),
+                                                          table[path_column].astype(str).tolist(),
+                                                          labels, acquisition)):
+            metadata = {"view": label, "family": (view_family_map or {}).get(label, label), "acquisition_ids": acq}
+            if probabilities is not None:
+                metadata["view_probs"] = probabilities[i]
+            self.video_metadata[(study, path)] = metadata
+        # Only the videos of the studies kept (after `views` and `min_videos`) can fill a slot.
+        missing = self.filler_families and self.filler_families - {
+            self.video_metadata[(study, path)]["family"] for study, paths, *_ in self.studies for path in paths}
+        if missing:
+            # Most likely a spelling that view_family_map does not produce (e.g. `Other` mapped to `OTHER`).
+            raise ValueError(f"filler_families {sorted(missing)} match no video's view family in this split "
+                             "(after view_family_map, views and min_videos).")
+        self.transform = transform
+        self.loader = make_clip_loader(frames_per_clip, frame_step, duration, fps, num_clips_per_video,
+                                       random_clip_sampling=self.training, filter_long_videos=filter_long_videos)
+        logger.info(f"Loaded {len(self.studies)} studies ({sum(len(s[1]) for s in self.studies)} videos); "
+                    f"{self.num_videos} slots x {self.num_clips_per_video} clips, selection: {self.selection}.")
+
+    def __len__(self):
+        return len(self.studies)
+
+    @property
+    def study_ids(self):
+        return [s[0] for s in self.studies]
+
+    @property
+    def targets(self):
+        """[studies, targets], NaN where missing."""
+        return np.stack([s[2] for s in self.studies])
+
+    def set_epoch(self, epoch):
+        """The epoch of `shared_bags` training bags. Workers must not persist: they keep the epoch they began with."""
+        self.epoch = int(epoch)
+
+    def bag_record(self):
+        """What fixes this split's bags in `sampling_mode: shared_bags` (`study_bags.bag_record`)."""
+        candidates = [(study, path, self.video_metadata[(study, path)]["view"])
+                      for study, paths, *_ in self.studies for path in paths]
+        return bag_record(candidates, self.routing_sha256, "view_balanced", self.num_videos,
+                          self.seed if self.training else self.eval_seed)
+
+    def select(self, paths, families=None, study_id=None):
+        """The positions of the videos read for one item, as `SELECTION[self.selection]` says."""
+        if self.selection == "shared_bags":
+            rng = (training_rng(self.seed, self.epoch, study_id) if self.training
+                   else evaluation_rng(self.eval_seed, self.eval_bag_index, study_id))
+            chosen = choose_bag(list(zip(paths, families)), self.num_videos, "view_balanced", rng, {})
+            return [paths.index(path) for path in chosen]
+        rng = random
+        if not self.training:
+            identity = str(study_id) if study_id is not None else "\0".join(paths)
+            digest = hashlib.sha256(f"{self.eval_seed}:{self.eval_bag_index}:{identity}".encode()).digest()
+            rng = random.Random(int.from_bytes(digest[:8], "big"))
+        if self.selection in ("random", "seeded_random"):
+            chosen = rng.sample(range(len(paths)), min(self.num_videos, len(paths)))
+            return chosen
+        if self.selection == "view_balanced":
+            if families is None or len(families) != len(paths):
+                raise ValueError("view_balanced sampling needs the family of every candidate video.")
+            buckets = {}
+            for index, family in enumerate(families):
+                buckets.setdefault(family, []).append(index)
+            for bucket in buckets.values():
+                rng.shuffle(bucket)
+            size = min(self.num_videos, len(paths))
+            chosen = []
+            # The round-robin runs over the other families first; filler families (e.g. OTHER) only take
+            # the slots left once those are used up. Without filler families this is a single pass with the
+            # same random draws as before the option existed, so earlier bags are unchanged.
+            for tier in ([f for f in buckets if f not in self.filler_families],
+                         [f for f in buckets if f in self.filler_families]):
+                while len(chosen) < size:
+                    active = [family for family in tier if buckets[family]]
+                    if not active:
+                        break
+                    rng.shuffle(active)
+                    for family in active:
+                        chosen.append(buckets[family].pop())
+                        if len(chosen) == size:
+                            break
+            rng.shuffle(chosen)
+            return chosen
+        return list(range(min(self.num_videos, len(paths))))
+
+    MAX_RETRIES = 20  # studies tried in training before an unreadable split stops the run.
+
+    def __getitem__(self, index):
+        # Training: a study that cannot be read is replaced by another, as `VideoDataset` does,
+        # up to `MAX_RETRIES` times, so an unreadable split stops the run instead of hanging it.
+        for attempt in range(self.MAX_RETRIES + 1):
+            item = self.get_item_study(index)
+            if item is not None:
+                return item
+            if not self.training:
+                raise RuntimeError(f"Study {index} could not be read.")
+            logger.warning(f"Retrying with another study: none of the selected videos of study {index} loaded.")
+            index = np.random.randint(len(self))
+        raise RuntimeError(f"None of {self.MAX_RETRIES + 1} studies drawn could be read: check the video paths.")
+
+    def get_item_study(self, index):
+        """(clips [slots*clips, C, T, H, W], targets [targets], video_mask [slots], clip_indices
+        [slots*clips, T], view_ids [slots], optional metadata dict) for the study at `index`, or `None` when none of its
+        selected videos loads (a `shared_bags` run stops at the first that does not). `view_ids` is -1 for a padded
+        slot, and for every slot without a `view_labels_map`."""
+        study_id, paths, targets, classes = self.studies[index]
+        clips, indices, mask, views = [], [], [], []
+        metadata = [self.video_metadata[(study_id, path)] for path in paths]
+        probabilities, acquisition = [], []
+        for position in self.select(paths, [m["family"] for m in metadata], study_id):
+            loaded = self.load_video(paths[position])
+            if loaded is None:
+                if self.selection == "shared_bags":
+                    raise RuntimeError(f"A selected video of study {index} failed to load: a shared bag is read whole "
+                                       "or the run stops. Remove the clip from the manifest of both runs.")
+                logger.warning(f"Skipping a video of study {index} that failed to load; its slot is padded.")
+                continue
+            video_clips, video_indices = loaded
+            clips += video_clips
+            indices += video_indices
+            mask.append(True)
+            views.append(classes[position])
+            if self.view_probability_columns:
+                probabilities.append(metadata[position]["view_probs"])
+            acquisition.append(metadata[position]["acquisition_ids"])
+        if not mask:
+            return None
+        pad = torch.zeros_like(clips[0])
+        while len(mask) < self.num_videos:
+            clips += [pad.clone() for _ in range(self.num_clips_per_video)]
+            indices += [np.full(self.frames_per_clip, -1, dtype=np.int64) for _ in range(self.num_clips_per_video)]
+            mask.append(False)
+            views.append(-1)
+            acquisition.append(-1)
+            if self.view_probability_columns:
+                probabilities.append(np.zeros_like(probabilities[0]))
+        item = (
+            torch.stack(clips),
+            torch.as_tensor(targets, dtype=torch.float32),
+            torch.tensor(mask, dtype=torch.bool),
+            torch.from_numpy(np.stack(indices)),
+            torch.tensor(views, dtype=torch.long),
+        )
+        extra = {}
+        if self.view_probability_columns:
+            extra["view_probs"] = torch.from_numpy(np.stack(probabilities))
+        if self.acquisition_column:
+            extra["acquisition_ids"] = torch.tensor(acquisition, dtype=torch.long)
+        return (*item, extra) if extra else item
+
+    def load_video(self, path):
+        """The video's `num_clips_per_video` transformed clips and their frame indices, or `None`."""
+        buffer, clip_indices = self.loader.loadvideo_decord(path, self.frames_per_clip)
+        if buffer is None or len(buffer) == 0:
+            return None
+        fpc = self.frames_per_clip
+        clips = [buffer[i * fpc: (i + 1) * fpc] for i in range(self.num_clips_per_video)]
+        if self.transform is not None:
+            # The probe transforms return one spatial view per clip.
+            clips = [self.transform(clip)[0] for clip in clips]
+        else:
+            clips = [torch.from_numpy(np.ascontiguousarray(clip)).permute(3, 0, 1, 2).float() / 255.0 for clip in clips]
+        return clips, [np.asarray(ci, dtype=np.int64) for ci in clip_indices]

@@ -15,13 +15,15 @@ dependencies = { file = ["requirements.txt"] }
 
 [dependency-groups]
 dev = [
-    "black==24.4.2",
+    "black==26.10.1",
     "flake8==7.0.0",
     "isort==5.13.2",
     "pyarrow",
 ]
 labelbox = [
     "labelbox>=7.12,<8",
+    # The upload tools read the RADAR ontology (app/radar/ontology.py) with it.
+    "pyyaml>=6.0",
 ]
 
 [tool.uv]

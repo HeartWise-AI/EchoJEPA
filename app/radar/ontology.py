@@ -1,11 +1,10 @@
-"""Load and validate the versioned RADAR concept ontology (configs/radar/concepts_v*.yaml).
+"""Load and validate the versioned RADAR caption ontology.
 
-The ontology is the single vocabulary shared by report-finding extraction, candidate captions, the Labelbox review
-form, the coverage ledger and the contrastive loss's concept keys. Every artifact built from it records its
-`version`, so a review collected under one version is never silently read under another.
+The ontology defines a shared vocabulary for report extraction, caption generation, clinical review,
+coverage tracking, and contrastive learning. Versioning ensures compatibility across generated artifacts.
 
-`relevance()` turns the ontology's view x acquisition prior into one of a few explicit outcomes. It is a prior on
-what *may* be visible in a clip, never evidence that it is.
+`relevance()` determines whether a concept may be visible in a clip based on its view and acquisition mode,
+without confirming its presence.
 """
 
 from __future__ import annotations
@@ -21,15 +20,16 @@ from typing import Any, Mapping
 import yaml
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-DEFAULT_ONTOLOGY_PATH = os.path.join(REPO_ROOT, "configs", "radar", "concepts_v0.yaml")
+DEFAULT_ONTOLOGY_PATH = os.path.join(REPO_ROOT, "configs", "radar", "radar-caption-ontology-v2.yaml")
 
-ONTOLOGY_SCHEMA = "radar-concept-ontology"
-# The view classifier's classes and the acquisition index's categories (shared contract). Duplicated in the YAML so
-# a file edited on its own still declares what it was written against; the loader checks the two agree.
+ONTOLOGY_SCHEMA = "radar-caption-ontology"
+# These constants define the view classifier's classes and acquisition index's categories. Duplicated in the YAML so
+# it can be edited independently. The loader verifies that both definitions match.
 VIEWS = (
     "A2C", "A2C_LV", "A2C_ZOOM", "A3C", "A3C_LV", "A3C_ZOOM", "A4C", "A4C_LV", "A4C_ZOOM", "A5C", "A5C_ZOOM",
     "PLAX", "PLAX_DEEP", "PLAX_ZOOM", "PSAX", "PSAX_AV", "RVINF", "SUBCOSTAL", "SUPRASTERNAL", "OTHER",
 )
+UNCLASSIFIED_VIEW = "OTHER"     # belongs to no view groups and carries no priors.
 ACQUISITION_CATEGORIES = ("bmode", "color_flow", "spectral_doppler", "mmode", "other", "unknown")
 # Categories that can carry evidence. "other" and "unknown" never satisfy a modality requirement (fail closed).
 EVIDENCE_MODALITIES = ("bmode", "color_flow", "spectral_doppler", "mmode")
@@ -39,8 +39,8 @@ EVIDENCE_TYPES = ("visual", "measurement")
 LANGUAGES = ("fr", "en")
 COLUMN_PARSERS = ("numeric", "scale")
 
-# Outcomes of `Ontology.relevance`. Only RELEVANT findings may enter a caption. The three gap outcomes are reported
-# as explicit gaps; NOT_IN_VIEW is simply out of scope for the clip.
+# Outcomes of `Ontology.relevance`. Only `RELEVANT` findings may enter a caption. The three gap outcomes are reported
+# as explicit gaps; `NOT_IN_VIEW` is simply out of scope for the clip.
 RELEVANT = "relevant"
 NOT_IN_VIEW = "not_in_view"
 MODALITY_ABSENT = "modality_absent"
@@ -49,7 +49,6 @@ ACQUISITION_UNKNOWN = "acquisition_unknown"
 GAP_REASONS = (MODALITY_ABSENT, MEASUREMENT_REQUIRED, ACQUISITION_UNKNOWN)
 
 _ID = re.compile(r"^[a-z][a-z0-9_]*$")
-_SEMVER = re.compile(r"^\d+\.\d+\.\d+$")
 
 
 class OntologyError(ValueError):
@@ -57,10 +56,8 @@ class OntologyError(ValueError):
 
 
 def normalize_text(text: str) -> str:
-    """Lower case, accents removed, typographic apostrophes unified, one output character per input character.
-
-    Keeping the length lets spans found in the normalized text point into the original text.
-    """
+    """Converts text to lowercase, remove accents, and standardize apostrophes. Preserves the original text
+    length so character positions in the normalized text still correspond to positions in the original text."""
     out = []
     for ch in str(text):
         if ch in "’‘`´":
@@ -74,7 +71,8 @@ def normalize_text(text: str) -> str:
 
 
 def is_code_alias(alias: str) -> bool:
-    """Aliases made only of digits and signs ("2+", "1-2") are grades for structured columns, not text."""
+    """Identify numeric grade aliases (e.g., "2+", "1-2") used in structured report columns rather than
+    free-text reports."""
     return bool(re.fullmatch(r"[\d\s+\-/.]+", alias))
 
 
@@ -83,47 +81,69 @@ class Scale:
     name: str
     values: tuple[str, ...]
     labels: Mapping[str, Mapping[str, str]]
-    aliases: Mapping[str, str]  # normalized alias -> value
+    aliases: Mapping[str, str]      # normalized alias -> value.
     negated_value: str | None = None
+    unranked: tuple[str, ...] = ()  # valid scale values that have no severity ranking, such as `indeterminate`.
+
+    @property
+    def ranked(self) -> tuple[str, ...]:
+        """Returns the scale values in severity order, excluding unranked values."""
+        return tuple(v for v in self.values if v not in self.unranked)
+
+
+@dataclass(frozen=True)
+class View:
+    id: str
+    window: str
+    variant: str
+    labels: Mapping[str, str]       # language -> label.
+    description: Mapping[str, str]  # language -> what the standard view shows.
+
+
+@dataclass(frozen=True)
+class Structure:
+    id: str
+    category: str
+    labels: Mapping[str, str]       # language -> label.
 
 
 @dataclass(frozen=True)
 class Concept:
     id: str
     labels: Mapping[str, str]
-    structure: str
+    structures: tuple[str, ...]
     kind: str
     value_type: str
     evidence: str
     required_modality: tuple[str, ...]
-    visible_in: frozenset  # {(view, acquisition)}
-    prior_views: frozenset  # views of `visible_in`, any acquisition
+    visible_in: frozenset           # {(view, acquisition)}
+    prior_views: frozenset          # views of `visible_in`, any acquisition.
     scale: str | None = None
     values: tuple[str, ...] | None = None  # categorical values
-    value_labels: Mapping[str, Mapping[str, str]] = field(default_factory=dict)  # categorical labels
-    aliases: Mapping[str, str] = field(default_factory=dict)  # categorical normalized alias -> value
+    value_labels: Mapping[str, Mapping[str, str]] = field(default_factory=dict)  # categorical labels.
+    aliases: Mapping[str, str] = field(default_factory=dict)  # categorical normalized alias -> value.
     unit: str | None = None
     minimum: float | None = None
     maximum: float | None = None
-    requires_views_from: tuple[str, ...] = ()  # view-group names that must each be covered
+    requires_views_from: tuple[str, ...] = ()   # view-group names that must each be covered.
     report_sources: Mapping[str, Any] = field(default_factory=dict)
-    related_tasks: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
     notes: str = ""
 
 
 @dataclass(frozen=True)
 class Ontology:
     name: str
-    version: str
-    status: str
+    version: int
     path: str
     sha256: str
+    views: Mapping[str, View]                       # in VIEWS order.
     view_groups: Mapping[str, tuple[str, ...]]
-    view_labels: Mapping[str, Mapping[str, str]]
+    view_labels: Mapping[str, Mapping[str, str]]    # language -> view -> label.
+    structures: Mapping[str, Structure]             # in file order.
     acquisition_labels: Mapping[str, Mapping[str, str]]
     scales: Mapping[str, Scale]
     negation_cues: tuple[str, ...]
-    concepts: Mapping[str, Concept]  # in file order
+    concepts: Mapping[str, Concept]                 # in file order.
 
     @property
     def concept_ids(self) -> tuple[str, ...]:
@@ -131,8 +151,9 @@ class Ontology:
 
     @property
     def tag(self) -> str:
-        """`name@version`, recorded on every artifact built from this ontology."""
-        return f"{self.name}@{self.version}"
+        """Returns the ontology identifier in `<name>-v<version>` format. This identifier is recorded
+        in every artifact generated from the ontology."""
+        return f"{self.name}-v{self.version}"
 
     def concept(self, concept_id: str) -> Concept:
         try:
@@ -141,7 +162,8 @@ class Ontology:
             raise KeyError(f"Unknown concept {concept_id!r} for ontology {self.tag}.") from None
 
     def allowed_values(self, concept_id: str) -> tuple | None:
-        """The values a finding may take, or None for numeric concepts (checked against min/max)."""
+        """Returns the allowed values for a concept. For numeric concepts, return `None` because validity is
+        determined by the minimum and maximum bounds."""
         c = self.concept(concept_id)
         if c.value_type == "boolean":
             return (True, False)
@@ -152,7 +174,7 @@ class Ontology:
         return None
 
     def value_error(self, concept_id: str, value: Any) -> str | None:
-        """Why `value` is not a valid value of the concept, or None if it is."""
+        """Returns an error message if the value is invalid for the concept. Returns `None` if the value is valid."""
         c = self.concept(concept_id)
         if c.value_type == "numeric":
             if isinstance(value, bool) or not isinstance(value, (int, float)):
@@ -168,9 +190,10 @@ class Ontology:
         return None if value in allowed else f"{concept_id} value {value!r} is not one of {list(allowed)}"
 
     def severity_values(self, concept_id: str) -> tuple[str, ...] | None:
-        """Ordinal concepts' severities are their scale values; other concepts carry no severity."""
+        """Returns the ordered severity levels of an ordinal concept. Exclude unranked values such as `indeterminate`,
+        which are valid but do not represent a severity level. Return `None` for non-ordinal concepts."""
         c = self.concept(concept_id)
-        return self.scales[c.scale].values if c.value_type == "ordinal" else None
+        return self.scales[c.scale].ranked if c.value_type == "ordinal" else None
 
     def label(self, concept_id: str, language: str) -> str:
         return self.concept(concept_id).labels[language]
@@ -191,11 +214,24 @@ class Ontology:
     def view_group_of(self, view: str) -> tuple[str, ...]:
         return tuple(name for name, views in self.view_groups.items() if view in views)
 
-    def relevance(self, concept_id: str, view: str, acquisition: str) -> str:
-        """Whether a clip of `view` and `acquisition` may show the concept, and if not, why.
+    def concepts_of_structure(self, structure: str) -> tuple[str, ...]:
+        """Ids of the concepts about `structure`, in file order."""
+        return tuple(cid for cid, c in self.concepts.items() if structure in c.structures)
 
-        Order matters: a view outside the prior is out of scope whatever the modality; inside it, an unknown
-        acquisition, an absent modality and a measurement-only value are explicit gaps.
+    def visibility_concept(self, structure: str) -> str | None:
+        """Returns the visibility concept associated with a structure. Returns `None` if the structure
+        has no visibility concept."""
+        found = [cid for cid in self.concepts_of_structure(structure)
+                 if self.concepts[cid].kind == "structure_visibility"]
+        return found[0] if found else None
+
+    def relevance(self, concept_id: str, view: str, acquisition: str) -> str:
+        """Determines whether a concept could be assessed from a clip based on its view and acquisition mode.
+
+        The order of checks matters:
+            - Views outside the concept's prior are considered out of scope.
+            - For views within the prior, unknown acquisition modes, missing required modalities, and
+            measurement-only findings are reported as explicit gaps.
         """
         if view not in VIEWS:
             raise ValueError(f"Unknown view {view!r}; expected one of {list(VIEWS)}.")
@@ -218,7 +254,11 @@ class Ontology:
         return list(self.concept(concept_id).report_sources.get("columns", []))
 
     def matching_columns(self, concept_id: str, available: list[str]) -> list[tuple[dict, str]]:
-        """Report-export columns feeding the concept: exact names first, then glob patterns, in file order."""
+        """Finds report-export columns associated with a concept.
+
+        Returns matching columns in the order of their specifications, using either exact column names
+        or glob patterns.
+        """
         found = []
         for spec in self.structured_columns(concept_id):
             if "name" in spec:
@@ -283,16 +323,34 @@ def validate_ontology(raw: Mapping, path: str = "<memory>", sha256: str = "") ->
         raise OntologyError(f"{path}: the ontology must be a mapping.")
     if raw.get("schema") != ONTOLOGY_SCHEMA:
         problems.append(f"schema must be {ONTOLOGY_SCHEMA!r}")
-    version = str(raw.get("version", ""))
-    if not _SEMVER.match(version):
-        problems.append(f"version {version!r} must look like MAJOR.MINOR.PATCH")
+    version = raw.get("version")
+    if isinstance(version, bool) or not isinstance(version, int) or version < 1:
+        problems.append(f"version {version!r} must be a positive integer")
     name = raw.get("name")
     if not isinstance(name, str) or not name:
         problems.append("name is required")
-    if tuple(raw.get("views") or ()) != VIEWS:
-        problems.append(f"views must be exactly {list(VIEWS)}")
+    raw_views = raw.get("views") if isinstance(raw.get("views"), Mapping) else {}
+    if tuple(raw_views) != VIEWS:
+        problems.append(f"views must be exactly {list(VIEWS)}, in that order")
     if tuple(raw.get("acquisition_categories") or ()) != ACQUISITION_CATEGORIES:
         problems.append(f"acquisition_categories must be exactly {list(ACQUISITION_CATEGORIES)}")
+
+    windows, variants = tuple(raw.get("view_windows") or ()), tuple(raw.get("view_variants") or ())
+    view_defs = {}
+    for vid, vraw in raw_views.items():
+        vraw = vraw or {}
+        where = f"view {vid}"
+        if vraw.get("window") not in windows:
+            problems.append(f"{where}: window {vraw.get('window')!r} not in view_windows {list(windows)}")
+        if vraw.get("variant") not in variants:
+            problems.append(f"{where}: variant {vraw.get('variant')!r} not in view_variants {list(variants)}")
+        labels, description = vraw.get("labels") or {}, vraw.get("description") or {}
+        for lang in LANGUAGES:
+            if not isinstance(labels.get(lang), str) or not isinstance(description.get(lang), str):
+                problems.append(f"{where}: needs a {lang} label and description")
+        view_defs[vid] = View(id=vid, window=vraw.get("window"), variant=vraw.get("variant"), labels=dict(labels),
+                              description=dict(description))
+    view_labels = {lang: {vid: v.labels.get(lang) for vid, v in view_defs.items()} for lang in LANGUAGES}
 
     groups = {}
     for gname, gviews in (raw.get("view_groups") or {}).items():
@@ -302,14 +360,29 @@ def validate_ontology(raw: Mapping, path: str = "<memory>", sha256: str = "") ->
         if unknown or not gviews:
             problems.append(f"view group {gname!r} has unknown or no views {unknown}")
         groups[gname] = tuple(v for v in gviews or [] if v in VIEWS)
+    for vid in VIEWS:
+        n = sum(vid in g for g in groups.values())
+        if vid == UNCLASSIFIED_VIEW and n:
+            problems.append(f"{vid} is the unclassified view and belongs to no view group")
+        elif vid != UNCLASSIFIED_VIEW and n != 1:
+            problems.append(f"view {vid} must belong to exactly one view group, not {n}")
 
-    view_labels = {}
-    for lang in LANGUAGES:
-        table = (raw.get("view_labels") or {}).get(lang) or {}
-        missing = [v for v in VIEWS if v not in table]
-        if missing:
-            problems.append(f"view_labels.{lang} missing {missing}")
-        view_labels[lang] = dict(table)
+    categories = tuple(raw.get("structure_categories") or ())
+    structures = {}
+    for sid, sraw in (raw.get("structures") or {}).items():
+        sraw = sraw or {}
+        where = f"structure {sid}"
+        if not isinstance(sid, str) or not _ID.match(sid):
+            problems.append(f"{where}: id must be snake_case")
+            continue
+        if sraw.get("category") not in categories:
+            problems.append(f"{where}: category {sraw.get('category')!r} not in structure_categories")
+        labels = sraw.get("labels") or {}
+        if any(not isinstance(labels.get(lang), str) or not labels.get(lang) for lang in LANGUAGES):
+            problems.append(f"{where}: labels need {list(LANGUAGES)}")
+        structures[sid] = Structure(id=sid, category=sraw.get("category"), labels=dict(labels))
+    if not structures:
+        problems.append("no structures")
     acquisition_labels = {}
     for lang in LANGUAGES:
         table = (raw.get("acquisition_labels") or {}).get(lang) or {}
@@ -327,9 +400,12 @@ def validate_ontology(raw: Mapping, path: str = "<memory>", sha256: str = "") ->
         negated = sraw.get("negated_value")
         if negated is not None and negated not in values:
             problems.append(f"{where}: negated_value {negated!r} is not a value")
+        unranked = tuple(str(v) for v in sraw.get("unranked") or ())
+        if not set(unranked) <= set(values) - {negated} or len(unranked) >= len(values):
+            problems.append(f"{where}: unranked values must be values other than negated_value, and not all of them")
         scales[sname] = Scale(
             name=sname, values=values, labels=_labels(sraw.get("labels"), values, where, problems),
-            aliases=_aliases(sraw.get("aliases"), values, where, problems), negated_value=negated,
+            aliases=_aliases(sraw.get("aliases"), values, where, problems), negated_value=negated, unranked=unranked,
         )
 
     concepts = {}
@@ -354,6 +430,15 @@ def validate_ontology(raw: Mapping, path: str = "<memory>", sha256: str = "") ->
             problems.append(f"{where}: value.type {vtype!r} not in {list(VALUE_TYPES)}")
         if kind == "structure_visibility" and vtype != "boolean":
             problems.append(f"{where}: a structure_visibility concept is boolean")
+        cstructures = craw.get("structures")
+        if not isinstance(cstructures, list) or not cstructures or len(set(cstructures)) != len(cstructures):
+            problems.append(f"{where}: structures must be a non-empty list without repeats")
+            cstructures = []
+        unknown_structures = [s for s in cstructures if s not in structures]
+        if unknown_structures:
+            problems.append(f"{where}: unknown structures {unknown_structures}")
+        if kind == "structure_visibility" and len(cstructures) != 1:
+            problems.append(f"{where}: a structure_visibility concept names exactly one structure")
         scale, values, value_labels, aliases = None, None, {}, {}
         if vtype == "ordinal":
             scale = value.get("scale")
@@ -383,13 +468,15 @@ def validate_ontology(raw: Mapping, path: str = "<memory>", sha256: str = "") ->
         visible = set()
         for j, entry in enumerate(craw.get("potentially_visible_in") or []):
             views = _expand_views(entry.get("views"), groups, f"{where}.potentially_visible_in[{j}]", problems)
+            if UNCLASSIFIED_VIEW in views:
+                problems.append(f"{where}: {UNCLASSIFIED_VIEW} is the unclassified view and carries no prior")
             acqs = entry.get("acquisitions") or []
             for acq in acqs:
                 if acq not in ACQUISITION_CATEGORIES:
                     problems.append(f"{where}: unknown acquisition {acq!r}")
                 elif acq not in required:
-                    # A prior that admits a modality the concept cannot be supported by would put findings into
-                    # captions of clips that cannot show them (e.g. RVSP in a color loop).
+                    # A concept's visibility prior must only include modalities that can support the finding.
+                    # Otherwise, captions could contain findings that cannot be assessed from the clip.
                     problems.append(f"{where}: prior lists {acq!r}, which is not in required_modality")
             visible.update((v, a) for v in views for a in acqs if a in required)
         if not visible:
@@ -416,21 +503,24 @@ def validate_ontology(raw: Mapping, path: str = "<memory>", sha256: str = "") ->
             problems.append(f"{where}: text_fields without phrase_hints or acronyms")
         if kind == "finding" and not sources:
             problems.append(f"{where}: a finding needs report_sources")
-        related = {k: tuple(v or ()) for k, v in (craw.get("related_tasks") or {}).items()}
         concepts[cid] = Concept(
-            id=cid, labels=dict(labels), structure=str(craw.get("structure") or ""), kind=kind, value_type=vtype,
+            id=cid, labels=dict(labels), structures=tuple(cstructures), kind=kind, value_type=vtype,
             evidence=evidence, required_modality=required, visible_in=frozenset(visible), prior_views=prior_views,
             scale=scale, values=values, value_labels=value_labels, aliases=aliases, unit=value.get("unit"),
             minimum=value.get("min"), maximum=value.get("max"), requires_views_from=needs, report_sources=sources,
-            related_tasks=related, notes=str(craw.get("notes") or ""),
+            notes=str(craw.get("notes") or ""),
         )
     if not concepts:
         problems.append("no concepts")
+    for sid in structures:
+        visibility = [cid for cid, c in concepts.items() if c.kind == "structure_visibility" and sid in c.structures]
+        if len(visibility) > 1:
+            problems.append(f"structure {sid}: more than one visibility concept {visibility}")
     if problems:
         raise OntologyError(f"{os.path.basename(path)} is not a valid RADAR ontology:\n- " + "\n- ".join(problems))
     return Ontology(
-        name=name, version=version, status=str(raw.get("status", "")), path=path, sha256=sha256,
-        view_groups=groups, view_labels=view_labels, acquisition_labels=acquisition_labels, scales=scales,
+        name=name, version=version, path=path, sha256=sha256, views=view_defs, view_groups=groups,
+        view_labels=view_labels, structures=structures, acquisition_labels=acquisition_labels, scales=scales,
         negation_cues=tuple(normalize_text(c) for c in raw.get("negation_cues") or ()), concepts=concepts,
     )
 

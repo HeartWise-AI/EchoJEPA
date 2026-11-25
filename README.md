@@ -98,7 +98,7 @@ Pretraining can also be run locally or distributed. Pretraining and cooldown tra
 
 For the pilot comparison of V-JEPA 2.1 ViT-B pretraining from scratch and from the EchoJEPA ViT-B checkpoint (code version, checkpoint, configs and launch commands), see [docs/pretraining_baseline.md](docs/pretraining_baseline.md).
 Its frozen Visual EF probe (protocol, metrics, outputs and reproduction) is described in [docs/visual_ef_probe.md](docs/visual_ef_probe.md).
-For archive-scale ICM pretraining (inclusive vs B-mode-only corpora, anchored patient split, schedule), see [docs/archive_pretraining.md](docs/archive_pretraining.md), with the acquisition-mode index ([docs/acquisition_index.md](docs/acquisition_index.md)), the short-clip policies ([docs/temporal_padding.md](docs/temporal_padding.md)), the multi-view RVSP probe ([docs/rvsp_multiview_probe.md](docs/rvsp_multiview_probe.md)) and the RADAR caption pilot ([docs/radar_pilot.md](docs/radar_pilot.md)).
+For archive-scale ICM pretraining (inclusive vs B-mode-only corpora, anchored patient split, schedule), see [docs/archive_pretraining.md](docs/archive_pretraining.md), with the acquisition-mode index ([docs/acquisition_index.md](docs/acquisition_index.md)), the short-clip policies ([docs/temporal_padding.md](docs/temporal_padding.md)) and the multi-view RVSP probe ([docs/rvsp_multiview_probe.md](docs/rvsp_multiview_probe.md)).
 
 #### Local
 
@@ -293,6 +293,10 @@ experiment:
 The settings are largely the same for classification, except we change `task_type: regression` to `task_type: classification` and we replace `num_targets: 1` with `num_classes: N`. 
 For multi-view, set `model_kwargs.module_name` to `evals.video_classification_frozen_multi.modelcustom.vit_encoder_multiclip`. See `configs/eval/vitg-384` for more examples.
 
+#### Study-level multi-task probe
+
+`eval_name: study_multitask_frozen` reads a **study** as a bag of its videos and predicts several targets at once, DeepCORO_CLIP style: a long CSV with one row per video (`video_path`, `study_id`, the target columns, optionally `view` and `split`), `num_videos` slots per study drawn at random (and shuffled) at every training read, one head per target (`target_label`, `head_task`, `head_structure`, `loss_structure`, `head_weights`), masked missing targets, a learned view embedding (`use_view_embedding`), and optional fine-tuning of the encoder's top blocks (`experiment.encoder.trainable_blocks`). The config is `configs/eval/vitl/study_multitask_frozen.yaml`; the protocol, outputs and tests are in [docs/study_multitask_probe.md](docs/study_multitask_probe.md). Two ready-made target sets: the DeepECHO report (`data/make_study_targets.py`, `configs/eval/vitl/study_multitask_deepecho.yaml`) and DeepCORO's angiogram stenoses, fine-tuning the EchoJEPA encoder of a DeepCORO_CLIP checkpoint (`data/make_coronary_manifest.py`, `configs/eval/vitl/study_multitask_deepcoro_finetune.yaml`). `pooling_mode: region` is the two-pass variant, off by default: the encoder reads the whole videos, a decoder on its own tokens finds regions, and the same encoder reads tracked crops of them; `configs/eval/vitl/study_multitask_deepcoro_jepa.yaml` trains DeepCORO-JEPA with it (stenosis, lesion and FFR/iFR heads per coronary segment), `tools/convert_deepcoro_bundle.py` converts a research bundle to its weights, and `configs/eval/vitl/study_multitask_deepcoro_jepa_finetune_example.yaml` is the example to copy for fine-tuning on your own angiograms: its header lists the videos, manifest columns and labels it needs.
+
 Evaluations can be run either locally, or distributed via SLURM. (Running locally is useful for debugging and validation).
 Use provided training configs under "Evaluation Attentive Probes". These configs allow to train multiple probes in parallel with various optimization parameters.
 Change filepaths as needed (e.g. `folder`, `checkpoint`, `dataset_train`, `dataset_val`) to match locations of data and downloaded checkpoints on your local filesystem.
@@ -393,6 +397,7 @@ The other settings should be identical to your training config. See configs unde
 ├── evals                                  # evaluation loops training an attentive probe with frozen backbone...
 │   ├── video_classification_frozen        #   single-view echocardiogram probes
 │   ├── video_classification_frozen_multi  #   multi-view echocardiogram probes
+│   ├── study_multitask_frozen             #   study-level (bag of videos) multi-task probes
 │   ├── main_distributed.py                #   entrypoint for distributed evaluations
 │   └── main.py                            #   entrypoint for locally-run evaluations
 ├── src                                    # the package

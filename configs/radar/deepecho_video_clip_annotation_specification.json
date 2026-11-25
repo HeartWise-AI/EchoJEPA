@@ -1,0 +1,1832 @@
+{
+  "schema": "deepecho-column-review",
+  "version": 5,
+  "fields": {
+    "lv_function": {
+      "label": "LV function",
+      "group": "Chambers",
+      "target": "lv",
+      "sources": [
+        "Left ventricule findings"
+      ],
+      "values": {
+        "hyperdynamic": "Hyperdynamic",
+        "normal": "Normal",
+        "mildly_reduced": "Mildly reduced",
+        "moderately_reduced": "Moderately reduced",
+        "severely_reduced": "Severely reduced"
+      },
+      "modalities": [
+        "bmode",
+        "color_flow"
+      ],
+      "context_columns": [
+        "Visually Estimated EF"
+      ],
+      "note": "Review qualitative contraction only; exact report EF is study context, not a local verified number."
+    },
+    "lv_size": {
+      "label": "LV size",
+      "group": "Chambers",
+      "target": "lv",
+      "sources": [
+        "Left ventricule findings"
+      ],
+      "values": {
+        "normal": "Normal",
+        "dilated": "Dilated"
+      },
+      "modalities": [
+        "bmode",
+        "color_flow"
+      ],
+      "context_columns": [
+        "LVID Diastole (2D)"
+      ],
+      "note": ""
+    },
+    "lv_wall_thickness": {
+      "label": "LV wall thickness",
+      "group": "Chambers",
+      "target": "lv",
+      "sources": [
+        "Left ventricule findings",
+        "Ventricular septum findings"
+      ],
+      "values": {
+        "not_increased": "Visualized walls not thickened",
+        "increased": "Generalized thickening of visualized walls",
+        "septal_thickening": "Septal thickening",
+        "posterior_thickening": "Posterior-wall thickening"
+      },
+      "modalities": [
+        "bmode",
+        "color_flow"
+      ],
+      "context_columns": [
+        "IVS Diastole Thickness (2D)",
+        "LVIW Diastolic Thickness (2D)"
+      ],
+      "note": "Explicit visual thickening only, without an LVH diagnosis or severity grade. Regional findings say nothing about other walls. A measurement is context, never evidence of normality elsewhere. Generalized thickening requires an explicit collective wall statement.",
+      "canonical_concept": "lv_wall_thickening_distribution",
+      "canonical_values": {
+        "not_increased": "not_increased",
+        "increased": "whole_wall",
+        "septal_thickening": "septal_thickening",
+        "posterior_thickening": "posterior_wall_thickening"
+      }
+    },
+    "septal_bulge": {
+      "label": "Basal septal bulge",
+      "group": "Chambers",
+      "target": "ivs",
+      "sources": [
+        "Left ventricule findings",
+        "Ventricular septum findings"
+      ],
+      "values": {
+        "present": "Present"
+      },
+      "modalities": [
+        "bmode",
+        "color_flow"
+      ],
+      "context_columns": [
+        "IVS Diastole Thickness (2D)"
+      ],
+      "note": "Focal basal septal prominence relative to the adjacent mid septum, assessed with adequate end-diastolic visualization. If the comparison cannot be made, use Cannot assess. This morphology alone establishes neither etiology, global LVH, HCM nor LVOT obstruction; none of those is excluded by its presence."
+    },
+    "rv_function": {
+      "label": "RV function",
+      "group": "Chambers",
+      "target": "rv",
+      "sources": [
+        "Right ventricule findings",
+        "MHI VD fonction systolique"
+      ],
+      "values": {
+        "normal": "Normal",
+        "mildly_reduced": "Mildly reduced",
+        "moderately_reduced": "Moderately reduced",
+        "severely_reduced": "Severely reduced"
+      },
+      "modalities": [
+        "bmode",
+        "color_flow"
+      ],
+      "context_columns": [],
+      "note": "",
+      "verified_codes": {
+        "-1": null,
+        "0": "normal",
+        "1": "mildly_reduced",
+        "2": "moderately_reduced",
+        "3": "severely_reduced"
+      }
+    },
+    "rv_size": {
+      "label": "RV size",
+      "group": "Chambers",
+      "target": "rv",
+      "sources": [
+        "Right ventricule findings"
+      ],
+      "values": {
+        "normal": "Normal",
+        "dilated": "Dilated"
+      },
+      "modalities": [
+        "bmode",
+        "color_flow"
+      ],
+      "context_columns": [
+        "RV Basal Diastolic Dimension",
+        "RV Dimension"
+      ],
+      "note": ""
+    },
+    "la_size": {
+      "label": "LA size",
+      "group": "Chambers",
+      "target": "la",
+      "sources": [
+        "Left atrial findings"
+      ],
+      "values": {
+        "normal": "Normal",
+        "dilated": "Dilated"
+      },
+      "modalities": [
+        "bmode",
+        "color_flow"
+      ],
+      "context_columns": [
+        "LA Volume Index (BP MOD) DuBois",
+        "LA Dimension"
+      ],
+      "note": ""
+    },
+    "ra_size": {
+      "label": "RA size",
+      "group": "Chambers",
+      "target": "ra",
+      "sources": [
+        "Right Atrial findings"
+      ],
+      "values": {
+        "normal": "Normal",
+        "dilated": "Dilated"
+      },
+      "modalities": [
+        "bmode",
+        "color_flow"
+      ],
+      "context_columns": [
+        "RA Area (4C)"
+      ],
+      "note": ""
+    },
+    "pericardial_effusion": {
+      "label": "Pericardial effusion",
+      "group": "Other visible anatomy",
+      "target": "pericardium",
+      "sources": [
+        "Pericardium findings"
+      ],
+      "values": {
+        "present": "Present",
+        "not_demonstrated": "Not demonstrated"
+      },
+      "modalities": [
+        "bmode",
+        "color_flow"
+      ],
+      "context_columns": [],
+      "note": "No global absence inferred from a partly imaged pericardium."
+    },
+    "ivc_size": {
+      "label": "IVC size",
+      "group": "Other visible anatomy",
+      "target": "ivc",
+      "sources": [
+        "Inferior vena cava findings"
+      ],
+      "values": {
+        "normal": "Normal",
+        "dilated": "Dilated"
+      },
+      "modalities": [
+        "bmode",
+        "color_flow"
+      ],
+      "context_columns": [
+        "IVC Diameter (Exp 2D)"
+      ],
+      "note": ""
+    },
+    "ivc_collapse": {
+      "label": "IVC collapse",
+      "group": "Other visible anatomy",
+      "target": "ivc",
+      "sources": [
+        "Inferior vena cava findings"
+      ],
+      "values": {
+        "preserved": "Preserved",
+        "reduced": "Reduced"
+      },
+      "modalities": [
+        "bmode",
+        "color_flow"
+      ],
+      "context_columns": [],
+      "note": "Needs an IVC-focused loop covering respiration; Worksheet Inspiratory Collapse is entirely empty in the audited export."
+    },
+    "mitral_appearance": {
+      "label": "Mitral leaflet/cusp appearance",
+      "group": "Valve morphology",
+      "target": "mitral",
+      "sources": [
+        "Mitral valve findings"
+      ],
+      "values": {
+        "normal": "Normal",
+        "thickened": "Thickened",
+        "calcified": "Calcified",
+        "sclerotic": "Sclerotic"
+      },
+      "modalities": [
+        "bmode",
+        "color_flow"
+      ]
+    },
+    "mitral_motion": {
+      "label": "Mitral leaflet/cusp motion",
+      "group": "Valve morphology",
+      "target": "mitral",
+      "sources": [
+        "Mitral valve findings"
+      ],
+      "values": {
+        "normal": "Normal",
+        "restricted": "Restricted",
+        "tethered": "Tethered",
+        "flail": "Flail",
+        "prolapse": "Prolapse"
+      },
+      "modalities": [
+        "bmode",
+        "color_flow"
+      ]
+    },
+    "mitral_device": {
+      "label": "Mitral valve device",
+      "group": "Valve morphology",
+      "target": "mitral",
+      "sources": [
+        "Mitral valve findings"
+      ],
+      "values": {
+        "edge_to_edge_clip": "Edge to edge clip",
+        "annuloplasty_ring": "Annuloplasty ring",
+        "bioprosthesis": "Bioprosthesis",
+        "mechanical_prosthesis": "Mechanical prosthesis"
+      },
+      "modalities": [
+        "bmode",
+        "color_flow"
+      ]
+    },
+    "mitral_regurgitant_jet": {
+      "label": "Mitral regurgitant jet",
+      "group": "Color flow",
+      "target": "mitral",
+      "sources": [
+        "Mitral valve findings"
+      ],
+      "values": {
+        "demonstrated": "Jet demonstrated",
+        "not_demonstrated": "No jet demonstrated in this acquisition"
+      },
+      "modalities": [
+        "color_flow"
+      ],
+      "note": "Presence/absence in this acquisition only; no integrated severity."
+    },
+    "aortic_appearance": {
+      "label": "Aortic leaflet/cusp appearance",
+      "group": "Valve morphology",
+      "target": "aortic",
+      "sources": [
+        "Aortic valve findings"
+      ],
+      "values": {
+        "normal": "Normal",
+        "thickened": "Thickened",
+        "calcified": "Calcified",
+        "sclerotic": "Sclerotic"
+      },
+      "modalities": [
+        "bmode",
+        "color_flow"
+      ]
+    },
+    "aortic_motion": {
+      "label": "Aortic leaflet/cusp motion",
+      "group": "Valve morphology",
+      "target": "aortic",
+      "sources": [
+        "Aortic valve findings"
+      ],
+      "values": {
+        "normal": "Normal",
+        "restricted": "Restricted"
+      },
+      "modalities": [
+        "bmode",
+        "color_flow"
+      ]
+    },
+    "aortic_device": {
+      "label": "Aortic valve device",
+      "group": "Valve morphology",
+      "target": "aortic",
+      "sources": [
+        "Aortic valve findings"
+      ],
+      "values": {
+        "annuloplasty_ring": "Annuloplasty ring",
+        "bioprosthesis": "Bioprosthesis",
+        "mechanical_prosthesis": "Mechanical prosthesis"
+      },
+      "modalities": [
+        "bmode",
+        "color_flow"
+      ]
+    },
+    "aortic_regurgitant_jet": {
+      "label": "Aortic regurgitant jet",
+      "group": "Color flow",
+      "target": "aortic",
+      "sources": [
+        "Aortic valve findings"
+      ],
+      "values": {
+        "demonstrated": "Jet demonstrated",
+        "not_demonstrated": "No jet demonstrated in this acquisition"
+      },
+      "modalities": [
+        "color_flow"
+      ],
+      "note": "Presence/absence in this acquisition only; no integrated severity."
+    },
+    "tricuspid_appearance": {
+      "label": "Tricuspid leaflet/cusp appearance",
+      "group": "Valve morphology",
+      "target": "tricuspid",
+      "sources": [
+        "Tricuspid valve findings"
+      ],
+      "values": {
+        "normal": "Normal",
+        "thickened": "Thickened",
+        "calcified": "Calcified",
+        "sclerotic": "Sclerotic"
+      },
+      "modalities": [
+        "bmode",
+        "color_flow"
+      ]
+    },
+    "tricuspid_motion": {
+      "label": "Tricuspid leaflet/cusp motion",
+      "group": "Valve morphology",
+      "target": "tricuspid",
+      "sources": [
+        "Tricuspid valve findings"
+      ],
+      "values": {
+        "normal": "Normal",
+        "restricted": "Restricted",
+        "tethered": "Tethered",
+        "flail": "Flail",
+        "prolapse": "Prolapse"
+      },
+      "modalities": [
+        "bmode",
+        "color_flow"
+      ]
+    },
+    "tricuspid_device": {
+      "label": "Tricuspid valve device",
+      "group": "Valve morphology",
+      "target": "tricuspid",
+      "sources": [
+        "Tricuspid valve findings"
+      ],
+      "values": {
+        "edge_to_edge_clip": "Edge to edge clip",
+        "annuloplasty_ring": "Annuloplasty ring",
+        "bioprosthesis": "Bioprosthesis",
+        "mechanical_prosthesis": "Mechanical prosthesis"
+      },
+      "modalities": [
+        "bmode",
+        "color_flow"
+      ]
+    },
+    "tricuspid_regurgitant_jet": {
+      "label": "Tricuspid regurgitant jet",
+      "group": "Color flow",
+      "target": "tricuspid",
+      "sources": [
+        "Tricuspid valve findings"
+      ],
+      "values": {
+        "demonstrated": "Jet demonstrated",
+        "not_demonstrated": "No jet demonstrated in this acquisition"
+      },
+      "modalities": [
+        "color_flow"
+      ],
+      "note": "Presence/absence in this acquisition only; no integrated severity."
+    },
+    "pulmonic_appearance": {
+      "label": "Pulmonic leaflet/cusp appearance",
+      "group": "Valve morphology",
+      "target": "pulmonic",
+      "sources": [
+        "Pulmonary valve findings"
+      ],
+      "values": {
+        "normal": "Normal",
+        "thickened": "Thickened",
+        "calcified": "Calcified",
+        "sclerotic": "Sclerotic"
+      },
+      "modalities": [
+        "bmode",
+        "color_flow"
+      ]
+    },
+    "pulmonic_motion": {
+      "label": "Pulmonic leaflet/cusp motion",
+      "group": "Valve morphology",
+      "target": "pulmonic",
+      "sources": [
+        "Pulmonary valve findings"
+      ],
+      "values": {
+        "normal": "Normal",
+        "restricted": "Restricted"
+      },
+      "modalities": [
+        "bmode",
+        "color_flow"
+      ]
+    },
+    "pulmonic_device": {
+      "label": "Pulmonic valve device",
+      "group": "Valve morphology",
+      "target": "pulmonic",
+      "sources": [
+        "Pulmonary valve findings"
+      ],
+      "values": {
+        "bioprosthesis": "Bioprosthesis",
+        "mechanical_prosthesis": "Mechanical prosthesis"
+      },
+      "modalities": [
+        "bmode",
+        "color_flow"
+      ]
+    },
+    "pulmonic_regurgitant_jet": {
+      "label": "Pulmonic regurgitant jet",
+      "group": "Color flow",
+      "target": "pulmonic",
+      "sources": [
+        "Pulmonary valve findings"
+      ],
+      "values": {
+        "demonstrated": "Jet demonstrated",
+        "not_demonstrated": "No jet demonstrated in this acquisition"
+      },
+      "modalities": [
+        "color_flow"
+      ],
+      "note": "Presence/absence in this acquisition only; no integrated severity."
+    },
+    "aortic_cusp_count": {
+      "label": "Aortic cusp count (en face)",
+      "group": "Valve morphology",
+      "target": "aortic",
+      "sources": [
+        "Aortic valve findings"
+      ],
+      "values": {
+        "two": "Two resolved cusps",
+        "three": "Three resolved cusps"
+      },
+      "modalities": [
+        "bmode",
+        "color_flow"
+      ],
+      "note": "Requires an adequately resolved en-face aortic valve; not a PLAX or apical cusp-count claim."
+    },
+    "aorta_root_size": {
+      "label": "Aortic root size",
+      "group": "Other visible anatomy",
+      "target": "aorta_root",
+      "sources": [
+        "Aorta findings"
+      ],
+      "values": {
+        "normal": "Not dilated",
+        "dilated": "Dilated"
+      },
+      "modalities": [
+        "bmode",
+        "color_flow"
+      ]
+    },
+    "aorta_ascending_size": {
+      "label": "Aortic ascending size",
+      "group": "Other visible anatomy",
+      "target": "aorta_ascending",
+      "sources": [
+        "Aorta findings"
+      ],
+      "values": {
+        "normal": "Not dilated",
+        "dilated": "Dilated"
+      },
+      "modalities": [
+        "bmode",
+        "color_flow"
+      ]
+    },
+    "aorta_arch_size": {
+      "label": "Aortic arch size",
+      "group": "Other visible anatomy",
+      "target": "aorta_arch",
+      "sources": [
+        "Aorta findings"
+      ],
+      "values": {
+        "normal": "Not dilated",
+        "dilated": "Dilated"
+      },
+      "modalities": [
+        "bmode",
+        "color_flow"
+      ]
+    },
+    "wall_basal_inferoseptal": {
+      "label": "Basal inferoseptal wall motion",
+      "group": "Regional wall motion",
+      "target": "lv",
+      "sources": [
+        "WMS Basal Inferoseptal"
+      ],
+      "values": {
+        "normal": "Normal motion and thickening",
+        "hyperkinetic": "Hyperkinetic",
+        "normal_or_hyperkinetic": "Normal / hyperkinetic (report score 1)",
+        "hypokinetic": "Hypokinetic",
+        "severely_hypokinetic": "Severely hypokinetic",
+        "akinetic": "Akinetic",
+        "akinetic_or_severely_hypokinetic": "Akinetic / severely hypokinetic (report score 3)",
+        "dyskinetic": "Dyskinetic",
+        "aneurysmal": "Aneurysmal deformation"
+      },
+      "modalities": [
+        "bmode",
+        "color_flow"
+      ]
+    },
+    "wall_mid_inferoseptal": {
+      "label": "Mid inferoseptal wall motion",
+      "group": "Regional wall motion",
+      "target": "lv",
+      "sources": [
+        "WMS 4C Mid Inferoseptal",
+        "WMS SAX Inferoseptal"
+      ],
+      "values": {
+        "normal": "Normal motion and thickening",
+        "hyperkinetic": "Hyperkinetic",
+        "normal_or_hyperkinetic": "Normal / hyperkinetic (report score 1)",
+        "hypokinetic": "Hypokinetic",
+        "severely_hypokinetic": "Severely hypokinetic",
+        "akinetic": "Akinetic",
+        "akinetic_or_severely_hypokinetic": "Akinetic / severely hypokinetic (report score 3)",
+        "dyskinetic": "Dyskinetic",
+        "aneurysmal": "Aneurysmal deformation"
+      },
+      "modalities": [
+        "bmode",
+        "color_flow"
+      ]
+    },
+    "wall_apical_septal": {
+      "label": "Apical septal wall motion",
+      "group": "Regional wall motion",
+      "target": "lv",
+      "sources": [
+        "WMS 4C Apical septum"
+      ],
+      "values": {
+        "normal": "Normal motion and thickening",
+        "hyperkinetic": "Hyperkinetic",
+        "normal_or_hyperkinetic": "Normal / hyperkinetic (report score 1)",
+        "hypokinetic": "Hypokinetic",
+        "severely_hypokinetic": "Severely hypokinetic",
+        "akinetic": "Akinetic",
+        "akinetic_or_severely_hypokinetic": "Akinetic / severely hypokinetic (report score 3)",
+        "dyskinetic": "Dyskinetic",
+        "aneurysmal": "Aneurysmal deformation"
+      },
+      "modalities": [
+        "bmode",
+        "color_flow"
+      ]
+    },
+    "wall_basal_anterolateral": {
+      "label": "Basal anterolateral wall motion",
+      "group": "Regional wall motion",
+      "target": "lv",
+      "sources": [
+        "WMS 4C Basal Anterolateral"
+      ],
+      "values": {
+        "normal": "Normal motion and thickening",
+        "hyperkinetic": "Hyperkinetic",
+        "normal_or_hyperkinetic": "Normal / hyperkinetic (report score 1)",
+        "hypokinetic": "Hypokinetic",
+        "severely_hypokinetic": "Severely hypokinetic",
+        "akinetic": "Akinetic",
+        "akinetic_or_severely_hypokinetic": "Akinetic / severely hypokinetic (report score 3)",
+        "dyskinetic": "Dyskinetic",
+        "aneurysmal": "Aneurysmal deformation"
+      },
+      "modalities": [
+        "bmode",
+        "color_flow"
+      ]
+    },
+    "wall_mid_anterolateral": {
+      "label": "Mid anterolateral wall motion",
+      "group": "Regional wall motion",
+      "target": "lv",
+      "sources": [
+        "WMS 4C Mid Anterolateral",
+        "WMS SAX Anterolateral"
+      ],
+      "values": {
+        "normal": "Normal motion and thickening",
+        "hyperkinetic": "Hyperkinetic",
+        "normal_or_hyperkinetic": "Normal / hyperkinetic (report score 1)",
+        "hypokinetic": "Hypokinetic",
+        "severely_hypokinetic": "Severely hypokinetic",
+        "akinetic": "Akinetic",
+        "akinetic_or_severely_hypokinetic": "Akinetic / severely hypokinetic (report score 3)",
+        "dyskinetic": "Dyskinetic",
+        "aneurysmal": "Aneurysmal deformation"
+      },
+      "modalities": [
+        "bmode",
+        "color_flow"
+      ]
+    },
+    "wall_apical_lateral": {
+      "label": "Apical lateral wall motion",
+      "group": "Regional wall motion",
+      "target": "lv",
+      "sources": [
+        "WMS 4C Apical Lateral"
+      ],
+      "values": {
+        "normal": "Normal motion and thickening",
+        "hyperkinetic": "Hyperkinetic",
+        "normal_or_hyperkinetic": "Normal / hyperkinetic (report score 1)",
+        "hypokinetic": "Hypokinetic",
+        "severely_hypokinetic": "Severely hypokinetic",
+        "akinetic": "Akinetic",
+        "akinetic_or_severely_hypokinetic": "Akinetic / severely hypokinetic (report score 3)",
+        "dyskinetic": "Dyskinetic",
+        "aneurysmal": "Aneurysmal deformation"
+      },
+      "modalities": [
+        "bmode",
+        "color_flow"
+      ]
+    },
+    "wall_basal_inferior": {
+      "label": "Basal inferior wall motion",
+      "group": "Regional wall motion",
+      "target": "lv",
+      "sources": [
+        "WMS 2C Basal Inferior"
+      ],
+      "values": {
+        "normal": "Normal motion and thickening",
+        "hyperkinetic": "Hyperkinetic",
+        "normal_or_hyperkinetic": "Normal / hyperkinetic (report score 1)",
+        "hypokinetic": "Hypokinetic",
+        "severely_hypokinetic": "Severely hypokinetic",
+        "akinetic": "Akinetic",
+        "akinetic_or_severely_hypokinetic": "Akinetic / severely hypokinetic (report score 3)",
+        "dyskinetic": "Dyskinetic",
+        "aneurysmal": "Aneurysmal deformation"
+      },
+      "modalities": [
+        "bmode",
+        "color_flow"
+      ]
+    },
+    "wall_mid_inferior": {
+      "label": "Mid inferior wall motion",
+      "group": "Regional wall motion",
+      "target": "lv",
+      "sources": [
+        "WMS 2C Mid Inferior",
+        "WMS SAX Inferior"
+      ],
+      "values": {
+        "normal": "Normal motion and thickening",
+        "hyperkinetic": "Hyperkinetic",
+        "normal_or_hyperkinetic": "Normal / hyperkinetic (report score 1)",
+        "hypokinetic": "Hypokinetic",
+        "severely_hypokinetic": "Severely hypokinetic",
+        "akinetic": "Akinetic",
+        "akinetic_or_severely_hypokinetic": "Akinetic / severely hypokinetic (report score 3)",
+        "dyskinetic": "Dyskinetic",
+        "aneurysmal": "Aneurysmal deformation"
+      },
+      "modalities": [
+        "bmode",
+        "color_flow"
+      ]
+    },
+    "wall_apical_inferior": {
+      "label": "Apical inferior wall motion",
+      "group": "Regional wall motion",
+      "target": "lv",
+      "sources": [
+        "WMS 2C Apical Inferior"
+      ],
+      "values": {
+        "normal": "Normal motion and thickening",
+        "hyperkinetic": "Hyperkinetic",
+        "normal_or_hyperkinetic": "Normal / hyperkinetic (report score 1)",
+        "hypokinetic": "Hypokinetic",
+        "severely_hypokinetic": "Severely hypokinetic",
+        "akinetic": "Akinetic",
+        "akinetic_or_severely_hypokinetic": "Akinetic / severely hypokinetic (report score 3)",
+        "dyskinetic": "Dyskinetic",
+        "aneurysmal": "Aneurysmal deformation"
+      },
+      "modalities": [
+        "bmode",
+        "color_flow"
+      ]
+    },
+    "wall_basal_anterior": {
+      "label": "Basal anterior wall motion",
+      "group": "Regional wall motion",
+      "target": "lv",
+      "sources": [
+        "WMS 2C Basal Anterior"
+      ],
+      "values": {
+        "normal": "Normal motion and thickening",
+        "hyperkinetic": "Hyperkinetic",
+        "normal_or_hyperkinetic": "Normal / hyperkinetic (report score 1)",
+        "hypokinetic": "Hypokinetic",
+        "severely_hypokinetic": "Severely hypokinetic",
+        "akinetic": "Akinetic",
+        "akinetic_or_severely_hypokinetic": "Akinetic / severely hypokinetic (report score 3)",
+        "dyskinetic": "Dyskinetic",
+        "aneurysmal": "Aneurysmal deformation"
+      },
+      "modalities": [
+        "bmode",
+        "color_flow"
+      ]
+    },
+    "wall_mid_anterior": {
+      "label": "Mid anterior wall motion",
+      "group": "Regional wall motion",
+      "target": "lv",
+      "sources": [
+        "WMS 2C Mid Anterior",
+        "WMS SAX Anterior"
+      ],
+      "values": {
+        "normal": "Normal motion and thickening",
+        "hyperkinetic": "Hyperkinetic",
+        "normal_or_hyperkinetic": "Normal / hyperkinetic (report score 1)",
+        "hypokinetic": "Hypokinetic",
+        "severely_hypokinetic": "Severely hypokinetic",
+        "akinetic": "Akinetic",
+        "akinetic_or_severely_hypokinetic": "Akinetic / severely hypokinetic (report score 3)",
+        "dyskinetic": "Dyskinetic",
+        "aneurysmal": "Aneurysmal deformation"
+      },
+      "modalities": [
+        "bmode",
+        "color_flow"
+      ]
+    },
+    "wall_apical_anterior": {
+      "label": "Apical anterior wall motion",
+      "group": "Regional wall motion",
+      "target": "lv",
+      "sources": [
+        "WMS 2C Apical Anterior"
+      ],
+      "values": {
+        "normal": "Normal motion and thickening",
+        "hyperkinetic": "Hyperkinetic",
+        "normal_or_hyperkinetic": "Normal / hyperkinetic (report score 1)",
+        "hypokinetic": "Hypokinetic",
+        "severely_hypokinetic": "Severely hypokinetic",
+        "akinetic": "Akinetic",
+        "akinetic_or_severely_hypokinetic": "Akinetic / severely hypokinetic (report score 3)",
+        "dyskinetic": "Dyskinetic",
+        "aneurysmal": "Aneurysmal deformation"
+      },
+      "modalities": [
+        "bmode",
+        "color_flow"
+      ]
+    },
+    "wall_basal_inferolateral": {
+      "label": "Basal inferolateral wall motion",
+      "group": "Regional wall motion",
+      "target": "lv",
+      "sources": [
+        "WMS LAX Basal Inferolateral"
+      ],
+      "values": {
+        "normal": "Normal motion and thickening",
+        "hyperkinetic": "Hyperkinetic",
+        "normal_or_hyperkinetic": "Normal / hyperkinetic (report score 1)",
+        "hypokinetic": "Hypokinetic",
+        "severely_hypokinetic": "Severely hypokinetic",
+        "akinetic": "Akinetic",
+        "akinetic_or_severely_hypokinetic": "Akinetic / severely hypokinetic (report score 3)",
+        "dyskinetic": "Dyskinetic",
+        "aneurysmal": "Aneurysmal deformation"
+      },
+      "modalities": [
+        "bmode",
+        "color_flow"
+      ]
+    },
+    "wall_mid_inferolateral": {
+      "label": "Mid inferolateral wall motion",
+      "group": "Regional wall motion",
+      "target": "lv",
+      "sources": [
+        "WMS LAX Mid Inferolateral",
+        "WMS SAX Inferolateral"
+      ],
+      "values": {
+        "normal": "Normal motion and thickening",
+        "hyperkinetic": "Hyperkinetic",
+        "normal_or_hyperkinetic": "Normal / hyperkinetic (report score 1)",
+        "hypokinetic": "Hypokinetic",
+        "severely_hypokinetic": "Severely hypokinetic",
+        "akinetic": "Akinetic",
+        "akinetic_or_severely_hypokinetic": "Akinetic / severely hypokinetic (report score 3)",
+        "dyskinetic": "Dyskinetic",
+        "aneurysmal": "Aneurysmal deformation"
+      },
+      "modalities": [
+        "bmode",
+        "color_flow"
+      ]
+    },
+    "wall_basal_anteroseptal": {
+      "label": "Basal anteroseptal wall motion",
+      "group": "Regional wall motion",
+      "target": "lv",
+      "sources": [
+        "WMS LAX Basal Anteroseptal"
+      ],
+      "values": {
+        "normal": "Normal motion and thickening",
+        "hyperkinetic": "Hyperkinetic",
+        "normal_or_hyperkinetic": "Normal / hyperkinetic (report score 1)",
+        "hypokinetic": "Hypokinetic",
+        "severely_hypokinetic": "Severely hypokinetic",
+        "akinetic": "Akinetic",
+        "akinetic_or_severely_hypokinetic": "Akinetic / severely hypokinetic (report score 3)",
+        "dyskinetic": "Dyskinetic",
+        "aneurysmal": "Aneurysmal deformation"
+      },
+      "modalities": [
+        "bmode",
+        "color_flow"
+      ]
+    },
+    "wall_mid_anteroseptal": {
+      "label": "Mid anteroseptal wall motion",
+      "group": "Regional wall motion",
+      "target": "lv",
+      "sources": [
+        "WMS LAX Mid Anteroseptal",
+        "WMS SAX Anteroseptal"
+      ],
+      "values": {
+        "normal": "Normal motion and thickening",
+        "hyperkinetic": "Hyperkinetic",
+        "normal_or_hyperkinetic": "Normal / hyperkinetic (report score 1)",
+        "hypokinetic": "Hypokinetic",
+        "severely_hypokinetic": "Severely hypokinetic",
+        "akinetic": "Akinetic",
+        "akinetic_or_severely_hypokinetic": "Akinetic / severely hypokinetic (report score 3)",
+        "dyskinetic": "Dyskinetic",
+        "aneurysmal": "Aneurysmal deformation"
+      },
+      "modalities": [
+        "bmode",
+        "color_flow"
+      ]
+    }
+  },
+  "views": {
+    "A4C": {
+      "columns": [
+        "lv_function",
+        "lv_size",
+        "lv_wall_thickness",
+        "septal_bulge",
+        "rv_function",
+        "rv_size",
+        "la_size",
+        "ra_size",
+        "pericardial_effusion",
+        "mitral_appearance",
+        "mitral_motion",
+        "mitral_device",
+        "mitral_regurgitant_jet",
+        "tricuspid_appearance",
+        "tricuspid_motion",
+        "tricuspid_device",
+        "tricuspid_regurgitant_jet",
+        "wall_basal_inferoseptal",
+        "wall_mid_inferoseptal",
+        "wall_apical_septal",
+        "wall_basal_anterolateral",
+        "wall_mid_anterolateral",
+        "wall_apical_lateral"
+      ],
+      "targets": [
+        "lv",
+        "rv",
+        "la",
+        "ra",
+        "ivs",
+        "ias",
+        "mitral",
+        "tricuspid",
+        "pericardium"
+      ],
+      "wall_sources": {
+        "basal_inferoseptal": "WMS Basal Inferoseptal",
+        "mid_inferoseptal": "WMS 4C Mid Inferoseptal",
+        "apical_septal": "WMS 4C Apical septum",
+        "basal_anterolateral": "WMS 4C Basal Anterolateral",
+        "mid_anterolateral": "WMS 4C Mid Anterolateral",
+        "apical_lateral": "WMS 4C Apical Lateral"
+      },
+      "note": "No routine aortic-valve claim; RA size and local wall motion are optional priorities when explicitly abnormal."
+    },
+    "A4C_LV": {
+      "columns": [
+        "lv_function",
+        "lv_wall_thickness",
+        "septal_bulge",
+        "mitral_appearance",
+        "mitral_motion",
+        "mitral_device",
+        "mitral_regurgitant_jet",
+        "tricuspid_appearance",
+        "tricuspid_motion",
+        "tricuspid_device",
+        "tricuspid_regurgitant_jet",
+        "wall_basal_inferoseptal",
+        "wall_mid_inferoseptal",
+        "wall_apical_septal",
+        "wall_basal_anterolateral",
+        "wall_mid_anterolateral",
+        "wall_apical_lateral"
+      ],
+      "targets": [
+        "lv",
+        "mitral",
+        "tricuspid",
+        "ivs"
+      ],
+      "wall_sources": {
+        "basal_inferoseptal": "WMS Basal Inferoseptal",
+        "mid_inferoseptal": "WMS 4C Mid Inferoseptal",
+        "apical_septal": "WMS 4C Apical septum",
+        "basal_anterolateral": "WMS 4C Basal Anterolateral",
+        "mid_anterolateral": "WMS 4C Mid Anterolateral",
+        "apical_lateral": "WMS 4C Apical Lateral"
+      },
+      "note": "LV-focused: the LV and this view's valves are prefilled. LV function, valve findings and wall motion are claimed, never chamber size."
+    },
+    "A2C": {
+      "columns": [
+        "lv_function",
+        "lv_size",
+        "lv_wall_thickness",
+        "la_size",
+        "pericardial_effusion",
+        "mitral_appearance",
+        "mitral_motion",
+        "mitral_device",
+        "mitral_regurgitant_jet",
+        "wall_basal_inferior",
+        "wall_mid_inferior",
+        "wall_apical_inferior",
+        "wall_basal_anterior",
+        "wall_mid_anterior",
+        "wall_apical_anterior"
+      ],
+      "targets": [
+        "lv",
+        "la",
+        "mitral",
+        "pericardium"
+      ],
+      "wall_sources": {
+        "basal_inferior": "WMS 2C Basal Inferior",
+        "mid_inferior": "WMS 2C Mid Inferior",
+        "apical_inferior": "WMS 2C Apical Inferior",
+        "basal_anterior": "WMS 2C Basal Anterior",
+        "mid_anterior": "WMS 2C Mid Anterior",
+        "apical_anterior": "WMS 2C Apical Anterior"
+      },
+      "note": ""
+    },
+    "A2C_LV": {
+      "columns": [
+        "lv_function",
+        "lv_wall_thickness",
+        "mitral_appearance",
+        "mitral_motion",
+        "mitral_device",
+        "mitral_regurgitant_jet",
+        "wall_basal_inferior",
+        "wall_mid_inferior",
+        "wall_apical_inferior",
+        "wall_basal_anterior",
+        "wall_mid_anterior",
+        "wall_apical_anterior"
+      ],
+      "targets": [
+        "lv",
+        "mitral"
+      ],
+      "wall_sources": {
+        "basal_inferior": "WMS 2C Basal Inferior",
+        "mid_inferior": "WMS 2C Mid Inferior",
+        "apical_inferior": "WMS 2C Apical Inferior",
+        "basal_anterior": "WMS 2C Basal Anterior",
+        "mid_anterior": "WMS 2C Mid Anterior",
+        "apical_anterior": "WMS 2C Apical Anterior"
+      },
+      "note": "LV-focused: the LV and this view's valves are prefilled. LV function, valve findings and wall motion are claimed, never chamber size."
+    },
+    "A3C": {
+      "columns": [
+        "lv_function",
+        "lv_size",
+        "lv_wall_thickness",
+        "septal_bulge",
+        "la_size",
+        "pericardial_effusion",
+        "mitral_appearance",
+        "mitral_motion",
+        "mitral_device",
+        "mitral_regurgitant_jet",
+        "aortic_appearance",
+        "aortic_motion",
+        "aortic_device",
+        "aortic_regurgitant_jet",
+        "aorta_root_size",
+        "wall_apical_septal",
+        "wall_apical_lateral",
+        "wall_basal_inferolateral",
+        "wall_mid_inferolateral",
+        "wall_basal_anteroseptal",
+        "wall_mid_anteroseptal"
+      ],
+      "targets": [
+        "lv",
+        "la",
+        "mitral",
+        "aortic",
+        "lvot",
+        "aorta_root",
+        "pericardium",
+        "ivs"
+      ],
+      "wall_sources": {
+        "basal_inferolateral": "WMS LAX Basal Inferolateral",
+        "mid_inferolateral": "WMS LAX Mid Inferolateral",
+        "basal_anteroseptal": "WMS LAX Basal Anteroseptal",
+        "mid_anteroseptal": "WMS LAX Mid Anteroseptal"
+      },
+      "note": ""
+    },
+    "A3C_LV": {
+      "columns": [
+        "lv_function",
+        "lv_wall_thickness",
+        "septal_bulge",
+        "mitral_appearance",
+        "mitral_motion",
+        "mitral_device",
+        "mitral_regurgitant_jet",
+        "aortic_appearance",
+        "aortic_motion",
+        "aortic_device",
+        "aortic_regurgitant_jet",
+        "wall_apical_septal",
+        "wall_apical_lateral",
+        "wall_basal_inferolateral",
+        "wall_mid_inferolateral",
+        "wall_basal_anteroseptal",
+        "wall_mid_anteroseptal"
+      ],
+      "targets": [
+        "lv",
+        "mitral",
+        "aortic",
+        "ivs"
+      ],
+      "wall_sources": {
+        "basal_inferolateral": "WMS LAX Basal Inferolateral",
+        "mid_inferolateral": "WMS LAX Mid Inferolateral",
+        "basal_anteroseptal": "WMS LAX Basal Anteroseptal",
+        "mid_anteroseptal": "WMS LAX Mid Anteroseptal"
+      },
+      "note": "LV-focused: the LV and this view's valves are prefilled. LV function, valve findings and wall motion are claimed, never chamber size."
+    },
+    "A5C": {
+      "columns": [
+        "lv_function",
+        "lv_size",
+        "lv_wall_thickness",
+        "septal_bulge",
+        "rv_function",
+        "rv_size",
+        "la_size",
+        "ra_size",
+        "pericardial_effusion",
+        "mitral_appearance",
+        "mitral_motion",
+        "mitral_device",
+        "mitral_regurgitant_jet",
+        "aortic_appearance",
+        "aortic_motion",
+        "aortic_device",
+        "aortic_regurgitant_jet",
+        "tricuspid_appearance",
+        "tricuspid_motion",
+        "tricuspid_device",
+        "tricuspid_regurgitant_jet",
+        "aorta_root_size"
+      ],
+      "targets": [
+        "lv",
+        "rv",
+        "la",
+        "ra",
+        "ivs",
+        "ias",
+        "mitral",
+        "tricuspid",
+        "pericardium",
+        "aortic",
+        "lvot",
+        "aorta_root"
+      ],
+      "wall_sources": {},
+      "note": "The A4C structures plus the LVOT, aortic valve and aortic root. Requires actual valve/color-box coverage; no gradient or stenosis grade in a B-mode loop."
+    },
+    "PLAX": {
+      "columns": [
+        "lv_function",
+        "lv_size",
+        "lv_wall_thickness",
+        "septal_bulge",
+        "rv_size",
+        "la_size",
+        "pericardial_effusion",
+        "mitral_appearance",
+        "mitral_motion",
+        "mitral_device",
+        "mitral_regurgitant_jet",
+        "aortic_appearance",
+        "aortic_motion",
+        "aortic_device",
+        "aortic_regurgitant_jet",
+        "aorta_root_size",
+        "aorta_ascending_size",
+        "wall_basal_inferolateral",
+        "wall_mid_inferolateral",
+        "wall_basal_anteroseptal",
+        "wall_mid_anteroseptal"
+      ],
+      "targets": [
+        "lv",
+        "rv",
+        "la",
+        "ivs",
+        "mitral",
+        "aortic",
+        "lvot",
+        "aorta_root",
+        "aorta_ascending",
+        "pericardium"
+      ],
+      "wall_sources": {
+        "basal_inferolateral": "WMS LAX Basal Inferolateral",
+        "mid_inferolateral": "WMS LAX Mid Inferolateral",
+        "basal_anteroseptal": "WMS LAX Basal Anteroseptal",
+        "mid_anteroseptal": "WMS LAX Mid Anteroseptal"
+      },
+      "note": "Optional local effusion. LV function may be assessed if adequate; not the preferred isolated EF route."
+    },
+    "PLAX_DEEP": {
+      "columns": [
+        "lv_function",
+        "lv_size",
+        "lv_wall_thickness",
+        "septal_bulge",
+        "rv_size",
+        "la_size",
+        "pericardial_effusion",
+        "mitral_appearance",
+        "mitral_motion",
+        "mitral_device",
+        "mitral_regurgitant_jet",
+        "aortic_appearance",
+        "aortic_motion",
+        "aortic_device",
+        "aortic_regurgitant_jet",
+        "aorta_root_size",
+        "aorta_ascending_size",
+        "wall_basal_inferolateral",
+        "wall_mid_inferolateral",
+        "wall_basal_anteroseptal",
+        "wall_mid_anteroseptal"
+      ],
+      "targets": [
+        "lv",
+        "rv",
+        "la",
+        "ivs",
+        "mitral",
+        "aortic",
+        "lvot",
+        "aorta_root",
+        "aorta_ascending",
+        "pericardium",
+        "aorta_descending"
+      ],
+      "wall_sources": {
+        "basal_inferolateral": "WMS LAX Basal Inferolateral",
+        "mid_inferolateral": "WMS LAX Mid Inferolateral",
+        "basal_anteroseptal": "WMS LAX Basal Anteroseptal",
+        "mid_anteroseptal": "WMS LAX Mid Anteroseptal"
+      },
+      "note": "The PLAX structures plus the descending aorta, and the PLAX findings. Pericardial versus pleural fluid requires landmark assessment; descending aorta must not be labeled aortic root."
+    },
+    "PSAX": {
+      "label": "PSAX (cannot tell the level)",
+      "prefill_view": false,
+      "targets": [
+        "lv",
+        "ivs",
+        "pericardium"
+      ],
+      "columns": [
+        "lv_function",
+        "pericardial_effusion"
+      ],
+      "wall_sources": {
+        "mid_anterior": "WMS SAX Anterior",
+        "mid_anterolateral": "WMS SAX Anterolateral",
+        "mid_inferolateral": "WMS SAX Inferolateral",
+        "mid_inferior": "WMS SAX Inferior",
+        "mid_inferoseptal": "WMS SAX Inferoseptal",
+        "mid_anteroseptal": "WMS SAX Anteroseptal"
+      },
+      "note": "The view classifier's class: it gives no level, so a clip of this class opens with no view and the reviewer chooses PSAX_BASAL, PSAX_MID or PSAX_APICAL, or this view when the level cannot be told. Only what every level claims is prefilled: no RV, no chamber size, and no LV wall thickness, which only the basal level claims. A clip at the aortic valve level is PSAX_AV."
+    },
+    "PSAX_BASAL": {
+      "refines": "PSAX",
+      "label": "PSAX_BASAL (mitral level)",
+      "targets": [
+        "lv",
+        "ivs",
+        "pericardium",
+        "mitral"
+      ],
+      "columns": [
+        "lv_function",
+        "lv_wall_thickness",
+        "septal_bulge",
+        "pericardial_effusion",
+        "mitral_appearance",
+        "mitral_motion",
+        "mitral_device",
+        "mitral_regurgitant_jet"
+      ],
+      "wall_sources": {},
+      "note": "Short axis at the mitral valve, the only PSAX level that claims LV wall thickness. No RV, no chamber size."
+    },
+    "PSAX_MID": {
+      "refines": "PSAX",
+      "label": "PSAX_MID (papillary level)",
+      "targets": [
+        "lv",
+        "ivs",
+        "pericardium",
+        "papillary_muscles",
+        "chordae"
+      ],
+      "columns": [
+        "lv_function",
+        "pericardial_effusion",
+        "wall_mid_inferoseptal",
+        "wall_mid_anterolateral",
+        "wall_mid_inferior",
+        "wall_mid_anterior",
+        "wall_mid_inferolateral",
+        "wall_mid_anteroseptal"
+      ],
+      "wall_sources": {
+        "mid_anterior": "WMS SAX Anterior",
+        "mid_anterolateral": "WMS SAX Anterolateral",
+        "mid_inferolateral": "WMS SAX Inferolateral",
+        "mid_inferior": "WMS SAX Inferior",
+        "mid_inferoseptal": "WMS SAX Inferoseptal",
+        "mid_anteroseptal": "WMS SAX Anteroseptal"
+      },
+      "note": "Fixed short axis at the papillary muscles. Papillary muscles, chordae and the mid wall segments may be assessed. No mitral leaflet, valve-device or regurgitant-jet claims; no chamber size or LV wall thickness. A sweep crossing levels must be split into level-specific clips or left unresolved, not assumed to show every level."
+    },
+    "PSAX_APICAL": {
+      "refines": "PSAX",
+      "label": "PSAX_APICAL",
+      "targets": [
+        "lv",
+        "ivs",
+        "pericardium"
+      ],
+      "columns": [
+        "lv_function",
+        "pericardial_effusion"
+      ],
+      "wall_sources": {},
+      "note": "Short axis near the apex: no RV, no chamber size, no LV wall thickness."
+    },
+    "PSAX_AV": {
+      "columns": [
+        "rv_size",
+        "la_size",
+        "ra_size",
+        "aortic_appearance",
+        "aortic_motion",
+        "aortic_device",
+        "aortic_regurgitant_jet",
+        "tricuspid_appearance",
+        "tricuspid_motion",
+        "tricuspid_device",
+        "tricuspid_regurgitant_jet",
+        "pulmonic_appearance",
+        "pulmonic_motion",
+        "pulmonic_device",
+        "pulmonic_regurgitant_jet",
+        "aortic_cusp_count"
+      ],
+      "targets": [
+        "aortic",
+        "rv",
+        "rvot",
+        "ra",
+        "la",
+        "tricuspid",
+        "pulmonic",
+        "pulmonary_artery",
+        "ias"
+      ],
+      "wall_sources": {},
+      "note": "Valve/jet must be identified; aortic morphology is preferred en-face when systolic opening is captured. The pulmonic valve, proximal pulmonary artery and interatrial septum are prefilled too: untick them when they are not visible."
+    },
+    "RVINF": {
+      "columns": [
+        "rv_function",
+        "rv_size",
+        "ra_size",
+        "tricuspid_appearance",
+        "tricuspid_motion",
+        "tricuspid_device",
+        "tricuspid_regurgitant_jet"
+      ],
+      "targets": [
+        "rv",
+        "ra",
+        "tricuspid"
+      ],
+      "wall_sources": {},
+      "note": "Focused inflow view is not a complete RV quantification study."
+    },
+    "SUBCOSTAL": {
+      "columns": [
+        "lv_function",
+        "lv_size",
+        "lv_wall_thickness",
+        "rv_function",
+        "rv_size",
+        "la_size",
+        "ra_size",
+        "pericardial_effusion",
+        "ivc_size",
+        "ivc_collapse",
+        "mitral_appearance",
+        "mitral_motion",
+        "mitral_device",
+        "mitral_regurgitant_jet",
+        "tricuspid_appearance",
+        "tricuspid_motion",
+        "tricuspid_device",
+        "tricuspid_regurgitant_jet"
+      ],
+      "targets": [],
+      "levels": {
+        "four_chamber": {
+          "targets": [
+            "lv",
+            "rv",
+            "la",
+            "ra",
+            "ivs",
+            "ias",
+            "mitral",
+            "tricuspid",
+            "pericardium"
+          ],
+          "columns": []
+        },
+        "ivc": {
+          "targets": [
+            "ivc",
+            "hepatic_veins"
+          ],
+          "columns": []
+        }
+      },
+      "default_level": "four_chamber",
+      "wall_sources": {},
+      "note": "The four-chamber subtype is prefilled; the reviewer switches an IVC sweep to the IVC subtype. IVC and chamber findings never mix."
+    },
+    "SUPRASTERNAL": {
+      "columns": [
+        "aorta_arch_size"
+      ],
+      "targets": [
+        "aorta_arch"
+      ],
+      "wall_sources": {},
+      "note": "Arch observations only; spectral obstruction/velocity labels remain separate."
+    },
+    "A2C_ZOOM": {
+      "columns": [
+        "lv_function",
+        "lv_wall_thickness",
+        "pericardial_effusion",
+        "mitral_appearance",
+        "mitral_motion",
+        "mitral_device",
+        "mitral_regurgitant_jet",
+        "wall_basal_inferior",
+        "wall_mid_inferior",
+        "wall_apical_inferior",
+        "wall_basal_anterior",
+        "wall_mid_anterior",
+        "wall_apical_anterior"
+      ],
+      "targets": [
+        "lv",
+        "la",
+        "mitral",
+        "pericardium"
+      ],
+      "wall_sources": {
+        "basal_inferior": "WMS 2C Basal Inferior",
+        "mid_inferior": "WMS 2C Mid Inferior",
+        "apical_inferior": "WMS 2C Apical Inferior",
+        "basal_anterior": "WMS 2C Basal Anterior",
+        "mid_anterior": "WMS 2C Mid Anterior",
+        "apical_anterior": "WMS 2C Apical Anterior"
+      },
+      "note": "Zoomed: the base view's structures are prefilled; untick any outside the zoom (a tick means visible, even partly). Valve, root and chamber function findings are claimed, never chamber size."
+    },
+    "A3C_ZOOM": {
+      "columns": [
+        "lv_function",
+        "lv_wall_thickness",
+        "septal_bulge",
+        "pericardial_effusion",
+        "mitral_appearance",
+        "mitral_motion",
+        "mitral_device",
+        "mitral_regurgitant_jet",
+        "aortic_appearance",
+        "aortic_motion",
+        "aortic_device",
+        "aortic_regurgitant_jet",
+        "aorta_root_size",
+        "wall_apical_septal",
+        "wall_apical_lateral",
+        "wall_basal_inferolateral",
+        "wall_mid_inferolateral",
+        "wall_basal_anteroseptal",
+        "wall_mid_anteroseptal"
+      ],
+      "targets": [
+        "lv",
+        "la",
+        "mitral",
+        "aortic",
+        "lvot",
+        "aorta_root",
+        "pericardium",
+        "ivs"
+      ],
+      "wall_sources": {
+        "basal_inferolateral": "WMS LAX Basal Inferolateral",
+        "mid_inferolateral": "WMS LAX Mid Inferolateral",
+        "basal_anteroseptal": "WMS LAX Basal Anteroseptal",
+        "mid_anteroseptal": "WMS LAX Mid Anteroseptal"
+      },
+      "note": "Zoomed: the base view's structures are prefilled; untick any outside the zoom (a tick means visible, even partly). Valve, root and chamber function findings are claimed, never chamber size."
+    },
+    "A4C_ZOOM": {
+      "columns": [
+        "lv_function",
+        "lv_wall_thickness",
+        "rv_function",
+        "pericardial_effusion",
+        "mitral_appearance",
+        "mitral_motion",
+        "mitral_device",
+        "mitral_regurgitant_jet",
+        "tricuspid_appearance",
+        "tricuspid_motion",
+        "tricuspid_device",
+        "tricuspid_regurgitant_jet",
+        "wall_basal_inferoseptal",
+        "wall_mid_inferoseptal",
+        "wall_apical_septal",
+        "wall_basal_anterolateral",
+        "wall_mid_anterolateral",
+        "wall_apical_lateral"
+      ],
+      "targets": [
+        "lv",
+        "rv",
+        "la",
+        "ra",
+        "ivs",
+        "ias",
+        "mitral",
+        "tricuspid",
+        "pericardium"
+      ],
+      "wall_sources": {
+        "basal_inferoseptal": "WMS Basal Inferoseptal",
+        "mid_inferoseptal": "WMS 4C Mid Inferoseptal",
+        "apical_septal": "WMS 4C Apical septum",
+        "basal_anterolateral": "WMS 4C Basal Anterolateral",
+        "mid_anterolateral": "WMS 4C Mid Anterolateral",
+        "apical_lateral": "WMS 4C Apical Lateral"
+      },
+      "note": "Zoomed: the base view's structures are prefilled; untick any outside the zoom (a tick means visible, even partly). Valve, root and chamber function findings are claimed, never chamber size."
+    },
+    "A5C_ZOOM": {
+      "columns": [
+        "lv_function",
+        "lv_wall_thickness",
+        "rv_function",
+        "pericardial_effusion",
+        "mitral_appearance",
+        "mitral_motion",
+        "mitral_device",
+        "mitral_regurgitant_jet",
+        "aortic_appearance",
+        "aortic_motion",
+        "aortic_device",
+        "aortic_regurgitant_jet",
+        "tricuspid_appearance",
+        "tricuspid_motion",
+        "tricuspid_device",
+        "tricuspid_regurgitant_jet",
+        "aorta_root_size"
+      ],
+      "targets": [
+        "lv",
+        "rv",
+        "la",
+        "ra",
+        "ivs",
+        "ias",
+        "mitral",
+        "tricuspid",
+        "pericardium",
+        "aortic",
+        "lvot",
+        "aorta_root"
+      ],
+      "wall_sources": {},
+      "note": "Zoomed: the base view's structures are prefilled; untick any outside the zoom (a tick means visible, even partly). Valve, root and chamber function findings are claimed, never chamber size."
+    },
+    "PLAX_ZOOM": {
+      "columns": [
+        "mitral_appearance",
+        "mitral_motion",
+        "mitral_device",
+        "mitral_regurgitant_jet",
+        "aortic_appearance",
+        "aortic_motion",
+        "aortic_device",
+        "aortic_regurgitant_jet",
+        "aorta_root_size",
+        "aorta_ascending_size"
+      ],
+      "targets": [
+        "la",
+        "ivs",
+        "mitral",
+        "aortic",
+        "lvot",
+        "aorta_root",
+        "aorta_ascending"
+      ],
+      "wall_sources": {},
+      "note": "Zoomed: the LV, RV and pericardium are not judged, and only valve, root and ascending aorta findings are claimed; untick any structure outside the zoom (a tick means visible, even partly). A zoom on the aortic valve is PLAX_ZOOM_AV."
+    },
+    "PLAX_ZOOM_AV": {
+      "refines": "PLAX_ZOOM",
+      "label": "PLAX_ZOOM_AV (zoomed on the aortic valve)",
+      "targets": [
+        "aortic",
+        "lvot",
+        "aorta_root",
+        "aorta_ascending"
+      ],
+      "columns": [
+        "aortic_appearance",
+        "aortic_motion",
+        "aortic_device",
+        "aortic_regurgitant_jet",
+        "aorta_root_size",
+        "aorta_ascending_size"
+      ],
+      "wall_sources": {},
+      "note": "Zoomed on the aortic valve: only the valve, LVOT, aortic root and ascending aorta are prefilled and claimed. The classifier has no such class yet: a PLAX_ZOOM clip keeps its prefills until the reviewer corrects the view, and the findings this view does not claim then leave the candidate."
+    },
+    "OTHER": {
+      "columns": [],
+      "targets": [],
+      "wall_sources": {},
+      "note": "No automatic report-to-local-caption routing. Reclassify or use separately flagged weak study supervision."
+    }
+  },
+  "review_states": {
+    "yes": "Supported in this input",
+    "no": "Incorrect / should not be here",
+    "cannot_assess": "Cannot assess",
+    "missing": "Important finding missing",
+    "no_claim": "No proposal"
+  },
+  "error_kinds": {
+    "wrong_value": "Wrong value / diagnosis",
+    "wrong_severity": "Wrong severity",
+    "wrong_location": "Wrong structure / segment",
+    "contradicted": "Contradicted by visible evidence",
+    "not_visible": "Claimed structure/finding not visible",
+    "wrong_view": "Wrong view / target",
+    "wrong_modality": "Needs another acquisition mode",
+    "study_only": "Study-level claim in a local caption",
+    "unsupported_report": "No supporting source / invented assertion"
+  },
+  "cannot_assess_reasons": {
+    "poor_quality": "Poor image quality",
+    "incomplete_cycle": "Incomplete cardiac/respiratory cycle",
+    "target_outside": "Target outside the displayed input",
+    "unresolved_view": "View / slice level unresolved",
+    "insufficient_input": "Needs additional views or measurements"
+  },
+  "uninterpretable_reasons": {
+    "poor_quality": "Poor image quality or artifacts throughout",
+    "no_cardiac_structure": "No identifiable cardiac structure (crop, zoom or depth)",
+    "not_cardiac": "Not a cardiac ultrasound acquisition",
+    "other": "Other: say why in Comments"
+  },
+  "unsupported_columns": {
+    "exact_ef": "Exact numerical EF",
+    "valve_severity": "Integrated valve severity",
+    "numeric_measurement": "Numeric dimension / velocity / gradient / pressure",
+    "other_statement": "Other unsupported statement"
+  },
+  "modalities": {
+    "bmode": "B-mode",
+    "color_flow": "Color Doppler",
+    "spectral": "Spectral Doppler",
+    "m_mode": "M-mode",
+    "mixed": "Mixed / analysis acquisition",
+    "unresolved": "Unresolved"
+  },
+  "targets": {
+    "lv": "LV",
+    "rv": "RV",
+    "la": "LA",
+    "ra": "RA",
+    "ivs": "Interventricular septum",
+    "ias": "Interatrial septum",
+    "mitral": "Mitral valve",
+    "tricuspid": "Tricuspid valve",
+    "aortic": "Aortic valve",
+    "pulmonic": "Pulmonic valve",
+    "papillary_muscles": "Papillary muscles",
+    "chordae": "Chordae",
+    "lvot": "LVOT",
+    "rvot": "RVOT",
+    "pulmonary_artery": "Proximal pulmonary artery",
+    "aorta_root": "Aortic root",
+    "aorta_ascending": "Ascending aorta",
+    "aorta_arch": "Aortic arch",
+    "aorta_descending": "Descending aorta",
+    "pericardium": "Pericardium",
+    "ivc": "IVC",
+    "hepatic_veins": "Hepatic veins"
+  },
+  "target_structures": {
+    "lv": "left_ventricle",
+    "rv": "right_ventricle",
+    "la": "left_atrium",
+    "ra": "right_atrium",
+    "ivs": "interventricular_septum",
+    "ias": "interatrial_septum",
+    "mitral": "mitral_valve",
+    "tricuspid": "tricuspid_valve",
+    "aortic": "aortic_valve",
+    "pulmonic": "pulmonic_valve",
+    "papillary_muscles": "papillary_muscles",
+    "chordae": "chordae_tendineae",
+    "lvot": "left_ventricular_outflow_tract",
+    "rvot": "right_ventricular_outflow_tract",
+    "pulmonary_artery": "pulmonary_artery",
+    "aorta_root": "aortic_root",
+    "aorta_ascending": "ascending_aorta",
+    "aorta_arch": "aortic_arch",
+    "aorta_descending": "descending_aorta",
+    "pericardium": "pericardium",
+    "ivc": "inferior_vena_cava",
+    "hepatic_veins": "hepatic_veins"
+  },
+  "levels": {
+    "not_applicable": "Not applicable (not subcostal)",
+    "unresolved": "Cannot tell the subtype",
+    "four_chamber": "Subcostal four-chamber",
+    "ivc": "Subcostal IVC / hepatic veins"
+  },
+  "wms_scale": {
+    "1": "normal_or_hyperkinetic",
+    "2": "hypokinetic",
+    "3": "akinetic_or_severely_hypokinetic",
+    "4": "dyskinetic",
+    "5": "aneurysmal"
+  },
+  "prefill_policy": "Explicit report values only, routed by view, mode, structures and level. Suggested structures are unverified priors; after a view or subtype change reviewers must explicitly select newly visible structures. No missing-to-normal inference. Candidates are unverified drafts; review_completed is never prefilled.",
+  "scoring_policy": "Immutable candidates and explicit corrections remain separate. Cannot assess is neither an error nor a negative. An uninterpretable clip requires only its reason, optional comment and review completion; no view or clinical findings are asked. Full nested validation and submitted review plus exact input provenance gate release. Refined views exclude unsupported candidate columns into out_of_view, not supported or rejected.",
+  "sources": [
+    "https://www.asecho.org/wp-content/uploads/2016/02/2015_ChamberQuantificationREV.pdf",
+    "https://www.asecho.org/wp-content/uploads/2025/09/PIIS0894731725002925.pdf",
+    "https://www.asecho.org/wp-content/uploads/2019/01/2019_Comprehensive-TTE.pdf",
+    "https://www.asecho.org/wp-content/uploads/2025/04/2017VavularRegurgitationGuideline.pdf",
+    "https://docs.labelbox.com/horizon/developer-guides/import-video-annotations",
+    "https://docs.labelbox.com/horizon/guides/model-assisted-labeling"
+  ]
+}
