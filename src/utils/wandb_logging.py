@@ -258,11 +258,14 @@ def unique_frame_fraction(clips, padded=None):
     return total / float(b)
 
 
-def log_input_clips(run, clips, step, normalize, num_videos=2, fps=4, tag="train/input_clips", padded=None):
+def log_input_clips(run, clips, step, normalize, num_videos=2, fps=4, tag="train/input_clips", padded=None,
+                    recycled=None):
     """Actual logging function to wandb. `step` is recorded as the `STEP_METRIC` value 
     rather than passed to `run.log(step=...)`, so a resumed run never replays a step 
     wandb would drop. `padded` marks the black padding frames of `clips` (a (B, T) bool
-    tensor, or a list parallel to `clips`).
+    tensor, or a list parallel to `clips`). `recycled`, in the same form, marks real frames that
+    the "loop" temporal-padding policy repeats on purpose: like padding, they are left out of the
+    repeated-frame check, but they are not counted as padding.
     """
     if run is None or wandb is None:
         return
@@ -278,12 +281,17 @@ def log_input_clips(run, clips, step, normalize, num_videos=2, fps=4, tag="train
         if isinstance(padded, (list, tuple)):
             padded = padded[0] if padded else None
         pad = None if padded is None else padded[:n]
+        if isinstance(recycled, (list, tuple)):
+            recycled = recycled[0] if recycled else None
+        exclude = pad
+        if recycled is not None:
+            exclude = recycled[:n] if pad is None else pad | recycled[:n].to(pad.device)
         vids = denormalize_clips(sample, normalize).cpu().numpy()
         payload = {f"{tag}/{i}": wandb.Video(vids[i], fps=fps, format="gif") for i in range(n)}
 
         # Check uploaded clips for repeated real frames only. Report black padding separately
-        # rather than counting it as repetition.
-        frac = unique_frame_fraction(sample, pad)
+        # rather than counting it, or deliberately looped frames, as repetition.
+        frac = unique_frame_fraction(sample, exclude)
         payload["data/unique_frame_frac"] = frac
         if pad is not None:
             payload["data/padded_frame_frac"] = float(pad.float().mean())

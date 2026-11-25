@@ -200,6 +200,143 @@ the metrics and how to reproduce a run are in
 - A different seed, configuration or metadata snapshot is a different cohort: write it to a
   new directory and record which directory each experiment used.
 
+## Archive mode: every study, anchored patient split
+
+[`configs/data/manifests_tte_archive.yaml`](../configs/data/manifests_tte_archive.yaml) sets
+`selection.mode: all_studies` for full-archive pretraining. It keeps **every eligible study of
+every patient** (longitudinal studies included), requires no EF label, and builds two training
+arms from one master index. The default mode, `one_study_per_patient`, is unchanged.
+
+```bash
+# 1. Freeze the patient split early: eligibility and assignment only, nothing is decoded.
+python data/build_manifests.py --config configs/data/manifests_tte_archive.yaml \
+    --metadata <video_metadata.parquet> --anchor-splits <10k_output_dir>/studies.csv \
+    --out-dir <split_dir> --assign-only
+
+# 2. Benchmark verification: decode 2,000 pending videos, report the rate and the time left,
+#    keep the results in the cache, write no manifest (`--verify-limit 0`: cache coverage only).
+python data/build_manifests.py --config configs/data/manifests_tte_archive.yaml \
+    --metadata <video_metadata.parquet> --anchor-splits <split_dir>/patient_splits.csv \
+    --verify-cache <cache_dir> --out-dir <archive_dir> --workers 32 --verify-limit 2000
+
+# 3. Full build: verify (resumable), join the acquisition index, write the arms and smoke-test them.
+python data/build_manifests.py --config configs/data/manifests_tte_archive.yaml \
+    --metadata <video_metadata.parquet> --anchor-splits <split_dir>/patient_splits.csv \
+    --acquisition-index <acquisition_index> --verify-cache <cache_dir> \
+    --out-dir <archive_dir> --workers 32
+```
+
+The acquisition index must list every eligible video of the verified splits, from the current scanner version
+(`SCANNER_VERSION`), with a successful header read; the build checks this before it verifies anything and stops
+otherwise, because a partial, stale or failed index would silently shrink `train_bmode.csv`. Failed reads that
+persist after `scan_acquisition.py scan ... --retry-errors` can be admitted, once reviewed, with
+`--accept-acquisition-read-errors N` (they stay out of `train_bmode.csv`). `--allow-partial-acquisition` admits
+any index for development builds only. `manifest_info.json` (`counts.acquisition`: `coverage_complete`,
+`stale_scanner_version`, `read_errors`, `ready`) and `summary.md` record all of it. Videos read successfully with
+an unknown mode are results, not errors: they stay out of `train_bmode.csv`.
+
+A build is written and smoke-tested in a staging folder next to `--out-dir`, then gets `outputs.sha256` (every
+file, `sha256sum -c` format) and, last, the receipt `BUILD_COMPLETE.json`, and only then is renamed to `--out-dir`.
+The smoke test of each manifest runs in a supervised worker process with a deadline (`--smoke-timeout`, default
+900 s, one retry), so a stalled decoder or network read fails the build instead of hanging it. A failure at any
+step leaves `--out-dir` as it was (the staging folder stays for inspection); if the final rename fails after an
+earlier build was moved aside, that build is moved back. An earlier build replaced with `--overwrite` is kept as
+`<out-dir>.replaced-<time>`. Only an abrupt end of the process between those two renames leaves `--out-dir`
+missing; the newest `<out-dir>.replaced-*` is then the earlier build, and the next run says so. Consumers should
+require the receipt and check the checksums (the production driver does).
+
+`--dry-run` reads the metadata and the anchor and prints the split counts, writing nothing.
+
+### Patient split
+
+- `--anchor-splits` is required: the 10k build's `studies.csv` (its patients get origin
+  `legacy`) or an earlier archive build's `patient_splits.csv` (origins carried over).
+  Identifiers are read as text, so leading zeros survive. A patient with two splits stops the build.
+- Every anchored patient keeps its split. Targets are exact patient counts over **all** eligible
+  patients (70/10/20 by default); the anchored patients present fill part of each target, and
+  the patients new to the anchor fill the rest in a seeded order of their sorted ids (a random
+  stream of its own, independent of the one-study stages). Video fractions are only
+  approximately proportional.
+- Splits are assigned from metadata eligibility, before any video is decoded. A study or patient
+  whose videos all fail verification keeps its split and is counted; nothing is redrawn.
+- Anchored patients without an eligible study are counted, listed in
+  `anchor_absent_patients.csv`, and kept in `patient_splits.csv` with `in_archive` false, so a
+  patient who returns in a later export keeps the original split.
+- Anchor every later build on the previous build's `patient_splits.csv`: the mapping is then
+  unchanged by new studies, new years or metadata row order, and only the new patients are assigned.
+  The anchor must not lie inside `--out-dir`.
+
+### Verification cache
+
+Verification is the same full decode as in the one-study mode (`verify_video`, unchanged). With
+`--verify-cache <dir>` (outside the repository) every result is stored with the file's size and
+modification time and `VERIFY_VERSION` plus the decoder version; a result is reused only when all
+of them match, so a changed file, a new `verify_video` (bump `VERIFY_VERSION`) or a decoder
+upgrade is verified again. Results are written atomically every `--verify-chunk` videos (default
+20,000), so an interrupted run resumes after its last write. Pending videos are verified in a
+fixed shuffled order, so a `--verify-limit` run measures a representative sample.
+`--verify-splits` restricts verification to some splits; the other splits' videos are excluded
+as `not_verified` and get no manifest.
+
+### Supervised workers and failures
+
+With `--workers` above 1 (the default is 32) each video is decoded in a worker process
+(`data/supervised_pool.py`) under a deadline, `--verify-timeout` (default 300 s, which outlasts one NFS major timeout of the video
+mount).
+A worker that overruns the deadline or dies is killed and replaced; a thread or a cancelled future
+could not stop a stalled decoder or network read, a process can be killed. `--workers 1` decodes in
+the build's own process, without a deadline (debugging only).
+
+| Situation | What happens |
+|---|---|
+| A worker times out or dies on a video | The video is tried again, up to `--verify-retries` more times (default 2) in this run, a few seconds later; each failed attempt is logged with its task index and counts only |
+| A decode fails: `empty`, `undecodable`, `no_frames`, `corrupt_frames` | Tried again the same way before the failure is cached: a storage read error can cause it with the file unchanged. `missing`, `no_path` and `whitespace_in_path` are cached at once (`missing` without a fingerprint, so it is verified again once the file appears) |
+| A video still has no result after every attempt (unresolved) | Never cached. Every completed result is cached, the unresolved videos are listed in `<verify_cache>/unresolved-<time>.csv`, and the build raises `VerificationIncomplete`: nonzero exit, nothing written to `--out-dir`. Rerunning the same command tries them again |
+| The same videos stay unresolved run after run | Inspect them, then rerun with `--accept-verify-failures N` (N at least their number): they are excluded as `verify_timeout`, `verify_crash` or `verify_error` (counted in `manifest_info.json`, listed in `excluded_videos.csv`) for that build only, never cached. More than N still stops the build |
+| Attempts keep failing with no result in between (2 x workers + retries + 1 in a row), or killed workers cannot be reaped | The storage or the workers are failing: the run stops (`PoolBroken`), keeping what it cached; rerun once the storage is back |
+| A cached failure should be retried after a storage incident | `--retry-failed` verifies the cached decode failures (the four above) again, still reusing every cached success |
+
+The stat of cached entries (`--stat-threads`) raises `PoolBroken` when nothing answers for
+`--verify-timeout` seconds, instead of waiting on a stalled mount forever.
+
+### Arms
+
+| Manifest | Rows |
+|---|---|
+| `train_inclusive.csv` | Every verified video of a train patient, any view (`OTHER` included) and any acquisition mode, unknown included |
+| `train_bmode.csv` | The subset whose DICOM header confirms B-mode: `acq_category` `bmode` with `acq_confidence` `header` in the acquisition index, from a vendor in `acquisition.bmode_vendors`. Color, spectral Doppler, M-mode, other, unknown, vendor-unvalidated and unscanned videos are left out. Written only with `--acquisition-index`. The same rule (`effective_acq_category`) gives the acquisition category the RVSP probe slots and RADAR records use |
+| `val.csv`, `test.csv` | Every verified video of the split's patients (inclusive) |
+
+The acquisition index (from `data/scan_acquisition.py`, a parquet file or directory) is joined on
+`columns.dicom_path`; a DICOM path listed twice in it stops the build. A video absent from it is
+`unknown` and counted as not scanned. Since the inclusive arm keeps unknown and other modes,
+comparing the arms is not a pure color-flow ablation; the summary quantifies these modes.
+
+### Outputs of an archive build
+
+| File | Contents |
+|---|---|
+| `patient_splits.csv` | `patient_id`, `split`, `origin` (`legacy` or `new`), `in_archive`: the mapping every later pipeline reuses, and the anchor of the next build |
+| `anchor_absent_patients.csv` | Anchored patients without an eligible study in this archive |
+| `studies.csv` | Every eligible study: patient, split, origin, date, exam type, `n_videos_metadata`, `label` (with `--labels`), and after verification `n_ok`, `n_bmode` (valid and header-confirmed B-mode, in every split), `n_failed`, `n_not_verified` |
+| `videos.parquet` | Master index of every eligible video, failed ones included: ids, split, origin, view, paths, vendor, model, verification `reason`, `n_frames`, `fps`, `needs_padding`, acquisition fields, `in_inclusive`, `in_bmode` |
+| `excluded_videos.csv` | Every eligible video left out of a manifest, with the `arm` (`inclusive` or `bmode`) and the reason: the verification failure, `not_verified`, or `acq:<category>` for the B-mode arm |
+| loader manifests | As in the table above |
+| `manifest_info.json`, `summary.md` | Provenance (inputs with SHA-256, the anchor and acquisition index included) and aggregate counts: by split for each arm, by year, view, vendor, model and acquisition mode, verification outcomes and rate, studies and patients left without videos, and videos per patient and per study |
+
+`--assign-only` writes the first three files, `manifest_info.json` and `summary.md`.
+
+Pretraining samples manifest rows (clips) uniformly, so a patient weighs in proportion to the
+number of videos over all their studies; the summary reports the share of training videos held by
+the top 1% and 10% of patients.
+
+Before writing, the build checks: no patient in two splits; every anchored patient keeps its
+split and origin; no anchored val/test patient in a training manifest; all videos of a study share
+its patient's split; `train_bmode` is a subset of `train_inclusive` with header-confirmed B-mode
+only; no video or DICOM path under two videos, studies or patients; no whitespace in a manifest
+path. The smoke test then loads each manifest with the EchoJEPA loader, with the special cases
+(low frame rate, unknown frame rate, shorter than one clip) drawn from `videos.parquet`.
+
 ## Keeping patient data out of Git
 
 The source exports (video metadata, report export, PACS index) and everything the scripts
@@ -216,6 +353,8 @@ Keep all of them outside this repository and never commit them:
 
 ```bash
 python -m unittest tests.data.test_build_manifests tests.data.test_make_probe_manifests
+python -m unittest tests.data.test_build_archive_manifests   # archive mode
+python -m unittest tests.data.test_supervision   # worker crash / stall injection, each run under a hard deadline
 ```
 
 The tests use synthetic metadata and tiny generated videos only. They also check that no
