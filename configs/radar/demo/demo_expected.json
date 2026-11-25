@@ -1,0 +1,396 @@
+{
+  "ontology_version": "0.1.0",
+  "records": [
+    {
+      "record_id": "rc-dee44424a0dfe999c721a419",
+      "view": "A4C",
+      "acquisition": "bmode",
+      "caption_fr": "Coupe apicale 4 cavités (A4C), mode B. Fonction systolique ventriculaire gauche : modérément diminuée. Fraction d'éjection VG (estimation visuelle) : 35 %. Cinétique segmentaire du VG (segment le plus atteint) : hypokinésie. Taille de l'oreillette gauche : modérément augmentée. Épanchement péricardique : absent.",
+      "caption_en": "Apical 4-chamber view (A4C), B-mode. Left ventricular systolic function: moderately reduced. LV ejection fraction (visual estimate): 35%. LV regional wall motion (worst segment): hypokinesis. Left atrial size: moderately increased. Pericardial effusion: none.",
+      "claims": [
+        [
+          "lv_systolic_function",
+          "moderately_reduced"
+        ],
+        [
+          "lv_ejection_fraction",
+          35
+        ],
+        [
+          "lv_regional_wall_motion",
+          "hypokinetic"
+        ],
+        [
+          "la_size",
+          "moderate"
+        ],
+        [
+          "pericardial_effusion",
+          "none"
+        ]
+      ],
+      "gaps": [
+        [
+          "rv_systolic_pressure",
+          "modality_absent"
+        ],
+        [
+          "tr_peak_velocity",
+          "modality_absent"
+        ],
+        [
+          "mitral_regurgitation",
+          "modality_absent"
+        ],
+        [
+          "tricuspid_regurgitation",
+          "modality_absent"
+        ],
+        [
+          "tricuspid_regurgitation_ero",
+          "modality_absent"
+        ]
+      ],
+      "out_of_view": [],
+      "expected_structures": [
+        "lv_visible",
+        "rv_visible",
+        "la_visible",
+        "ra_visible",
+        "mitral_valve_visible",
+        "tricuspid_valve_visible",
+        "interatrial_septum_visible",
+        "pericardium_visible"
+      ]
+    },
+    {
+      "record_id": "rc-47aa21b10d1919de729c3246",
+      "view": "A4C",
+      "acquisition": "color_flow",
+      "caption_fr": "Coupe apicale 4 cavités (A4C), Doppler couleur. Insuffisance mitrale : modérée. Insuffisance tricuspide : légère.",
+      "caption_en": "Apical 4-chamber view (A4C), color Doppler. Mitral regurgitation: moderate. Tricuspid regurgitation: mild.",
+      "claims": [
+        [
+          "mitral_regurgitation",
+          "moderate"
+        ],
+        [
+          "tricuspid_regurgitation",
+          "mild"
+        ]
+      ],
+      "gaps": [
+        [
+          "lv_systolic_function",
+          "modality_absent"
+        ],
+        [
+          "lv_ejection_fraction",
+          "modality_absent"
+        ],
+        [
+          "lv_regional_wall_motion",
+          "modality_absent"
+        ],
+        [
+          "rv_systolic_pressure",
+          "modality_absent"
+        ],
+        [
+          "tr_peak_velocity",
+          "modality_absent"
+        ],
+        [
+          "la_size",
+          "modality_absent"
+        ],
+        [
+          "tricuspid_regurgitation_ero",
+          "measurement_required"
+        ],
+        [
+          "pericardial_effusion",
+          "modality_absent"
+        ]
+      ],
+      "out_of_view": [],
+      "expected_structures": [
+        "lv_visible",
+        "rv_visible",
+        "la_visible",
+        "ra_visible",
+        "mitral_valve_visible",
+        "tricuspid_valve_visible",
+        "interatrial_septum_visible"
+      ]
+    },
+    {
+      "record_id": "rc-a13266188a91e3f0759f1489",
+      "view": "A2C",
+      "acquisition": "bmode",
+      "caption_fr": "Coupe apicale 2 cavités (A2C), mode B. Fonction systolique ventriculaire gauche : modérément diminuée. Fraction d'éjection VG (estimation visuelle) : 35 %. Cinétique segmentaire du VG (segment le plus atteint) : hypokinésie. Taille de l'oreillette gauche : modérément augmentée. Épanchement péricardique : absent.",
+      "caption_en": "Apical 2-chamber view (A2C), B-mode. Left ventricular systolic function: moderately reduced. LV ejection fraction (visual estimate): 35%. LV regional wall motion (worst segment): hypokinesis. Left atrial size: moderately increased. Pericardial effusion: none.",
+      "claims": [
+        [
+          "lv_systolic_function",
+          "moderately_reduced"
+        ],
+        [
+          "lv_ejection_fraction",
+          35
+        ],
+        [
+          "lv_regional_wall_motion",
+          "hypokinetic"
+        ],
+        [
+          "la_size",
+          "moderate"
+        ],
+        [
+          "pericardial_effusion",
+          "none"
+        ]
+      ],
+      "gaps": [
+        [
+          "mitral_regurgitation",
+          "modality_absent"
+        ]
+      ],
+      "out_of_view": [
+        "rv_systolic_pressure",
+        "tr_peak_velocity",
+        "tricuspid_regurgitation",
+        "tricuspid_regurgitation_ero"
+      ],
+      "expected_structures": [
+        "lv_visible",
+        "la_visible",
+        "mitral_valve_visible",
+        "pericardium_visible"
+      ]
+    },
+    {
+      "record_id": "rc-f3a6495fc3984a7d75d6d6d6",
+      "view": "PLAX",
+      "acquisition": "bmode",
+      "caption_fr": "Coupe parasternale grand axe (PLAX), mode B. Fonction systolique ventriculaire gauche : modérément diminuée. Taille de l'oreillette gauche : modérément augmentée. Épanchement péricardique : absent.",
+      "caption_en": "Parasternal long-axis view (PLAX), B-mode. Left ventricular systolic function: moderately reduced. Left atrial size: moderately increased. Pericardial effusion: none.",
+      "claims": [
+        [
+          "lv_systolic_function",
+          "moderately_reduced"
+        ],
+        [
+          "la_size",
+          "moderate"
+        ],
+        [
+          "pericardial_effusion",
+          "none"
+        ]
+      ],
+      "gaps": [
+        [
+          "mitral_regurgitation",
+          "modality_absent"
+        ]
+      ],
+      "out_of_view": [
+        "lv_ejection_fraction",
+        "lv_regional_wall_motion",
+        "rv_systolic_pressure",
+        "tr_peak_velocity",
+        "tricuspid_regurgitation",
+        "tricuspid_regurgitation_ero"
+      ],
+      "expected_structures": [
+        "lv_visible",
+        "rv_visible",
+        "la_visible",
+        "mitral_valve_visible",
+        "aortic_valve_visible",
+        "aortic_root_visible",
+        "pericardium_visible"
+      ]
+    },
+    {
+      "record_id": "rc-05a43cb8b9d6d9dc77a689a9",
+      "view": "SUBCOSTAL",
+      "acquisition": "unknown",
+      "caption_fr": "Coupe sous-costale (SUBCOSTAL), acquisition indéterminée.",
+      "caption_en": "Subcostal view (SUBCOSTAL), unknown acquisition.",
+      "claims": [],
+      "gaps": [
+        [
+          "lv_systolic_function",
+          "acquisition_unknown"
+        ],
+        [
+          "rv_systolic_pressure",
+          "acquisition_unknown"
+        ],
+        [
+          "tr_peak_velocity",
+          "acquisition_unknown"
+        ],
+        [
+          "tricuspid_regurgitation",
+          "acquisition_unknown"
+        ],
+        [
+          "pericardial_effusion",
+          "acquisition_unknown"
+        ]
+      ],
+      "out_of_view": [
+        "lv_ejection_fraction",
+        "lv_regional_wall_motion",
+        "la_size",
+        "mitral_regurgitation",
+        "tricuspid_regurgitation_ero"
+      ],
+      "expected_structures": []
+    },
+    {
+      "record_id": "rc-78d7ae38d926fee193672e6a",
+      "view": "A4C",
+      "acquisition": "color_flow",
+      "caption_fr": "Coupe apicale 4 cavités (A4C), Doppler couleur. Insuffisance mitrale : minime (trace).",
+      "caption_en": "Apical 4-chamber view (A4C), color Doppler. Mitral regurgitation: trace.",
+      "claims": [
+        [
+          "mitral_regurgitation",
+          "trace"
+        ]
+      ],
+      "gaps": [
+        [
+          "lv_systolic_function",
+          "modality_absent"
+        ],
+        [
+          "lv_ejection_fraction",
+          "modality_absent"
+        ],
+        [
+          "rv_systolic_function",
+          "modality_absent"
+        ]
+      ],
+      "out_of_view": [
+        "aortic_regurgitation",
+        "aortic_stenosis",
+        "bicuspid_aortic_valve",
+        "ivc_dilation"
+      ],
+      "expected_structures": [
+        "lv_visible",
+        "rv_visible",
+        "la_visible",
+        "ra_visible",
+        "mitral_valve_visible",
+        "tricuspid_valve_visible",
+        "interatrial_septum_visible"
+      ]
+    },
+    {
+      "record_id": "rc-957452f918aaba56b402c625",
+      "view": "A5C",
+      "acquisition": "color_flow",
+      "caption_fr": "Coupe apicale 5 cavités (A5C), Doppler couleur. Insuffisance mitrale : minime (trace). Insuffisance aortique : légère.",
+      "caption_en": "Apical 5-chamber view (A5C), color Doppler. Mitral regurgitation: trace. Aortic regurgitation: mild.",
+      "claims": [
+        [
+          "mitral_regurgitation",
+          "trace"
+        ],
+        [
+          "aortic_regurgitation",
+          "mild"
+        ]
+      ],
+      "gaps": [
+        [
+          "aortic_stenosis",
+          "modality_absent"
+        ]
+      ],
+      "out_of_view": [
+        "lv_systolic_function",
+        "lv_ejection_fraction",
+        "rv_systolic_function",
+        "bicuspid_aortic_valve",
+        "ivc_dilation"
+      ],
+      "expected_structures": [
+        "lv_visible",
+        "rv_visible",
+        "la_visible",
+        "ra_visible",
+        "mitral_valve_visible",
+        "aortic_valve_visible",
+        "tricuspid_valve_visible",
+        "aortic_root_visible"
+      ]
+    },
+    {
+      "record_id": "rc-3adcc582c313e28928a13e7a",
+      "view": "PSAX_AV",
+      "acquisition": "bmode",
+      "caption_fr": "Coupe parasternale petit axe aortique (PSAX_AV), mode B. Absence de bicuspidie aortique.",
+      "caption_en": "Parasternal short-axis view at the aortic valve (PSAX_AV), B-mode. No bicuspid aortic valve.",
+      "claims": [
+        [
+          "bicuspid_aortic_valve",
+          false
+        ]
+      ],
+      "gaps": [
+        [
+          "aortic_regurgitation",
+          "modality_absent"
+        ]
+      ],
+      "out_of_view": [
+        "lv_systolic_function",
+        "lv_ejection_fraction",
+        "rv_systolic_function",
+        "mitral_regurgitation",
+        "aortic_stenosis",
+        "ivc_dilation"
+      ],
+      "expected_structures": [
+        "rv_visible",
+        "la_visible",
+        "ra_visible",
+        "aortic_valve_visible",
+        "tricuspid_valve_visible",
+        "pulmonic_valve_visible",
+        "aortic_root_visible",
+        "interatrial_septum_visible"
+      ]
+    },
+    {
+      "record_id": "rc-9daa3fbc1ebe8149efce24ce",
+      "view": "OTHER",
+      "acquisition": "bmode",
+      "caption_fr": "Coupe non classée (OTHER), mode B.",
+      "caption_en": "Unclassified view (OTHER), B-mode.",
+      "claims": [],
+      "gaps": [],
+      "out_of_view": [
+        "lv_systolic_function",
+        "lv_ejection_fraction",
+        "rv_systolic_function",
+        "mitral_regurgitation",
+        "aortic_regurgitation",
+        "aortic_stenosis",
+        "bicuspid_aortic_valve",
+        "ivc_dilation"
+      ],
+      "expected_structures": []
+    }
+  ]
+}

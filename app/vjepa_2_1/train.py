@@ -39,6 +39,12 @@ from app.vjepa_2_1.utils import (
     token_validity,
 )
 from src.datasets.data_manager import init_data
+from src.datasets.video_dataset import (
+    DEFAULT_LOADER_TIMEOUT,
+    clip_index_stats,
+    recycled_frame_mask,
+    validate_temporal_padding,
+)
 from src.masks.multiseq_multiblock3d import MaskCollator
 from src.masks.utils import apply_masks
 from src.utils.distributed import any_rank_failed, global_sample_weighted_means, init_distributed
@@ -133,6 +139,40 @@ def _raise_data_loading_retries_exhausted(error, max_retries):
     raise RuntimeError(
         f"Exceeded max retries ({max_retries}) when loading data."
     ) from error
+
+
+# Loading errors retried in a row, `DATA_LOADING_RETRY_DELAY` seconds apart, before the run stops.
+DATA_LOADING_RETRIES = 5
+DATA_LOADING_RETRY_DELAY = 5
+
+
+def _next_batch(loader, refresh, max_retries=DATA_LOADING_RETRIES, delay=DATA_LOADING_RETRY_DELAY):
+    """(batch, iterator): the next batch of the iterator `loader`, and the iterator to continue with.
+
+    An exhausted iterator is replaced by `refresh()` (a new pass over the data). Any other error (a
+    sample whose replacements all failed, a dead worker, a `DataLoader` timeout) is retried up to
+    `max_retries` times in a row; the next one raises `RuntimeError` with the error as its cause, so
+    the process fails and the driver can relaunch it from `latest.pth.tar`. A worker's error loses only
+    its own batch. After a timeout the same iterator waits again for the late batch, so a slow batch
+    still arrives, while a hung worker times out on every retry. A fresh iterator that is exhausted at
+    once is an error as well: refreshing it again would loop forever.
+    """
+    retries, refreshed = 0, False
+    while True:
+        try:
+            return next(loader), loader
+        except StopIteration:
+            if refreshed:
+                raise RuntimeError("The data loader yields no batch: the training set holds less than one "
+                                   "batch per rank.") from None
+            logger.info("Exhausted data loaders. Refreshing...")
+            loader, refreshed = refresh(), True
+        except Exception as e:
+            if retries >= max_retries:
+                _raise_data_loading_retries_exhausted(e, max_retries)
+            retries += 1
+            _log_data_loading_retry(e, retries, max_retries)
+            time.sleep(delay)
 
 
 def main(args, resume_preempt=False):
@@ -248,6 +288,14 @@ def main(args, resume_preempt=False):
     grid_size = crop_size // patch_size
     pin_mem = cfgs_data.get("pin_mem", False)
     num_workers = cfgs_data.get("num_workers", 1)
+    # How short videos fill their clip (docs/temporal_padding.md): "black" padding (the baseline,
+    # excluded from the loss) or "loop" (the clip's real frames repeated, all valid loss targets).
+    temporal_padding = validate_temporal_padding(cfgs_data.get("temporal_padding", "black"))
+    logger.info(f"{temporal_padding=}")
+    # Seconds without any batch before the loader raises into `_next_batch`'s retries (0: never);
+    # the default and its rationale are in src/datasets/video_dataset.py.
+    loader_timeout = cfgs_data.get("loader_timeout", DEFAULT_LOADER_TIMEOUT)
+    logger.info(f"{loader_timeout=}")
 
     # -- IMG DATA
     cfgs_img_data = args.get("img_data")
@@ -532,6 +580,8 @@ def main(args, resume_preempt=False):
         persistent_workers=cfgs_data.get("persistent_workers", False),
         in_order=cfgs_data.get("in_order", True),
         log_dir=None,
+        temporal_padding=temporal_padding,
+        loader_timeout=loader_timeout,
     )
     try:
         _dlen = len(unsupervised_loader)
@@ -669,7 +719,8 @@ def main(args, resume_preempt=False):
     try:
         wandb_run, effective_wandb_run_id = init_wandb(
             cfgs_meta,
-            args,
+            # The run config records the resolved policy even when the config file leaves it to the default.
+            {**args, "data": {**cfgs_data, "temporal_padding": temporal_padding}},
             rank,
             folder,
             resuming_training=resuming_training,
@@ -692,6 +743,14 @@ def main(args, resume_preempt=False):
     # where clipping occurred (how many steps `clip_grad` scaled down).
     grad_norm_max, clipped_steps = float("nan"), 0
 
+    def refresh_loader():
+        """A new pass over the data, once the current one is exhausted (`_next_batch`)."""
+        if "airstore" in dataset_type.lower():
+            unsupervised_sampler.increase_epoch()
+        else:
+            unsupervised_sampler.set_epoch(epoch)
+        return iter(unsupervised_loader)
+
     # -- TRAINING LOOP
     for epoch in range(start_epoch, num_epochs):
         logger.info("Epoch %d" % (epoch + 1))
@@ -703,31 +762,16 @@ def main(args, resume_preempt=False):
         data_elapsed_time_meter = AverageMeter()
         valid_meter = AverageMeter()    # fraction of tokens not built from padding.
         padded_meter = AverageMeter()   # fraction of frames that are black padding.
+        # From `clip_indices` (`clip_index_stats`): distinct source frames, recycled (looped) frames,
+        # and wraparound junctions per clip. Unique + recycled + padded frame fractions sum to 1.
+        unique_meter = AverageMeter()
+        recycled_meter = AverageMeter()
+        junction_meter = AverageMeter()
 
         for itr in range(ipe):
             itr_start_time = time.time()
 
-            iter_retries = 0
-            iter_successful = False
-            while not iter_successful:
-                try:
-                    sample = next(loader)
-                    iter_successful = True
-                except StopIteration:
-                    logger.info("Exhausted data loaders. Refreshing...")
-                    if "airstore" in dataset_type.lower():
-                        unsupervised_sampler.increase_epoch()
-                    else:
-                        unsupervised_sampler.set_epoch(epoch)
-                    loader = iter(unsupervised_loader)
-                except Exception as e:
-                    NUM_RETRIES = 5
-                    if iter_retries < NUM_RETRIES:
-                        iter_retries += 1
-                        _log_data_loading_retry(e, iter_retries, NUM_RETRIES)
-                        time.sleep(5)
-                    else:
-                        _raise_data_loading_retries_exhausted(e, NUM_RETRIES)
+            sample, loader = _next_batch(loader, refresh_loader)
 
             for _fpc_sample in sample:
                 bs, fpc = _fpc_sample[0][-1][0].size()
@@ -735,7 +779,7 @@ def main(args, resume_preempt=False):
 
             def load_clips():
                 all_clips, all_masks_enc, all_masks_pred, all_valid = [], [], [], []
-                valid_frac, padded_frac = [], []
+                valid_frac, padded_frac, unique_frac, recycled_frac, junctions = [], [], [], [], []
                 for fpc_sample in sample:
                     udata, masks_enc, masks_pred = fpc_sample
                     all_clips += [udata[0][0].to(device, non_blocking=True)]
@@ -751,9 +795,16 @@ def main(args, resume_preempt=False):
                     # Measured on the CPU copy, so logging it never waits on the GPU.
                     valid_frac += [v.mean(dim=(1, 2))]
                     padded_frac += [(udata[-1][0] < 0).float().mean(dim=1)]
+                    stats = clip_index_stats(udata[-1][0])
+                    unique_frac += [stats["unique_frame_frac"]]
+                    recycled_frac += [stats["recycled_frame_frac"]]
+                    junctions += [stats["loop_junctions"]]
                     all_valid += [v.to(device, non_blocking=True)]
                 valid_meter.update(float(torch.cat(valid_frac).mean()))
                 padded_meter.update(float(torch.cat(padded_frac).mean()))
+                unique_meter.update(float(np.concatenate(unique_frac).mean()))
+                recycled_meter.update(float(np.concatenate(recycled_frac).mean()))
+                junction_meter.update(float(np.concatenate(junctions).mean()))
                 return all_clips, all_masks_enc, all_masks_pred, all_valid
 
             clips, masks_enc, masks_pred, valid = load_clips()
@@ -769,6 +820,8 @@ def main(args, resume_preempt=False):
                         num_videos=num_log_videos,
                         # Report black padding frames (`clip_index == -1`) separately from repeated real frames.
                         padded=[fpc_sample[0][-1][0] == -1 for fpc_sample in sample],
+                        # Looped frames repeat on purpose: keep them out of the repeated-frame check.
+                        recycled=[torch.from_numpy(recycled_frame_mask(s[0][-1][0])) for s in sample],
                     )
 
             if sync_gc and (itr + 1) % GARBAGE_COLLECT_ITR_FREQ == 0:
@@ -1015,12 +1068,15 @@ def main(args, resume_preempt=False):
                     (global_loss_context, _),
                     (global_valid, _),
                     (global_padded, _),
+                    (global_unique, _),
+                    (global_recycled, _),
+                    (global_junctions, _),
                     (global_clip_cosine, _),
                     (global_effective_rank, _),
                 ) = global_sample_weighted_means(
                     [loss, loss_meter.avg, loss_pred, loss_context, valid_meter.val, padded_meter.val,
-                     clip_cosine, effective_rank],
-                    [1, loss_meter.count, 1, 1, 1, 1, 1, 1],
+                     unique_meter.val, recycled_meter.val, junction_meter.val, clip_cosine, effective_rank],
+                    [1, loss_meter.count, 1, 1, 1, 1, 1, 1, 1, 1, 1],
                     device=device,
                 )
                 log_scalars(
@@ -1043,6 +1099,10 @@ def main(args, resume_preempt=False):
                         "features/effective_rank": global_effective_rank,  # falling: fewer directions in use.
                         "data/valid_token_frac": global_valid,  # tokens counted in the loss.
                         "data/batch_padded_frame_frac": global_padded,  # black padding frames.
+                        # Per `clip_indices`; not `data/unique_frame_frac`, the pixel check of uploaded clips.
+                        "data/unique_source_frame_frac": global_unique,  # distinct source frames.
+                        "data/recycled_frame_frac": global_recycled,  # repeats of earlier frames (loop).
+                        "data/loop_junctions_per_clip": global_junctions,  # wraps to the clip's start.
                         "time/iter_ms": iter_elapsed_time_ms,
                         "time/gpu_ms": gpu_etime_ms,
                         "time/data_ms": data_elapsed_time_ms,
@@ -1075,6 +1135,8 @@ def main(args, resume_preempt=False):
                         "masks: %s "
                         "[wd: %.2e] [lr: %.2e] "
                         "[valid: %.2f] "
+                        "[frames unique/recycled/black: %.2f/%.2f/%.2f] "
+                        "[junctions: %.2f] "
                         "[mem: %.2e] "
                         "[iter: %.1f ms] "
                         "[gpu: %.1f ms] "
@@ -1094,6 +1156,10 @@ def main(args, resume_preempt=False):
                             _new_wd,
                             _new_lr,
                             valid_meter.avg,
+                            unique_meter.avg,
+                            recycled_meter.avg,
+                            padded_meter.avg,
+                            junction_meter.avg,
                             torch.cuda.max_memory_allocated() / 1024.0**2,
                             iter_time_meter.avg,
                             gpu_time_meter.avg,

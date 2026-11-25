@@ -19,6 +19,8 @@ timm
 transformers
 peft
 decord
+# DICOM headers for the acquisition-mode index (data/scan_acquisition.py); never reads pixels.
+pydicom>=3.0,<3.1
 pandas
 einops
 beartype

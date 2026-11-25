@@ -1,0 +1,91 @@
+{
+  "description": "Synthetic LLM responses for parse_llm_output. `record` indexes demo_records.jsonl (0-based).",
+  "cases": [
+    {
+      "name": "valid_color_a4c",
+      "record": 1,
+      "language": "fr",
+      "response": "{\"schema_version\": \"radar-llm-caption/0.1\", \"language\": \"fr\", \"caption\": \"Coupe apicale 4 cavités en Doppler couleur : insuffisance mitrale modérée et insuffisance tricuspide légère.\", \"claims\": [{\"concept_id\": \"tricuspid_regurgitation\", \"value\": \"mild\"}, {\"concept_id\": \"mitral_regurgitation\", \"value\": \"moderate\"}], \"omitted\": [{\"concept_id\": \"rv_systolic_pressure\", \"reason\": \"modality_absent\"}, {\"concept_id\": \"tricuspid_regurgitation_ero\", \"reason\": \"measurement_required\"}]}",
+      "expect": "accepted"
+    },
+    {
+      "name": "prose_around_json",
+      "record": 1,
+      "language": "fr",
+      "response": "Voici la légende : {\"schema_version\": \"radar-llm-caption/0.1\", \"language\": \"fr\", \"caption\": \"Coupe apicale 4 cavités en Doppler couleur : insuffisance mitrale modérée et insuffisance tricuspide légère.\", \"claims\": [{\"concept_id\": \"tricuspid_regurgitation\", \"value\": \"mild\"}, {\"concept_id\": \"mitral_regurgitation\", \"value\": \"moderate\"}], \"omitted\": [{\"concept_id\": \"rv_systolic_pressure\", \"reason\": \"modality_absent\"}, {\"concept_id\": \"tricuspid_regurgitation_ero\", \"reason\": \"measurement_required\"}]}",
+      "expect": "rejected",
+      "error": "not valid JSON"
+    },
+    {
+      "name": "markdown_fence",
+      "record": 1,
+      "language": "fr",
+      "response": "```json\n{\"schema_version\": \"radar-llm-caption/0.1\", \"language\": \"fr\", \"caption\": \"Coupe apicale 4 cavités en Doppler couleur : insuffisance mitrale modérée et insuffisance tricuspide légère.\", \"claims\": [{\"concept_id\": \"tricuspid_regurgitation\", \"value\": \"mild\"}, {\"concept_id\": \"mitral_regurgitation\", \"value\": \"moderate\"}], \"omitted\": [{\"concept_id\": \"rv_systolic_pressure\", \"reason\": \"modality_absent\"}, {\"concept_id\": \"tricuspid_regurgitation_ero\", \"reason\": \"measurement_required\"}]}\n```",
+      "expect": "rejected",
+      "error": "not valid JSON"
+    },
+    {
+      "name": "unknown_concept",
+      "record": 1,
+      "language": "fr",
+      "response": "{\"schema_version\": \"radar-llm-caption/0.1\", \"language\": \"fr\", \"caption\": \"Coupe apicale 4 cavités en Doppler couleur : insuffisance mitrale modérée et insuffisance tricuspide légère.\", \"claims\": [{\"concept_id\": \"tricuspid_regurgitation\", \"value\": \"mild\"}, {\"concept_id\": \"mitral_regurgitation\", \"value\": \"moderate\"}, {\"concept_id\": \"mitral_valve_prolapse\", \"value\": true}], \"omitted\": [{\"concept_id\": \"rv_systolic_pressure\", \"reason\": \"modality_absent\"}, {\"concept_id\": \"tricuspid_regurgitation_ero\", \"reason\": \"measurement_required\"}]}",
+      "expect": "rejected",
+      "error": "unknown concept"
+    },
+    {
+      "name": "spectral_finding_in_color_loop",
+      "record": 1,
+      "language": "fr",
+      "response": "{\"schema_version\": \"radar-llm-caption/0.1\", \"language\": \"fr\", \"caption\": \"Coupe apicale 4 cavités en Doppler couleur : insuffisance tricuspide légère, PSVD 42 mmHg.\", \"claims\": [{\"concept_id\": \"tricuspid_regurgitation\", \"value\": \"mild\"}, {\"concept_id\": \"rv_systolic_pressure\", \"value\": 42}], \"omitted\": [{\"concept_id\": \"rv_systolic_pressure\", \"reason\": \"modality_absent\"}, {\"concept_id\": \"tricuspid_regurgitation_ero\", \"reason\": \"measurement_required\"}]}",
+      "expect": "rejected",
+      "error": "modality_absent"
+    },
+    {
+      "name": "value_differs_from_report",
+      "record": 1,
+      "language": "fr",
+      "response": "{\"schema_version\": \"radar-llm-caption/0.1\", \"language\": \"fr\", \"caption\": \"Coupe apicale 4 cavités en Doppler couleur : insuffisance mitrale modérée et insuffisance tricuspide légère.\", \"claims\": [{\"concept_id\": \"mitral_regurgitation\", \"value\": \"severe\"}], \"omitted\": [{\"concept_id\": \"rv_systolic_pressure\", \"reason\": \"modality_absent\"}, {\"concept_id\": \"tricuspid_regurgitation_ero\", \"reason\": \"measurement_required\"}]}",
+      "expect": "rejected",
+      "error": "differs from the report"
+    },
+    {
+      "name": "value_outside_ontology",
+      "record": 1,
+      "language": "fr",
+      "response": "{\"schema_version\": \"radar-llm-caption/0.1\", \"language\": \"fr\", \"caption\": \"Coupe apicale 4 cavités en Doppler couleur : insuffisance mitrale modérée et insuffisance tricuspide légère.\", \"claims\": [{\"concept_id\": \"mitral_regurgitation\", \"value\": \"massive\"}], \"omitted\": [{\"concept_id\": \"rv_systolic_pressure\", \"reason\": \"modality_absent\"}, {\"concept_id\": \"tricuspid_regurgitation_ero\", \"reason\": \"measurement_required\"}]}",
+      "expect": "rejected",
+      "error": "is not one of"
+    },
+    {
+      "name": "extra_key",
+      "record": 1,
+      "language": "fr",
+      "response": "{\"schema_version\": \"radar-llm-caption/0.1\", \"language\": \"fr\", \"caption\": \"Coupe apicale 4 cavités en Doppler couleur : insuffisance mitrale modérée et insuffisance tricuspide légère.\", \"claims\": [{\"concept_id\": \"tricuspid_regurgitation\", \"value\": \"mild\"}, {\"concept_id\": \"mitral_regurgitation\", \"value\": \"moderate\"}], \"omitted\": [{\"concept_id\": \"rv_systolic_pressure\", \"reason\": \"modality_absent\"}, {\"concept_id\": \"tricuspid_regurgitation_ero\", \"reason\": \"measurement_required\"}], \"confidence\": 0.9}",
+      "expect": "rejected",
+      "error": "exactly the keys"
+    },
+    {
+      "name": "identifier_in_caption",
+      "record": 1,
+      "language": "fr",
+      "response": "{\"schema_version\": \"radar-llm-caption/0.1\", \"language\": \"fr\", \"caption\": \"Étude demo-study-1 : insuffisance mitrale modérée.\", \"claims\": [{\"concept_id\": \"tricuspid_regurgitation\", \"value\": \"mild\"}, {\"concept_id\": \"mitral_regurgitation\", \"value\": \"moderate\"}], \"omitted\": [{\"concept_id\": \"rv_systolic_pressure\", \"reason\": \"modality_absent\"}, {\"concept_id\": \"tricuspid_regurgitation_ero\", \"reason\": \"measurement_required\"}]}",
+      "expect": "rejected",
+      "error": "identifier"
+    },
+    {
+      "name": "wrong_language",
+      "record": 1,
+      "language": "fr",
+      "response": "{\"schema_version\": \"radar-llm-caption/0.1\", \"language\": \"en\", \"caption\": \"Coupe apicale 4 cavités en Doppler couleur : insuffisance mitrale modérée et insuffisance tricuspide légère.\", \"claims\": [{\"concept_id\": \"tricuspid_regurgitation\", \"value\": \"mild\"}, {\"concept_id\": \"mitral_regurgitation\", \"value\": \"moderate\"}], \"omitted\": [{\"concept_id\": \"rv_systolic_pressure\", \"reason\": \"modality_absent\"}, {\"concept_id\": \"tricuspid_regurgitation_ero\", \"reason\": \"measurement_required\"}]}",
+      "expect": "rejected",
+      "error": "language must be"
+    },
+    {
+      "name": "valid_bmode_psax_av_english",
+      "record": 7,
+      "language": "en",
+      "response": "{\"schema_version\": \"radar-llm-caption/0.1\", \"language\": \"en\", \"caption\": \"Parasternal short-axis view at the aortic valve, B-mode: no bicuspid aortic valve.\", \"claims\": [{\"concept_id\": \"bicuspid_aortic_valve\", \"value\": false}], \"omitted\": [{\"concept_id\": \"aortic_regurgitation\", \"reason\": \"modality_absent\"}]}",
+      "expect": "accepted"
+    }
+  ]
+}

@@ -40,6 +40,7 @@ from evals.video_classification_frozen import provenance
 from evals.video_classification_frozen.models import init_module
 from evals.video_classification_frozen.utils import make_transforms
 from src.datasets.data_manager import init_data
+from src.datasets.video_dataset import DEFAULT_LOADER_TIMEOUT, dataloader_timeout
 from src.models.attentive_pooler import AttentiveClassifier
 from src.models.attentive_pooler import AttentiveRegressor
 from src.models.linear_pooler import LinearClassifier, LinearRegressor
@@ -192,6 +193,8 @@ def main(args_eval, resume_preempt=False):
     resume_checkpoint = args_eval.get("resume_checkpoint", False) or resume_preempt
     eval_tag = args_eval.get("tag", None)
     num_workers = args_eval.get("num_workers", 12)
+    # Seconds without any batch before a loader raises (0: never); see src/datasets/video_dataset.py.
+    loader_timeout = args_eval.get("loader_timeout", DEFAULT_LOADER_TIMEOUT)
 
     # -- PRETRAIN
     args_pretrain = args_eval.get("model_kwargs")
@@ -442,6 +445,7 @@ def main(args_eval, resume_preempt=False):
         training=True,
         num_workers=num_workers,
         normalization=normalization,
+        loader_timeout=loader_timeout,
     )
     val_loader, _ = make_dataloader(
         dataset_type=dataset_type,
@@ -459,6 +463,7 @@ def main(args_eval, resume_preempt=False):
         training=False,
         num_workers=num_workers,
         normalization=normalization,
+        loader_timeout=loader_timeout,
     )
     ipe = len(train_loader)
     logger.info(f"Dataloader created... iterations per epoch: {ipe}")
@@ -589,6 +594,7 @@ def main(args_eval, resume_preempt=False):
             training=False,
             num_workers=num_workers,
             normalization=normalization,
+            loader_timeout=loader_timeout,
         )
         if video_index is not None:
             check_split(video_index, test_loader.dataset, "test")
@@ -600,6 +606,7 @@ def main(args_eval, resume_preempt=False):
             val_dataset=val_loader.dataset,
             batch_size=batch_size,
             num_workers=num_workers,
+            loader_timeout=loader_timeout,
             checkpoint_path=os.path.join(folder, "best.pt"),
             task_type=task_type,
             use_bfloat16=use_bfloat16,
@@ -757,6 +764,7 @@ def main(args_eval, resume_preempt=False):
                 rank=rank,
                 world_size=world_size,
                 studies=val_studies,
+                loader_timeout=loader_timeout,
             )
             val_heads = val[selected]
             val_acc_scalar = float(val_heads.min())
@@ -1144,7 +1152,7 @@ def _collate_loaded(batch):
 
 
 def score_videos(device, encoder, heads, dataset, batch_size, num_workers, use_bfloat16, task_type, rank,
-                 world_size):
+                 world_size, loader_timeout=DEFAULT_LOADER_TIMEOUT):
     """Score every video in `dataset` exactly once with each probe head. Each rank processes every
     `world_size`-th video, avoiding duplicate samples from distributed-sampler padding. Videos that
     fail to load are recorded as failures rather than replaced. Each video's prediction is the mean
@@ -1169,6 +1177,8 @@ def score_videos(device, encoder, heads, dataset, batch_size, num_workers, use_b
         num_workers=num_workers,
         collate_fn=_collate_loaded,
         pin_memory=True,
+        # A hung read raises instead of stalling the evaluation; a failed video is already counted.
+        timeout=dataloader_timeout(loader_timeout, num_workers),
     )
     indices, labels, predictions, failed = [], [], [[] for _ in modules], []
     for batch_indices, data, batch_failed in loader:
@@ -1221,7 +1231,7 @@ def score_videos(device, encoder, heads, dataset, batch_size, num_workers, use_b
 
 
 def validate(device, encoder, classifiers, dataset, batch_size, num_workers, use_bfloat16, target_mean,
-             target_std, rank, world_size, studies=None):
+             target_std, rank, world_size, studies=None, loader_timeout=DEFAULT_LOADER_TIMEOUT):
     """Validate every probe head for one epoch, scoring each video exactly once.
 
     For each head, compute the per-video MAE in EF percentage points, the L1 loss on z-scored
@@ -1231,7 +1241,7 @@ def validate(device, encoder, classifiers, dataset, batch_size, num_workers, use
     """
     indices, labels, predictions, failed = score_videos(
         device, encoder, classifiers, dataset, batch_size, num_workers, use_bfloat16, "regression", rank,
-        world_size,
+        world_size, loader_timeout=loader_timeout,
     )
     t_mean = target_mean if target_mean is not None else 0.0
     t_std = target_std if target_std is not None else 1.0
@@ -1292,6 +1302,7 @@ def run_test(
     wandb_run=None,
     step=0,
     fingerprint=None,
+    loader_timeout=DEFAULT_LOADER_TIMEOUT,
 ):
     """Score the test split once, with the epoch and head chosen on validation.
 
@@ -1328,7 +1339,7 @@ def run_test(
 
     def score(split_dataset):
         return score_videos(device, encoder, [classifier], split_dataset, batch_size, num_workers, use_bfloat16,
-                            task_type, rank, world_size)
+                            task_type, rank, world_size, loader_timeout=loader_timeout)
 
     regression = task_type == "regression"
     val_scored = score(val_dataset) if regression and val_dataset is not None else None
@@ -1786,6 +1797,7 @@ def make_dataloader(
     num_workers=12,
     subset_file=None,
     normalization=None,
+    loader_timeout=DEFAULT_LOADER_TIMEOUT,
 ):
     if normalization is None:
         normalization = DEFAULT_NORMALIZATION
@@ -1823,6 +1835,7 @@ def make_dataloader(
         random_clip_sampling=sampling["clip_positions"] == "random",
         drop_last=sampling["drop_last"],
         subset_file=subset_file,
+        loader_timeout=loader_timeout,
     )
     return data_loader, data_sampler
 

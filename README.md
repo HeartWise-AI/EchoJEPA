@@ -98,6 +98,7 @@ Pretraining can also be run locally or distributed. Pretraining and cooldown tra
 
 For the pilot comparison of V-JEPA 2.1 ViT-B pretraining from scratch and from the EchoJEPA ViT-B checkpoint (code version, checkpoint, configs and launch commands), see [docs/pretraining_baseline.md](docs/pretraining_baseline.md).
 Its frozen Visual EF probe (protocol, metrics, outputs and reproduction) is described in [docs/visual_ef_probe.md](docs/visual_ef_probe.md).
+For archive-scale ICM pretraining (inclusive vs B-mode-only corpora, anchored patient split, schedule), see [docs/archive_pretraining.md](docs/archive_pretraining.md), with the acquisition-mode index ([docs/acquisition_index.md](docs/acquisition_index.md)), the short-clip policies ([docs/temporal_padding.md](docs/temporal_padding.md)), the multi-view RVSP probe ([docs/rvsp_multiview_probe.md](docs/rvsp_multiview_probe.md)) and the RADAR caption pilot ([docs/radar_pilot.md](docs/radar_pilot.md)).
 
 #### Local
 

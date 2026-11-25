@@ -1,0 +1,60 @@
+# configs/data/manifests_tte_archive.yaml
+# Full-archive pretraining corpus: every eligible standard TTE study of every patient,
+# longitudinal studies included, with the patient split anchored on the 10k cohort (issue #6).
+#
+# Read by `data/build_manifests.py`, which needs `--anchor-splits` in this mode: the 10k
+# build's studies.csv for the first archive build, then the previous archive build's
+# patient_splits.csv. Input and output locations are command-line arguments; nothing here
+# names a filesystem path.
+
+# Role -> column in the video metadata table (one row per video).
+columns:
+  patient_id: mrn
+  study_id: study_uid
+  exam_type: study_type
+  view: predicted_class
+  video_path: avi_path
+  avi_status: avi_status
+  study_date: date            # YYYYMMDD...; used for the years filter and reports.
+  dicom_path: dcm_path        # source DICOM; joins the acquisition index (--acquisition-index).
+  vendor: brand               # reported only.
+  model: model                # reported only.
+
+# Role -> column in the study-level label table (optional here; adds `label` to studies.csv).
+labels:
+  study_id: study_id
+  value: ef
+  low_threshold: 40
+
+eligibility:
+  # Standard transthoracic study, as in the 10k cohort.
+  exam_types:
+  - ECHO CARDIAQUE AVEC DOPPLER
+  status_ok:
+  - success
+  require_label: false        # EF availability must not restrict the pretraining corpus.
+  years: null                 # every year, the newly added ones included.
+
+selection:
+  mode: all_studies           # every eligible study of every patient; no n_patients.
+  seed: 42                    # orders the patients new to the anchor before they fill the targets.
+
+split:                        # global patient-level target over all eligible patients, anchored ones included.
+  train: 0.7
+  val: 0.1
+  test: 0.2
+
+# Clip sampling of the pretraining loader, as in the 10k configuration: flags videos shorter
+# than one clip (`needs_padding`) and sets how the smoke test loads clips. No video is excluded for it.
+acquisition:
+  # Vendors whose DICOM ultrasound-region headers were checked against the decoded videos
+  # (data/validate_acquisition.py). Some vendors' headers declare one tissue region over a colour-flow
+  # loop, so header "bmode" from any other vendor is unresolved and stays out of train_bmode.csv (it
+  # remains in train_inclusive.csv).
+  bmode_vendors:
+  - GE Vingmed Ultrasound
+  - GE Healthcare Ultrasound
+  - GEMS Ultrasound
+clip:
+  frames_per_clip: 16
+  fps: 8

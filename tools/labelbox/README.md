@@ -128,3 +128,89 @@ The tests use fake SDK clients and never require a real key or make external cal
 ```bash
 python -m unittest discover -s tools/labelbox/tests -p 'test_*.py' -v
 ```
+
+## RADAR caption review (local workflow)
+
+These modules prepare the review without contacting Labelbox. They are separate from
+`create_pilot_project.py`, whose behavior is unchanged. Background, schemas and the
+ontology are described in [`docs/radar_pilot.md`](../../docs/radar_pilot.md).
+
+| Module | Purpose |
+|---|---|
+| `review_ontology.py` | The review form, built from `configs/radar/concepts_v0.yaml`. It mirrors the SDK's `OntologyBuilder.asdict()` layout. |
+| `payloads.py` | Data rows and caption prelabels as local NDJSON, plus the safety guard. |
+| `review_export.py` | Maps a project export back onto clip records. |
+| `radar_review.py` | Command line for the three steps. |
+
+The form asks one global question per item:
+
+- whether the caption is satisfactory;
+- whether the clip can be assessed (image quality, crop, modality);
+- which visible, relevant concepts are missing;
+- which claimed concepts are unsupported;
+- which claimed values are wrong (with a nested corrected value);
+- which concepts are uncertain or unassessable (each with a nested reason);
+- the corrected caption (preloaded with the candidate);
+- comments.
+
+Visibility concepts ("mitral valve visible") and findings ("mitral regurgitation") are
+separate options. The review version is `radar-review/0.2+concepts_v0@<version>` and is
+stamped on every imported review.
+
+```bash
+# The form (no identifiers; safe to keep anywhere).
+python -m tools.labelbox.radar_review ontology --out /path/outside/repo/review_form.json
+
+# Data rows + caption prelabels. Dry run by default: builds, checks and prints counts only.
+python -m tools.labelbox.radar_review payload --records /path/outside/repo/records.jsonl
+python -m tools.labelbox.radar_review payload --records /path/outside/repo/records.jsonl \
+  --out-dir /path/outside/repo/labelbox_payload
+
+# Map a Labelbox export back onto the records (approved captions only from returned reviews).
+python -m tools.labelbox.radar_review import-export --records /path/outside/repo/records.jsonl \
+  --export /path/outside/repo/export.ndjson --review-version "radar-review/0.2+concepts_v0@0.1.0" \
+  --reviewer-map /path/outside/repo/reviewers.json --out /path/outside/repo/records.reviewed.jsonl
+```
+
+Each data row holds:
+
+- `global_key`: the pseudonymous record id;
+- `row_data`: a video URL from `--video-url-template`. The default is a placeholder on
+  the reserved `.invalid` domain; replace it with an approved de-identified location
+  before any upload.
+- text attachments: the candidate caption, the view and acquisition, and the findings
+  this clip cannot ground (concept names and reasons only; the report's values for them
+  stay local).
+
+Training-split records are the only ones accepted unless `--splits` says otherwise.
+
+The guard refuses a payload containing any of:
+
+- identifier-like field names;
+- local paths or file names;
+- DICOM UIDs or dates;
+- e-mail addresses;
+- runs of seven or more digits;
+- any record's study key, patient key or video path.
+
+Its error messages give the JSON location and the rule, never the value. Commands that
+write captions or identifiers refuse output paths inside the repository.
+
+The importer refuses any of the following:
+
+- an unknown global key;
+- a feature the form does not define;
+- more than one label per data row;
+- a Done label missing the required answers;
+- a review-version mismatch.
+
+Reviewer e-mail addresses are replaced with handles from `--reviewer-map`, or with a
+hash prefix when no map is given.
+
+Uploading is not implemented. It needs an approved workspace, approved de-identified
+video storage and a reviewed upload change (`Dataset.create_data_rows` for the rows,
+model-assisted labeling import for the prelabels).
+
+```bash
+python -m unittest discover -s tools/labelbox/tests -p 'test_*.py' -v
+```
