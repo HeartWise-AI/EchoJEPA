@@ -1,0 +1,84 @@
+# configs/eval/vitb16/rvsp-multiview-224px-16f.yaml
+#
+# Frozen early-fusion probe for study-level RVSP regression on several echo views, using a pretrained
+# V-JEPA 2.1 ViT-B encoder. Each manifest row is one study: its RVSP and the videos of its view slots
+# (`data/make_rvsp_probe_manifests.py`); missing slots are masked out. Encoder, clips, head and
+# optimization match the EF probe (`lvef-a4c-224px-16f.yaml`), so every encoder is probed identically.
+#
+# Results go to `<folder>/video_classification_frozen_multi/<tag>/`. Once the probe has finished,
+# `python -m evals.main --fname <this config> --test_only` scores `dataset_test` once with the epoch and
+# head chosen on validation (`best.pt`). Protocol, metrics and reproduction: `docs/rvsp_multiview_probe.md`.
+
+app: vjepa
+eval_name: video_classification_frozen_multi
+folder: /your_folder/cooldown/vitb16-continued-224px-16f   # the run that produced the probed checkpoint.
+tag: rvsp-multiview
+nodes: 1
+tasks_per_node: 4
+cpus_per_task: 32
+num_workers: 8
+resume_checkpoint: true
+
+meta:
+  seed: 0                                         # probe initialization, data order and augmentation.
+  wandb_project: null
+  wandb_entity: null  # set your W&B entity together with wandb_project
+
+experiment:
+  classifier:
+    task_type: regression
+    probe_type: attentive
+    fusion: early                                 # the probe; `late` (mean of per-view predictions) is a dev baseline.
+    num_heads: 16
+    num_probe_blocks: 4
+    num_targets: 1
+
+  data:
+    dataset_type: VideoGroupDataset
+    dataset_train: /your_rvsp_manifests/train.csv  # probe_info.json must sit next to it.
+    dataset_val: /your_rvsp_manifests/val.csv
+    dataset_test: /your_rvsp_manifests/test.csv    # read only by `--test_only`; its checksum is in probe_info.json.
+    video_index: /your_rvsp_manifests/video_index.csv  # each chosen video's split, study and patient.
+    resolution: 224
+    frames_per_clip: 16
+    frame_step: 2
+    num_segments: 2                               # clips per video, one from each half, as in the EF probe.
+    num_views_per_segment: 1
+    target_mean: null                             # RVSP mean of the probe train split, from `probe_info.json`.
+    target_std: null                              # RVSP std of the probe train split, from `probe_info.json`.
+
+  evaluation:
+    selection: study                              # `best.pt`: the epoch and head with the lowest val MAE per study.
+    rvsp_ranges: [30, 40, 50, 60]                 # error by reference RVSP range (mmHg): <30, 30-40, ..., >=60.
+    targets: {}                                   # none prespecified; e.g. {mae_below: <mmHg>} once agreed.
+
+  optimization:
+    batch_size: 4                                 # studies per GPU.
+    num_epochs: 20
+    use_bfloat16: true
+    multihead_kwargs:
+    - {start_lr: 1.0e-4, lr: 1.0e-4, final_lr: 0.0, warmup: 0.0, weight_decay: 0.01, final_weight_decay: 0.01}
+    - {start_lr: 1.0e-4, lr: 1.0e-4, final_lr: 0.0, warmup: 0.0, weight_decay: 0.1, final_weight_decay: 0.1}
+    - {start_lr: 1.0e-4, lr: 1.0e-4, final_lr: 0.0, warmup: 0.0, weight_decay: 0.4, final_weight_decay: 0.4}
+    - {start_lr: 5.0e-5, lr: 5.0e-5, final_lr: 0.0, warmup: 0.0, weight_decay: 0.01, final_weight_decay: 0.01}
+    - {start_lr: 5.0e-5, lr: 5.0e-5, final_lr: 0.0, warmup: 0.0, weight_decay: 0.1, final_weight_decay: 0.1}
+    - {start_lr: 5.0e-5, lr: 5.0e-5, final_lr: 0.0, warmup: 0.0, weight_decay: 0.4, final_weight_decay: 0.4}
+
+model_kwargs:
+  checkpoint: /your_folder/cooldown/vitb16-continued-224px-16f/latest.pth.tar
+  module_name: evals.video_classification_frozen.modelcustom.vjepa_2_1_encoder
+  pretrain_kwargs:
+    encoder:                                    # as in the pretraining config's `model` and `data` blocks.
+      model_name: vit_base
+      checkpoint_key: target_encoder
+      patch_size: 16
+      tubelet_size: 2
+      uniform_power: true
+      use_rope: true
+      use_sdpa: true
+      img_temporal_dim_size: 1
+      interpolate_rope: true
+      modality_embedding: true
+      n_output_distillation: 1
+  wrapper_kwargs:
+    max_frames: 128

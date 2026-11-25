@@ -65,6 +65,126 @@ def _native_stderr_discarded():
             os.close(devnull)
 
 
+# Short-clip temporal policies (docs/temporal_padding.md). "black" is the baseline.
+TEMPORAL_PADDING_POLICIES = ("black", "loop")
+
+
+def validate_temporal_padding(policy):
+    """Return `policy` if it names a temporal-padding policy, else raise. Strict on purpose: a typo
+    or `null` in a config must not silently fall back to another policy."""
+    if not isinstance(policy, str) or policy not in TEMPORAL_PADDING_POLICIES:
+        raise ValueError(f"temporal_padding must be one of {TEMPORAL_PADDING_POLICIES}, got {policy!r}.")
+    return policy
+
+
+def loop_clip_indices(indices, n_real):
+    """The looped clip: position `j` takes the source frame of position `j % n_real`, so the clip's
+    real frames repeat from its start, in their original order, until every position is filled.
+
+    `indices[:n_real]` must be the clip's real (strictly increasing) source indices; later entries
+    are ignored. The repeated unit holds no index twice, so no frame is shown twice in a row unless
+    `n_real == 1`.
+    """
+    indices = np.asarray(indices)
+    if not 1 <= n_real <= len(indices):
+        raise ValueError(f"n_real must be in [1, {len(indices)}], got {n_real}.")
+    return indices[np.arange(len(indices)) % n_real]
+
+
+def recycled_frame_mask(clip_indices):
+    """(B, T) bool: True where a real frame (index >= 0) repeats a source index seen earlier in the
+    same clip. Its first occurrence is not recycled; black padding (`-1`) never is."""
+    idx = _as_clip_index_array(clip_indices)
+    t = idx.shape[1]
+    earlier = np.tril(np.ones((t, t), dtype=bool), k=-1)  # earlier[j, k]: position k comes before j
+    seen = ((idx[:, :, None] == idx[:, None, :]) & earlier).any(axis=2)
+    return (idx >= 0) & seen
+
+
+def clip_index_stats(clip_indices):
+    """Per-clip diagnostics of the loader's `clip_indices` ((B, T) or (T,), numpy or CPU tensor),
+    from the indices alone. Every position is exactly one of: a unique source frame (first
+    occurrence of its index), a recycled frame (a repeat of an earlier index; loop policy), or black
+    padding (`-1`), so the three fractions sum to 1.
+
+    Returns a dict of (B,) float64 arrays:
+        unique_frame_frac: distinct source frames / T.
+        recycled_frame_frac: recycled positions / T.
+        padded_frame_frac: black padding positions / T.
+        loop_junctions: wraparound junctions, i.e. real indices smaller than the previous real
+            index. A static clip of one repeated frame has none.
+    """
+    idx = _as_clip_index_array(clip_indices)
+    b, t = idx.shape
+    real = idx >= 0
+    recycled = recycled_frame_mask(idx)
+    # Value of the most recent real index before each position (padding in between is skipped).
+    real_pos = np.where(real, np.arange(t), -1)
+    prev_pos = np.concatenate([np.full((b, 1), -1), np.maximum.accumulate(real_pos, axis=1)[:, :-1]], axis=1)
+    prev_val = np.take_along_axis(idx, np.maximum(prev_pos, 0), axis=1)
+    junctions = real & (prev_pos >= 0) & (idx < prev_val)
+    return {
+        "unique_frame_frac": (real & ~recycled).sum(axis=1) / float(t),
+        "recycled_frame_frac": recycled.sum(axis=1) / float(t),
+        "padded_frame_frac": (~real).sum(axis=1) / float(t),
+        "loop_junctions": junctions.sum(axis=1).astype(np.float64),
+    }
+
+
+def _as_clip_index_array(clip_indices):
+    idx = np.asarray(clip_indices)
+    if idx.ndim == 1:
+        idx = idx[None]
+    if idx.ndim != 2 or idx.shape[1] == 0:
+        raise ValueError(f"clip_indices must be (B, T) or (T,) with T > 0, got shape {idx.shape}.")
+    if not np.issubdtype(idx.dtype, np.integer):
+        raise ValueError(f"clip_indices must be integers, got {idx.dtype}.")
+    if (idx < -1).any():
+        raise ValueError("clip_indices hold source frame indices (>= 0) or -1 for black padding only.")
+    return idx
+
+
+# How many replacement samples one `__getitem__` call may draw after the requested sample fails to
+# load before it raises instead of retrying forever. Loads fail rarely, so a long run of failures is
+# very unlikely by chance; 11 in a row (the sample and 10 replacements) means the storage or the manifest
+# is broken, and drawing more would only hide that.
+DEFAULT_MAX_REPLACEMENTS = 10
+
+# Seconds a DataLoader with worker processes waits for a batch before raising
+# `RuntimeError("DataLoader timed out ...")`; 0 waits forever (PyTorch's default). The 2.1 trainer
+# (`data.loader_timeout`) and the frozen probes (top-level `loader_timeout`) default to it. The wait
+# restarts whenever any worker delivers a batch, so it fires only when no batch at all arrives for this
+# long. In pretraining a batch normally arrives every few seconds, and one slow NAS read delays a single
+# worker by seconds to minutes; 15 minutes of silence means workers are hung (I/O that never returns,
+# a stuck decoder), not slow. The trainer's retry guard waits again after a timeout, so a stall shorter
+# than ~6 timeouts still recovers.
+# It is half the 30-minute NCCL timeout (src/utils/distributed.py): when one rank's loader stalls, that
+# rank logs the timeout before the other ranks, waiting for it in a collective, abort.
+DEFAULT_LOADER_TIMEOUT = 900
+
+
+def validate_max_replacements(max_replacements):
+    """Return `max_replacements` if it is an integer >= 0, else raise."""
+    if isinstance(max_replacements, bool) or not isinstance(max_replacements, (int, np.integer)) \
+            or max_replacements < 0:
+        raise ValueError(f"max_replacements must be an integer >= 0, got {max_replacements!r}.")
+    return int(max_replacements)
+
+
+def dataloader_timeout(timeout, num_workers):
+    """The `timeout` to give a `DataLoader` with `num_workers` workers: `timeout` seconds (validated:
+    a finite number >= 0, where 0 disables it), or 0 without workers, since PyTorch times out only
+    worker processes and refuses a timeout for loading in the main process."""
+    if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or not math.isfinite(timeout) \
+            or timeout < 0:
+        raise ValueError(f"loader_timeout must be a number of seconds >= 0 (0 disables it), got {timeout!r}.")
+    if num_workers == 0:
+        if timeout > 0:
+            logger.info("loader_timeout ignored: without worker processes, loading cannot be timed out.")
+        return 0
+    return timeout
+
+
 def _worker_init_fn(_):
     # keep each worker to 1 CPU thread to avoid oversubscription
     try:
@@ -106,7 +226,11 @@ def make_videodataset(
     deterministic=True,
     log_dir=None,
     in_order=True,
+    temporal_padding="black",
+    loader_timeout=0,
 ):
+    # Validated before the dataset reads its manifests, so a bad value fails fast.
+    timeout = dataloader_timeout(loader_timeout, num_workers)
     dataset = VideoDataset(
         data_paths=data_paths,
         datasets_weights=datasets_weights,
@@ -122,6 +246,7 @@ def make_videodataset(
         filter_long_videos=filter_long_videos,
         shared_transform=shared_transform,
         transform=transform,
+        temporal_padding=temporal_padding,
     )
 
     log_dir = pathlib.Path(log_dir) if log_dir else None
@@ -154,6 +279,7 @@ def make_videodataset(
         num_workers=num_workers,
         persistent_workers=(num_workers > 0) and persistent_workers,
         worker_init_fn=_worker_init_fn,
+        timeout=timeout,
     )
     if num_workers > 0:
         dl_kwargs["prefetch_factor"] = 1  # safe default; change as needed
@@ -183,9 +309,21 @@ class VideoDataset(torch.utils.data.Dataset):
     """
     Video classification dataset that supports both local filesystem and S3 paths.
 
-    Every clip has exactly `frames_per_clip` frames. A video that is too short for a
-    whole clip is sampled in full and padded at the end with black frames, which are
-    reported at clip index `-1`; padding frames never duplicate real video frames.
+    Every clip has exactly `frames_per_clip` frames. A video that is too short for a whole clip is
+    sampled in full, chronologically from its first frame, giving `n_real < frames_per_clip` real
+    frames; `temporal_padding` decides how the remaining positions are filled
+    (docs/temporal_padding.md):
+
+    - "black" (default, the baseline): black frames reported at clip index `-1`; padding frames
+      never duplicate real video frames.
+    - "loop": position `j >= n_real` repeats real frame `j % n_real`, i.e. the clip's own real
+      frames again from its start, chronological within each repetition, with their true source
+      indices. The sampled indices, `n_real` and the random window of long videos are exactly those
+      of "black"; a video long enough for a whole clip is sampled identically by both policies.
+
+    A sample that cannot be loaded is replaced, in `__getitem__`, by a random other sample, as
+    upstream does; after `max_replacements` replacements that all fail too, `__getitem__` raises
+    `RuntimeError` instead of retrying forever.
     """
 
     def __init__(
@@ -204,9 +342,13 @@ class VideoDataset(torch.utils.data.Dataset):
         filter_short_videos=False,
         filter_long_videos=int(10**9),
         duration=None,  # duration in seconds
+        temporal_padding="black",
+        max_replacements=DEFAULT_MAX_REPLACEMENTS,
     ):
         if isinstance(data_paths, str):
             data_paths = [data_paths]
+        self.temporal_padding = validate_temporal_padding(temporal_padding)
+        self.max_replacements = validate_max_replacements(max_replacements)
         self.data_paths = data_paths
         self.datasets_weights = datasets_weights
         self.frame_step = frame_step
@@ -290,7 +432,10 @@ class VideoDataset(torch.utils.data.Dataset):
 
     # ---------- Dataset API ----------
     def __getitem__(self, index):
-        # Keep trying new indices until a valid sample is loaded (matches default behavior)
+        # Keep trying new indices until a valid sample is loaded (matches default behavior), but at
+        # most `max_replacements` times: raising lets the trainer's retry guard, then the process,
+        # fail instead of a worker spinning forever. Below the bound, the draws are upstream's.
+        requested, replacements = index, 0
         while True:
             sample_path = self.samples[index]
             if isinstance(sample_path, str):
@@ -298,6 +443,13 @@ class VideoDataset(torch.utils.data.Dataset):
                 loaded = self.get_item_image(index) if is_image else self.get_item_video(index)
                 if loaded:
                     return loaded
+            if replacements == self.max_replacements:
+                tried = self.describe(requested)
+                if replacements:
+                    tried += f" and its {replacements} random replacements (the last: {self.describe(index)})"
+                raise RuntimeError(f"Failed to load {tried}; max_replacements={self.max_replacements} reached, so "
+                                   "the videos are probably unreachable or the manifest is wrong.")
+            replacements += 1
             warnings.warn(f"Retrying with new sample, failed to load {self.describe(index)}.")
             index = np.random.randint(len(self))
 
@@ -511,6 +663,7 @@ class VideoDataset(torch.utils.data.Dataset):
 
         # Pad short videos to `frames_per_clip` with black frames matching the decoded shape and dtype.
         # Padding frames are marked with clip index `-1`; the last real frame is decoded, then replaced with black.
+        # Under "loop", the same real frames are first chosen, then repeated in place of the padding.
         all_indices, clip_indices, pad_masks = [], [], []
         for i in range(self.num_clips):
             n_real = fpc
@@ -556,6 +709,9 @@ class VideoDataset(torch.utils.data.Dataset):
             # the last real frame when `-1` is reserved for padding.
             indices = np.clip(indices, 0, len(vr) - 1)
             pad = np.arange(fpc) >= n_real
+            if self.temporal_padding == "loop":
+                # Recycled positions are decoded real frames with their true indices: nothing is padding.
+                indices, pad = loop_clip_indices(indices, n_real), np.zeros(fpc, dtype=bool)
             clip_indices.append(np.where(pad, -1, indices))
             pad_masks.append(pad)
             all_indices.extend(list(indices))

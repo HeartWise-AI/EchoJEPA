@@ -330,6 +330,40 @@ The hard view column still controls sampling. Acquisition embeddings are separat
 and not dropped with the view signal. Hierarchical pooling adds both metadata embeddings to
 the clip summaries before study attention.
 
+## Training augmentation and class weights
+
+- **`experiment.data.augmentation`** sets the probe's training transform: `random_resize_scale`,
+  `random_resize_aspect_ratio`, `reprob` and `auto_augment`. Left out, it is the legacy ImageNet-style setting:
+  crops down to 8% of the frame, aspect 0.75-1.33, RandAugment (with inversion, solarize and colour changes) and
+  25% random erasing. Evaluation always resizes and centre-crops, so small training crops read the heart at
+  another mm-per-pixel scale than evaluation, which adds noise to every size head, and the colour operations
+  change the Doppler jets. The pretraining-matched setting is `{random_resize_scale: [0.5, 1.0],
+  random_resize_aspect_ratio: [0.9, 1.1], reprob: 0.0, auto_augment: false}`.
+- **`experiment.classifier.class_weights`**: `auto` weighs every binary and 3-class head by inverse prevalence on
+  the train split (binary `pos_weight` = negatives / positives; classes = largest count / class count), capped at
+  `class_weight_cap` (default 10). Or give `{head: auto | value | [one value per class]}`. Rare findings
+  (tricuspid, pulmonic, stenosis) then weigh more. Heads not named keep unweighted losses.
+- Both are recorded in the run's fingerprint only when set, so earlier runs resume as they were.
+- `configs/sweeps/study_probe_v3.yaml` tests both, plus OTHER as filler only, from v2's best probe, and a control
+  with the top 4 encoder blocks trained. Select on validation, then score the chosen variant once with
+  `test_only: true`.
+
+## Brought over from DeepCORO_CLIP (11-22)
+
+- **Test reporting.** `test_only` now adds `test_operating_points`: each binary head's Youden threshold fixed on
+  validation, with the test's sensitivity, specificity, PPV and NPV at it. It also adds `test_intervals`: study-bootstrap 95%
+  intervals of MAE and Pearson r (regression) and AUROC (binary, classification). `evaluation.bootstrap` sets the
+  number of resamples (default 1000; 0 turns it off).
+- **Encoder fine-tuning.** `experiment.encoder.layer_decay` (e.g. 0.75): the top trainable block at the encoder
+  learning rate, each block below it at that times `layer_decay`. Use it with `experiment.encoder.warmup` (epochs) and
+  `start_lr: 0`. DeepCORO_CLIP warms up over about 7% of steps.
+- **`experiment.classifier.pooler_lr_scale`**: the pooling layers' learning rate as a multiple of the heads'
+  (DeepCORO_CLIP's attention_lr / head_lr, about 5-10x).
+- **`experiment.classifier.hybrid_attention: true`** (attentive pooling, shared query): the attentive pooler's
+  study vector is joined with gated attention over the videos' mean tokens, then projected back (DeepCORO_CLIP's
+  attention + CLS pooling).
+- All of them are off by default and recorded in the fingerprint only when set. The v3 sweep tests each one as a control.
+
 ## Sweep
 
 [`configs/sweeps/study_probe.yaml`](../configs/sweeps/study_probe.yaml) defines a controlled

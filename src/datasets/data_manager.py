@@ -43,8 +43,22 @@ def init_data(
     img_size=336,
     miss_augment_prob=0.0,          # <<< NEW
     min_present=1,                  # <<< NEW
-    split_name="train"
+    split_name="train",
+    temporal_padding="black",
+    loader_timeout=0,
 ):
+    # Only VideoDataset implements a temporal-padding choice (docs/temporal_padding.md); every other
+    # dataset keeps its own behaviour, so asking it to loop is an error rather than silently ignored.
+    if temporal_padding != "black":
+        from src.datasets.video_dataset import validate_temporal_padding
+
+        validate_temporal_padding(temporal_padding)
+        if data.lower() != "videodataset":
+            raise ValueError(f"temporal_padding={temporal_padding!r} is only supported by VideoDataset, not {data!r}.")
+    # The same for the loader timeout (seconds without any batch before the DataLoader raises; 0 waits forever).
+    if loader_timeout != 0 and data.lower() != "videodataset":
+        raise ValueError(f"loader_timeout={loader_timeout!r} is only supported by VideoDataset, not {data!r}.")
+
     if data.lower() == "imagenet":
         from src.datasets.imagenet1k import make_imagenet1k
 
@@ -93,6 +107,8 @@ def init_data(
             deterministic=deterministic,
             log_dir=log_dir,
             in_order=in_order,
+            temporal_padding=temporal_padding,
+            loader_timeout=loader_timeout,
         )
 
     elif data.lower() == "videogroupdataset":  

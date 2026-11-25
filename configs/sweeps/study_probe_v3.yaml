@@ -1,0 +1,90 @@
+# Generate only: python -m tools.study_probe_sweep generate --spec configs/sweeps/study_probe_v3.yaml \
+#   --output /your_folder/sweep-configs   (override --base, --checkpoint, --data and --folder as for v2)
+#
+# v3 starts from v2's best probe (flat 3D RoPE + view-balanced bags, 3 eval bags) and tests the levers of the
+# 11-22 review, one at a time and together, 3 seeds each:
+#   echo_augmentation  the training augmentation of the encoder's pretraining (crops of 50-100% of the frame,
+#                      aspect 0.9-1.1, no RandAugment, no erasing) instead of ImageNet-style crops down to 8%,
+#                      inversion/solarize/colour RandAugment and 25% erasing, which change the mm-per-pixel
+#                      scale of the size heads and the colour of the Doppler jets.
+#   class_weights      inverse-prevalence class weights on every binary and 3-class head (capped at 10),
+#                      so rare findings (tricuspid, pulmonic, stenosis) weigh more (Robert, 11-19).
+#   other_filler       view-balanced bags fill with OTHER clips only after every view family has a slot.
+# Controls (each `all` plus one change, from DeepCORO_CLIP): `finetune_top4` trains the top 4 of ViT-B's 12 encoder
+# blocks (lr 6.4e-6, 1.5-epoch warmup, layer-wise decay 0.75); `pooler_lr_x5`; `hybrid_pooling`.
+# One probe setting for every variant (the fine-tuned control needs one, and the sweep compares variants on the
+# same optimizer). Select on validation, then score the selected variant once on the test split
+# (`test_only: true`) before quoting numbers: validation picks both the epoch and the variant.
+name: study-probe-v3
+base_config: ../eval/vitl/study_multitask_deepecho.yaml
+seeds: [0, 1, 2]
+
+defaults:
+  experiment.classifier.pooling_mode: attentive
+  experiment.classifier.query_mode: shared
+  experiment.classifier.task_groups: null
+  experiment.classifier.use_view_embedding: true
+  experiment.classifier.view_dropout: 0.0
+  experiment.classifier.local_use_rope: false
+  experiment.classifier.local_depth: 1
+  experiment.classifier.local_num_queries: 4
+  experiment.classifier.study_use_rope: true
+  experiment.data.sampling_mode: view_balanced
+  experiment.data.eval_seed: 1729
+  experiment.data.view_family_map:
+    A4C_LV: A4C
+    A4C_RV: A4C
+    A4C_ZOOM: A4C
+    A2C_LV: A2C
+    A2C_ZOOM: A2C
+    A3C_LV: A3C
+    A3C_ZOOM: A3C
+    A5C_ZOOM: A5C
+    PLAX_ZOOM: PLAX
+    PLAX_DEEP: PLAX
+    PSAX_AV: PSAX
+    PSAX_MV: PSAX
+    PSAX_PM: PSAX
+    PSAX_APICAL: PSAX
+    Other: OTHER
+  experiment.evaluation.selection: weighted_loss
+  experiment.evaluation.num_bags: 3
+  experiment.optimization.multihead_kwargs:
+  - {start_lr: 1.0e-4, lr: 1.0e-4, final_lr: 0.0, warmup: 0.0, weight_decay: 0.01, final_weight_decay: 0.01}
+
+factors:
+  echo_augmentation:
+    experiment.data.augmentation: &echo_augmentation
+      random_resize_scale: [0.5, 1.0]
+      random_resize_aspect_ratio: [0.9, 1.1]
+      reprob: 0.0
+      auto_augment: false
+  class_weights:
+    experiment.classifier.class_weights: auto
+    experiment.classifier.class_weight_cap: 10.0
+  other_filler:
+    experiment.data.filler_families: [OTHER]
+
+# Each control is `all` plus one change (DeepCORO_CLIP's recipe, 11-22).
+controls:
+  finetune_top4:                                  # top 4 blocks, 1.5-epoch warmup from 0, layer-wise decay 0.75
+    experiment.data.augmentation: *echo_augmentation
+    experiment.classifier.class_weights: auto
+    experiment.classifier.class_weight_cap: 10.0
+    experiment.data.filler_families: [OTHER]
+    experiment.encoder.trainable_blocks: 4
+    experiment.encoder.start_lr: 0.0
+    experiment.encoder.warmup: 1.5
+    experiment.encoder.layer_decay: 0.75
+  pooler_lr_x5:                                   # pooling layers at 5x the heads' learning rate
+    experiment.data.augmentation: *echo_augmentation
+    experiment.classifier.class_weights: auto
+    experiment.classifier.class_weight_cap: 10.0
+    experiment.data.filler_families: [OTHER]
+    experiment.classifier.pooler_lr_scale: 5.0
+  hybrid_pooling:                                 # attentive pooler + gated attention over videos
+    experiment.data.augmentation: *echo_augmentation
+    experiment.classifier.class_weights: auto
+    experiment.classifier.class_weight_cap: 10.0
+    experiment.data.filler_families: [OTHER]
+    experiment.classifier.hybrid_attention: true
