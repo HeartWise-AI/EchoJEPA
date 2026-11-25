@@ -63,7 +63,7 @@ class WarmupCosineSchedule(object):
             )
 
         for group in self.optimizer.param_groups:
-            group["lr"] = new_lr
+            group["lr"] = new_lr * group.get("lr_scale", 1.0)
 
         return new_lr
 

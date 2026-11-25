@@ -1,0 +1,130 @@
+app: vjepa_2_1
+nodes: 1
+tasks_per_node: 1
+cpus_per_task: 24
+mem_per_gpu: 48G
+folder: /media/data1/models/EchoJEPA/encoders/ej21port_v1/armA_objective
+data:
+  dataset_type: VideoDataset
+  datasets:
+  - /media/data1/models/EchoJEPA/encoders/ej21port_v1/data/train_videos_excl_valtest.csv
+  batch_size: 16
+  crop_size: 384
+  patch_size: 16
+  dataset_fpcs:
+  - 16
+  fps: 8
+  tubelet_size: 2
+  num_workers: 12
+  persistent_workers: true
+  in_order: false
+  pin_mem: true
+data_aug:
+  auto_augment: false
+  motion_shift: false
+  random_horizontal_flip: false
+  random_resize_aspect_ratio:
+  - 0.9
+  - 1.1
+  random_resize_scale:
+  - 0.5
+  - 1.0
+  reprob: 0.0
+loss:
+  loss_exp: 1.0
+  predict_all: true
+  shift_by_n: 0
+  weight_distance_loss: true
+  offset_context_loss: false
+mask:
+- aspect_ratio:
+  - 0.75
+  - 1.5
+  full_complement: false
+  max_keep: null
+  max_temporal_keep: 1.0
+  num_blocks: 8
+  spatial_scale:
+  - 0.15
+  - 0.15
+  temporal_scale:
+  - 1.0
+  - 1.0
+- aspect_ratio:
+  - 0.75
+  - 1.5
+  full_complement: false
+  max_keep: null
+  max_temporal_keep: 1.0
+  num_blocks: 2
+  spatial_scale:
+  - 0.7
+  - 0.7
+  temporal_scale:
+  - 1.0
+  - 1.0
+meta:
+  wandb_project: null
+  num_log_videos: 0
+  dtype: bfloat16
+  eval_freq: 100
+  load_checkpoint: true
+  read_checkpoint: null
+  init_checkpoint: /media/data1/models/EchoJEPA/encoders/echojepa-vitl-coro-cooldown-ep60/checkpoint.pt
+  init_encoder_key: ema
+  init_predictor_partial: true
+  save_every_freq: -1
+  save_at_epochs:
+  - 2
+  - 4
+  - 6
+  - 8
+  - 10
+  - 12
+  - 14
+  - 16
+  - 18
+  seed: 239
+  use_sdpa: true
+  init_backbone: echojepa
+model:
+  model_name: vit_large
+  pred_depth: 12
+  pred_embed_dim: 384
+  pred_num_heads: 12
+  n_output_distillation: 4
+  has_cls_first: false
+  img_temporal_dim_size: 1
+  interpolate_rope: true
+  modality_embedding: true
+  n_registers: 0
+  n_registers_predictor: 0
+  normalize_predictor: false
+  uniform_power: true
+  use_activation_checkpointing: true
+  use_mask_tokens: true
+  use_rope: true
+  zero_init_mask_tokens: true
+  lambda_value_vid: 0.5
+  lambda_progressive: true
+  lambda_start_iter: 6000
+  lambda_end_iter: 12000
+optimization:
+  is_anneal: false
+  ipe: 1000
+  ipe_scale: 1.0
+  ema:
+  - 0.9999
+  - 1.0
+  weight_decay: 0.04
+  final_weight_decay: 0.04
+  clip_grad: 10.0
+  freeze_encoder_iters: 1000
+  anchor:
+    weight: 0.0
+  collapse_log_freq: 100
+  start_lr: 2.7e-07
+  lr: 2.73e-06
+  final_lr: 1.0e-07
+  warmup: 2
+  epochs: 20
