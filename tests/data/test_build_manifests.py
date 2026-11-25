@@ -743,7 +743,7 @@ class TestLinkEfLabels(unittest.TestCase):
         with mock.patch.object(sys, "argv", ["link_ef_labels.py", "--help"]), \
                 contextlib.redirect_stdout(out), self.assertRaises(SystemExit):
             lel.parse_args()
-        help_text = out.getvalue()
+        help_text = " ".join(out.getvalue().split())  # argparse wraps to the terminal's width
         self.assertIn("report/PACS patient-ID agreement", help_text)
         self.assertIn("combined PACS/metadata patient/date agreement", help_text)
 

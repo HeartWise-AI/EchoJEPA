@@ -45,6 +45,28 @@ class TestStudySweep(unittest.TestCase):
         self.assertEqual(defaults["experiment.data.sampling_mode"], "random")
         self.assertNotIn("experiment.data.routing", defaults)
 
+    def test_the_v3_sweep_tests_augmentation_class_weights_filler_and_a_finetuned_control(self):
+        spec = yaml.safe_load((ROOT / "configs/sweeps/study_probe_v3.yaml").read_text())
+        runs = expand(self.base, spec)
+        variants = list(dict.fromkeys(m["variant"] for _, m in runs))
+        self.assertEqual(variants, ["baseline", "echo_augmentation", "class_weights", "other_filler", "all",
+                                    "finetune_top4", "pooler_lr_x5", "hybrid_pooling"])
+        self.assertEqual(len(runs), 8 * len(spec["seeds"]))
+        by_variant = {m["variant"]: c for c, m in runs}
+        baseline, tuned = by_variant["baseline"], by_variant["finetune_top4"]
+        self.assertNotIn("augmentation", baseline["experiment"]["data"])
+        self.assertEqual(baseline["experiment"]["data"]["sampling_mode"], "view_balanced")
+        self.assertTrue(baseline["experiment"]["classifier"]["study_use_rope"])
+        self.assertEqual(len(baseline["experiment"]["optimization"]["multihead_kwargs"]), 1)
+        self.assertEqual(by_variant["all"]["experiment"]["data"]["augmentation"]["random_resize_scale"], [0.5, 1.0])
+        self.assertEqual(by_variant["all"]["experiment"]["classifier"]["class_weights"], "auto")
+        self.assertEqual(tuned["experiment"]["encoder"]["trainable_blocks"], 4)
+        self.assertEqual((tuned["experiment"]["encoder"]["warmup"], tuned["experiment"]["encoder"]["layer_decay"]),
+                         (1.5, 0.75))
+        self.assertEqual(by_variant["pooler_lr_x5"]["experiment"]["classifier"]["pooler_lr_scale"], 5.0)
+        self.assertTrue(by_variant["hybrid_pooling"]["experiment"]["classifier"]["hybrid_attention"])
+        self.assertEqual(baseline["experiment"]["encoder"]["trainable_blocks"], 0)
+
     def test_ablation_and_factorial_cover_each_factor_and_preserve_protocol(self):
         original = copy.deepcopy(self.base)
         runs = expand(self.base, self.spec)

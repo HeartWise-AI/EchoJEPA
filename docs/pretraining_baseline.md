@@ -83,6 +83,10 @@ In the trainer, one additional feature is available but disabled in the shipped 
 
 13. **`optimization.clip_grad` optionally caps the total gradient norm** of the encoder and predictor before each optimizer step. Gradients above the threshold are scaled down, and `optimization/clipped_steps` reports how many steps were clipped since the previous log. Upstream V-JEPA and EchoJEPA do not use gradient clipping, so the shipped configs leave `clip_grad: null`. Although AdamW limits the effect of a single update, a large gradient spike can inflate its running second-moment estimate and reduce subsequent update sizes for many steps. If enabled, the cap should therefore target only clear outliers and sit several times above the run's typical gradient norm, which differs by training arm.
 
+In the data loader (`src/datasets`, shared with the frozen probes):
+
+14. **Unreadable data cannot stall a run.** A sample that fails to load is still replaced by a random other one, as upstream, but after `max_replacements` (default 10) failed replacements in a row `VideoDataset` (and the RVSP probe's `VideoGroupDataset`) raises instead of retrying forever; below that bound the replacements are drawn exactly as upstream draws them. The loader also raises after `data.loader_timeout` seconds without any batch (default 900, `0` waits forever, no effect with `num_workers: 0`), where upstream waited forever on a hung worker. With `in_order: false` one hung worker does not stall the step; the timeout fires once no worker delivers at all. Both errors reach the trainer's guard, which retries 5 times, 5 s apart (after a timeout it waits again for the same batch, so a batch that is only slow still arrives), then stops the process so the run can be relaunched from `latest.pth.tar`: a hung loader stops a run within about 6 × 900 s (when only one rank stalls, the 30-minute NCCL timeout of the ranks waiting for it can stop it first). The frozen probes read the same timeout from their top-level `loader_timeout`, without retries.
+
 Not used or not ported: the image branch (`img_data`, ImageNet), the Gram-loss options present in upstream cooldown configs but ignored by this trainer, and upstream’s V-JEPA 2.1 evaluation configs.
 
 ## Architecture
@@ -213,9 +217,8 @@ Compared with upstream's `vitb16` configs, this recipe changes:
 - the augmentation: narrower ranges, no flips;
 - the schedule: an LR scaled to batch 256, and a far shorter duration.
 
-Both arms train for 3,900 pretraining and 900 cooldown steps. The budget was sized from a
-throughput test on 4 × A6000. A different budget must change `epochs` (or
-`ipe`) identically in all four configs and keep the ramp at about 5–10 % of the
+Both arms train for 3,900 pretraining and 900 cooldown steps. A different schedule length must
+change `epochs` (or `ipe`) identically in all four configs and keep the ramp at about 5–10 % of the
 pretraining steps.
 
 ## Launch

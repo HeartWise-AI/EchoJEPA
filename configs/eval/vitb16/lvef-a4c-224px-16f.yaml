@@ -22,7 +22,7 @@ resume_checkpoint: true
 meta:
   seed: 0                                         # probe initialization, data order and augmentation.
   wandb_project: null
-  wandb_entity: mhi_ai
+  wandb_entity: null  # set your W&B entity together with wandb_project
   # wandb_run_name: null
 
 experiment:
