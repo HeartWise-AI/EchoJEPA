@@ -106,6 +106,8 @@ class VideoGroupDataset(torch.utils.data.Dataset):
         allow_clip_overlap=False,
         temporal_padding=None,
         max_replacements=DEFAULT_MAX_REPLACEMENTS,
+        fps=None,
+        fractional_frame_step=False,
     ):
         self.max_replacements = validate_max_replacements(max_replacements)
         self.manifest = manifest
@@ -120,10 +122,13 @@ class VideoGroupDataset(torch.utils.data.Dataset):
         self.transform = transform
         # The single-view loader reads every video, so sampling and padding match the EF probe's.
         options = {} if temporal_padding is None else {"temporal_padding": temporal_padding}
+        if fractional_frame_step:       # exact-rate clips (src/datasets/utils/frame_sampling.py); off by default
+            options["fractional_frame_step"] = True
         self.reader = VideoDataset(
             data_paths=[],
             frames_per_clip=frames_per_clip,
-            frame_step=frame_step,
+            frame_step=None if fps is not None else frame_step,     # `fps` replaces `frame_step`
+            fps=fps,
             num_clips=num_segments,
             random_clip_sampling=random_clip_sampling,
             allow_clip_overlap=allow_clip_overlap,

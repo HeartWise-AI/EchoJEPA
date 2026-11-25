@@ -25,6 +25,7 @@ import torchvision
 from decord import VideoReader, cpu
 
 from src.datasets.utils.color_order import fix_legacy_colors
+from src.datasets.utils import frame_sampling
 from src.datasets.utils.dataloader import ConcatIndices, MonitoredDataset, NondeterministicDataLoader
 from src.datasets.utils.weighted_sampler import DistributedWeightedSampler
 
@@ -226,6 +227,7 @@ def make_videodataset(
     deterministic=True,
     log_dir=None,
     in_order=True,
+    fractional_frame_step=False,
     temporal_padding="black",
     loader_timeout=0,
 ):
@@ -246,6 +248,7 @@ def make_videodataset(
         filter_long_videos=filter_long_videos,
         shared_transform=shared_transform,
         transform=transform,
+        fractional_frame_step=fractional_frame_step,
         temporal_padding=temporal_padding,
     )
 
@@ -324,6 +327,10 @@ class VideoDataset(torch.utils.data.Dataset):
     A sample that cannot be loaded is replaced, in `__getitem__`, by a random other sample, as
     upstream does; after `max_replacements` replacements that all fail too, `__getitem__` raises
     `RuntimeError` instead of retrying forever.
+
+    `fractional_frame_step=True` samples at the exact rate asked for (`fps` or `duration`)
+    instead of a whole frame step (src/datasets/utils/frame_sampling.py); both padding policies
+    apply to its short clips. Off by default, so that runs made before it read the same frames.
     """
 
     def __init__(
@@ -342,6 +349,7 @@ class VideoDataset(torch.utils.data.Dataset):
         filter_short_videos=False,
         filter_long_videos=int(10**9),
         duration=None,  # duration in seconds
+        fractional_frame_step=False,
         temporal_padding="black",
         max_replacements=DEFAULT_MAX_REPLACEMENTS,
     ):
@@ -361,6 +369,7 @@ class VideoDataset(torch.utils.data.Dataset):
         self.filter_long_videos = filter_long_videos
         self.duration = duration
         self.fps = fps
+        self.fractional_frame_step = bool(fractional_frame_step)
 
         # Initialize S3 client lazily per worker (avoid pickling/FD sharing)
         self.s3_client = None
@@ -614,6 +623,8 @@ class VideoDataset(torch.utils.data.Dataset):
         if len(vr) == 0:
             warnings.warn("Skipping video without frames.")
             return [], None
+        if self.fractional_frame_step:
+            return self._sample_fractional(vr, fpc)
         fstp = self.frame_step
         if self.duration is not None or self.fps is not None:
             try:
@@ -716,6 +727,10 @@ class VideoDataset(torch.utils.data.Dataset):
             pad_masks.append(pad)
             all_indices.extend(list(indices))
 
+        return self._decode(vr, all_indices, clip_indices, pad_masks)
+
+    def _decode(self, vr, all_indices, clip_indices, pad_masks):
+        """Decode the sampled frames and black out the padding frames."""
         try:
             with _native_stderr_discarded():
                 buffer = vr.get_batch(all_indices).asnumpy()
@@ -724,6 +739,45 @@ class VideoDataset(torch.utils.data.Dataset):
             return [], None
         buffer[np.concatenate(pad_masks)] = 0
         return buffer, clip_indices
+
+    def _sample_fractional(self, vr, fpc):
+        """`_sample_from_vr` with a fractional frame step (`fractional_frame_step`): clips at the exact rate asked
+        for. A video too short for a whole clip is filled as `temporal_padding` says: black frames (clip index -1),
+        or under "loop" the clip's own real frames again from its start."""
+        video_fps = None
+        if self.duration is not None or self.fps is not None:
+            try:
+                video_fps = float(vr.get_avg_fps())
+            except Exception as e:
+                logger.warning(f"FPS unavailable: {type(e).__name__}.")
+                video_fps = float("nan")
+            if not (math.isfinite(video_fps) and video_fps > 0):
+                warnings.warn(f"Unusable FPS {video_fps}: sampling every frame.")
+        step = frame_sampling.native_step(video_fps, fpc, frame_step=self.frame_step, fps=self.fps,
+                                          duration=self.duration)
+
+        if self.filter_short_videos and len(vr) <= frame_sampling.span(step, fpc):
+            warnings.warn(f"Skipping video of length {len(vr)}.")
+            return [], None
+
+        try:
+            with _native_stderr_discarded():
+                vr.seek(0)  # Go to start of video before sampling frames
+        except Exception as e:
+            logger.warning(f"Failed to decode video: {type(e).__name__}.")
+            return [], None
+
+        all_indices, clip_indices, pad_masks = [], [], []
+        for indices, n_real in frame_sampling.clip_indices(
+                len(vr), fpc, step, num_clips=self.num_clips, random_start=self.random_clip_sampling,
+                allow_clip_overlap=self.allow_clip_overlap):
+            pad = np.arange(fpc) >= n_real
+            if self.temporal_padding == "loop":
+                indices, pad = loop_clip_indices(indices, n_real), np.zeros(fpc, dtype=bool)
+            clip_indices.append(np.where(pad, -1, indices))
+            pad_masks.append(pad)
+            all_indices.extend(list(indices))
+        return self._decode(vr, all_indices, clip_indices, pad_masks)
 
     def __len__(self):
         return len(self.samples)

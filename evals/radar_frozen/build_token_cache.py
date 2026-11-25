@@ -2,8 +2,9 @@
 
 """Write the token cache RADAR trains on: the frozen encoder's tokens of every clip of one clip table.
 
-Each clip is read as the study probe reads it at evaluation: the first `frames_per_clip` frames at `frame_step`
-(a short video is padded with black frames), resized and centre-cropped to `resolution`, no augmentation. With
+Each clip is read as the study probe reads it at evaluation: the first `frames_per_clip` frames at `frame_step`, or at
+`fps` (with `fractional_frame_step: true` at the exact rate, src/datasets/utils/frame_sampling.py); a short video is
+padded with black frames. Clips are resized and centre-cropped to `resolution`, no augmentation. With
 `data.spatial: full_squash` the centre crop is dropped instead: every frame is resized to `resolution` x `resolution`
 (the same bilinear resize, aspect not kept), so the whole frame is encoded, as in the 224 x 224 squashed videos
 EchoJEPA was pretrained on; the default `resize_centre_crop` keeps the short side's central 224/256 and less of the
@@ -35,9 +36,9 @@ Two stages, so that several GPUs can share the work and an interrupted run loses
 
 `<out>` must be outside the repository: clip ids are file paths. Nothing printed names a clip or a study.
 
-Config (YAML): encoder {checkpoint, module_name, pretrain_kwargs, wrapper_kwargs}; data {frames_per_clip, frame_step,
-resolution, normalization, spatial, resize}; cache {token_grid, embed_dim, dtype, use_bfloat16}. `--checkpoint` overrides
-encoder.checkpoint.
+Config (YAML): encoder {checkpoint, module_name, pretrain_kwargs, wrapper_kwargs}; data {frames_per_clip, frame_step
+or fps or clip_duration, fractional_frame_step, resolution, normalization, spatial, resize}; cache {token_grid,
+embed_dim, dtype, use_bfloat16}. `--checkpoint` overrides encoder.checkpoint.
 
 Usage (one process per GPU, then once):
     CUDA_VISIBLE_DEVICES=0 python -m evals.radar_frozen.build_token_cache encode --config <yaml> --clips <table> \\
@@ -118,6 +119,15 @@ def _commit():
         return None
 
 
+def clip_timing(data):
+    """The clip loader's timing options from the config's data section: `frame_step` (default 2), or `fps` /
+    `clip_duration` instead, and `fractional_frame_step` (default off)."""
+    fps, duration = data.get("fps"), data.get("clip_duration")
+    frame_step = None if (fps is not None or duration is not None) else data.get("frame_step", 2)
+    return {"frame_step": frame_step, "duration": duration, "fps": fps,
+            "fractional_frame_step": bool(data.get("fractional_frame_step", False))}
+
+
 def provenance(config, args, n_clips, n_excluded):
     """What fixes the tokens: every chunk of one cache must carry the same record."""
     enc, data = config["encoder"], config.get("data", {})
@@ -136,6 +146,14 @@ def provenance(config, args, n_clips, n_excluded):
         "builder_sha256": file_sha256(os.path.abspath(__file__)), "commit": _commit(),
         "legacy_ybr_fix": color_order._enabled(),
     }
+    timing = clip_timing(data)
+    # Recorded only when set, so the records of caches written before these options stay as they were.
+    for key, value in (("fps", timing["fps"]), ("clip_duration", timing["duration"])):
+        if value is not None:
+            record["data"][key] = value
+            record["data"]["frame_step"] = None
+    if timing["fractional_frame_step"]:
+        record["data"]["fractional_frame_step"] = True
     return json.loads(json.dumps(record))    # as meta.json gives it back (tuples become lists)
 
 
@@ -147,7 +165,7 @@ class ClipReader(torch.utils.data.Dataset):
         from src.datasets.video_study_dataset import make_clip_loader
         self.clip_ids = list(clip_ids)
         self.frames = int(data.get("frames_per_clip", 16))
-        self.loader = make_clip_loader(self.frames, data.get("frame_step", 2), random_clip_sampling=False)
+        self.loader = make_clip_loader(self.frames, **clip_timing(data), random_clip_sampling=False)
         resolution = int(data.get("resolution", 224))
         normalization = data.get("normalization") or DEFAULT_NORMALIZATION
         self.squash = spatial_transform(data) != "eval"     # (an attribute, not a closure: workers pickle the reader)

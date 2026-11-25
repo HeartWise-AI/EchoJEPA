@@ -14,6 +14,7 @@ import yaml
 
 import src.models.predictor as vit_pred
 import src.models.vision_transformer as video_vit
+from src.datasets.utils import frame_sampling
 from src.utils.checkpoint_loader import robust_checkpoint_loader
 from src.utils.schedulers import CosineWDSchedule, LinearDecaySchedule, WarmupCosineSchedule
 from src.utils.wrappers import MultiSeqWrapper, PredictorMultiSeqWrapper
@@ -102,9 +103,14 @@ def load_checkpoint(
     target_encoder,
     opt,
     scaler,
+    clip_sampling=None,
 ):
+    """Resume a training checkpoint. With `clip_sampling` (this run's `frame_sampling.sampling_record`), refuse
+    a checkpoint trained with other clip-sampling settings (`frame_sampling.check_resume`)."""
     logger.info(f"Loading checkpoint from {r_path}")
     checkpoint = robust_checkpoint_loader(r_path, map_location=torch.device("cpu"))
+    if clip_sampling is not None:
+        frame_sampling.check_resume(checkpoint, clip_sampling, r_path)
 
     epoch = checkpoint["epoch"]
     itr   = checkpoint.get("itr", 0)

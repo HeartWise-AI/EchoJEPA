@@ -135,14 +135,7 @@ def main(args_eval, resume_preempt=False):
         raise ValueError("The multi-view probe needs `experiment.data.video_index` (the split check of every video).")
     if args_data.get("num_views_per_segment", 1) != 1:
         raise ValueError("The multi-view probe reads one spatial view per clip (`num_views_per_segment: 1`).")
-    clip_settings = {
-        "resolution": args_data.get("resolution", 224),
-        "frames_per_clip": args_data.get("frames_per_clip", 16),
-        "frame_step": args_data.get("frame_step", 4),
-        "num_segments": args_data.get("num_segments", 1),
-        "normalization": args_data.get("normalization", None),
-        "temporal_padding": args_data.get("temporal_padding", None),
-    }
+    clip_settings = read_clip_settings(args_data)
     target_mean, target_std = args_data.get("target_mean"), args_data.get("target_std")
     ef.check_normalization(target_mean, target_std, train_path)
     target_mean, target_std = float(target_mean), float(target_std)
@@ -446,8 +439,27 @@ class Selection:
         }
 
 
+def read_clip_settings(args_data):
+    """How each video is read, from `experiment.data`; also the fingerprint's `clips`. `fps` (it replaces
+    `frame_step`) and `fractional_frame_step` (docs/frame_sampling.md) appear only when set, so the settings, and
+    the fingerprint, of a probe run without them stay as they were."""
+    settings = {
+        "resolution": args_data.get("resolution", 224),
+        "frames_per_clip": args_data.get("frames_per_clip", 16),
+        "frame_step": args_data.get("frame_step", 4),
+        "num_segments": args_data.get("num_segments", 1),
+        "normalization": args_data.get("normalization", None),
+        "temporal_padding": args_data.get("temporal_padding", None),
+    }
+    if args_data.get("fps") is not None:
+        settings.update(fps=args_data["fps"], frame_step=None)
+    if args_data.get("fractional_frame_step", False):
+        settings["fractional_frame_step"] = True
+    return settings
+
+
 def make_dataset(path, training, resolution, frames_per_clip, frame_step, num_segments, normalization=None,
-                 temporal_padding=None):
+                 temporal_padding=None, fps=None, fractional_frame_step=False):
     """A split's studies, each video read and augmented as the EF probe's `make_dataloader` reads one:
     random clip positions and augmentation in training, fixed positions and no augmentation otherwise."""
     transform = make_transforms(
@@ -459,7 +471,8 @@ def make_dataset(path, training, resolution, frames_per_clip, frame_step, num_se
     sampling = PROTOCOL["train" if training else "evaluation"]
     return VideoGroupDataset(path, frames_per_clip=frames_per_clip, frame_step=frame_step, num_segments=num_segments,
                              transform=transform, random_clip_sampling=sampling["clip_positions"] == "random",
-                             allow_clip_overlap=True, temporal_padding=temporal_padding)
+                             allow_clip_overlap=True, temporal_padding=temporal_padding, fps=fps,
+                             fractional_frame_step=fractional_frame_step)
 
 
 def make_train_loader(dataset, batch_size, world_size, rank, num_workers, loader_timeout=DEFAULT_LOADER_TIMEOUT):

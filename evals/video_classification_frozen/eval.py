@@ -236,6 +236,12 @@ def main(args_eval, resume_preempt=False):
     frames_per_clip = args_data.get("frames_per_clip", 16)
     frame_step = args_data.get("frame_step", 4)
     duration = args_data.get("clip_duration", None)
+    # `fps` (or `clip_duration`) replaces `frame_step`; `fractional_frame_step` samples at the exact rate
+    # (docs/frame_sampling.md).
+    fps = args_data.get("fps")
+    if fps is not None or duration is not None:
+        frame_step = None
+    fractional_frame_step = bool(args_data.get("fractional_frame_step", False))
     num_views_per_segment = args_data.get("num_views_per_segment", 1)
     normalization = args_data.get("normalization", None)
     
@@ -436,6 +442,8 @@ def main(args_eval, resume_preempt=False):
         frames_per_clip=frames_per_clip,
         frame_step=frame_step,
         eval_duration=duration,
+        fps=fps,
+        fractional_frame_step=fractional_frame_step,
         num_segments=num_segments,
         num_views_per_segment=1,
         allow_segment_overlap=True,
@@ -455,6 +463,8 @@ def main(args_eval, resume_preempt=False):
         frame_step=frame_step,
         num_segments=num_segments,
         eval_duration=duration,
+        fps=fps,
+        fractional_frame_step=fractional_frame_step,
         num_views_per_segment=num_views_per_segment,
         allow_segment_overlap=True,
         batch_size=batch_size,
@@ -508,7 +518,10 @@ def main(args_eval, resume_preempt=False):
         "classifier": dict(args_classifier),
         "clips": {"dataset_type": dataset_type, "resolution": resolution, "frames_per_clip": frames_per_clip,
                   "frame_step": frame_step, "clip_duration": duration, "num_segments": num_segments,
-                  "num_views_per_segment": num_views_per_segment, "normalization": normalization},
+                  "num_views_per_segment": num_views_per_segment, "normalization": normalization,
+                  # Only when set, so the fingerprints of probes run without them stay as they were.
+                  **({"fps": fps} if fps is not None else {}),
+                  **({"fractional_frame_step": True} if fractional_frame_step else {})},
         "optimization": {"batch_size": batch_size, "num_epochs": num_epochs, "use_bfloat16": use_bfloat16,
                          "use_focal_loss": use_focal_loss, "multihead_kwargs": args_opt.get("multihead_kwargs")},
         "evaluation": {"low_ef_below": low_ef_below, "ef_ranges": list(ef_ranges),
@@ -586,6 +599,8 @@ def main(args_eval, resume_preempt=False):
             frame_step=frame_step,
             num_segments=num_segments,
             eval_duration=duration,
+            fps=fps,
+            fractional_frame_step=fractional_frame_step,
             num_views_per_segment=num_views_per_segment,
             allow_segment_overlap=True,
             batch_size=batch_size,
@@ -1797,6 +1812,8 @@ def make_dataloader(
     num_workers=12,
     subset_file=None,
     normalization=None,
+    fps=None,
+    fractional_frame_step=False,
     loader_timeout=DEFAULT_LOADER_TIMEOUT,
 ):
     if normalization is None:
@@ -1829,6 +1846,8 @@ def make_dataloader(
         clip_len=frames_per_clip,
         frame_sample_rate=frame_step,
         duration=eval_duration,
+        fps=fps,
+        fractional_frame_step=fractional_frame_step,
         num_clips=num_segments,
         allow_clip_overlap=allow_segment_overlap,
         num_workers=num_workers,

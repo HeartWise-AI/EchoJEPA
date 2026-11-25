@@ -44,6 +44,7 @@ def init_data(
     miss_augment_prob=0.0,          # <<< NEW
     min_present=1,                  # <<< NEW
     split_name="train",
+    fractional_frame_step=False,    # exact-rate frame steps (src/datasets/utils/frame_sampling.py); off by default
     temporal_padding="black",
     loader_timeout=0,
 ):
@@ -107,6 +108,7 @@ def init_data(
             deterministic=deterministic,
             log_dir=log_dir,
             in_order=in_order,
+            fractional_frame_step=fractional_frame_step,
             temporal_padding=temporal_padding,
             loader_timeout=loader_timeout,
         )

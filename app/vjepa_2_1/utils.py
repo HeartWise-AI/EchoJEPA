@@ -14,6 +14,7 @@ import torch
 import torch.nn.functional as F
 import yaml
 from app.vjepa_2_1.wrappers import MultiSeqWrapper, PredictorMultiSeqWrapper
+from src.datasets.utils import frame_sampling
 from src.utils.checkpoint_loader import robust_checkpoint_loader
 from src.utils.schedulers import (
     CosineWDSchedule,
@@ -117,6 +118,7 @@ def load_checkpoint(
     opt,
     scaler,
     is_anneal=False,
+    clip_sampling=None,
 ):
     """Resume training from a checkpoint of this trainer: model weights, optimizer and scaler
     state, and the epoch (0 when a cooldown starts from `anneal_ckpt`). Also returns the
@@ -125,9 +127,15 @@ def load_checkpoint(
     Everything must match the run exactly. Upstream skipped missing tensors, kept the current
     weights for mis-shaped ones and started a fresh optimizer when its groups did not match,
     which silently turned a resume into a partial re-initialisation.
+
+    With `clip_sampling` (this run's `frame_sampling.sampling_record`), a resume of a checkpoint trained with
+    other clip-sampling settings is refused (`frame_sampling.check_resume`). A cooldown starting from
+    `anneal_ckpt` (`is_anneal`) is a new phase, not a resume, and is not checked.
     """
     logger.info(f"Loading {r_path}")
     checkpoint = robust_checkpoint_loader(r_path, map_location=torch.device("cpu"))
+    if clip_sampling is not None and not is_anneal:
+        frame_sampling.check_resume(checkpoint, clip_sampling, r_path)
     needed = ["encoder", "predictor", "opt", "scaler"]
     needed += [] if target_encoder is None else ["target_encoder"]
     needed += [] if is_anneal else ["epoch"]
