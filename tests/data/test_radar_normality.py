@@ -1734,10 +1734,13 @@ class TestPolicy(unittest.TestCase):
             yaml.safe_dump(raw, f)
         return path
 
-    def test_the_shipped_policy_is_approved_for_exactly_its_rules_and_covers_every_trained_structure(self):
-        self.assertEqual(POLICY.status, "approved")
-        self.assertEqual(POLICY.approval["digest"], POLICY.digest)   # load_policy refuses a stale approval
-        self.assertEqual(rn.load_policy(self.write(self.raw)).status, "provisional")   # without its approval block
+    def test_the_shipped_policy_is_provisional_and_covers_every_trained_structure(self):
+        # Provisional until a second reviewer confirms the cutoffs and the manual-sample audit (the file's header).
+        self.assertEqual(POLICY.status, "provisional")
+        self.assertIsNone(POLICY.approval)
+        approved = {**self.raw, "approval": {"by": "test", "on": "January 2026", "audit_report": "audit_report.json",
+                                             "digest": POLICY.digest}}
+        self.assertEqual(rn.load_policy(self.write(approved)).status, "approved")   # an approval for exactly its rules
         self.assertEqual(POLICY.scope, "bmode")
         self.assertEqual(set(POLICY.required), set(rn.GRAMMARS))
 

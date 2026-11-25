@@ -165,9 +165,4 @@ device_present: abnormal
 #     "on": "<month year>"      (quoted: YAML reads a bare on as true; month only: full dates fail the privacy scan)
 #     audit_report: audit_report.json
 #     digest: <policy_digest>
-approval:
-  by: Charlotte Chen
-  "on": "November 2026"
-  audit_report: structured cross-check of the merged English caption flags against the report's structured fields,
-    training split (kept outside the repository)
-  digest: 877ecf1bbf3f5221df89102880936577e4e4df9e65198e2cdd265afd81e3fb61
+approval: null
