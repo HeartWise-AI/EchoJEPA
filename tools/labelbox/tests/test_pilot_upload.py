@@ -7,24 +7,38 @@ import stat
 import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
+from tools.labelbox import view_review
 from tools.labelbox.column_review import build_candidate, build_form, load_spec, prelabels
 from tools.labelbox.create_pilot_project import DATASET_DESCRIPTION, PROJECT_DESCRIPTION
 from tools.labelbox.pilot_upload import (
     BATCH_DELETE_WAITS,
+    BATCH_FILE,
     BATCH_PREFIX,
     CLIPS,
     COLUMN_REVIEW,
     ITEMS,
+    LOOKUP_CHUNK,
+    LOOKUP_WAITS,
     NOTICE,
+    PILOT,
+    PILOT_KEY_PREFIX,
+    PILOT_STUDY_KEY_PREFIX,
     PREDICTIONS_NAME,
     PREVIEW,
     STUDY_KEY_PREFIX,
     TEST_KEY_PREFIX,
+    UPLOAD_CHUNK,
+    VIEW_KEY_PREFIX,
+    VIEW_RELABEL,
+    VIEW_REVIEW,
+    VIEW_STUDY_KEY_PREFIX,
     VIEW_TYPE_REVIEW,
+    WORKFLOW_TEST,
     WORKSPACES,
     LabelboxUploadApi,
     StepFailed,
@@ -32,6 +46,8 @@ from tools.labelbox.pilot_upload import (
     Workspace,
     _answers_from_label,
     ensure_upload,
+    export_summary,
+    flagged_reviews,
     main,
     preview,
     read_plan,
@@ -48,6 +64,9 @@ A4C = TEST_KEY_PREFIX + "a" * 24
 COLOR = TEST_KEY_PREFIX + "b" * 24
 OTHER = TEST_KEY_PREFIX + "c" * 24
 STUDY = STUDY_KEY_PREFIX + "d" * 24
+# The same clips in a pilot folder (`pilot_prepare`).
+PILOT_KEYS = tuple(PILOT_KEY_PREFIX + char * 24 for char in "abc")
+PILOT_STUDY = PILOT_STUDY_KEY_PREFIX + "d" * 24
 TARGETS = WORKSPACES["pilot"]  # the workspace the SDK adapter tests use; main defaults to the test workspace.
 
 
@@ -58,20 +77,22 @@ def write_csv(path, rows, fields):
         writer.writerows(rows)
 
 
-def make_folder(root: Path, *, candidates=None, listed=None, other=None) -> Path:
+def make_folder(root: Path, *, candidates=None, listed=None, other=None, keys=(A4C, COLOR, OTHER),
+                study=STUDY) -> Path:
     (root / CLIPS).mkdir()
     (root / ITEMS).mkdir()
-    forms = {A4C: COLUMN_REVIEW, COLOR: COLUMN_REVIEW, OTHER: VIEW_TYPE_REVIEW}
+    a4c, color, view_type = keys
+    forms = {a4c: COLUMN_REVIEW, color: COLUMN_REVIEW, view_type: VIEW_TYPE_REVIEW}
     rows = []
     for key, form in forms.items():
         path = root / CLIPS / f"{key}.mp4"
         path.write_bytes(f"video {key}".encode())
-        rows.append({"global_key": key, "form": form, "study_key": STUDY, "copy_sha256": sha256(path)})
+        rows.append({"global_key": key, "form": form, "study_key": study, "copy_sha256": sha256(path)})
     if candidates is None:
-        candidates = [build_candidate(REPORT, "A4C", "bmode", global_key=A4C, input_kind="video"),
-                      build_candidate(REPORT, "A4C", "color_flow", global_key=COLOR, input_kind="video")]
+        candidates = [build_candidate(REPORT, "A4C", "bmode", global_key=a4c, input_kind="video"),
+                      build_candidate(REPORT, "A4C", "color_flow", global_key=color, input_kind="video")]
     (root / ITEMS / "candidates.json").write_text(json.dumps(candidates, ensure_ascii=False), encoding="utf-8")
-    write_csv(root / ITEMS / "view_type_items.csv", [{"global_key": key} for key in (other or [OTHER])],
+    write_csv(root / ITEMS / "view_type_items.csv", [{"global_key": key} for key in (other or [view_type])],
               ["global_key"])
     write_csv(root / ITEMS / "global_keys.csv", listed or rows, ["global_key", "form", "study_key", "copy_sha256"])
     return root
@@ -192,17 +213,41 @@ class PlanTests(unittest.TestCase):
         with self.assertRaisesRegex(UploadError, "missing or differs"):
             read_plan(folder)
 
-    def test_refuses_keys_outside_the_test_prefix(self):
-        pilot_key = "radar-pilot-" + "a" * 24
-        rows = [{"global_key": pilot_key, "form": COLUMN_REVIEW, "study_key": STUDY, "copy_sha256": "0" * 64}]
-        folder = make_folder(self.folder, listed=rows)
-        with self.assertRaisesRegex(UploadError, "workflow-test global key"):
-            read_plan(folder)
+    def test_refuses_keys_of_neither_kind_or_of_both(self):
+        for keys in (["radar-other-" + "a" * 24], [A4C, PILOT_KEYS[1]]):
+            rows = [{"global_key": key, "form": COLUMN_REVIEW, "study_key": STUDY, "copy_sha256": "0" * 64}
+                    for key in keys]
+            with tempfile.TemporaryDirectory() as folder:
+                with self.assertRaisesRegex(UploadError, "all of one kind of folder"):
+                    read_plan(make_folder(Path(folder), listed=rows))
+
+    def test_a_pilot_folder_is_read_as_the_pilots(self):
+        plan = read_plan(make_folder(self.folder, keys=PILOT_KEYS, study=PILOT_STUDY))
+
+        self.assertIs(plan.kind, PILOT)
+        self.assertEqual(plan.rows_of(VIEW_TYPE_REVIEW)[0].attachments, (PILOT.notice,))
+        self.assertEqual(plan.rows_of(COLUMN_REVIEW)[0].attachments[0]["name"], "RADAR caption pilot")
+        self.assertTrue(all(name.startswith("RADAR pilot study ") for name in plan.batches(COLUMN_REVIEW)))
+        self.assertIs(plan.only(COLUMN_REVIEW).kind, PILOT)
+        self.assertNotEqual(PILOT.predictions_name, WORKFLOW_TEST.predictions_name)
+        with tempfile.TemporaryDirectory() as folder:
+            self.assertIs(read_plan(make_folder(Path(folder))).kind, WORKFLOW_TEST)
+
+    def test_refuses_a_study_key_of_the_other_kind(self):
+        with self.assertRaisesRegex(UploadError, "opaque pilot study key"):
+            read_plan(make_folder(self.folder, keys=PILOT_KEYS, study=STUDY))
+
+    def test_refuses_candidates_of_another_form_version(self):
+        old = build_candidate(REPORT, "A4C", "bmode", global_key=A4C, input_kind="video")
+        old["version"] = 2
+        color = build_candidate(REPORT, "A4C", "color_flow", global_key=COLOR, input_kind="video")
+        with self.assertRaisesRegex(UploadError, "built for column review v2, not the committed v5"):
+            read_plan(make_folder(self.folder, candidates=[old, color]))
 
     def test_refuses_a_plain_study_id(self):
         rows = [{"global_key": A4C, "form": COLUMN_REVIEW, "study_key": "1.2.840.113619.2.1", "copy_sha256": "0" * 64}]
         folder = make_folder(self.folder, listed=rows)
-        with self.assertRaisesRegex(UploadError, "opaque study key"):
+        with self.assertRaisesRegex(UploadError, "opaque workflow test study key"):
             read_plan(folder)
 
     def test_refuses_items_that_do_not_match_the_listed_forms(self):
@@ -224,8 +269,9 @@ class PlanTests(unittest.TestCase):
 
 
 class FakeApi:
-    def __init__(self, existing=()):
+    def __init__(self, existing=(), unprocessed=()):
         self.existing = set(existing)
+        self.unprocessed = set(unprocessed)
         self.calls = []
         self.uploaded = []
         self.batches = {}
@@ -241,6 +287,13 @@ class FakeApi:
     def existing_global_keys(self, workspace, rows):
         return self.existing & {row.global_key for row in rows}
 
+    def remove_unprocessed(self, keys):
+        removed = self.unprocessed & set(keys)
+        self.calls.append(("remove unprocessed", tuple(sorted(removed))))
+        self.existing -= removed
+        self.unprocessed -= removed
+        return removed
+
     def upload_rows(self, workspace, rows):
         self.calls.append("upload")
         self.uploaded.extend(row.global_key for row in rows)
@@ -253,8 +306,9 @@ class FakeApi:
         known.update(new)
         return len(new)
 
-    def ensure_prelabels(self, workspace, candidates, *, refresh=False):
+    def ensure_prelabels(self, workspace, candidates, *, name, refresh=False, form=COLUMN_REVIEW):
         self.calls.append(("prelabels", refresh))
+        self.prelabel_name = name
         if self.prelabeled is not None and not refresh:
             return False
         self.prelabeled = [candidate["global_key"] for candidate in candidates]
@@ -271,11 +325,32 @@ class OrchestrationTests(unittest.TestCase):
 
         self.assertEqual(api.uploaded, [A4C, OTHER])
         self.assertEqual(result.uploaded, 2)
-        self.assertEqual(api.calls, [("workspace", (COLUMN_REVIEW, VIEW_TYPE_REVIEW), True), "upload",
+        self.assertEqual(api.calls, [("workspace", (COLUMN_REVIEW, VIEW_TYPE_REVIEW), True),
+                                     ("remove unprocessed", ()), "upload",
                                      ("batches", f"project-{COLUMN_REVIEW}"),
                                      ("batches", f"project-{VIEW_TYPE_REVIEW}"), ("prelabels", True)])
         self.assertEqual(api.prelabeled, [A4C, COLOR])
         self.assertTrue(result.prelabels_imported)
+
+    def test_uploads_again_the_rows_labelbox_never_processed(self):
+        with tempfile.TemporaryDirectory() as folder:
+            plan = read_plan(make_folder(Path(folder)))
+        api = FakeApi(existing={A4C, COLOR}, unprocessed={COLOR})
+
+        result = ensure_upload(api, plan)
+
+        self.assertEqual(api.uploaded, [COLOR, OTHER])
+        self.assertEqual((result.uploaded, result.replaced), (2, 1))
+        self.assertEqual(api.calls[1:3], [("remove unprocessed", (COLOR,)), "upload"])
+
+    def test_each_kind_imports_its_prelabels_under_its_own_name(self):
+        for folder_keys, study, kind in (((A4C, COLOR, OTHER), STUDY, WORKFLOW_TEST),
+                                         (PILOT_KEYS, PILOT_STUDY, PILOT)):
+            with tempfile.TemporaryDirectory() as folder:
+                plan = read_plan(make_folder(Path(folder), keys=folder_keys, study=study))
+            api = FakeApi()
+            ensure_upload(api, plan)
+            self.assertEqual(api.prelabel_name, kind.predictions_name)
 
     def test_second_run_changes_nothing(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -340,6 +415,22 @@ class FakeClient:
         self.ontologies = list(ontologies)
         self.created = []
         self.rows = {}
+        self.unprocessed, self.queries = set(), []
+
+    def execute(self, query, params):
+        """The processing check `create_batch` waits on, the only query the uploader sends itself."""
+        self.queries.append(list(params["globalKeys"]))
+        processed = not self.unprocessed & set(params["globalKeys"])
+        return {"queryAllDataRowsHaveBeenProcessed": {"allDataRowsHaveBeenProcessed": processed}}
+
+    def get_data_row_ids_for_global_keys(self, keys):
+        """As the SDK: an empty string in the place of a key Labelbox does not have, named in `errors`."""
+        return {"results": [key if key in self.rows else "" for key in keys],
+                "errors": [{"global_key": key, "error": "Data Row not found"} for key in keys if key not in self.rows]}
+
+    def get_data_row(self, uid):
+        self.rows[uid].global_key = uid
+        return self.rows[uid]
 
     def get_datasets(self, where=None):
         return list(self.datasets)
@@ -525,6 +616,96 @@ class SdkPayloadTests(unittest.TestCase):
         with self.assertRaisesRegex(UploadError, "belongs to another dataset"):
             sdk_api(client).existing_global_keys(workspace, plan.rows)
 
+    def test_the_lookup_asks_for_a_chunk_of_keys_at_a_time(self):
+        client = FakeClient()
+        keys = [f"key-{index}" for index in range(LOOKUP_CHUNK + 1)]
+        client.rows[keys[-1]] = SimpleNamespace()
+        asked = []
+        lookup = client.get_data_row_ids_for_global_keys
+        client.get_data_row_ids_for_global_keys = lambda chunk: asked.append(len(chunk)) or lookup(chunk)
+        self.assertEqual(sdk_api(client)._lookup(keys), {keys[-1]: keys[-1]})
+        self.assertEqual(asked, [LOOKUP_CHUNK, 1])
+
+    def test_the_lookup_reads_a_result_without_the_empty_places(self):
+        result = {"results": ["id-b"], "errors": [{"global_key": "a", "error": "Data Row not found"}]}
+        client = SimpleNamespace(get_data_row_ids_for_global_keys=lambda chunk: result)
+        self.assertEqual(sdk_api(client)._lookup(["a", "b"]), {"b": "id-b"})
+
+    def test_a_lookup_that_does_not_add_up_stops_the_run(self):
+        result = {"results": ["id-a", "id-b"], "errors": [{"global_key": "a", "error": "Data Row not found"}]}
+        client = SimpleNamespace(get_data_row_ids_for_global_keys=lambda chunk: result)
+        with self.assertRaisesRegex(UploadError, "does not add up"):
+            sdk_api(client)._lookup(["a", "b"])
+
+    def test_a_failed_lookup_is_repeated_then_reported(self):
+        calls, waits = [], []
+
+        def fails(times):
+            def lookup(chunk):
+                calls.append(chunk)
+                if len(calls) <= times:
+                    raise RuntimeError("Job dataRowsForGlobalKeys failed.")
+                return {"results": ["id-a"], "errors": []}
+            return SimpleNamespace(get_data_row_ids_for_global_keys=lookup)
+
+        self.assertEqual(sdk_api(fails(len(LOOKUP_WAITS)), sleep=waits.append)._lookup(["a"]), {"a": "id-a"})
+        self.assertEqual(waits, list(LOOKUP_WAITS))
+        calls.clear()
+        with self.assertRaisesRegex(RuntimeError, "failed"):
+            sdk_api(fails(len(LOOKUP_WAITS) + 1), sleep=waits.append)._lookup(["a"])
+        self.assertEqual(len(calls), len(LOOKUP_WAITS) + 1)
+
+    def test_a_row_of_another_key_stops_the_run(self):
+        client = FakeClient()
+        workspace = sdk_api(client).ensure_workspace(FORMS, create=False)
+        with tempfile.TemporaryDirectory() as folder:
+            plan = read_plan(make_folder(Path(folder)))
+        client.rows[A4C] = SimpleNamespace(dataset=lambda: client.dataset(COLUMN_REVIEW))
+        client.get_data_row = lambda uid: SimpleNamespace(global_key=OTHER, dataset=client.rows[uid].dataset)
+        with self.assertRaisesRegex(UploadError, "data row of another"):
+            sdk_api(client).existing_global_keys(workspace, plan.rows)
+
+    def test_rows_are_created_a_group_at_a_time_so_a_rerun_keeps_the_groups_done(self):
+        created = []
+
+        def create_data_rows(rows):
+            created.append(len(rows))
+            task = FakeTask()
+            if len(created) == 2:
+                task.status = "FAILED"
+            return task
+
+        client = SimpleNamespace(upload_file=lambda path: "url")
+        with tempfile.TemporaryDirectory() as folder:
+            plan = read_plan(make_folder(Path(folder)))
+            row = plan.rows[0]
+            rows = [replace(row, global_key=f"key-{index}") for index in range(UPLOAD_CHUNK + 1)]
+            workspace = Workspace({row.form: SimpleNamespace(create_data_rows=create_data_rows)}, {}, {})
+            with self.assertRaisesRegex(UploadError, "Data-row creation failed"), \
+                    mock.patch("sys.__stdout__", io.StringIO()) as shown:
+                sdk_api(client).upload_rows(workspace, rows)
+        self.assertEqual(created, [UPLOAD_CHUNK, 1])
+        self.assertEqual(shown.getvalue(), f"[upload] {UPLOAD_CHUNK}/{UPLOAD_CHUNK + 1} clips sent\n")
+
+    def test_a_failed_row_is_named_without_its_url(self):
+        url = "https://storage.example.invalid/clip"
+
+        class FailedTask(FakeTask):
+            errors = [{"message": f"Command '['ffprobe', '-v', 'quiet', '{url}']' returned non-zero exit status 1.",
+                       "failedDataRows": [{"globalKey": COLOR, "rowData": url}]}]
+
+        client = SimpleNamespace(upload_file=lambda path: url)
+        datasets = {form: SimpleNamespace(create_data_rows=lambda rows: FailedTask()) for form in FORMS}
+        with tempfile.TemporaryDirectory() as folder:
+            plan = read_plan(make_folder(Path(folder)))
+            with self.assertRaises(UploadError) as raised:
+                sdk_api(client).upload_rows(Workspace(datasets, {}, {}), plan.rows)
+
+        message = str(raised.exception)
+        self.assertIn(f"failed for 1 of 2 rows ({COLOR})", message)
+        self.assertIn("exit status 1", message)
+        self.assertNotIn("storage.example.invalid", message)
+
     def test_export_reads_the_rows_from_the_stream_not_the_result_url(self):
         rows = [exported(A4C), exported(OTHER)]
 
@@ -544,9 +725,11 @@ class SdkPayloadTests(unittest.TestCase):
             def get_buffered_stream(self):
                 return iter([SimpleNamespace(json=row) for row in rows])
 
-        project = SimpleNamespace(export=lambda params: StreamedExport())
+        asked = []
+        project = SimpleNamespace(export=lambda params: asked.append(params) or StreamedExport())
 
         self.assertEqual(LabelboxUploadApi.export_rows(project), rows)
+        self.assertTrue(asked[0]["label_details"] and asked[0]["performance_details"])  # M7 reads the latter.
 
         failed = StreamedExport()
         failed.has_errors = lambda: True
@@ -604,6 +787,37 @@ class SdkPayloadTests(unittest.TestCase):
         self.assertEqual({p["dataRow"]["globalKey"] for p in predictions}, {A4C, COLOR})
 
 
+class UnprocessedRowTests(unittest.TestCase):
+    """Rows Labelbox created but never processed (it could not read the video), found before batching."""
+
+    def setUp(self):
+        self.client, self.deleted = FakeClient(), []
+        for key in (A4C, COLOR):
+            self.client.rows[key] = SimpleNamespace(labels=lambda: [], delete=lambda key=key: self.deleted.append(key))
+
+    def test_processed_rows_cost_one_request_and_nothing_is_deleted(self):
+        self.assertEqual(sdk_api(self.client).remove_unprocessed({COLOR, A4C}), set())
+        self.assertEqual(sdk_api(self.client).remove_unprocessed(set()), set())
+
+        self.assertEqual(self.client.queries, [sorted([A4C, COLOR])])
+        self.assertEqual(self.deleted, [])
+
+    def test_an_unprocessed_row_is_deleted_so_that_it_is_uploaded_again(self):
+        self.client.unprocessed.add(COLOR)
+
+        self.assertEqual(sdk_api(self.client).remove_unprocessed({A4C, COLOR}), {COLOR})
+        self.assertEqual(self.deleted, [COLOR])
+
+    def test_a_labelled_unprocessed_row_stops_the_run(self):
+        self.client.unprocessed.add(COLOR)
+        self.client.rows[COLOR].labels = lambda: ["a label"]
+
+        with self.assertRaises(UploadError) as raised:
+            sdk_api(self.client).remove_unprocessed({A4C, COLOR})
+        self.assertIn(f"never processed 1 labelled rows of this folder ({COLOR})", str(raised.exception))
+        self.assertEqual(self.deleted, [])
+
+
 class OperationNotAllowedException(Exception):
     """Named like the SDK's, which the uploader recognises by name."""
 
@@ -612,16 +826,19 @@ class CleanupTests(unittest.TestCase):
     """What `--delete` finds and removes in a workspace that also holds the pilot's own work."""
 
     def setUp(self):
+        self.upload()
+
+    def upload(self, **folder):
+        """A workspace holding this folder's upload (a workflow test's by default) and other work."""
         self.events, self.sleeps = [], []
         self.client = FakeClient()
-        folder = tempfile.mkdtemp()
-        self.plan = read_plan(make_folder(Path(folder)))
+        self.plan = read_plan(make_folder(Path(tempfile.mkdtemp()), **folder))
         for form in FORMS:
             project = self.client.project(form)
             for name in [*self.plan.batches(form), "pilot study batch"]:
                 project.batch_list.append(self.batch(project, name))
         column = self.client.project(COLUMN_REVIEW)
-        for name in (PREDICTIONS_NAME, "pilot prelabels"):
+        for name in (self.plan.kind.predictions_name, "pilot prelabels"):
             item = SimpleNamespace(name=name)
             item.delete = lambda item=item: self.events.append(("delete import", item.name))
             column.import_list.append(item)
@@ -646,6 +863,25 @@ class CleanupTests(unittest.TestCase):
     def cleanup(self, apply):
         api = sdk_api(self.client, sleep=self.sleeps.append)
         return api.cleanup(api.ensure_workspace(FORMS, create=False), self.plan, apply=apply)
+
+    def test_a_pilot_upload_is_deleted_only_before_any_review(self):
+        self.upload(keys=PILOT_KEYS, study=PILOT_STUDY)
+        self.client.project(COLUMN_REVIEW).labels = 1
+
+        self.assertEqual(self.cleanup(apply=False), {"study batches": 2, "prelabel imports": 1, "data rows": 3})
+        with self.assertRaisesRegex(UploadError, "pilot projects hold submitted reviews"):
+            self.cleanup(apply=True)
+        self.assertEqual(self.events, [])
+
+        self.client.project(COLUMN_REVIEW).labels = 0
+        self.cleanup(apply=True)
+        self.assertIn(("delete import", PILOT.predictions_name), self.events)
+        self.assertEqual({name for kind, name in self.events if kind == "delete row"}, set(PILOT_KEYS))
+
+    def test_a_workflow_test_is_deleted_even_after_reviews(self):
+        self.client.project(COLUMN_REVIEW).labels = 1
+        self.cleanup(apply=True)
+        self.assertEqual(len([e for e in self.events if e[0] == "delete row"]), 3)
 
     def test_listing_counts_only_this_folders_work_and_deletes_nothing(self):
         self.assertEqual(self.cleanup(apply=False), {"study batches": 2, "prelabel imports": 1, "data rows": 3})
@@ -759,11 +995,198 @@ class ExportTests(unittest.TestCase):
 
         self.assertEqual([item["global_key"] for item in summary["items"]], [A4C])
 
+    def test_names_each_scored_label_and_its_time_to_create(self):
+        with tempfile.TemporaryDirectory() as folder:
+            plan = read_plan(make_folder(Path(folder)))
+        timed = exported(A4C, column_review_label(plan.candidates[A4C]))
+        label = timed["projects"]["project"]["labels"][0]
+        label.update(id="label-a4c", performance_details={"seconds_to_create": 95, "seconds_to_review": 0})
+        untimed = exported(COLOR, column_review_label(plan.candidates[COLOR]))
+
+        summary = summarize_export({COLUMN_REVIEW: [timed, untimed]}, plan)
+        items = {item["global_key"]: item for item in summary["items"]}
+
+        self.assertEqual((items[A4C]["label_id"], items[A4C]["seconds_to_create"]), ("label-a4c", 95))
+        self.assertEqual((items[COLOR]["label_id"], items[COLOR]["seconds_to_create"]), (None, None))
+
     def test_refuses_a_row_found_in_the_other_forms_project(self):
         with tempfile.TemporaryDirectory() as folder:
             plan = read_plan(make_folder(Path(folder)))
         with self.assertRaisesRegex(UploadError, "other form's project"):
             summarize_export({COLUMN_REVIEW: [exported(OTHER)]}, plan)
+
+
+class KeptExportTests(unittest.TestCase):
+    """Every export is kept unchanged next to its summary and never overwritten (docs/radar/pilot_metrics_v2.md)."""
+
+    def setUp(self):
+        self.folder = Path(tempfile.mkdtemp())
+        (self.folder / "upload").mkdir()
+        self.plan = read_plan(make_folder(self.folder / "upload"))
+        self.rows = {COLUMN_REVIEW: [exported(A4C, column_review_label(self.plan.candidates[A4C])), exported(COLOR)],
+                     VIEW_TYPE_REVIEW: [exported(OTHER)]}
+        self.exported = []
+        self.api = SimpleNamespace(
+            ensure_workspace=lambda forms, create: Workspace({}, {form: form for form in forms}, {}),
+            export_rows=lambda project: self.exported.append(project) or self.rows[project])
+
+    def tearDown(self):
+        import shutil
+
+        shutil.rmtree(self.folder)
+
+    def test_keeps_each_forms_export_as_received_and_records_it_in_the_summary(self):
+        output = self.folder / "exports" / "session_01.json"
+
+        export_summary(self.api, self.plan, output)
+
+        summary = json.loads(output.read_text())
+        for form in (COLUMN_REVIEW, VIEW_TYPE_REVIEW):
+            kept = output.with_name(f"session_01.{form}.export.ndjson")
+            self.assertEqual([json.loads(line) for line in kept.read_text().splitlines()], self.rows[form])
+            self.assertEqual(summary["exports"][form], {"file": kept.name, "sha256": sha256(kept),
+                                                        "rows": len(self.rows[form])})
+            self.assertEqual(stat.S_IMODE(kept.stat().st_mode), 0o600)
+
+    def test_never_overwrites_an_earlier_export(self):
+        output = self.folder / "session_01.json"
+        export_summary(self.api, self.plan, output)
+        before = {path.name: path.read_bytes() for path in self.folder.glob("session_01*")}
+
+        with self.assertRaisesRegex(UploadError, "every export is kept"):
+            export_summary(self.api, self.plan, output)
+        self.assertEqual({path.name: path.read_bytes() for path in self.folder.glob("session_01*")}, before)
+        self.assertEqual(len(self.exported), 2)  # the refused run exported nothing.
+
+    def test_refuses_to_keep_an_export_in_the_repository(self):
+        with self.assertRaisesRegex(UploadError, "outside the repository"):
+            export_summary(self.api, self.plan, Path(__file__).resolve().parent / "session_01.json")
+        self.assertEqual(self.exported, [])
+
+
+def make_view_folder(root: Path, views=(("a", "PLAX_ZOOM"), ("b", "PSAX"))) -> Path:
+    """An upload folder of the view relabelling set: `views` is each clip's key ending and predicted view."""
+    (root / CLIPS).mkdir()
+    (root / ITEMS).mkdir()
+    rows, predicted = [], []
+    for char, view in views:
+        key = VIEW_KEY_PREFIX + char * 24
+        path = root / CLIPS / f"{key}.mp4"
+        path.write_bytes(f"video {key}".encode())
+        rows.append({"global_key": key, "form": VIEW_REVIEW, "study_key": VIEW_STUDY_KEY_PREFIX + "d" * 24,
+                     "copy_sha256": sha256(path)})
+        predicted.append({"global_key": key, "view": view})
+    (root / ITEMS / "candidates.json").write_text("[]", encoding="utf-8")
+    write_csv(root / ITEMS / "view_type_items.csv", [], ["global_key"])
+    write_csv(root / ITEMS / "view_items.csv", predicted, ["global_key", "view"])
+    write_csv(root / ITEMS / "global_keys.csv", rows, ["global_key", "form", "study_key", "copy_sha256"])
+    return root
+
+
+class ViewRelabelTests(unittest.TestCase):
+    ZOOM, LEVEL = VIEW_KEY_PREFIX + "a" * 24, VIEW_KEY_PREFIX + "b" * 24
+
+    def plan(self, folder, **kwargs):
+        return read_plan(make_view_folder(Path(folder), **kwargs))
+
+    def test_a_view_folder_goes_to_its_own_project_in_one_batch(self):
+        with tempfile.TemporaryDirectory() as folder:
+            plan = self.plan(folder)
+        self.assertEqual(plan.kind, VIEW_RELABEL)
+        self.assertEqual(plan.forms(), [VIEW_REVIEW])
+        self.assertEqual(len(plan.batches(VIEW_REVIEW)), 1)
+        self.assertEqual(set(WORKSPACES[plan.kind.workspace]), {VIEW_REVIEW})
+
+    def test_the_preview_shows_a_prefill_for_every_clip_but_psax(self):
+        with tempfile.TemporaryDirectory() as folder:
+            plan = self.plan(folder)
+        rows = {row["global_key"]: row for row in preview(plan, WORKSPACES["view_relabel"])["rows"]}
+        self.assertEqual(rows[self.ZOOM]["prelabel_records"], 1)
+        self.assertEqual(rows[self.LEVEL]["prelabel_records"], 0)
+
+    def test_a_prediction_the_form_does_not_offer_is_refused(self):
+        with tempfile.TemporaryDirectory() as folder:
+            with self.assertRaisesRegex(UploadError, "not a choice"):
+                self.plan(folder, views=(("a", "A9C"),))
+
+    def test_clips_without_a_predicted_view_are_refused(self):
+        with tempfile.TemporaryDirectory() as folder:
+            make_view_folder(Path(folder))
+            write_csv(Path(folder) / ITEMS / "view_items.csv", [], ["global_key", "view"])
+            with self.assertRaisesRegex(UploadError, "view_review items"):
+                read_plan(Path(folder))
+
+    def test_the_upload_imports_the_views_into_the_view_project(self):
+        calls = []
+
+        class Api(FakeApi):
+            def ensure_prelabels(self, workspace, candidates, *, name, refresh=False, form=COLUMN_REVIEW):
+                calls.append((form, name, [dict(c) for c in candidates]))
+                return True
+
+        with tempfile.TemporaryDirectory() as folder:
+            plan = self.plan(folder)
+            result = ensure_upload(Api(), plan)
+        self.assertTrue(result.prelabels_imported)
+        form, name, items = calls[0]
+        self.assertEqual((form, name), (VIEW_REVIEW, VIEW_RELABEL.predictions_name))
+        self.assertEqual(items, [{"global_key": self.ZOOM, "view": "PLAX_ZOOM"},
+                                 {"global_key": self.LEVEL, "view": "PSAX"}])
+
+    @unittest.skipUnless(importlib.util.find_spec("labelbox"), "Labelbox SDK not installed")
+    def test_the_views_are_imported_by_schema_id_and_psax_opens_empty(self):
+        created = []
+
+        class Job:
+            state, errors = None, []
+
+            def wait_till_done(self):
+                return None
+
+        class PredictionImport:
+            @classmethod
+            def create_from_objects(cls, **kwargs):
+                created.append(kwargs)
+                return Job()
+
+        form = copy.deepcopy(view_review.build_form())
+        for number, question in enumerate(form["classifications"]):
+            question["featureSchemaId"] = f"q{number}"
+            for choice, option in enumerate(question["options"]):
+                option["featureSchemaId"] = f"q{number}.o{choice}"
+        project = SimpleNamespace(uid="project", get_mal_prediction_imports=lambda: [],
+                                  enable_model_assisted_labeling=lambda enabled: self.assertTrue(enabled))
+        workspace = Workspace({}, {VIEW_REVIEW: project}, {VIEW_REVIEW: SimpleNamespace(normalized=form)})
+        with tempfile.TemporaryDirectory() as folder:
+            plan = self.plan(folder)
+        with mock.patch("labelbox.schema.annotation_import.MALPredictionImport", PredictionImport):
+            self.assertTrue(sdk_api(None).ensure_prelabels(workspace, plan.prelabel_items(), form=VIEW_REVIEW))
+
+        predictions = created[0]["predictions"]
+        self.assertEqual([p["dataRow"]["globalKey"] for p in predictions], [self.ZOOM])
+        self.assertTrue(all("schemaId" in p and "name" not in p for p in predictions))
+
+    def test_the_summary_keeps_the_prediction_next_to_the_answer(self):
+        with tempfile.TemporaryDirectory() as folder:
+            plan = self.plan(folder)
+        summary = summarize_export({VIEW_REVIEW: [exported(self.ZOOM, [radio("view", "PLAX_ZOOM_AV")]),
+                                                  exported(self.LEVEL, [radio("view", "unsure")])]}, plan)
+        by_key = {item["global_key"]: item for item in summary["items"]}
+        self.assertEqual((by_key[self.ZOOM]["predicted_view"], by_key[self.ZOOM]["answers"]["view"]),
+                         ("PLAX_ZOOM", "PLAX_ZOOM_AV"))
+        self.assertEqual({item["status"] for item in summary["items"]}, {"valid"})
+
+    def test_an_invalid_review_and_a_comment_are_both_printed(self):
+        comment = {"name": "Comments", "value": "comments", "text_answer": {"content": "a name in the corner"}}
+        with tempfile.TemporaryDirectory() as folder:
+            plan = self.plan(folder)
+        summary = summarize_export({VIEW_REVIEW: [exported(self.ZOOM, [radio("view", "PLAX"), comment]),
+                                                  exported(self.LEVEL, [radio("view", "PSAX")])]}, plan)
+        lines = flagged_reviews(summary)
+        self.assertEqual(len(lines), 2)
+        self.assertIn("Unknown or duplicate selected value", next(line for line in lines if self.LEVEL in line))
+        self.assertIn("comment to read", next(line for line in lines if self.ZOOM in line))
+        self.assertNotIn("a name in the corner", "".join(lines))
 
 
 class MainTests(unittest.TestCase):
@@ -787,12 +1210,27 @@ class MainTests(unittest.TestCase):
         self.assertEqual(sent["forms"][COLUMN_REVIEW]["project"], "RADAR Workflow Test - column review")
         self.assertEqual(len(sent["rows"]), 3)
 
-    def test_the_pilot_workspace_is_chosen_explicitly(self):
+    def test_a_pilot_folder_goes_to_the_pilot_projects(self):
         with tempfile.TemporaryDirectory() as folder:
-            make_folder(Path(folder))
-            self.run_main("--folder", folder, "--workspace", "pilot", environ={})
-            sent = json.loads((Path(folder) / PREVIEW).read_text())
-        self.assertEqual(sent["forms"][COLUMN_REVIEW]["project"], "RADAR Caption Pilot")
+            make_folder(Path(folder), keys=PILOT_KEYS, study=PILOT_STUDY)
+            for workspace in ([], ["--workspace", "pilot"]):
+                code, out, _ = self.run_main("--folder", folder, *workspace, environ={})
+                sent = json.loads((Path(folder) / PREVIEW).read_text())
+                self.assertEqual(code, 0)
+                self.assertIn("of a pilot folder, for the pilot projects", out)
+                self.assertEqual(sent["forms"][COLUMN_REVIEW]["project"], "RADAR Caption Pilot")
+                self.assertTrue(sent["rows"][0]["batch"].startswith("RADAR pilot study "))
+
+    def test_a_folder_is_refused_in_the_other_workspace(self):
+        for keys, study, workspace in (((A4C, COLOR, OTHER), STUDY, "pilot"), (PILOT_KEYS, PILOT_STUDY, "test")):
+            with tempfile.TemporaryDirectory() as folder:
+                make_folder(Path(folder), keys=keys, study=study)
+                code, _, err = self.run_main("--folder", folder, "--workspace", workspace, "--apply",
+                                             environ={"LABELBOX_API_KEY": "key"},
+                                             api_factory=lambda _key: self.fail("made a client"))
+                self.assertFalse((Path(folder) / PREVIEW).exists())
+            self.assertEqual(code, 1)
+            self.assertIn("workspace only", err)
 
     def test_form_limits_the_preview_and_the_run(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -909,6 +1347,16 @@ class MainTests(unittest.TestCase):
         self.assertIn("uploaded now: 3", out)
         self.assertIn("prelabels: imported", out)
 
+    def test_apply_reports_rows_uploaded_again(self):
+        api = FakeApi(existing={COLOR}, unprocessed={COLOR})
+        with tempfile.TemporaryDirectory() as folder:
+            make_folder(Path(folder))
+            code, out, _ = self.run_main("--folder", folder, "--apply", environ={"LABELBOX_API_KEY": "key"},
+                                         api_factory=lambda _key: api)
+        self.assertEqual(code, 0)
+        self.assertIn("uploaded now: 3", out)
+        self.assertIn("of which 1 again: Labelbox had not processed their videos", out)
+
     def test_delete_lists_first_and_deletes_only_with_apply(self):
         cleanup = CleanupTests("test_listing_counts_only_this_folders_work_and_deletes_nothing")
         cleanup.setUp()
@@ -925,6 +1373,236 @@ class MainTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertIn("Deleted what this folder uploaded: 2 study batches, 1 prelabel imports, 3 data rows", out)
         self.assertEqual(len([e for e in cleanup.events if e[0] == "delete row"]), 3)
+
+
+def grown_view_form():
+    """The view review form as reviewers edited it in Labelbox: options added at the end and project instructions."""
+    form = copy.deepcopy(view_review.build_form())
+    options = form["classifications"][0]["options"]
+    options += [{**options[0], "value": value, "label": f"{value}: added in Labelbox"}
+                for value in ("A4C_RV", "PLAX_ZOOM_MV")]
+    form["projectInstructions"] = "https://example.invalid/guide.pdf"
+    return form
+
+
+class LaterBatchTests(unittest.TestCase):
+    """A second batch of the view relabelling project, uploaded next to a first that reviewers have labelled."""
+
+    TARGET = WORKSPACES["view_relabel"][VIEW_REVIEW]
+
+    def later_plan(self, folder, batch=2):
+        root = make_view_folder(Path(folder))
+        (root / ITEMS / BATCH_FILE).write_text(json.dumps({"batch": batch}), encoding="utf-8")
+        return read_plan(root)
+
+    def test_a_later_batch_has_its_own_batch_and_prelabel_names(self):
+        with tempfile.TemporaryDirectory() as first, tempfile.TemporaryDirectory() as later:
+            one, two = read_plan(make_view_folder(Path(first))), self.later_plan(later)
+        self.assertEqual((one.batch, two.batch), (None, 2))
+        self.assertEqual(one.predictions_name, VIEW_RELABEL.predictions_name)  # the first batch's, unchanged.
+        self.assertEqual(two.predictions_name, f"{VIEW_RELABEL.predictions_name}, batch 2")
+        (name_one,), (name_two,) = one.batches(VIEW_REVIEW), two.batches(VIEW_REVIEW)
+        self.assertTrue(name_one.startswith(f"{VIEW_RELABEL.batch_prefix} ") and not name_one.startswith(
+            f"{VIEW_RELABEL.batch_prefix} 2 "))
+        self.assertTrue(name_two.startswith(f"{VIEW_RELABEL.batch_prefix} 2 "))
+        self.assertEqual(two.only(VIEW_REVIEW).batch, 2)
+        self.assertEqual(preview(two, WORKSPACES["view_relabel"])["rows"][0]["batch"], name_two)
+
+    def test_a_bad_batch_file_is_refused(self):
+        for text in ('{"batch": 1}', '{"batch": "2"}', '{"batch": true}', "[2]", "not json"):
+            with tempfile.TemporaryDirectory() as folder:
+                root = make_view_folder(Path(folder))
+                (root / ITEMS / BATCH_FILE).write_text(text, encoding="utf-8")
+                with self.assertRaisesRegex(UploadError, BATCH_FILE):
+                    read_plan(root)
+
+    def test_the_upload_imports_the_later_batchs_prefills_under_its_own_name(self):
+        with tempfile.TemporaryDirectory() as folder:
+            plan = self.later_plan(folder)
+        api = FakeApi()
+        result = ensure_upload(api, plan)
+        self.assertEqual(api.prelabel_name, f"{VIEW_RELABEL.predictions_name}, batch 2")
+        self.assertEqual(list(api.batches[f"project-{VIEW_REVIEW}"]), list(plan.batches(VIEW_REVIEW)))
+        self.assertTrue(result.prelabels_imported)
+
+    def test_rows_only_sends_the_rows_and_neither_batches_nor_prefills(self):
+        with tempfile.TemporaryDirectory() as folder:
+            plan = self.later_plan(folder)
+        api = FakeApi()
+
+        result = ensure_upload(api, plan, rows_only=True)
+
+        self.assertEqual(api.calls, [("workspace", (VIEW_REVIEW,), True), ("remove unprocessed", ()), "upload"])
+        self.assertEqual((result.uploaded, result.batches, result.prelabels_imported), (2, {}, False))
+        result = ensure_upload(api, plan)  # then --apply alone: nothing sent again, one batch, its prefills.
+        self.assertEqual(result.uploaded, 0)
+        self.assertEqual(result.created_batches, {VIEW_REVIEW: 1})
+        self.assertTrue(result.prelabels_imported)
+
+    def client(self, normalized):
+        ontology = SimpleNamespace(name=self.TARGET.ontology_name, uid="live", normalized=normalized)
+        project = FakeProject(self.TARGET.project_name, ontology=ontology, labels=1000)
+        project.batch_list.append(SimpleNamespace(name=f"{VIEW_RELABEL.batch_prefix} first"))
+        client = FakeClient(projects=[project], datasets=[fake_dataset(self.TARGET.dataset_name)],
+                            ontologies=[ontology])
+        api = OfflineApi(client, project_type=SimpleNamespace(name="name"), dataset_type=SimpleNamespace(name="name"),
+                         media_type="video", targets=WORKSPACES["view_relabel"], sleep=lambda _seconds: None)
+        return client, project, ontology, api
+
+    def test_a_form_grown_in_labelbox_is_used_as_it_is(self):
+        client, project, ontology, api = self.client(grown_view_form())
+
+        workspace = api.ensure_workspace([VIEW_REVIEW], create=True)
+
+        self.assertIs(workspace.ontologies[VIEW_REVIEW], ontology)
+        self.assertIs(project.ontology(), ontology)
+        self.assertEqual(client.created, [])
+        self.assertEqual(ontology.normalized, grown_view_form())  # nothing was changed in it.
+
+    def test_a_committed_option_changed_removed_or_archived_in_labelbox_is_refused(self):
+        def changed(edit):
+            form = grown_view_form()
+            edit(form["classifications"][0]["options"])
+            return form
+
+        for form in (changed(lambda options: options[0].update(label="another text")),
+                     changed(lambda options: options.pop(0)),
+                     changed(lambda options: options[0].update(archived=True)),
+                     changed(lambda options: options.insert(0, options.pop(1))),
+                     {**grown_view_form(), "classifications": grown_view_form()["classifications"][:1]}):
+            client, project, ontology, api = self.client(form)
+            with self.assertRaisesRegex(UploadError, "differs from the committed form"):
+                api.ensure_workspace([VIEW_REVIEW], create=True)
+            self.assertEqual(client.created, [])
+
+    def test_only_the_view_relabelling_form_may_grow(self):
+        self.assertTrue(self.TARGET.form_may_grow)
+        self.assertFalse(any(target.form_may_grow for name, workspace in WORKSPACES.items() if name != "view_relabel"
+                             for target in workspace.values()))
+        form = build_form()
+        form["projectInstructions"] = "https://example.invalid/guide.pdf"
+        client = FakeClient(ontologies=[SimpleNamespace(name=TARGETS[COLUMN_REVIEW].ontology_name, uid="old",
+                                                        normalized=form)])
+        with self.assertRaisesRegex(UploadError, "differs from the committed form"):
+            sdk_api(client).ensure_workspace(FORMS, create=True)
+
+    def test_the_view_relabelling_dataset_may_carry_an_added_guide_link(self):
+        guide = DATASET_DESCRIPTION + " Annotation guide: https://example.invalid/guide - PDF in the project."
+        client, _, _, api = self.client(grown_view_form())
+        client.datasets[0] = fake_dataset(self.TARGET.dataset_name, guide)
+        api.ensure_workspace([VIEW_REVIEW], create=True)
+        self.assertEqual(client.created, [])
+        for description in ("Someone else's. " + DATASET_DESCRIPTION, "someone else's", "", None):
+            client, _, _, api = self.client(grown_view_form())
+            client.datasets[0] = fake_dataset(self.TARGET.dataset_name, description)
+            with self.assertRaisesRegex(UploadError, "not an unconnected pilot dataset"):
+                api.ensure_workspace([VIEW_REVIEW], create=True)
+        client, _, _, api = self.client(grown_view_form())
+        connected = fake_dataset(self.TARGET.dataset_name, guide)
+        connected.iam_integration = lambda: SimpleNamespace(name="bucket")
+        client.datasets[0] = connected
+        with self.assertRaisesRegex(UploadError, "not an unconnected pilot dataset"):
+            api.ensure_workspace([VIEW_REVIEW], create=True)
+
+    def test_only_the_view_relabelling_dataset_description_may_grow(self):
+        self.assertTrue(self.TARGET.description_may_grow)
+        self.assertFalse(any(target.description_may_grow for name, workspace in WORKSPACES.items()
+                             if name != "view_relabel" for target in workspace.values()))
+        grown = FakeClient(datasets=[fake_dataset(t.dataset_name, DATASET_DESCRIPTION + " Guide: x.")
+                                     for t in TARGETS.values()])
+        with self.assertRaisesRegex(UploadError, "not an unconnected pilot dataset"):
+            sdk_api(grown).ensure_workspace(FORMS, create=True)
+
+    def test_a_data_row_read_that_fails_is_read_again(self):
+        client, _, _, api = self.client(grown_view_form())
+        with tempfile.TemporaryDirectory() as folder:
+            plan = self.later_plan(folder)
+        workspace = api.ensure_workspace([VIEW_REVIEW], create=False)
+        key = plan.rows[0].global_key
+        client.rows[key] = SimpleNamespace(dataset=lambda: client.datasets[0])
+        failures, read = [RuntimeError("Internal server error")] * len(LOOKUP_WAITS), client.get_data_row
+
+        def flaky(uid):
+            if failures:
+                raise failures.pop()
+            return read(uid)
+
+        client.get_data_row = flaky
+        self.assertEqual(api.existing_global_keys(workspace, plan.rows), {key})
+        failures.extend([RuntimeError("Internal server error")] * (len(LOOKUP_WAITS) + 1))
+        with self.assertRaises(StepFailed):
+            api.existing_global_keys(workspace, plan.rows)
+
+    def test_a_half_made_row_counts_as_absent_and_is_uploaded_again(self):
+        class ResourceNotFoundError(Exception):  # the SDK's, as the uploader sees it: by name.
+            pass
+
+        client, _, _, api = self.client(grown_view_form())
+        with tempfile.TemporaryDirectory() as folder:
+            plan = self.later_plan(folder)
+        workspace = api.ensure_workspace([VIEW_REVIEW], create=False)
+        kept, gone = plan.rows[0].global_key, plan.rows[1].global_key
+        client.rows[kept] = SimpleNamespace(dataset=lambda: client.datasets[0])
+        client.rows[gone] = SimpleNamespace(dataset=lambda: None)  # no dataset: a row made half way.
+        self.assertEqual(api.existing_global_keys(workspace, plan.rows), {kept})
+        read = client.get_data_row
+        client.get_data_row = lambda uid: (_ for _ in ()).throw(ResourceNotFoundError(uid)) if uid == gone else read(uid)
+        with redirect_stderr(io.StringIO()) as err:
+            self.assertEqual(api.existing_global_keys(workspace, plan.rows), {kept})
+        self.assertIn(gone, err.getvalue())
+        client.get_data_row = lambda uid: (_ for _ in ()).throw(KeyError(uid)) if uid == gone else read(uid)
+        with self.assertRaises(StepFailed):  # any other failed read still stops the run.
+            api.existing_global_keys(workspace, plan.rows)
+
+    @unittest.skipUnless(importlib.util.find_spec("labelbox"), "Labelbox SDK not installed")
+    def test_the_first_batchs_import_is_left_alone(self):
+        created, deleted = [], []
+
+        class Job:
+            state, errors = None, []
+
+            def wait_till_done(self):
+                return None
+
+        class PredictionImport:
+            @classmethod
+            def create_from_objects(cls, **kwargs):
+                created.append(kwargs)
+                return Job()
+
+        first = SimpleNamespace(name=VIEW_RELABEL.predictions_name, state=None, errors=[],
+                                wait_till_done=lambda: None, delete=lambda: deleted.append("first"))
+        form = grown_view_form()
+        for number, question in enumerate(form["classifications"]):
+            question["featureSchemaId"] = f"q{number}"
+            for choice, option in enumerate(question.get("options", [])):
+                option["featureSchemaId"] = f"q{number}.o{choice}"
+        project = SimpleNamespace(uid="project", get_mal_prediction_imports=lambda: [first],
+                                  get_label_count=lambda: 1000, enable_model_assisted_labeling=lambda enabled: None)
+        workspace = Workspace({}, {VIEW_REVIEW: project}, {VIEW_REVIEW: SimpleNamespace(normalized=form)})
+        with tempfile.TemporaryDirectory() as folder:
+            plan = self.later_plan(folder)
+        with mock.patch("labelbox.schema.annotation_import.MALPredictionImport", PredictionImport):
+            self.assertTrue(sdk_api(None).ensure_prelabels(workspace, plan.prelabel_items(), name=plan.predictions_name,
+                                                           refresh=True, form=VIEW_REVIEW))
+        self.assertEqual(deleted, [])
+        self.assertEqual(created[0]["name"], f"{VIEW_RELABEL.predictions_name}, batch 2")
+        self.assertEqual([p["dataRow"]["globalKey"] for p in created[0]["predictions"]], [VIEW_KEY_PREFIX + "a" * 24])
+
+    def test_main_rows_only_goes_with_an_upload_and_says_what_is_left(self):
+        with tempfile.TemporaryDirectory() as folder:
+            self.later_plan(folder)
+            for action in ([], ["--delete", "--apply"]):
+                with self.assertRaises(SystemExit), redirect_stderr(io.StringIO()):
+                    main(["--folder", folder, "--rows-only", *action], environ={})
+            out = io.StringIO()
+            with redirect_stdout(out):
+                code = main(["--folder", folder, "--apply", "--rows-only"], environ={"LABELBOX_API_KEY": "key"},
+                            api_factory=lambda _key: FakeApi())
+        self.assertEqual(code, 0)
+        self.assertIn("uploaded now: 2", out.getvalue())
+        self.assertIn("no batch and no prelabel yet", out.getvalue())
+        self.assertNotIn("study batches", out.getvalue())
 
 
 if __name__ == "__main__":

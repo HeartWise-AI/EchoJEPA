@@ -211,17 +211,18 @@ or `--form view_type_review` to target one form.
   4:2:0 needs even sides. SHA-256 checks prevent uploading modified copies.
 - **Privacy and keys.** Test-specific global keys avoid pilot conflicts;
   study identifiers are HMAC-protected. Only converted clips, test notices,
-  and numeric report-field context are uploaded. Report text stays local
+  and numeric report-field context (in its unit, rounded) are uploaded. Report text stays local
   and is excluded from exports.
-- **Labelbox.** The default `--workspace test` uses separate test projects,
-  and datasets; `--workspace pilot` uses pilot resources. Both share the
+- **Labelbox.** A workflow test's keys send it to the test projects and
+  datasets; a pilot folder's keys send it to the pilot's (`--workspace` may
+  only confirm this). Both share the
   committed review forms (`DeepECHO column review v5` with prelabels;
   `DeepECHO view and type review v2` without). A project with another form
   is refused; once it is empty (`--delete --apply`), `--apply --replace-form`
   gives it the committed form, so a project keeps its name across form
   versions (`RADAR Workflow Test - column review`). Projects and datasets must
-  be created using `create_pilot_project.py`. Uploads are resumable and
-  reject incompatible forms or resources.
+  be created using `create_pilot_project.py`. Uploads are resumable, 100 clips
+  at a time, and reject incompatible forms or resources.
 - **Sending a review back.** Labelbox shows no warning at submission, because a
   form cannot compare two answers. `--export-summary` prints one line per invalid
   review: its key, what is unresolved, and any warning for the reviewer. In the
@@ -233,6 +234,87 @@ or `--form view_type_review` to target one form.
   deletion. Retry later if asynchronous label deletion blocks cleanup.
 - **Pilot separation.** Use a study outside the pilot selection and exclude it
   from the final pilot.
+
+## Upload the pilot
+
+After `data/radar_pilot.py candidates` on a calibrated screen, and after every pilot video and caption has
+passed the de-identification check (`docs/radar/pilot_selection.md`), `pilot_prepare.py` turns the pilot folder
+into an upload folder; `pilot_upload.py` then sends it to the pilot projects.
+
+```bash
+PILOT=/volume/DeepECHO/experiments/radar_pilot/pilot_06    # radar_pilot.py --out-dir, after candidates
+PY=/volume/envs/echojepa/bin/python
+
+# 1. Playable copies, opaque study keys and review items, in $PILOT/upload (a new folder).
+$PY -m tools.labelbox.pilot_prepare --pilot $PILOT --out $PILOT/upload
+
+# 2. Dry run: every check, and $PILOT/upload/upload_preview.json with each row as it would be sent.
+UV_PROJECT_ENVIRONMENT=$HOME/.venvs/echojepa-labelbox uv run --frozen --only-group labelbox \
+  python -m tools.labelbox.pilot_upload --folder $PILOT/upload
+
+# 3. Upload; --replace-form gives the emptied pilot project the committed form the first time.
+read -rsp "Labelbox API key: " LABELBOX_API_KEY && echo
+export LABELBOX_API_KEY
+UV_PROJECT_ENVIRONMENT=$HOME/.venvs/echojepa-labelbox uv run --frozen --only-group labelbox \
+  python -m tools.labelbox.pilot_upload --folder $PILOT/upload --apply --replace-form
+unset LABELBOX_API_KEY
+```
+
+`pilot_prepare` refuses candidates from a provisional screen or from another column review specification,
+lists that disagree, and clips whose video changed since the screen; the copies are made as for the workflow
+test. Each clip carries a pilot notice and its proposals; report numbers are shown in their unit and rounded
+(lengths in cm, the LA volume index in mL/m²), and report text stays local. Batches are named `RADAR pilot
+study <hash>`. `--delete --apply` removes a pilot upload only while its projects hold no submitted review.
+
+After each review session, and always before a review is returned, export the projects under a new name:
+
+```bash
+UV_PROJECT_ENVIRONMENT=$HOME/.venvs/echojepa-labelbox uv run --frozen --only-group labelbox \
+  python -m tools.labelbox.pilot_upload --folder $PILOT/upload --export-summary $PILOT/exports/session_01.json
+```
+
+Each form's export is kept unchanged next to the summary (`session_01.column_review.export.ndjson`), with each
+label's details and its time to create (`performance_details`, which review time M7 reads). Summaries record per-clip scores, label IDs, and export SHA-256 hashes. Reject existing filenames and repository paths to prevent overwrites and exposure of reviewer names or comments.
+
+Labelbox reads videos when creating data rows and reports unreadable ones. On rerun, unlabeled failed rows are deleted and reuploaded to prevent blocking their study batches during the SDK's one-hour processing wait.
+
+## Upload the view relabelling set
+
+One question per clip, to retrain the view classifier on the PSAX levels and
+`PLAX_ZOOM_AV` and to validate its other classes: 400 PSAX, 200 `PLAX_ZOOM` and
+400 spread evenly over the other classes, prefilled with the predicted view.
+`data/view_relabel.py` holds the steps, and its header the commands: `draw`, the
+clip screen, then `prepare`.
+
+- **The form.** `DeepECHO view review v1` asks only the view, with `unsure` for a
+  clip that is not clear or of poor quality. `PSAX` is not a choice, so a PSAX
+  clip opens with no view and Submit stays disabled until a level or `unsure`
+  is chosen. Comments are optional, and the place to report identifying text:
+  `--export-summary` names each clip with a comment, without its text.
+- **The clips.** Train split only, B-mode and color Doppler, no listed patient or
+  clip, one clip per patient. `prepare` keeps only what the calibrated screen
+  keeps, and refuses a provisional screen or a clip changed since it.
+- **The project.** `RADAR View Relabelling`, created with
+  `create_pilot_project.py --project-name "RADAR View Relabelling" --dataset-name
+  "RADAR View Relabelling Dataset" --apply`. All clips are one batch. The folder's keys
+  send it there, and once it holds reviews `--delete --apply` is refused.
+- **The labels.** The summary holds each clip's predicted view next to its answer;
+  `picked_clips.csv` in the `draw` folder maps each key to its clip, and stays there.
+- **Training labels.** `export_view_labels.py` exports the project with each row's
+  workflow status and writes one row per picked clip (its clip, predicted view,
+  answer, `label_status`: done, unlabelled, skipped, in_rework or conflict, and
+  its workflow status, so `done` rows still in review show), keeping the export
+  next to it; its header describes the columns. When the project holds several
+  batches, give each batch's `picked_clips.csv` to `--picked`, batch 1 first:
+  the export must match their union, and the `batch` column says which list each
+  row came from (1 = the first). `--from-export` writes the labels again from a
+  kept export, without a request:
+
+  ```bash
+  UV_PROJECT_ENVIRONMENT=$HOME/.venvs/echojepa-labelbox uv run --frozen --only-group labelbox \
+    python -m tools.labelbox.export_view_labels --picked DRAW1/picked_clips.csv DRAW2/picked_clips.csv \
+    --out LABELS/view_labels.csv
+  ```
 
 ## Data and credential safety
 

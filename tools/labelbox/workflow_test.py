@@ -70,9 +70,9 @@ def to_test_key(pilot_key: str) -> str:
     return TEST_KEY_PREFIX + match.group(1)
 
 
-def study_key(secret: bytes, study_id: str) -> str:
+def study_key(secret: bytes, study_id: str, prefix: str = STUDY_KEY_PREFIX) -> str:
     """Opaque study key: an HMAC, because a study id has few unknown digits and a plain hash of it is reversible."""
-    return STUDY_KEY_PREFIX + hmac.new(secret, study_id.encode(), hashlib.sha256).hexdigest()[:24]
+    return prefix + hmac.new(secret, study_id.encode(), hashlib.sha256).hexdigest()[:24]
 
 
 def read_pilot(pilot: str) -> tuple[pd.DataFrame, pd.DataFrame]:

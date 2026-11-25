@@ -1,17 +1,20 @@
 """Upload prepared real clips to a RADAR review workspace in Labelbox, and optionally remove them afterward.
 
 Reads playable clips (`clips/<global key>.mp4`) and review items (`candidates.json`, `view_type_items.csv`,
-`global_keys.csv`) prepared by `tools.labelbox.workflow_test`. Run in the Labelbox environment:
+`global_keys.csv`) prepared by `tools.labelbox.workflow_test` (a workflow test) or `tools.labelbox.pilot_prepare`
+(the pilot). Run in the Labelbox environment:
 
     python -m tools.labelbox.pilot_upload --folder TEST                       # dry run: checks and preview only
     python -m tools.labelbox.pilot_upload --folder TEST --apply               # upload, batch, prelabel
     python -m tools.labelbox.pilot_upload --folder TEST --apply --replace-form  # an empty project gets the new form
+    python -m tools.labelbox.pilot_upload --folder TEST --apply --rows-only   # rows only: check media, then --apply
     python -m tools.labelbox.pilot_upload --folder TEST --export-summary OUT  # score the submitted reviews
     python -m tools.labelbox.pilot_upload --folder TEST --delete              # list what this folder uploaded
     python -m tools.labelbox.pilot_upload --folder TEST --delete --apply      # delete it
 
-Use `--form column_review` or `--form view_type_review` to target one form. `--workspace test` (default)
-uses separate test projects; `--workspace pilot` uses pilot projects.
+Use `--form column_review`, `--form view_type_review` or `--form view_review` to target one form. The folder's keys decide its workspace:
+a workflow test's go to the test projects, the pilot's to the pilot projects (`--workspace` may only confirm it). A
+pilot upload is deleted only while its project holds no submitted review.
 
 Validation and privacy: all checks run before uploading, including during dry runs. Each run writes
 `TEST/upload_preview.json` with the exact upload metadata. Only playable copies, opaque keys, and
@@ -33,11 +36,11 @@ import re
 import sys
 import time
 from contextlib import contextmanager, redirect_stderr, redirect_stdout
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Iterator, Mapping, Sequence
+from typing import Any, Callable, Collection, Iterator, Mapping, Sequence
 
-from tools.labelbox import column_review, view_type_review
+from tools.labelbox import column_review, view_review, view_type_review
 from tools.labelbox.create_pilot_project import (
     DATASET_DESCRIPTION,
     DEFAULT_DATASET_NAME,
@@ -55,12 +58,16 @@ from tools.labelbox.synthetic_pipeline import (
     _study_batch_plan,
 )
 
-COLUMN_REVIEW, VIEW_TYPE_REVIEW = "column_review", "view_type_review"
+COLUMN_REVIEW, VIEW_TYPE_REVIEW, VIEW_REVIEW = "column_review", "view_type_review", "view_review"
 TEST_KEY_PREFIX = "radar-workflow-test-"
 STUDY_KEY_PREFIX = "radar-workflow-test-study-"
 GLOBAL_KEY = re.compile(re.escape(TEST_KEY_PREFIX) + r"[0-9a-f]{24}")
 STUDY_KEY = re.compile(re.escape(STUDY_KEY_PREFIX) + r"[0-9a-f]{24}")
 CLIPS, ITEMS, PREVIEW = "clips", "items", "upload_preview.json"
+# A later batch of a project (`data/view_relabel.py prepare --batch-number`): {"batch": N} in ITEMS. Its number goes
+# into its batch's and its prefill import's names, so that it never reuses an earlier batch's. A folder without one is
+# a first batch, named as before.
+BATCH_FILE = "batch.json"
 
 BATCH_PREFIX = "RADAR workflow test study"
 PREDICTIONS_NAME = f"DeepECHO column review v{COLUMN_REVIEW_VERSION} workflow test prelabels v1"
@@ -68,8 +75,54 @@ NOTICE = {"type": "RAW_TEXT", "name": "Workflow test",
           "value": "Workflow test of the RADAR review (EchoJEPA issue #22) on a real de-identified clip. "
                    "Reviews made here are not pilot data; the clip is deleted after the test."}
 SUMMARY_SCHEMA = "radar-workflow-test-summary-v1"
+# The pilot's keys: `data/radar_pilot.py` names each clip `radar-pilot-<HMAC digest>`, and `pilot_prepare` each study.
+PILOT_KEY_PREFIX = "radar-pilot-"
+PILOT_STUDY_KEY_PREFIX = "radar-pilot-study-"
+# The view relabelling set's keys (`data/view_relabel.py`). Its clips come from many studies, so all of them share one
+# key and one batch, not a batch per study.
+VIEW_KEY_PREFIX = "radar-view-"
+VIEW_STUDY_KEY_PREFIX = "radar-view-study-"
 # Seconds between attempts to delete a study batch whose labels Labelbox is still deleting, about 5 minutes in all.
 BATCH_DELETE_WAITS = (5, 10, 15, 30, 60, 60, 60, 60)
+LOOKUP_CHUNK = 200  # global keys per Labelbox lookup job.
+LOOKUP_WAITS = (5, 30, 60)  # pauses before repeating a lookup job that failed: it only reads.
+UPLOAD_CHUNK = 100  # clips sent before their data rows are created, so that a rerun keeps the groups already done.
+
+
+@dataclass(frozen=True)
+class Kind:
+    """A kind of folder: the keys of its clips and studies, the workspace it goes to, and the names its batches,
+    prelabel import, notice and summary carry there."""
+
+    name: str
+    workspace: str
+    global_key: re.Pattern
+    study_key: re.Pattern
+    batch_prefix: str
+    predictions_name: str
+    notice: Mapping[str, str]
+    summary_schema: str
+    keeps_reviews: bool  # deleting the upload is refused once its project holds a submitted review.
+
+
+WORKFLOW_TEST = Kind("workflow test", "test", GLOBAL_KEY, STUDY_KEY, BATCH_PREFIX, PREDICTIONS_NAME, NOTICE,
+                     SUMMARY_SCHEMA, keeps_reviews=False)
+PILOT = Kind(
+    "pilot", "pilot", re.compile(re.escape(PILOT_KEY_PREFIX) + r"[0-9a-f]{24}"),
+    re.compile(re.escape(PILOT_STUDY_KEY_PREFIX) + r"[0-9a-f]{24}"), "RADAR pilot study",
+    f"DeepECHO column review v{COLUMN_REVIEW_VERSION} pilot prelabels v1",
+    {"type": "RAW_TEXT", "name": "RADAR caption pilot",
+     "value": "RADAR caption pilot (EchoJEPA issue #22) on a real de-identified clip. "
+              "Reviews made here are pilot data."},
+    "radar-pilot-summary-v1", keeps_reviews=True)
+VIEW_RELABEL = Kind(
+    "view relabelling", "view_relabel", re.compile(re.escape(VIEW_KEY_PREFIX) + r"[0-9a-f]{24}"),
+    re.compile(re.escape(VIEW_STUDY_KEY_PREFIX) + r"[0-9a-f]{24}"), "RADAR view relabelling set",
+    f"{view_review.FORM_NAME} prelabels v1",
+    {"type": "RAW_TEXT", "name": "RADAR view relabelling",
+     "value": "View relabelling for the view classifier (EchoJEPA issue #22) on a real de-identified clip."},
+    "radar-view-relabel-summary-v1", keeps_reviews=True)
+KINDS = (WORKFLOW_TEST, PILOT, VIEW_RELABEL)
 
 
 @dataclass(frozen=True)
@@ -80,9 +133,19 @@ class Target:
     dataset_name: str
     ontology_name: str
     build_form: Callable[[], dict]
+    # Whether the form in Labelbox may hold more than the committed one: options added to a question, or project
+    # instructions attached, in Labelbox after the upload. Every committed option must still be there, unchanged.
+    form_may_grow: bool = False
+    # Whether the dataset's description may hold text added after the committed one in Labelbox (the reviewers'
+    # annotation guide link, 2026-11-12). The committed text must still open it; a storage integration is still refused.
+    description_may_grow: bool = False
+
+    def dataset_description_ok(self, description: str | None) -> bool:
+        return description == DATASET_DESCRIPTION or (
+            self.description_may_grow and isinstance(description, str) and description.startswith(DATASET_DESCRIPTION))
 
 
-FORMS = (COLUMN_REVIEW, VIEW_TYPE_REVIEW)
+FORMS = (COLUMN_REVIEW, VIEW_TYPE_REVIEW, VIEW_REVIEW)
 WORKSPACES = {
     "test": {
         # The project keeps its name across form versions: `--replace-form` gives it a new form once emptied.
@@ -98,6 +161,12 @@ WORKSPACES = {
         VIEW_TYPE_REVIEW: Target("RADAR Caption Pilot - view and type review",
                                  "RADAR Caption Pilot - view and type dataset", view_type_review.FORM_NAME,
                                  view_type_review.build_form),
+    },
+    "view_relabel": {
+        # The reviewers' form gained view options, and the dataset's description a guide link, in Labelbox after the
+        # first batch (see `form_may_grow` and `description_may_grow`).
+        VIEW_REVIEW: Target("RADAR View Relabelling", "RADAR View Relabelling Dataset", view_review.FORM_NAME,
+                            view_review.build_form, form_may_grow=True, description_may_grow=True),
     },
 }
 
@@ -147,6 +216,9 @@ class Row:
 class Plan:
     rows: tuple[Row, ...]
     candidates: Mapping[str, Mapping[str, Any]]  # column review candidates by global key.
+    kind: Kind = WORKFLOW_TEST
+    views: Mapping[str, str] = field(default_factory=dict)  # the view review's predicted views by global key.
+    batch: int | None = None  # a later batch's number (BATCH_FILE); None for a first batch.
 
     def forms(self) -> list[str]:
         return [form for form in FORMS if self.rows_of(form)]
@@ -156,10 +228,25 @@ class Plan:
 
     def batches(self, form: str) -> dict[str, list[str]]:
         rows = [{"study_key": row.study_key, "global_key": row.global_key} for row in self.rows_of(form)]
-        return _study_batch_plan(rows, prefix=BATCH_PREFIX)
+        prefix = self.kind.batch_prefix if self.batch is None else f"{self.kind.batch_prefix} {self.batch}"
+        return _study_batch_plan(rows, prefix=prefix)
+
+    @property
+    def predictions_name(self) -> str:
+        """The name of this folder's prelabel import: a later batch's carries its number."""
+        return self.kind.predictions_name if self.batch is None else f"{self.kind.predictions_name}, batch {self.batch}"
 
     def only(self, form: str) -> "Plan":
-        return Plan(rows=tuple(self.rows_of(form)), candidates=self.candidates if form == COLUMN_REVIEW else {})
+        return Plan(rows=tuple(self.rows_of(form)), candidates=self.candidates if form == COLUMN_REVIEW else {},
+                    kind=self.kind, views=self.views if form == VIEW_REVIEW else {}, batch=self.batch)
+
+    def prelabel_form(self) -> str | None:
+        """The form this folder prefills, if any."""
+        return COLUMN_REVIEW if self.candidates else VIEW_REVIEW if self.views else None
+
+    def prelabel_items(self) -> list[Mapping[str, Any]]:
+        """What the prelabels are made from: the column review's candidates, or each clip's predicted view."""
+        return list(self.candidates.values()) or [{"global_key": key, "view": view} for key, view in self.views.items()]
 
 
 def _read_csv(path: Path) -> list[dict[str, str]]:
@@ -174,20 +261,31 @@ def read_plan(folder: Path) -> Plan:
         candidates = json.loads((items / "candidates.json").read_text(encoding="utf-8"))
         other = [row["global_key"] for row in _read_csv(items / "view_type_items.csv")]
         listed = _read_csv(items / "global_keys.csv")
+        predicted = ({row["global_key"]: row["view"] for row in _read_csv(items / "view_items.csv")}
+                     if (items / "view_items.csv").exists() else {})
+        batch = (json.loads((items / BATCH_FILE).read_text(encoding="utf-8")).get("batch")
+                 if (items / BATCH_FILE).exists() else None)
     except FileNotFoundError:
-        raise UploadError("The folder has no review items: run `workflow_test items` first.")
+        raise UploadError("The folder has no review items: run `workflow_test items` or `pilot_prepare` first.")
     except KeyError:
-        raise UploadError("view_type_items.csv needs a global_key column.")
+        raise UploadError("view_type_items.csv needs a global_key column, and view_items.csv a view column too.")
+    except (ValueError, AttributeError):  # a BATCH_FILE that is not a JSON object.
+        raise UploadError(f"{BATCH_FILE} must hold a JSON object {{\"batch\": N}}.")
     if not listed:
         raise UploadError("global_keys.csv lists no clip.")
+    if batch is not None and (isinstance(batch, bool) or not isinstance(batch, int) or batch < 2):
+        raise UploadError(f"{BATCH_FILE} must give a later batch's number, 2 or more.")
     keys = [row.get("global_key", "") for row in listed]
-    if len(keys) != len(set(keys)) or any(not GLOBAL_KEY.fullmatch(key) for key in keys):
-        raise UploadError("Every listed clip needs its own workflow-test global key.")
-    if any(row.get("form") not in FORMS or not STUDY_KEY.fullmatch(row.get("study_key", "")) for row in listed):
-        raise UploadError("Every listed clip needs a known review form and an opaque study key.")
+    kinds = [kind for kind in KINDS if all(kind.global_key.fullmatch(key) for key in keys)]
+    if len(keys) != len(set(keys)) or len(kinds) != 1:
+        raise UploadError("Every listed clip needs its own global key, all of one kind of folder.")
+    kind = kinds[0]
+    if any(row.get("form") not in FORMS or not kind.study_key.fullmatch(row.get("study_key", "")) for row in listed):
+        raise UploadError(f"Every listed clip needs a known review form and an opaque {kind.name} study key.")
     forms = {row["global_key"]: row["form"] for row in listed}
     candidate_keys = [candidate.get("global_key") for candidate in candidates]
-    for form, keys_of_form in ((COLUMN_REVIEW, candidate_keys), (VIEW_TYPE_REVIEW, other)):
+    for form, keys_of_form in ((COLUMN_REVIEW, candidate_keys), (VIEW_TYPE_REVIEW, other),
+                               (VIEW_REVIEW, list(predicted))):
         if len(keys_of_form) != len(set(keys_of_form)) or set(keys_of_form) != {
                 key for key, listed_form in forms.items() if listed_form == form}:
             raise UploadError(f"The {form} items and the clips global_keys.csv lists for that form differ.")
@@ -196,11 +294,19 @@ def read_plan(folder: Path) -> Plan:
     for candidate in candidates:
         if candidate.get("input_kind") != "video":
             raise UploadError("Every column review candidate must describe a video.")
+        if candidate.get("version") != COLUMN_REVIEW_VERSION:
+            raise UploadError(f"The candidates were built for column review v{candidate.get('version')}, not the "
+                              f"committed v{COLUMN_REVIEW_VERSION}: build them again with this code.")
         try:
             column_review.prelabels(candidate)  # validates the candidate against the form.
         except (ValueError, KeyError) as exc:
             raise UploadError(f"A column review candidate is invalid ({type(exc).__name__}).") from exc
         by_key[candidate["global_key"]] = candidate
+    try:
+        for key, view in predicted.items():
+            view_review.prelabels({"global_key": key, "view": view})  # validates the view against the form.
+    except ValueError as exc:
+        raise UploadError(f"A predicted view is invalid: {exc}.") from exc
 
     rows = []
     for row in listed:
@@ -208,13 +314,13 @@ def read_plan(folder: Path) -> Plan:
         path = folder / CLIPS / f"{key}.mp4"
         if not path.is_file() or sha256(path) != row.get("copy_sha256"):
             raise UploadError(f"The copy of {key} is missing or differs from global_keys.csv.")
-        attachments = [NOTICE]
+        attachments = [kind.notice]
         if row["form"] == COLUMN_REVIEW:
             context = column_review.context_attachment(by_key[key])
             attachments.append({"type": context["attachment_type"], "name": context["attachment_name"],
                                 "value": context["attachment_value"]})
         rows.append(Row(key, row["form"], row["study_key"], path, row["copy_sha256"], tuple(attachments)))
-    return Plan(rows=tuple(rows), candidates=by_key)
+    return Plan(rows=tuple(rows), candidates=by_key, kind=kind, views=predicted, batch=batch)
 
 
 def preview(plan: Plan, targets: Mapping[str, Target]) -> dict[str, Any]:
@@ -232,8 +338,11 @@ def preview(plan: Plan, targets: Mapping[str, Target]) -> dict[str, Any]:
             "file": row.path.name,
             "sha256": row.sha256,
             "attachments": [dict(attachment) for attachment in row.attachments],
-            "prelabel_records": len(column_review.prelabels(plan.candidates[row.global_key]))
-            if row.form == COLUMN_REVIEW else 0,
+            "prelabel_records": (len(column_review.prelabels(plan.candidates[row.global_key]))
+                                 if row.form == COLUMN_REVIEW else
+                                 len(view_review.prelabels({"global_key": row.global_key,
+                                                            "view": plan.views[row.global_key]}))
+                                 if row.form == VIEW_REVIEW else 0),
         } for row in plan.rows],
     }
 
@@ -252,6 +361,7 @@ class UploadResult:
     batches: Mapping[str, int]
     created_batches: Mapping[str, int]
     prelabels_imported: bool
+    replaced: int = 0  # rows Labelbox had not processed, deleted and uploaded again.
 
 
 def _one(resources: Sequence[Any], kind: str, name: str) -> Any | None:
@@ -261,10 +371,42 @@ def _one(resources: Sequence[Any], kind: str, name: str) -> Any | None:
     return matches[0] if matches else None
 
 
+def _failed_keys(errors: Any, keys: Sequence[str]) -> list[str]:
+    """The keys, of `keys` and in their order, that a data-row task's errors name (`failedDataRows`)."""
+    named = {row.get("globalKey") for error in (errors if isinstance(errors, list) else [errors])
+             if isinstance(error, Mapping) for row in error.get("failedDataRows") or [] if isinstance(row, Mapping)}
+    return [key for key in keys if key in named]
+
+
 def _empty_form(ontology) -> bool:
     form = ontology.normalized
     form = json.loads(form) if isinstance(form, str) else form
     return not form.get("tools") and not form.get("classifications")
+
+
+def _form_grows(expected: Any, actual: Any) -> bool:
+    """Whether the canonical form `actual` is the canonical `expected` with options added to its questions and project
+    instructions attached, and nothing else changed: every committed option is still there, unchanged and in order."""
+
+    def committed_part(committed: Any, live: Any) -> Any:
+        if isinstance(committed, Mapping) and isinstance(live, Mapping):
+            part = {}
+            for key, item in live.items():
+                if key == "options" and isinstance(committed.get(key), list) and isinstance(item, list):
+                    options = {option.get("value"): option for option in committed[key] if isinstance(option, Mapping)}
+                    part[key] = [committed_part(options[option.get("value")], option) for option in item
+                                 if isinstance(option, Mapping) and option.get("value") in options]
+                else:
+                    part[key] = committed_part(committed[key], item) if key in committed else item
+            return part
+        if isinstance(committed, list) and isinstance(live, list) and len(committed) == len(live):
+            return [committed_part(c, item) for c, item in zip(committed, live)]
+        return live
+
+    if not isinstance(actual, Mapping):
+        return False
+    live = {key: item for key, item in actual.items() if key != "projectInstructions"}
+    return committed_part(expected, live) == expected
 
 
 def _bootstrap_command(target: Target) -> str:
@@ -294,10 +436,15 @@ class LabelboxUploadApi:
             return cls(lb.Client(api_key=api_key), project_type=Project, dataset_type=Dataset,
                        media_type=lb.MediaType.Video, targets=targets)
 
-    def ensure_workspace(self, forms: Sequence[str], *, create: bool, replace_form: bool = False) -> Workspace:
+    def ensure_workspace(self, forms: Sequence[str], *, create: bool, replace_form: bool = False,
+                         datasets_checked: bool = True, form_checked: bool = True) -> Workspace:
         """Find each form's project and dataset, which must exist, and its form; check every match. With `create`,
         then create a missing form and connect each form to its project. A project with another form is refused,
-        unless `replace_form` and the project is empty (no batch, no label): it then gets the committed form."""
+        unless `replace_form` and the project is empty (no batch, no label): it then gets the committed form.
+        Without `datasets_checked` (reading only, never with `create`) the datasets are not looked up: they are None.
+        Without `form_checked` (reading only) a form edited in Labelbox is not refused; the caller reads it."""
+        if create and not (datasets_checked and form_checked):
+            raise ValueError("create needs datasets_checked and form_checked")
         datasets, projects, ontologies = {}, {}, {}
         with _step("looking up the projects, datasets and forms"):
             for form in forms:
@@ -305,22 +452,23 @@ class LabelboxUploadApi:
                 project = _one(list(self.client.get_projects(where=self.project_type.name == target.project_name)),
                                "project", target.project_name)
                 dataset = _one(list(self.client.get_datasets(where=self.dataset_type.name == target.dataset_name)),
-                               "dataset", target.dataset_name)
-                if project is None or dataset is None:
+                               "dataset", target.dataset_name) if datasets_checked else None
+                if project is None or (datasets_checked and dataset is None):
                     raise UploadError(f"The project {target.project_name!r} or its dataset {target.dataset_name!r} "
                                       f"does not exist. An administrator creates both with: "
                                       f"{_bootstrap_command(target)}")
                 if project.media_type != self.media_type or project.description != PROJECT_DESCRIPTION:
                     raise UploadError(f"The project {target.project_name!r} is not a pilot video project made by "
                                       "create_pilot_project.py.")
-                if dataset.description != DATASET_DESCRIPTION or dataset.iam_integration() is not None:
+                if datasets_checked and (not target.dataset_description_ok(dataset.description)
+                                         or dataset.iam_integration() is not None):
                     raise UploadError(f"The dataset {target.dataset_name!r} is not an unconnected pilot dataset made "
                                       "by create_pilot_project.py.")
                 ontology = _one(list(self.client.get_ontologies(name_contains=target.ontology_name)),
                                 "form", target.ontology_name)
-                if ontology is not None:
+                if ontology is not None and form_checked:
                     expected, actual = _canonical_form(target.build_form()), _canonical_form(ontology.normalized)
-                    if actual != expected:
+                    if actual != expected and not (target.form_may_grow and _form_grows(expected, actual)):
                         paths = ", ".join(_difference_paths(expected, actual))
                         raise UploadError(f"The form {target.ontology_name!r} differs from the committed form "
                                           f"at: {paths}.")
@@ -359,43 +507,126 @@ class LabelboxUploadApi:
         except ResourceNotFoundError:
             return None
 
+    def _lookup(self, keys: Sequence[str]) -> dict[str, str]:
+        """{global key: data row id} of the keys Labelbox has, a chunk of keys per job: a job waits 2 s or more, and on
+        2026-11-06 one job failing among the 1000 of a clip each stopped an upload after half an hour."""
+        found = {}
+        for start in range(0, len(keys), LOOKUP_CHUNK):
+            chunk = keys[start:start + LOOKUP_CHUNK]
+            for wait in (*LOOKUP_WAITS, None):
+                try:
+                    result = self.client.get_data_row_ids_for_global_keys(chunk)
+                    break
+                except Exception:
+                    if wait is None:
+                        raise
+                    self.sleep(wait)
+            missing = {error["global_key"] for error in result["errors"]}
+            present = [key for key in chunk if key not in missing]
+            ids = [uid for uid in result["results"] if uid]
+            if len(ids) != len(present):
+                raise UploadError("Labelbox's lookup of the global keys does not add up: nothing was changed.")
+            found.update(zip(present, ids))
+        return found
+
+    def _read_data_row(self, uid: str):
+        """One data row, read again after each of LOOKUP_WAITS when the request fails: it only reads, and a read
+        among a thousand fails now and then ("Internal server error", 2026-11-06)."""
+        for wait in (*LOOKUP_WAITS, None):
+            try:
+                return self.client.get_data_row(uid)
+            except Exception:
+                if wait is None:
+                    raise
+                self.sleep(wait)
+
     def _rows_in_labelbox(self, workspace: Workspace, rows: Sequence[Row]) -> dict[str, Any]:
         """{global key: data row} of the rows Labelbox has; a key in a dataset other than its form's stops the run."""
-        found = {}
+        ids = self._lookup([row.global_key for row in rows])
+        found, ghosts = {}, []
         for row in rows:
-            data_row = self._data_row(row.global_key)
-            if data_row is None:
+            if row.global_key not in ids:
                 continue
-            if data_row.dataset().uid != workspace.datasets[row.form].uid:
-                raise UploadError("A workflow-test global key belongs to another dataset.")
+            # A key the lookup still maps to a row Labelbox cannot read, or to a row with no dataset, is a creation
+            # that failed half way (2026-11-19, after Labelbox could not read a clip): the clip is uploaded again.
+            try:
+                data_row = self._read_data_row(ids[row.global_key])
+            except Exception as exc:
+                if type(exc).__name__ != "ResourceNotFoundError":
+                    raise
+                ghosts.append(row.global_key)
+                continue
+            if data_row.global_key != row.global_key:
+                raise UploadError("Labelbox's lookup gave a global key the data row of another.")
+            dataset = data_row.dataset()
+            if dataset is None:
+                ghosts.append(row.global_key)
+                continue
+            if dataset.uid != workspace.datasets[row.form].uid:
+                raise UploadError("A global key of this folder belongs to another dataset.")
             found[row.global_key] = data_row
+        if ghosts:
+            print(f"{len(ghosts)} keys Labelbox looks up but cannot read (a half-made row), uploaded again: "
+                  f"{', '.join(ghosts)}", file=sys.stderr)
         return found
 
     def existing_global_keys(self, workspace: Workspace, rows: Sequence[Row]) -> set[str]:
         with _step("checking which clips Labelbox already has"):
             return set(self._rows_in_labelbox(workspace, rows))
 
+    def _processed(self, keys: Sequence[str]) -> bool:
+        """Whether Labelbox processed (read the video of) the data row of every key: the check `create_batch` repeats
+        for up to an hour before it creates a batch (the SDK's `Project.__check_data_rows_have_been_processed`)."""
+        response = self.client.execute(
+            "query AllDataRowsProcessed($globalKeys: [ID!]) { queryAllDataRowsHaveBeenProcessed("
+            "globalKeys: $globalKeys) { allDataRowsHaveBeenProcessed } }", {"globalKeys": list(keys)})
+        return bool(response["queryAllDataRowsHaveBeenProcessed"]["allDataRowsHaveBeenProcessed"])
+
+    def remove_unprocessed(self, keys: Collection[str]) -> set[str]:
+        """Delete the rows of these keys that Labelbox created but never processed, and return their keys, so that the
+        run uploads them again. Such a row (Labelbox could not read one clip's video on 2026-10-30) would hold its
+        study batch back for an hour, then fail it. A labelled one stops the run instead."""
+        with _step("checking that Labelbox processed the clips it has"):
+            if not keys or self._processed(sorted(keys)):
+                return set()
+            unprocessed = {key: self._data_row(key) for key in sorted(keys) if not self._processed([key])}
+            labelled = [key for key, data_row in unprocessed.items() if list(data_row.labels())]
+        if labelled:
+            raise UploadError(f"Labelbox never processed {len(labelled)} labelled rows of this folder "
+                              f"({', '.join(labelled)}): remove them in Labelbox, then run again.")
+        with _step("deleting the rows Labelbox could not process"):
+            for data_row in unprocessed.values():
+                data_row.delete()
+        return set(unprocessed)
+
     def upload_rows(self, workspace: Workspace, rows: Sequence[Row]) -> None:
         for form in FORMS:
-            payload = []
-            for row in (row for row in rows if row.form == form):
-                if sha256(row.path) != row.sha256:
-                    raise UploadError("A copy changed after the checks: run again.")
-                with _step("uploading the video files"):
-                    url = self.client.upload_file(str(row.path))
-                payload.append({
-                    "row_data": url,
-                    "global_key": row.global_key,
-                    "external_id": row.global_key,
-                    "attachments": [dict(attachment) for attachment in row.attachments],
-                })
-            if not payload:
-                continue
-            with _step(f"creating the data rows in {self.targets[form].dataset_name!r}"):
-                task = workspace.datasets[form].create_data_rows(payload)
-                task.wait_till_done()
-            if task.status == "FAILED" or task.errors:
-                raise UploadError(f"Data-row creation failed: {_safe_error_summary(task.errors)}.")
+            form_rows = [row for row in rows if row.form == form]
+            for start in range(0, len(form_rows), UPLOAD_CHUNK):
+                payload = []
+                for row in form_rows[start:start + UPLOAD_CHUNK]:
+                    if sha256(row.path) != row.sha256:
+                        raise UploadError("A copy changed after the checks: run again.")
+                    with _step("uploading the video files"):
+                        url = self.client.upload_file(str(row.path))
+                    payload.append({
+                        "row_data": url,
+                        "global_key": row.global_key,
+                        "external_id": row.global_key,
+                        "attachments": [dict(attachment) for attachment in row.attachments],
+                    })
+                with _step(f"creating the data rows in {self.targets[form].dataset_name!r}"):
+                    task = workspace.datasets[form].create_data_rows(payload)
+                    task.wait_till_done()
+                    errors = task.errors
+                if task.status == "FAILED" or errors:
+                    failed = _failed_keys(errors, [item["global_key"] for item in payload])
+                    which = f" for {len(failed)} of {len(payload)} rows ({', '.join(failed)})" if failed else ""
+                    raise UploadError(f"Data-row creation failed{which}: {_safe_error_summary(errors)}. A rerun "
+                                      "uploads again the rows Labelbox does not have or did not process.")
+                if len(form_rows) > UPLOAD_CHUNK:  # `main` silences the SDK's output, and with it `sys.stdout`.
+                    print(f"[upload] {start + len(payload)}/{len(form_rows)} clips sent", file=sys.__stdout__,
+                          flush=True)
 
     @staticmethod
     def ensure_batches(project, plan: Mapping[str, Sequence[str]]) -> int:
@@ -419,17 +650,17 @@ class LabelboxUploadApi:
             return created
 
     def ensure_prelabels(self, workspace: Workspace, candidates: Sequence[Mapping[str, Any]], *,
-                         refresh: bool = False) -> bool:
-        """Import the column review prelabels once; a failed import, or one made before the batches changed, is
-        replaced only while the project has no labels."""
+                         name: str = PREDICTIONS_NAME, refresh: bool = False, form: str = COLUMN_REVIEW) -> bool:
+        """Import the column review prelabels once, as `name`; a failed import, or one made before the batches
+        changed, is replaced only while the project has no labels."""
         with _step("importing the column review prelabels"):
             from labelbox.schema.annotation_import import MALPredictionImport
             from labelbox.schema.enums import AnnotationImportState
 
-            project = workspace.projects[COLUMN_REVIEW]
-            imports = [item for item in project.get_mal_prediction_imports() if item.name == PREDICTIONS_NAME]
+            project = workspace.projects[form]
+            imports = [item for item in project.get_mal_prediction_imports() if item.name == name]
             if len(imports) > 1:
-                raise UploadError("Several imports use the workflow-test prelabel name.")
+                raise UploadError("Several imports use this folder's prelabel name.")
             if imports:
                 imports[0].wait_till_done()
                 failed = imports[0].state == AnnotationImportState.FAILED or bool(imports[0].errors)
@@ -441,21 +672,25 @@ class LabelboxUploadApi:
             project.enable_model_assisted_labeling(True)
             if imports:
                 return False
-            named = [record for candidate in candidates for record in column_review.prelabels(candidate)]
+            build = view_review.prelabels if form == VIEW_REVIEW else column_review.prelabels
+            named = [record for candidate in candidates for record in build(candidate)]
             job = MALPredictionImport.create_from_objects(
-                client=self.client, project_id=project.uid, name=PREDICTIONS_NAME,
-                predictions=_schema_id_predictions(named, workspace.ontologies[COLUMN_REVIEW].normalized))
+                client=self.client, project_id=project.uid, name=name,
+                predictions=_schema_id_predictions(named, workspace.ontologies[form].normalized))
             job.wait_till_done()
             if job.state == AnnotationImportState.FAILED or job.errors:
                 raise UploadError(f"Prelabel import failed: {_safe_error_summary(job.errors)}.")
             return True
 
     @staticmethod
-    def export_rows(project) -> list[Mapping[str, Any]]:
-        """Every exported row as a dict. `Project.export` is a streamed export: its `result` is the URL of the
-        result file, not the rows, which come from its buffered stream."""
+    def export_rows(project, *, project_details: bool = False) -> list[Mapping[str, Any]]:
+        """Every exported row as a dict, with each label's details and performance details (its time to create,
+        which the pilot's review time M7 reads; the SDK leaves both off by default), and with `project_details` each
+        row's workflow status. `Project.export` is a streamed export: its `result` is the URL of the result file, not
+        the rows, which come from its buffered stream."""
         with _step("exporting the reviews"):
-            task = project.export(params={"label_details": True, "attachments": True})
+            task = project.export(params={"label_details": True, "performance_details": True, "attachments": True,
+                                          "project_details": project_details})
             task.wait_till_done()
             if task.status == "FAILED" or task.has_errors():
                 raise UploadError("Project export failed.")
@@ -466,16 +701,23 @@ class LabelboxUploadApi:
     def cleanup(self, workspace: Workspace, plan: Plan, *, apply: bool) -> dict[str, int]:
         """What this folder uploaded: its study batches, its prelabel import and its data rows, counted; with `apply`,
         deleted in that order (each batch's labels first, which a batch with labels needs; see `_delete_batch`).
-        Nothing else is touched. A rerun continues where an interrupted one stopped."""
+        Nothing else is touched. A rerun continues where an interrupted one stopped. A folder whose kind keeps its
+        reviews (the pilot's) is deleted only while its projects hold no submitted review."""
         with _step("listing what this folder uploaded"):
             batches = [batch for form in plan.forms() for batch in workspace.projects[form].batches()
                        if batch.name in plan.batches(form)]
-            imports = ([item for item in workspace.projects[COLUMN_REVIEW].get_mal_prediction_imports()
-                        if item.name == PREDICTIONS_NAME] if COLUMN_REVIEW in plan.forms() else [])
+            prefilled = plan.prelabel_form()
+            imports = ([item for item in workspace.projects[prefilled].get_mal_prediction_imports()
+                        if item.name == plan.predictions_name] if prefilled in plan.forms() else [])
             data_rows = list(self._rows_in_labelbox(workspace, plan.rows).values())
+            reviewed = plan.kind.keeps_reviews and any(workspace.projects[form].get_label_count() != 0
+                                                       for form in plan.forms())
         counts = {"study batches": len(batches), "prelabel imports": len(imports), "data rows": len(data_rows)}
         if not apply:
             return counts
+        if reviewed:
+            raise UploadError(f"The {plan.kind.name} projects hold submitted reviews, which deleting would remove: "
+                              "nothing was deleted.")
         with _step("deleting the labels of the study batches"):
             for batch in batches:
                 batch.delete_labels()
@@ -504,22 +746,29 @@ class LabelboxUploadApi:
             self.sleep(wait)
 
 
-def ensure_upload(api, plan: Plan, *, replace_form: bool = False) -> UploadResult:
+def ensure_upload(api, plan: Plan, *, replace_form: bool = False, rows_only: bool = False) -> UploadResult:
     """Check the projects and datasets, create and connect the forms (replacing an emptied project's form with
-    `replace_form`), upload missing rows, batch them by study (rows must be batched before their prelabels are
-    imported), then import the column review prelabels."""
+    `replace_form`), upload missing rows (and again those Labelbox never processed), batch them by study (rows must
+    be batched before their prelabels are imported), then import the column review prelabels. With `rows_only`, stop
+    after the rows: no batch and no prelabel, so no reviewer sees a clip before its media is checked."""
     forms = plan.forms()
     workspace = api.ensure_workspace(forms, create=True, replace_form=replace_form)
     existing = api.existing_global_keys(workspace, plan.rows)
-    missing = [row for row in plan.rows if row.global_key not in existing]
+    replaced = api.remove_unprocessed(existing)
+    missing = [row for row in plan.rows if row.global_key not in existing - replaced]
     if missing:
         api.upload_rows(workspace, missing)
+    if rows_only:
+        return UploadResult(rows=len(plan.rows), uploaded=len(missing), batches={}, created_batches={},
+                            prelabels_imported=False, replaced=len(replaced))
     created = {form: api.ensure_batches(workspace.projects[form], plan.batches(form)) for form in forms}
-    imported = bool(plan.candidates) and api.ensure_prelabels(
-        workspace, list(plan.candidates.values()), refresh=created.get(COLUMN_REVIEW, 0) > 0)
+    prefilled = plan.prelabel_form()
+    imported = prefilled is not None and api.ensure_prelabels(
+        workspace, plan.prelabel_items(), name=plan.predictions_name, refresh=created.get(prefilled, 0) > 0,
+        form=prefilled)
     return UploadResult(rows=len(plan.rows), uploaded=len(missing),
                         batches={form: len(plan.batches(form)) for form in forms}, created_batches=created,
-                        prelabels_imported=imported)
+                        prelabels_imported=imported, replaced=len(replaced))
 
 
 def _answers_from_label(label: Mapping[str, Any]) -> dict[str, Any]:
@@ -613,6 +862,14 @@ def _without_source_text(value: Any) -> Any:
     return value
 
 
+def _label_record(label: Mapping[str, Any]) -> dict[str, Any]:
+    """The scored label's id and its time to create in seconds (`performance_details`; None when the export has none),
+    so that each check run and the review time M7 name the label they read."""
+    performance = label.get("performance_details")
+    seconds = performance.get("seconds_to_create") if isinstance(performance, Mapping) else None
+    return {"label_id": label.get("id"), "seconds_to_create": seconds}
+
+
 def summarize_export(exports: Mapping[str, Sequence[Mapping[str, Any]]], plan: Plan) -> dict[str, Any]:
     """The review status of each of this folder's exported rows: column reviews scored with `score_review`, view and
     type reviews checked with `review_problems`. Other rows of the project (the pilot's) are left out."""
@@ -630,33 +887,59 @@ def summarize_export(exports: Mapping[str, Sequence[Mapping[str, Any]]], plan: P
             if label is None:
                 items.append({"global_key": key, "form": form, "status": "unreviewed"})
                 continue
+            item = {"global_key": key, "form": form, **_label_record(label)}
+            if form == VIEW_REVIEW:
+                item["predicted_view"] = plan.views[key]
             try:
                 annotations = _annotations_from_label(label)
-                review_form = column_review.build_form() if form == COLUMN_REVIEW else view_type_review.build_form()
+                review_form = {COLUMN_REVIEW: column_review.build_form, VIEW_REVIEW: view_review.build_form,
+                               VIEW_TYPE_REVIEW: view_type_review.build_form}[form]()
                 column_review.validate_annotations(annotations, review_form, require_complete=True)
                 answers = column_review.decode_annotations(annotations)
             except (ValueError, KeyError, TypeError) as exc:
-                items.append({"global_key": key, "form": form, "status": "invalid", "problems": [str(exc)]})
+                items.append({**item, "status": "invalid", "problems": [str(exc)]})
                 continue
             if form == COLUMN_REVIEW:
                 try:
                     problems = column_review.review_problems(plan.candidates[key], annotations)
                     score = column_review.score_review(plan.candidates[key], answers, submitted=True)
                 except ValueError as exc:
-                    items.append({"global_key": key, "form": form, "status": "invalid", "problems": [str(exc)]})
+                    items.append({**item, "status": "invalid", "problems": [str(exc)]})
                     continue
-                items.append({"global_key": key, "form": form, "status": "invalid" if problems else "valid",
-                              "problems": problems, "score": _without_source_text(score)})
+                items.append({**item, "status": "invalid" if problems else "valid", "problems": problems,
+                              "score": _without_source_text(score)})
+            elif form == VIEW_REVIEW:
+                problems = view_review.review_problems(answers)
+                items.append({**item, "status": "invalid" if problems else "valid", "answers": answers,
+                              "problems": problems})
             else:
                 problems = view_type_review.review_problems(answers)
-                items.append({"global_key": key, "form": form, "status": "invalid" if problems else "valid",
+                items.append({**item, "status": "invalid" if problems else "valid",
                               "answers": view_type_review.with_not_applicable(answers), "problems": problems})
-    return {"schema": SUMMARY_SCHEMA, "items": sorted(items, key=lambda item: item["global_key"])}
+    return {"schema": plan.kind.summary_schema, "items": sorted(items, key=lambda item: item["global_key"])}
+
+
+def export_paths(output: Path, forms: Sequence[str]) -> dict[str, Path]:
+    """Where each form's export is kept, next to its summary: `<summary name>.<form>.export.ndjson`."""
+    return {form: output.with_name(f"{output.stem}.{form}.export.ndjson") for form in forms}
 
 
 def export_summary(api, plan: Plan, output: Path) -> dict[str, int]:
+    """Export each form's project, keep the export unchanged next to the summary, and score this folder's rows. The
+    pilot's rules keep every export (docs/radar/pilot_metrics_v2.md), so an existing summary or export is refused,
+    never overwritten; an export holds reviewers' names and comments, so it stays outside the repository."""
+    kept = export_paths(output, plan.forms())
+    if output.resolve().is_relative_to(column_review.ROOT):
+        raise UploadError("--export-summary must be outside the repository: an export holds reviewers' names.")
+    if any(path.exists() for path in (output, *kept.values())):
+        raise UploadError(f"{output.name} or its exports exist: every export is kept, so give a new name.")
     workspace = api.ensure_workspace(plan.forms(), create=False)
-    summary = summarize_export({form: api.export_rows(workspace.projects[form]) for form in plan.forms()}, plan)
+    exports = {form: api.export_rows(workspace.projects[form]) for form in plan.forms()}
+    for form, rows in exports.items():
+        _write_private(kept[form], "".join(json.dumps(row, ensure_ascii=False) + "\n" for row in rows))
+    summary = summarize_export(exports, plan)
+    summary["exports"] = {form: {"file": kept[form].name, "sha256": sha256(kept[form]), "rows": len(exports[form])}
+                          for form in exports}
     _write_private(output, json.dumps(summary, ensure_ascii=False, indent=2) + "\n")
     counts: dict[str, int] = {}
     for item in summary["items"]:
@@ -673,6 +956,8 @@ def flagged_reviews(summary: Mapping[str, Any]) -> list[str]:
             score = item.get("score", {})
             reasons = [*item.get("problems", []), *score.get("pending", []), *score.get("warnings", [])]
             lines.append(f"{item['global_key']}: " + "; ".join(reasons))
+        elif item["form"] == VIEW_REVIEW and item.get("answers", {}).get("comments", "").strip():
+            lines.append(f"{item['global_key']}: has a comment to read, which may report identifying text")
     return lines
 
 
@@ -685,15 +970,20 @@ def _write_private(path: Path, text: str) -> None:
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--folder", type=Path, required=True, help="the folder `workflow_test` prepared")
-    parser.add_argument("--workspace", choices=sorted(WORKSPACES), default="test",
-                        help="the workflow test's own projects (default) or the pilot's")
+    parser.add_argument("--folder", type=Path, required=True,
+                        help="the folder `workflow_test` or `pilot_prepare` prepared")
+    parser.add_argument("--workspace", choices=sorted(WORKSPACES),
+                        help="the folder's own workspace, which its keys decide: the workflow test's projects for a "
+                             "workflow test, the pilot's for the pilot; another is refused")
     parser.add_argument("--form", choices=FORMS, help="only this form's rows")
     parser.add_argument("--apply", action="store_true",
                         help="upload missing rows; with --delete, delete what this folder uploaded")
     parser.add_argument("--delete", action="store_true", help="list what this folder uploaded (delete with --apply)")
     parser.add_argument("--replace-form", action="store_true",
                         help="with --apply: give an empty project that has another form the committed form")
+    parser.add_argument("--rows-only", action="store_true",
+                        help="with --apply: upload the rows only, with no batch and no prelabel, so that their media "
+                             "can be checked before reviewers see them; --apply alone then batches and prefills them")
     parser.add_argument("--export-summary", type=Path, metavar="PATH", help="export and score submitted reviews")
     return parser
 
@@ -706,8 +996,12 @@ def main(argv: Sequence[str] | None = None, *, environ: Mapping[str, str] = os.e
         parser.error("--export-summary runs alone")
     if args.replace_form and (not args.apply or args.delete):
         parser.error("--replace-form goes with --apply, for an upload")
+    if args.rows_only and (not args.apply or args.delete):
+        parser.error("--rows-only goes with --apply, for an upload")
     try:
         plan = read_plan(args.folder)
+        if args.workspace not in (None, plan.kind.workspace):
+            raise UploadError(f"A {plan.kind.name} folder goes to the {plan.kind.workspace!r} workspace only.")
     except UploadError as exc:
         print(f"Upload stopped by a check: {exc}", file=sys.stderr)
         return 1
@@ -716,12 +1010,13 @@ def main(argv: Sequence[str] | None = None, *, environ: Mapping[str, str] = os.e
         if not plan.rows:
             print(f"The folder holds no {args.form} rows.", file=sys.stderr)
             return 1
-    targets = WORKSPACES[args.workspace]
+    targets = WORKSPACES[plan.kind.workspace]
     _write_private(args.folder / PREVIEW, json.dumps(preview(plan, targets), ensure_ascii=False, indent=2) + "\n")
     counts = {form: len(plan.rows_of(form)) for form in plan.forms()}
     description = ", ".join(f"{n} {form}" for form, n in counts.items())
     if not args.apply and not args.delete and args.export_summary is None:
-        print(f"Dry run: no Labelbox requests were made. Checked {len(plan.rows)} rows ({description}).")
+        print(f"Dry run: no Labelbox requests were made. Checked {len(plan.rows)} rows ({description}) of a "
+              f"{plan.kind.name} folder, for the {plan.kind.workspace} projects.")
         print(f"Read {args.folder / PREVIEW}: every row as it would be sent.")
         print("Run again with --apply after setting LABELBOX_API_KEY.")
         return 0
@@ -742,7 +1037,7 @@ def main(argv: Sequence[str] | None = None, *, environ: Mapping[str, str] = os.e
                 workspace = api.ensure_workspace(plan.forms(), create=False)
                 found = api.cleanup(workspace, plan, apply=args.apply)
             elif args.apply:
-                result = ensure_upload(api, plan, replace_form=args.replace_form)
+                result = ensure_upload(api, plan, replace_form=args.replace_form, rows_only=args.rows_only)
             else:
                 statuses = export_summary(api, plan, args.export_summary)
     except UploadError as exc:
@@ -768,15 +1063,23 @@ def main(argv: Sequence[str] | None = None, *, environ: Mapping[str, str] = os.e
             print(f"This folder's upload holds {listed}; nothing was deleted. Run with --delete --apply to delete.")
     elif args.apply:
         print(f"rows: {result.rows} ({description}); uploaded now: {result.uploaded}")
+        if result.replaced:
+            print(f"of which {result.replaced} again: Labelbox had not processed their videos")
+        if args.rows_only:
+            print("rows only: no batch and no prelabel yet. Check the media, then run again with --apply alone.")
+            return 0
         for form in result.batches:
             print(f"{targets[form].project_name}: study batches {result.batches[form]}, "
                   f"created now {result.created_batches[form]}")
-        if plan.candidates:
-            print(f"column review prelabels: {'imported' if result.prelabels_imported else 'existing import kept'}")
+        if plan.prelabel_form():
+            print(f"{'column review' if plan.candidates else 'view'} prelabels: "
+                  f"{'imported' if result.prelabels_imported else 'existing import kept'}")
     else:
         for line in flagged_reviews(json.loads(args.export_summary.read_text(encoding="utf-8"))):
             print(line)
         print("summary written; " + ", ".join(f"{status}: {n}" for status, n in sorted(statuses.items())))
+        kept = export_paths(args.export_summary, plan.forms()).values()
+        print("exports kept: " + ", ".join(path.name for path in kept))
     return 0
 
 
