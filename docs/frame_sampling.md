@@ -42,11 +42,13 @@ config is ignored when `fps` or `clip_duration` is set).
 | Multi-view probe (`evals/video_classification_frozen_multi`) | `experiment.data:` | `fps: 12`, `fractional_frame_step: true` (drop `frame_step`) |
 | RADAR token cache (`evals/radar_frozen/build_token_cache.py`) | `data:` | `fps: 12`, `fractional_frame_step: true` (drop `frame_step`) |
 
-The group loader (`dataset_type: videogroupdataset`) honours the same keys. It reads its `num_clips_per_video`
-clips back to back, each starting where the previous one would have taken its next frame. With the option on,
-training (`training` and `random_clip_sampling`) starts them at a random frame where all of them fit, evaluation at
-frame 0, and a video without a usable frame rate is read frame by frame. Past the video's end the last frame is
-repeated, as without the option. Without the option the group loader still always starts at frame 0.
+The multi-view probe takes `fps`, not `clip_duration`. Its group loader (`src/datasets/video_group_dataset.py`)
+reads every video with the single-view loader (`VideoDataset`), so each view gets exactly the clips the frozen clip
+probe would read: the same rate, the same short-video padding and the same training/evaluation positions. The
+upstream `init_data(data="VideoGroupDataset")` path is refused; use the multi-view probe.
+
+Short clips are filled as `temporal_padding` says ([temporal_padding.md](temporal_padding.md)), with the option on
+as without it: black frames at clip index -1, or under `loop` the clip's own real frames again from its start.
 
 ## What changes when it is on
 

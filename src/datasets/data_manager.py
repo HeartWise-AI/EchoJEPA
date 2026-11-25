@@ -45,7 +45,21 @@ def init_data(
     min_present=1,                  # <<< NEW
     split_name="train",
     fractional_frame_step=False,    # exact-rate frame steps (src/datasets/utils/frame_sampling.py); off by default
+    temporal_padding="black",
+    loader_timeout=0,
 ):
+    # Only VideoDataset implements a temporal-padding choice (docs/temporal_padding.md); every other
+    # dataset keeps its own behaviour, so asking it to loop is an error rather than silently ignored.
+    if temporal_padding != "black":
+        from src.datasets.video_dataset import validate_temporal_padding
+
+        validate_temporal_padding(temporal_padding)
+        if data.lower() != "videodataset":
+            raise ValueError(f"temporal_padding={temporal_padding!r} is only supported by VideoDataset, not {data!r}.")
+    # The same for the loader timeout (seconds without any batch before the DataLoader raises; 0 waits forever).
+    if loader_timeout != 0 and data.lower() != "videodataset":
+        raise ValueError(f"loader_timeout={loader_timeout!r} is only supported by VideoDataset, not {data!r}.")
+
     if data.lower() == "imagenet":
         from src.datasets.imagenet1k import make_imagenet1k
 
@@ -95,6 +109,8 @@ def init_data(
             log_dir=log_dir,
             in_order=in_order,
             fractional_frame_step=fractional_frame_step,
+            temporal_padding=temporal_padding,
+            loader_timeout=loader_timeout,
         )
 
     elif data.lower() == "videogroupdataset":  
@@ -106,8 +122,6 @@ def init_data(
             group_size=num_clips,  # num_segments from config  
             frames_per_clip=clip_len,  
             frame_step=frame_sample_rate,  
-            duration=duration,
-            fps=fps,
             num_clips_per_video=num_clips_per_video,  # NEW  
             random_clip_sampling=random_clip_sampling,  
             allow_clip_overlap=allow_clip_overlap,  
@@ -125,8 +139,7 @@ def init_data(
             training=training,                 # <<< NEW
             miss_augment_prob=miss_augment_prob,          # <<< NEW
             min_present=min_present,                  # <<< NEW
-            split_name=split_name,
-            fractional_frame_step=fractional_frame_step,
+            split_name=split_name
         )
 
     return (data_loader, dist_sampler)
