@@ -29,6 +29,7 @@ from app.vjepa_2_1.models.utils.modules import Lambda_LinearWarmupHold
 from app.vjepa_2_1.transforms import make_transforms
 from app.vjepa_2_1.utils import (
     clip_grads_with_norm_,
+    AnchorProjector,
     anchor_loss,
     anchor_weight,
     feature_spread,
@@ -702,17 +703,16 @@ def main(args, resume_preempt=False):
     )
 
     # Learned projector for a separate teacher (`optimization.anchor.checkpoint`; `projector: false` disables).
-    # Not DDP-wrapped, so only single-process runs may use it.
+    # DDP-wrapped like the encoder, so its gradients are averaged across GPUs; checkpoints hold the unwrapped
+    # module's state (same format as single-GPU runs).
     anchor_proj = None
     if anchor_encoder is not None and anchor_ckpt is not None and cfgs_anchor.get("projector", True):
-        if world_size != 1:
-            raise ValueError("optimization.anchor projector supports a single process (world_size 1) only.")
-        anchor_proj = torch.nn.ModuleList(
-            [torch.nn.Linear(embed_dim_encoder, embed_dim_encoder) for _ in range(max(1, n_output_distillation))]
-        ).to(device)
+        anchor_proj = AnchorProjector(max(1, n_output_distillation), embed_dim_encoder).to(device)
         optimizer.add_param_group({"params": list(anchor_proj.parameters()), "WD_exclude": False,
                                    "weight_decay": wd, "lr_scale": float(cfgs_anchor.get("projector_lr_scale", 100.0))})
-        logger.info(f"Anchor projector: {len(anchor_proj)} x Linear({embed_dim_encoder}, {embed_dim_encoder}).")
+        anchor_proj = DistributedDataParallel(anchor_proj)
+        logger.info(f"Anchor projector: {max(1, n_output_distillation)} x Linear({embed_dim_encoder}, "
+                    f"{embed_dim_encoder}), DDP over {world_size} process(es).")
 
     start_epoch = 0
     # Only a job that continues this run's own checkpoint reattaches to its wandb run;
@@ -749,7 +749,10 @@ def main(args, resume_preempt=False):
             _ck = robust_checkpoint_loader(load_path, map_location=torch.device("cpu"))
             if "anchor_proj" not in _ck:
                 raise KeyError(f"{load_path} has no anchor_proj weights.")
-            anchor_proj.load_state_dict(_ck["anchor_proj"], strict=True)
+            _sd = _ck["anchor_proj"]
+            if not any(k.startswith("proj.") for k in _sd):  # single-GPU checkpoints before AnchorProjector
+                _sd = {f"proj.{k}": v for k, v in _sd.items()}
+            anchor_proj.module.load_state_dict(_sd, strict=True)
             del _ck
         if not is_anneal or resume_anneal:
             for _ in range(start_epoch * ipe):
@@ -775,7 +778,7 @@ def main(args, resume_preempt=False):
                 frame_sampling.CHECKPOINT_KEY: clip_sampling,
             }
             if anchor_proj is not None:
-                save_dict["anchor_proj"] = anchor_proj.state_dict()
+                save_dict["anchor_proj"] = anchor_proj.module.state_dict()
             _atomic_torch_save(save_dict, path)
 
         _run_rank_zero_checkpoint_save(save_on_rank_zero, rank, device)

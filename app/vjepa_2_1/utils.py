@@ -295,6 +295,21 @@ def load_frozen_anchor(r_path, model, encoder_key="ema"):
     return model
 
 
+class AnchorProjector(torch.nn.Module):
+    """One Linear(embed_dim, embed_dim) per output level, mapping the student's layer-normed tokens
+    [..., levels, embed_dim] into the frozen teacher's feature space. A single forward call per step,
+    so it can be wrapped in DistributedDataParallel (multi-GPU gradient averaging)."""
+
+    def __init__(self, levels, embed_dim):
+        super().__init__()
+        self.proj = torch.nn.ModuleList([torch.nn.Linear(embed_dim, embed_dim) for _ in range(levels)])
+
+    def forward(self, x):
+        if x.size(-2) != len(self.proj):
+            raise ValueError(f"AnchorProjector has {len(self.proj)} levels, input has {x.size(-2)}.")
+        return torch.stack([p(x[..., k, :]) for k, p in enumerate(self.proj)], dim=-2)
+
+
 def anchor_loss(z, a, embed_dim, valid=None, proj=None):
     """Feature-distillation anchor: mean (1 - cosine) between the online encoder's context
     tokens `z` and the frozen anchor's tokens `a` for the same visible tokens, per output level
@@ -302,8 +317,8 @@ def anchor_loss(z, a, embed_dim, valid=None, proj=None):
     (list per clip length of list per mask of [B, N, levels * embed_dim]).
 
     `valid`: matching token-validity weights ([B, N, 1], same nesting) or None (every token counts).
-    `proj`: optional ModuleList of one Linear(embed_dim, embed_dim) per level, applied to the
-    student's layer-normed tokens before the cosine (needed when the teacher is another model).
+    `proj`: optional `AnchorProjector` (or its DDP wrapper), applied to the student's layer-normed
+    tokens [B, N, levels, embed_dim] before the cosine (needed when the teacher is another model).
     """
     loss, n = 0.0, 0
     for i, (zi, ai) in enumerate(zip(z, a)):
@@ -311,7 +326,7 @@ def anchor_loss(z, a, embed_dim, valid=None, proj=None):
             levels = zij.size(-1) // embed_dim
             zl = F.layer_norm(zij.float().unflatten(-1, (levels, embed_dim)), (embed_dim,))
             if proj is not None:  # learned student->teacher map (teacher in another feature space)
-                zl = torch.stack([proj[k](zl[..., k, :]) for k in range(levels)], dim=-2)
+                zl = proj(zl)
             al = F.layer_norm(aij.float().unflatten(-1, (levels, embed_dim)), (embed_dim,))
             dist = 1.0 - F.cosine_similarity(zl, al, dim=-1)  # [B, N, levels]
             if valid is None:
