@@ -22,10 +22,13 @@ import torch.nn.functional as F
 
 from app.vjepa_2_1 import train
 from app.vjepa_2_1.utils import (
+    anchor_loss,
+    anchor_weight,
     clip_grads_with_norm_,
     feature_spread,
     init_video_model,
     load_checkpoint,
+    load_frozen_anchor,
     load_pretrained_weights,
     masked_l1_loss,
     normalize_nested,
@@ -477,6 +480,33 @@ class TestLoadPretrainedWeights(QuietLogs):
         with self.assertRaisesRegex(RuntimeError, "`predictor` does not match .* `n_output_distillation`"):
             load_pretrained_weights(path, encoder, predictor, tiny_model(1)[0])
 
+    def test_ema_key_seeds_the_online_encoder_too(self):
+        ema = tiny_model(1)[0]
+        path = self.checkpoint("ema_both.pt", ema_key="ema_encoder", ema=ema)
+        encoder, predictor = tiny_model(1)
+        target = tiny_model(1)[0]
+        load_pretrained_weights(path, encoder, predictor, target, encoder_key="ema")
+        self.assert_loaded(encoder, ema)
+        self.assert_loaded(target, ema)
+
+    def test_partial_predictor_loads_the_trunk_and_keeps_fresh_output_heads(self):
+        source = tiny_model(1)
+        path = self.checkpoint("one_level.pt", source=source)
+        encoder, predictor = tiny_model(4)
+        fresh_proj = predictor.state_dict()["backbone.predictor_proj.weight"].clone()
+        load_pretrained_weights(path, encoder, predictor, tiny_model(4)[0], partial_predictor=True)
+        got, src = predictor.state_dict(), source[1].state_dict()
+        self.assertTrue(torch.equal(got["backbone.predictor_blocks.0.attn.qkv.weight"], src["backbone.predictor_blocks.0.attn.qkv.weight"]))
+        self.assertTrue(torch.equal(got["backbone.predictor_proj.weight"], fresh_proj))
+
+    def test_frozen_anchor_loads_the_ema_entry_and_takes_no_gradient(self):
+        ema = tiny_model(4)[0]
+        path = self.checkpoint("anchor.pt", ema_key="ema_encoder", ema=ema, source=tiny_model(4))
+        anchor = load_frozen_anchor(path, tiny_model(4)[0], encoder_key="ema")
+        self.assert_loaded(anchor, ema)
+        self.assertFalse(any(p.requires_grad for p in anchor.parameters()))
+        self.assertFalse(anchor.training)
+
     def test_a_missing_tensor_fails_instead_of_being_skipped(self):
         path = self.checkpoint("partial.pt")
         ckpt = torch.load(path)
@@ -627,3 +657,41 @@ class TestConfigChecks(QuietLogs):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestAnchor(unittest.TestCase):
+
+    def nested(self, *tensors):
+        return [list(tensors)]
+
+    def test_identical_features_have_zero_anchor_loss(self):
+        z = torch.randn(2, 5, 4 * 8)
+        self.assertAlmostEqual(float(anchor_loss(self.nested(z), self.nested(z.clone()), 8)), 0.0, places=5)
+
+    def test_each_level_counts_and_scale_is_ignored(self):
+        a = torch.randn(2, 5, 2 * 8)
+        z = a.clone()
+        z[..., :8] = -a[..., :8]  # level 0 flipped: distance 2; level 1 equal: 0
+        self.assertAlmostEqual(float(anchor_loss(self.nested(z), self.nested(a), 8)), 1.0, places=4)
+        self.assertAlmostEqual(float(anchor_loss(self.nested(3 * a), self.nested(a), 8)), 0.0, places=4)
+
+    def test_padded_tokens_do_not_count(self):
+        a = torch.randn(1, 4, 8)
+        z = a.clone()
+        z[:, 2:] = -a[:, 2:]
+        valid = [[torch.tensor([[[1.0], [1.0], [0.0], [0.0]]])]]
+        self.assertAlmostEqual(float(anchor_loss(self.nested(z), self.nested(a), 8, valid=valid)), 0.0, places=5)
+        self.assertAlmostEqual(float(anchor_loss(self.nested(z), self.nested(a), 8)), 1.0, places=4)
+
+    def test_gradient_reaches_the_online_features(self):
+        z = torch.randn(2, 3, 8, requires_grad=True)
+        anchor_loss(self.nested(z), self.nested(torch.randn(2, 3, 8)), 8).backward()
+        self.assertGreater(float(z.grad.abs().sum()), 0)
+
+    def test_weight_is_off_while_frozen_then_decays_linearly(self):
+        self.assertEqual(anchor_weight(1999, 1.0, 0.1, 2000, 92000), 0.0)
+        self.assertAlmostEqual(anchor_weight(2000, 1.0, 0.1, 2000, 92000), 1.0)
+        self.assertAlmostEqual(anchor_weight(47000, 1.0, 0.1, 2000, 92000), 0.55)
+        self.assertAlmostEqual(anchor_weight(92000, 1.0, 0.1, 2000, 92000), 0.1)
+        self.assertAlmostEqual(anchor_weight(99999, 1.0, 0.1, 2000, 92000), 0.1)
+        self.assertEqual(anchor_weight(5000, 0.0, 0.0, 2000, 92000), 0.0)

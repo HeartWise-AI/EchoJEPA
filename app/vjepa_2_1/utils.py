@@ -182,21 +182,42 @@ def load_checkpoint(
     )
 
 
-def load_pretrained_weights(r_path, encoder, predictor, target_encoder):
+def _load_matching_shapes(model, state, name):
+    """Load the tensors whose name and shape match; keep the model's fresh initialization for the rest."""
+    own = model.state_dict()
+    matched = {k: v for k, v in state.items() if k in own and own[k].shape == v.shape}
+    fresh = sorted(k for k in own if k not in matched)
+    unused = sorted(k for k in state if k not in matched)
+    model.load_state_dict(matched, strict=False)
+    logger.info(f"Loaded {len(matched)}/{len(own)} {name} tensors by name and shape; "
+                f"freshly initialized: {fresh}; checkpoint tensors not used: {unused}.")
+    if not matched:
+        raise RuntimeError(f"No {name} tensor matched the checkpoint.")
+
+
+def load_pretrained_weights(r_path, encoder, predictor, target_encoder, encoder_key="encoder",
+                            partial_predictor=False, partial_encoder=False):
     """Initialize model weights from another run. Loads encoder, predictor, and
     target encoder weights strictly while keeping the optimizer and schedule fresh.
     Call before wrapping models in DDP.
 
     Args:
         r_path: path to the source checkpoint.
+        encoder_key: checkpoint entry that seeds the online encoder (`encoder`, or the EMA
+            entry so that student and teacher start from the same released weights).
+        partial_predictor: load only the predictor tensors whose shapes match. Needed when the
+            source predictor was trained for another target (e.g. Meta's ViT-L distilled from
+            ViT-G predicts 1664-d ViT-G features, while deep self-supervision needs 4 x 1024).
     """
     logger.info(f"Initialising weights from {r_path}")
     # Load the checkpoint into CPU memory first rather than immediately putting everything
     # onto the GPU, which is safer (avoid suddenly allocating GPU memory while loading).
     checkpoint = robust_checkpoint_loader(r_path, map_location=torch.device("cpu"))
     ema_key = "target_encoder" if "target_encoder" in checkpoint else "ema_encoder"
+    if encoder_key == "ema":
+        encoder_key = ema_key
     for name, key, model in (
-        ("encoder", "encoder", encoder),
+        ("encoder", encoder_key, encoder),
         ("predictor", "predictor", predictor),
         ("target_encoder", ema_key, target_encoder),
     ):
@@ -207,6 +228,12 @@ def load_pretrained_weights(r_path, encoder, predictor, target_encoder):
             )
         # Remove the `module.` prefix from DDP-wrapped model.
         state = {k.removeprefix("module."): v for k, v in checkpoint[key].items()}
+        if name == "predictor" and partial_predictor:
+            _load_matching_shapes(model, state, name)
+            continue
+        if name != "predictor" and partial_encoder:
+            _load_encoder_from_v2(model, state, name)
+            continue
         try:
             # `strict=True`: the source checkpoint and the destination model must match exactly.
             model.load_state_dict(state, strict=True)
@@ -218,6 +245,106 @@ def load_pretrained_weights(r_path, encoder, predictor, target_encoder):
         logger.info(f"Loaded {name} from `{key}` (source epoch {checkpoint.get('epoch')}), strict.")
     logger.info("Weights only: optimizer, scaler, schedules and epoch start fresh.")
     del checkpoint
+
+
+def _load_encoder_from_v2(model, state, name):
+    """Load a V-JEPA 2.0-recipe encoder (EchoJEPA) into a V-JEPA 2.1 encoder (see
+    `load_pretrained_weights(partial_encoder=True)`)."""
+    own = model.state_dict()
+    levels = sorted({k.split(".")[2] for k in own if k.startswith("backbone.norms_block.")}, key=int)
+    remap = {}
+    for k, v in state.items():
+        if k.startswith("backbone.norm.") and levels:
+            remap[k.replace("backbone.norm.", f"backbone.norms_block.{levels[-1]}.")] = v
+        else:
+            remap[k] = v
+    matched = {k: v for k, v in remap.items() if k in own and own[k].shape == v.shape}
+    required = [k for k in own if k.startswith(("backbone.blocks.", "backbone.patch_embed."))]
+    missing_required = [k for k in required if k not in matched]
+    if missing_required:
+        raise RuntimeError(f"{name}: 2.0 checkpoint is missing required tensors {missing_required[:10]}.")
+    unused = sorted(k for k in remap if k not in matched)
+    if unused:
+        raise RuntimeError(f"{name}: checkpoint tensors with no destination {unused[:10]}.")
+    model.load_state_dict(matched, strict=False)
+    fresh = sorted(k for k in own if k not in matched)
+    logger.info(f"Loaded {len(matched)}/{len(own)} {name} tensors from a 2.0-recipe encoder; fresh: {fresh}.")
+
+
+def load_frozen_teacher(r_path, model, encoder_key="ema"):
+    """Frozen distillation teacher built from its own model config (may differ from the online
+    encoder, e.g. Meta's V-JEPA 2.1 teaching an EchoJEPA student); loaded strictly."""
+    return load_frozen_anchor(r_path, model, encoder_key=encoder_key)
+
+
+def load_frozen_anchor(r_path, model, encoder_key="ema"):
+    """Load the released encoder into `model` and freeze it, as a fixed anchor for continued
+    pretraining (the online encoder is pulled towards its features so it cannot drift into a
+    collapsed solution). Loaded from `r_path` itself, so it is the same on a fresh start and on
+    a resume (where the online encoder comes from `latest.pth.tar`)."""
+    checkpoint = robust_checkpoint_loader(r_path, map_location=torch.device("cpu"))
+    if encoder_key == "ema":
+        encoder_key = "target_encoder" if "target_encoder" in checkpoint else "ema_encoder"
+    state = {k.removeprefix("module."): v for k, v in checkpoint[encoder_key].items()}
+    model.load_state_dict(state, strict=True)
+    del checkpoint
+    model.eval()
+    for p in model.parameters():
+        p.requires_grad = False
+    logger.info(f"Frozen anchor encoder loaded from `{encoder_key}` of {r_path}, strict.")
+    return model
+
+
+class AnchorProjector(torch.nn.Module):
+    """One Linear(embed_dim, embed_dim) per output level, mapping the student's layer-normed tokens
+    [..., levels, embed_dim] into the frozen teacher's feature space. A single forward call per step,
+    so it can be wrapped in DistributedDataParallel (multi-GPU gradient averaging)."""
+
+    def __init__(self, levels, embed_dim):
+        super().__init__()
+        self.proj = torch.nn.ModuleList([torch.nn.Linear(embed_dim, embed_dim) for _ in range(levels)])
+
+    def forward(self, x):
+        if x.size(-2) != len(self.proj):
+            raise ValueError(f"AnchorProjector has {len(self.proj)} levels, input has {x.size(-2)}.")
+        return torch.stack([p(x[..., k, :]) for k, p in enumerate(self.proj)], dim=-2)
+
+
+def anchor_loss(z, a, embed_dim, valid=None, proj=None):
+    """Feature-distillation anchor: mean (1 - cosine) between the online encoder's context
+    tokens `z` and the frozen anchor's tokens `a` for the same visible tokens, per output level
+    (each level layer-normed, as the JEPA targets). Same nesting as the encoder output
+    (list per clip length of list per mask of [B, N, levels * embed_dim]).
+
+    `valid`: matching token-validity weights ([B, N, 1], same nesting) or None (every token counts).
+    `proj`: optional `AnchorProjector` (or its DDP wrapper), applied to the student's layer-normed
+    tokens [B, N, levels, embed_dim] before the cosine (needed when the teacher is another model).
+    """
+    loss, n = 0.0, 0
+    for i, (zi, ai) in enumerate(zip(z, a)):
+        for j, (zij, aij) in enumerate(zip(zi, ai)):
+            levels = zij.size(-1) // embed_dim
+            zl = F.layer_norm(zij.float().unflatten(-1, (levels, embed_dim)), (embed_dim,))
+            if proj is not None:  # learned student->teacher map (teacher in another feature space)
+                zl = proj(zl)
+            al = F.layer_norm(aij.float().unflatten(-1, (levels, embed_dim)), (embed_dim,))
+            dist = 1.0 - F.cosine_similarity(zl, al, dim=-1)  # [B, N, levels]
+            if valid is None:
+                loss = loss + dist.mean()
+            else:
+                w = valid[i][j].float()  # [B, N, 1]
+                loss = loss + (dist * w).sum() / (w.sum() * levels).clamp(min=1)
+            n += 1
+    return loss / max(n, 1)
+
+
+def anchor_weight(step, weight, final_weight, start_iter, total_iters):
+    """Anchor weight: 0 before `start_iter` (encoder frozen, nothing to anchor), then linear
+    decay from `weight` at `start_iter` to `final_weight` at `total_iters`, held after."""
+    if weight <= 0 or step < start_iter:
+        return 0.0
+    t = min(1.0, (step - start_iter) / max(1, total_iters - start_iter))
+    return float(weight + t * (final_weight - weight))
 
 
 def select_load_path(latest_path, load_model, r_file, is_anneal, resume_anneal, anneal_ckpt):

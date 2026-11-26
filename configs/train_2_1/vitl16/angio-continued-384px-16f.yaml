@@ -1,0 +1,151 @@
+# configs/train_2_1/vitl16/angio-continued-384px-16f.yaml
+#
+# V-JEPA 2.1 ViT-L/16 at 384 px, CONTINUED self-supervised pretraining on unlabeled MHI coronary angiograms.
+# Pre-registration: /volume/DeepCoro/experiments/step3/vjepa21_angio384/prereg.md (approved by Robert 2026-11-21).
+#
+# Init: Meta's public V-JEPA 2.1 ViT-L 384 (distilled from ViT-G), `ema_encoder` seeds BOTH the online encoder and
+# the EMA teacher (so the start equals the frozen 2026-11-18 bake-off arm). The released predictor was trained to
+# predict 1664-d ViT-G features, so only its trunk loads (embeddings, 12 blocks, norm, 2 mask tokens); the output
+# projections for 4-level deep self-supervision (4 x 1024) start fresh. The encoder is frozen for the first
+# `freeze_encoder_iters` steps while the fresh heads warm up.
+#
+# Objective: V-JEPA 2.1 dense loss on masked AND visible (context) tokens, deep supervision over layers 5/11/17/23,
+# EMA teacher. Data: the EchoJEPA angiography SSL pool minus every DeepCoro val/test patient.
+# 2 GPUs (cuda:1, cuda:3). Schedule sized from the smoke-test throughput (see prereg section 6).
+# RUN 2 (2026-11-21, prereg Amendment 1): run 1 partially collapsed; anti-collapse changes marked `run 2` below.
+
+app: vjepa_2_1
+nodes: 1
+tasks_per_node: 2
+cpus_per_task: 24
+mem_per_gpu: 48G
+folder: /media/data1/models/VJEPA2_1/angio384_run2
+
+data:
+  dataset_type: VideoDataset
+  datasets:
+  - /media/data1/models/VJEPA2_1/angio384_run2/data/train_videos_excl_valtest.csv
+  # No `datasets_weights`: each pass is a shuffle of the list.
+  batch_size: 16           # per GPU (smoke test: 22.7 GB max allocated, 3.2 s/iter on one GPU)
+  crop_size: 384
+  patch_size: 16
+  dataset_fpcs:
+  - 16
+  fps: 8                   # 16 frames at 8 fps = 2 s, as the EchoJEPA angiography SSL run.
+  tubelet_size: 2
+  num_workers: 12
+  persistent_workers: true
+  in_order: false
+  pin_mem: true
+
+data_aug:                  # as the EchoJEPA angiography SSL run
+  auto_augment: false
+  motion_shift: false
+  random_horizontal_flip: false
+  random_resize_aspect_ratio:
+  - 0.9
+  - 1.1
+  random_resize_scale:
+  - 0.5
+  - 1.0
+  reprob: 0.0
+
+loss:
+  loss_exp: 1.0
+  predict_all: true        # context loss on visible tokens
+  shift_by_n: 0
+  weight_distance_loss: true
+  offset_context_loss: false
+
+mask:
+- aspect_ratio:
+  - 0.75
+  - 1.5
+  full_complement: false
+  max_keep: null
+  max_temporal_keep: 1.0
+  num_blocks: 8
+  spatial_scale:
+  - 0.15
+  - 0.15
+  temporal_scale:
+  - 1.0
+  - 1.0
+- aspect_ratio:
+  - 0.75
+  - 1.5
+  full_complement: false
+  max_keep: null
+  max_temporal_keep: 1.0
+  num_blocks: 2
+  spatial_scale:
+  - 0.7
+  - 0.7
+  temporal_scale:
+  - 1.0
+  - 1.0
+
+meta:
+  wandb_project: null      # no external logging of this run
+  num_log_videos: 0        # never upload clips
+  dtype: bfloat16
+  eval_freq: 100
+  load_checkpoint: true    # auto-resume from latest.pth.tar
+  read_checkpoint: null
+  init_checkpoint: /media/data1/models/VJEPA2_1/vjepa2_1_vitl_dist_vitG_384/vjepa2_1_vitl_dist_vitG_384.pt
+  init_encoder_key: ema
+  init_predictor_partial: true
+  save_every_freq: -1      # latest.pth.tar every epoch (~55 min); kept snapshots below
+  # Run 2 (prereg Amendment 1): kept e{N}.pth.tar at 2k, 5k, 10k steps, every 10% after, plus e32 (35%: decision probe).
+  save_at_epochs: [2, 5, 10, 18, 27, 32, 36, 45, 54, 63, 72, 81]
+  seed: 239
+  use_sdpa: true
+
+model:
+  model_name: vit_large
+  pred_depth: 12
+  pred_embed_dim: 384
+  pred_num_heads: 12
+  n_output_distillation: 4 # deep self-supervision
+  has_cls_first: false
+  img_temporal_dim_size: 1
+  interpolate_rope: true
+  modality_embedding: true
+  n_registers: 0
+  n_registers_predictor: 0
+  normalize_predictor: false
+  uniform_power: false     # as Meta's released ViT-L 384
+  use_activation_checkpointing: true
+  use_mask_tokens: true
+  use_rope: true
+  zero_init_mask_tokens: true
+  lambda_value_vid: 0.5
+  lambda_progressive: true
+  # Run 2: upstream ramp. Run 1 used 500-2,000 and partially collapsed (prereg Amendment 1).
+  lambda_start_iter: 15000
+  lambda_end_iter: 30000
+
+optimization:
+  is_anneal: false
+  ipe: 1000
+  ipe_scale: 1.0
+  ema:                     # run 2: slower teacher, linear 0.9999 -> 1.0 over the run (run 1: 0.99925 fixed)
+  - 0.9999
+  - 1.0
+  weight_decay: 0.04
+  final_weight_decay: 0.04
+  clip_grad: 10.0          # safety for the fresh predictor heads (upstream: null)
+  freeze_encoder_iters: 2000   # run 2: predictor-only warm-up 2k steps (run 1: 300)
+  # Run 2 anti-collapse anchor: frozen copy of Meta's released encoder (init_checkpoint, `ema_encoder`) on each GPU;
+  # 1 - cosine between online and anchor context tokens, per level (layer-normed), weight 1.0 from the unfreeze
+  # (step 2,000) decaying linearly to 0.1 at step 90,000.
+  anchor:
+    weight: 1.0
+    final_weight: 0.1
+  collapse_log_freq: 100       # teacher clip cosine / effective rank in train.log every 100 steps
+  # Lab linear-scaling rule (EchoJEPA configs): 5.25e-4 x global_batch / 3072; global batch 32 -> 5.47e-6.
+  start_lr: 5.5e-7
+  lr: 5.47e-6
+  final_lr: 1.0e-7         # cosine decay over the whole run (no separate cool-down: already at 384 px)
+  warmup: 4                # epochs = 4,000 steps; run 2: the encoder (frozen to 2k) meets a still-rising lr
+  epochs: 90               # x ipe 1000 = 90,000 steps x 32 clips = 2.88M clips (~7 passes over 412k videos)

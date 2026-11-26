@@ -23,12 +23,18 @@ import torch
 import torch.multiprocessing as mp
 import torch.nn.functional as F
 from app.vjepa.utils import grad_norm
+from src.utils.checkpoint_loader import robust_checkpoint_loader
 from app.vjepa_2_1.models.utils.masks_dist import compute_mask_distance
 from app.vjepa_2_1.models.utils.modules import Lambda_LinearWarmupHold
 from app.vjepa_2_1.transforms import make_transforms
 from app.vjepa_2_1.utils import (
     clip_grads_with_norm_,
+    AnchorProjector,
+    anchor_loss,
+    anchor_weight,
     feature_spread,
+    load_frozen_anchor,
+    load_frozen_teacher,
     init_opt,
     init_video_model,
     load_checkpoint,
@@ -198,8 +204,19 @@ def main(args, resume_preempt=False):
             "Set `meta.init_checkpoint` (weights only, fresh optimizer and schedule) or "
             "`meta.read_checkpoint` (full resume of a run), not both."
         )
+    # Which checkpoint entry seeds the online encoder (`encoder` or `ema`), and whether the
+    # predictor may be loaded partially (only tensors whose shapes match).
+    init_encoder_key = cfgs_meta.get("init_encoder_key", "encoder")
+    init_predictor_partial = cfgs_meta.get("init_predictor_partial", False)
+    # `init_backbone: echojepa` = `init_checkpoint` is a V-JEPA 2.0-recipe encoder (EchoJEPA): its blocks load,
+    # 2.1-only tensors start fresh. `vjepa21` (default) = strict load of a 2.1 checkpoint.
+    init_backbone = cfgs_meta.get("init_backbone", "vjepa21")
+    if init_backbone not in ("vjepa21", "echojepa"):
+        raise ValueError(f"meta.init_backbone must be vjepa21 or echojepa, got {init_backbone!r}.")
     seed = cfgs_meta.get("seed", _GLOBAL_SEED)
     save_every_freq = cfgs_meta.get("save_every_freq", -1)
+    # Extra kept snapshots `e<N>.pth.tar` after these epochs (e.g. early probes), besides `save_every_freq`.
+    save_at_epochs = {int(e) for e in (cfgs_meta.get("save_at_epochs", None) or [])}
     skip_batches = cfgs_meta.get("skip_batches", -1)
     use_sdpa = cfgs_meta.get("use_sdpa", False)
     sync_gc = cfgs_meta.get("sync_gc", False)
@@ -366,6 +383,26 @@ def main(args, resume_preempt=False):
     # Maximum combined gradient norm for the encoder and predictor.
     # `null` disables gradient clipping (upstream); otherwise larger gradients are scaled down to this value.
     clip_grad = cfgs_opt.get("clip_grad", None)
+    # Predictor warm-up: for the first `freeze_encoder_iters` global steps the online encoder
+    # receives no update (its gradients are dropped), so a freshly initialized predictor head
+    # cannot push large gradients into pretrained encoder weights. 0 disables it.
+    freeze_encoder_iters = int(cfgs_opt.get("freeze_encoder_iters", 0))
+    # Anti-collapse anchor (continued pretraining): a frozen copy of the released encoder
+    # (`meta.init_checkpoint`); the online encoder's context tokens are pulled towards its
+    # features with weight `weight`, decaying linearly to `final_weight` at the end of the run,
+    # starting when the encoder unfreezes. `weight: 0` (default) disables it.
+    cfgs_anchor = cfgs_opt.get("anchor", None) or {}
+    anchor_w0 = float(cfgs_anchor.get("weight", 0.0))
+    anchor_w1 = float(cfgs_anchor.get("final_weight", anchor_w0))
+    # Optional separate frozen teacher for the anchor term (teacher-quality distillation, e.g. Meta's
+    # V-JEPA 2.1 teaching an EchoJEPA student): `checkpoint`, `key` (default ema) and `model`
+    # (overrides of the model config used to build it, e.g. uniform_power / modality_embedding).
+    anchor_ckpt = cfgs_anchor.get("checkpoint", None)
+    anchor_key = cfgs_anchor.get("key", "ema")
+    anchor_model_overrides = cfgs_anchor.get("model", None) or {}
+    # Feature-collapse metrics of the EMA teacher (clip cosine, effective rank) written to the
+    # train log every `collapse_log_freq` steps (0: only with wandb).
+    collapse_log_freq = int(cfgs_opt.get("collapse_log_freq", 0))
     if clip_grad is not None and not float(clip_grad) > 0:
         raise ValueError(f"optimization.clip_grad must be a positive number or null, got {clip_grad!r}.")
     # ----------------------------------------------------------------------- #
@@ -491,7 +528,7 @@ def main(args, resume_preempt=False):
     )
 
     # -- init model
-    encoder, predictor = init_video_model(
+    _model_kwargs = dict(
         uniform_power=uniform_power,
         use_mask_tokens=use_mask_tokens,
         num_mask_tokens=int(len(model_cfgs_mask) * len(model_fpcs)),
@@ -524,8 +561,22 @@ def main(args, resume_preempt=False):
         modality_embedding=modality_embedding,
         n_output_distillation=n_output_distillation,
     )
+    encoder, predictor = init_video_model(**_model_kwargs)
     target_encoder = copy.deepcopy(encoder)
     embed_dim_encoder = encoder.backbone.embed_dim
+    anchor_encoder = None
+    if anchor_w0 > 0:
+        if init_checkpoint is None and anchor_ckpt is None:
+            raise ValueError("`optimization.anchor` needs `checkpoint` or `meta.init_checkpoint` (the encoder to anchor to).")
+        if anchor_ckpt is not None:
+            teacher_kwargs = dict(_model_kwargs)
+            teacher_kwargs.update(anchor_model_overrides)
+            teacher, _ = init_video_model(**teacher_kwargs)
+            anchor_encoder = load_frozen_teacher(anchor_ckpt, teacher, encoder_key=anchor_key)
+            if teacher.backbone.embed_dim != encoder.backbone.embed_dim:
+                raise ValueError("anchor teacher and online encoder must have the same embed_dim.")
+        else:
+            anchor_encoder = load_frozen_anchor(init_checkpoint, copy.deepcopy(encoder), encoder_key=init_encoder_key)
 
     if init_checkpoint is not None:
         if is_anneal:
@@ -533,7 +584,15 @@ def main(args, resume_preempt=False):
                 "`init_checkpoint` and `is_anneal` cannot both be set; cooldown runs must start from `anneal_ckpt`."
             )
         if load_path is None:
-            load_pretrained_weights(init_checkpoint, encoder, predictor, target_encoder)
+            load_pretrained_weights(
+                init_checkpoint,
+                encoder,
+                predictor,
+                target_encoder,
+                encoder_key=init_encoder_key,
+                partial_predictor=init_predictor_partial,
+                partial_encoder=(init_backbone == "echojepa"),
+            )
         else:
             logger.info(f"Resuming from {load_path}; init_checkpoint {init_checkpoint} not used.")
 
@@ -643,6 +702,18 @@ def main(args, resume_preempt=False):
         end_iter=lambda_end_iter,
     )
 
+    # Learned projector for a separate teacher (`optimization.anchor.checkpoint`; `projector: false` disables).
+    # DDP-wrapped like the encoder, so its gradients are averaged across GPUs; checkpoints hold the unwrapped
+    # module's state (same format as single-GPU runs).
+    anchor_proj = None
+    if anchor_encoder is not None and anchor_ckpt is not None and cfgs_anchor.get("projector", True):
+        anchor_proj = AnchorProjector(max(1, n_output_distillation), embed_dim_encoder).to(device)
+        optimizer.add_param_group({"params": list(anchor_proj.parameters()), "WD_exclude": False,
+                                   "weight_decay": wd, "lr_scale": float(cfgs_anchor.get("projector_lr_scale", 100.0))})
+        anchor_proj = DistributedDataParallel(anchor_proj)
+        logger.info(f"Anchor projector: {max(1, n_output_distillation)} x Linear({embed_dim_encoder}, "
+                    f"{embed_dim_encoder}), DDP over {world_size} process(es).")
+
     start_epoch = 0
     # Only a job that continues this run's own checkpoint reattaches to its wandb run;
     # a cooldown starting from `anneal_ckpt` is a new run and gets a new wandb run.
@@ -674,6 +745,15 @@ def main(args, resume_preempt=False):
             clip_sampling=clip_sampling,
         )
         resuming_training = not is_anneal or resume_anneal
+        if anchor_proj is not None:
+            _ck = robust_checkpoint_loader(load_path, map_location=torch.device("cpu"))
+            if "anchor_proj" not in _ck:
+                raise KeyError(f"{load_path} has no anchor_proj weights.")
+            _sd = _ck["anchor_proj"]
+            if not any(k.startswith("proj.") for k in _sd):  # single-GPU checkpoints before AnchorProjector
+                _sd = {f"proj.{k}": v for k, v in _sd.items()}
+            anchor_proj.module.load_state_dict(_sd, strict=True)
+            del _ck
         if not is_anneal or resume_anneal:
             for _ in range(start_epoch * ipe):
                 scheduler.step()
@@ -697,6 +777,8 @@ def main(args, resume_preempt=False):
                 "wandb_run_id": effective_wandb_run_id,
                 frame_sampling.CHECKPOINT_KEY: clip_sampling,
             }
+            if anchor_proj is not None:
+                save_dict["anchor_proj"] = anchor_proj.module.state_dict()
             _atomic_torch_save(save_dict, path)
 
         _run_rank_zero_checkpoint_save(save_on_rank_zero, rank, device)
@@ -879,7 +961,7 @@ def main(args, resume_preempt=False):
 
                         if predict_all:
                             z_context = normalize_nested(z_context, embed_dim)
-                    return z_pred, z_context
+                    return z_pred, z_context, z
 
                 def loss_fn(z, h, masks_to_apply, cls_loss, d_weights, valid):
                     if cls_loss:
@@ -927,7 +1009,7 @@ def main(args, resume_preempt=False):
                 # Step 1. Forward
                 with torch.cuda.amp.autocast(dtype=dtype, enabled=mixed_precision):
                     h = forward_target(clips)
-                    z_pred, z_context = forward_context(clips)
+                    z_pred, z_context, z_enc = forward_context(clips)
                     loss = 0
                     loss_pred = loss_fn(
                         z_pred,
@@ -963,9 +1045,24 @@ def main(args, resume_preempt=False):
                             lambda_value_step = lambda_value
                         loss += loss_context * lambda_value_step
 
-                # Measure how different the target encoder’s clip representations are from one another,
-                # but only compute this metric on steps that are being logged.
-                spread = feature_spread(h, valid) if log_step else (float("nan"), float("nan"))
+                    # Anti-collapse anchor on the visible tokens the online encoder saw.
+                    loss_anchor, anchor_w_step = None, 0.0
+                    if anchor_encoder is not None:
+                        anchor_w_step = anchor_weight(
+                            epoch * ipe + itr, anchor_w0, anchor_w1, freeze_encoder_iters, ipe * num_epochs
+                        )
+                        if anchor_w_step > 0:
+                            with torch.no_grad():
+                                a = anchor_encoder(clips, masks_enc, gram_mode=False, training_mode=True)
+                            v_enc = [apply_masks(vi, mi, concat=False) for vi, mi in zip(valid, masks_enc)]
+                            loss_anchor = anchor_loss(z_enc, a, embed_dim_encoder, valid=v_enc, proj=anchor_proj)
+                            loss += loss_anchor * anchor_w_step
+
+                # Measure how different the target encoder’s clip representations are from one another
+                # (last output level = final encoder layer, as the probe), only on logged steps.
+                spread_step = log_step or (collapse_log_freq > 0 and itr % collapse_log_freq == 0)
+                h_last = [hi[:, :, -embed_dim_encoder:] for hi in h]
+                spread = feature_spread(h_last, valid) if spread_step else (float("nan"), float("nan"))
 
                 _raise_if_non_finite_loss(loss, device)
 
@@ -998,6 +1095,10 @@ def main(args, resume_preempt=False):
                     _grad_norm = grad_norm(encoder, predictor)
                     if clip_grad is not None:
                         clip_grads_with_norm_(trained_params, clip_grad, _grad_norm)
+                    if epoch * ipe + itr < freeze_encoder_iters:
+                        # AdamW skips parameters without a gradient: no update, no weight decay.
+                        for p in encoder.parameters():
+                            p.grad = None
                     if mixed_precision:
                         scaler.step(optimizer)
                         scaler.update()
@@ -1030,6 +1131,8 @@ def main(args, resume_preempt=False):
                     float("nan") if _grad_norm is None else float(_grad_norm),
                     m,
                     spread,
+                    float("nan") if loss_anchor is None else float(loss_anchor.detach()),
+                    anchor_w_step,
                 )
 
             (
@@ -1043,7 +1146,20 @@ def main(args, resume_preempt=False):
                 _grad_norm,
                 _ema_m,
                 (clip_cosine, effective_rank),
+                loss_anchor,
+                anchor_w_step,
             ), gpu_etime_ms = gpu_timer(train_step)
+            if collapse_log_freq > 0 and itr % collapse_log_freq == 0:
+                # Same step on every rank, so the reduction is safe. Per-GPU batch metrics, averaged.
+                (c_cos, _), (c_rank, _) = global_sample_weighted_means(
+                    [clip_cosine, effective_rank], [1, 1], device=device
+                )
+                logger.info(
+                    "[collapse] step %d clip_cosine %.4f effective_rank %.2f (per-GPU batch of %d clips, "
+                    "teacher last level) anchor %.4f x %.3f ema %.6f lambda %.3f"
+                    % (epoch * ipe + itr, c_cos, c_rank, batch_size, loss_anchor, anchor_w_step, _ema_m,
+                       lambda_value_step)
+                )
             if not np.isnan(_grad_norm):        # `NaN` when the step was skipped
                 grad_norm_max = _grad_norm if np.isnan(grad_norm_max) else max(grad_norm_max, _grad_norm)
                 clipped_steps += int(clip_grad is not None and _grad_norm > clip_grad)
@@ -1140,6 +1256,7 @@ def main(args, resume_preempt=False):
                 ):
                     logger.info(
                         "[%d, %5d] loss: %.3f "
+                        "[pred: %.4f ctx: %.4f lambda: %.2f] "
                         "masks: %s "
                         "[wd: %.2e] [lr: %.2e] "
                         "[valid: %.2f] "
@@ -1153,6 +1270,9 @@ def main(args, resume_preempt=False):
                             epoch + 1,
                             itr,
                             loss_meter.avg,
+                            loss_pred,
+                            loss_context,
+                            lambda_value_step,
                             "["
                             + ", ".join(
                                 [
@@ -1181,7 +1301,7 @@ def main(args, resume_preempt=False):
         logger.info("avg. loss %.3f" % loss_meter.avg)
         if (epoch + 1) % CHECKPOINT_FREQ == 0 or epoch == (num_epochs - 1):
             save_checkpoint(epoch + 1, latest_path)
-            if save_every_freq > 0 and (epoch + 1) % save_every_freq == 0:
+            if (save_every_freq > 0 and (epoch + 1) % save_every_freq == 0) or (epoch + 1) in save_at_epochs:
                 # Named after the epoch count stored inside; upstream used the 0-based index.
                 save_every_file = f"e{epoch + 1}.pth.tar"
                 save_every_path = os.path.join(folder, save_every_file)

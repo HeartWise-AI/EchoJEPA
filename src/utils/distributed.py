@@ -43,7 +43,8 @@ def init_distributed(port=37129, rank_and_world_size=(None, None)):
             return world_size, rank
 
     try:
-        os.environ["MASTER_PORT"] = str(port)
+        # `MASTER_PORT` in the environment overrides the default, so two jobs on one host do not collide.
+        os.environ["MASTER_PORT"] = os.environ.get("MASTER_PORT", str(port))
         torch.distributed.init_process_group(backend="nccl", 
                                              world_size=world_size, 
                                              rank=rank,
