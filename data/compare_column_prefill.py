@@ -507,7 +507,7 @@ def compare(linked, clips, routing, policy, spec, cr, limits, acquisition="bmode
         cache = {}
         for structure in routing.trained:
             views = study_views & set(structure.views)
-            if not views:
+            if not views or structure.name not in rn.GRAMMARS:     # no parser side to compare (routing v2's RA)
                 continue
             name = structure.name
             coverage[(name, "eligible")] += 1

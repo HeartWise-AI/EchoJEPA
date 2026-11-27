@@ -52,7 +52,9 @@ Logs (rank 0): `log.jsonl`, one line per step (epoch, step, loss, learning rates
 per-structure rows, skip reason, exact-caption pairs and normal-normal pairs); `epochs.jsonl`, per epoch and structure
 the contributing steps, the epoch's steps, their ratio (`use_fraction`, the structure's training use), the count of
 steps skipped for each reason (`skipped_too_few_rows`, `skipped_uniform_targets`, `skipped_no_abnormal_row`) and the
-medians of rows, exact-caption pairs and normal-normal pairs over the contributing steps. Both pair
+medians of rows, exact-caption pairs and normal-normal pairs over the contributing steps (with
+`loss.uniform_fallback`, also the contributing steps that fell back to identity targets: `fallback_identity` with
+distinct captions, `fallback_identity_identical` with one caption on every row; and each step line's `fallback`). Both pair
 counts are taken in every arm, so the logs of two arms show the same quantities: exact-caption pairs are positives
 in A1 and negatives in A0, normal-normal pairs are positives in A2 and A3 only, and their count is what
 `data.normal_fraction` reduces. A resume drops the lines
@@ -69,14 +71,20 @@ is run control, outside the fingerprint, and a failure to log never stops traini
 Config: data {cache_dir, clips, captions, split, routing, normality_policy, num_clips, selection, acquisition_classes,
 normal_fraction (share of normal captions a training epoch keeps, drawn per epoch, default 1), view_prefix
 (default false; true: each caption after the views of the bag's clips that feed its structure, clip-only runs, see
-src/models/radar/view_prefix.py), view_phrases (the phrase file, default configs/radar/view_phrases_v0.yaml)}
+src/models/radar/view_prefix.py), view_phrases (the phrase file, default configs/radar/view_phrases_v0.yaml),
+color_flow_captions (default false; true: a structure whose bag holds a colour-flow clip routed to it reads its
+`color_flow` caption row, the merged builder's `--regurgitation-grade-valves`; see
+src/datasets/radar_study_dataset.py)}
 (another view family map means another registry through `routing`; the old `view_families` key is refused);
 model {token_grid, embed_dim, depth, num_heads, mlp_ratio, proj_dim, activation_checkpointing};
 text {backbone, max_length, max_overlength_fraction, ...: see `build_text_encoder`; frozen (default false), pooling,
 layer, template, dtype, head, head_hidden_dim, input_norm: a frozen backbone with cached caption features and a
 trained head, `src/models/radar/frozen_text.py`, its features kept under data.text_cache_dir}; loss {use_exact
 (required: false = A0, true = A1 and the base of A2/A3), use_normal,
-use_abnormal_teacher, release_gate, min_pairs, init_temperature, temperature_bounds, teacher_momentum, soft_ef
+use_abnormal_teacher, release_gate, min_pairs (an integer, or {structure: integer}), uniform_fallback (off when
+absent: identity, or {structure: identity}; a structure whose targets are uniform in a step trains on identity
+targets instead of being skipped, see `src/models/radar/loss.py`), uniform_fallback_min_distinct (default 1),
+init_temperature, temperature_bounds, teacher_momentum, soft_ef
 (off when absent: {sigma, weight, structure, source, grade_values}, soft value targets from the caption text, see
 `src/models/radar/loss.py`; A0 and A1 only, not with data.view_prefix; its coverage goes to `soft_ef_coverage.json`
 and its per-step diagnostics to the structure's `soft_*` keys in `log.jsonl`)}; optimization
@@ -217,6 +225,9 @@ def fingerprint(config, routing, cache, n_studies, normality_digest=None, bags=N
         semantic.pop(section, None)
     if not semantic.get("loss", {}).get("soft_ef", True):     # an empty soft_ef is off: the run of a config without it
         semantic["loss"].pop("soft_ef")
+    for section, key in (("loss", "uniform_fallback"), ("data", "color_flow_captions")):     # off: as if absent
+        if key in semantic.get(section, {}) and not semantic[section][key]:
+            semantic[section].pop(key)
     data = semantic.get("data", {})
     record = {
         "config": semantic,
@@ -353,7 +364,9 @@ def build_model(config, routing):
         trained, use_exact=lc["use_exact"], use_normal=lc.get("use_normal", False),
         use_abnormal_teacher=lc.get("use_abnormal_teacher", False), release_gate=lc.get("release_gate", False),
         min_pairs=lc.get("min_pairs", 2), init_temperature=lc.get("init_temperature", 0.07),
-        temperature_bounds=tuple(lc.get("temperature_bounds", (0.001, 0.5))), soft_ef=lc.get("soft_ef"))
+        temperature_bounds=tuple(lc.get("temperature_bounds", (0.001, 0.5))), soft_ef=lc.get("soft_ef"),
+        uniform_fallback=lc.get("uniform_fallback"),
+        uniform_fallback_min_distinct=lc.get("uniform_fallback_min_distinct", 1))
     if heads is None:
         return RadarModel(pooler, text_encoder, loss), tokenizer
     return RadarModel(pooler, text_encoder, loss, heads, heads_config.get("weight", 1.0),
@@ -418,14 +431,18 @@ def make_loader(dataset, sampler, tokenizer, num_workers=0, start_method="spawn"
 
 
 SKIP_REASONS = ("too_few_rows", "uniform_targets", "no_abnormal_row")
+FALLBACK_KINDS = ("identity", "identity_identical")     # `loss.uniform_fallback`, src/models/radar/loss.py
 
 
-def structure_summary(contributing, skips, steps):
+def structure_summary(contributing, skips, steps, fallbacks=None):
     """One epoch's entry per structure for `epochs.jsonl`. `contributing`: {name: [(rows, exact_pairs,
     normal_pairs)] of the steps it contributed to}; `skips`: {name: Counter of skip reasons}; `steps`: the epoch's
     steps. `use_fraction` (contributing steps / steps) is a structure's training use; the `skipped_<reason>` counts
     say why it was not used, so a structure at 0% can be told apart: too few valid rows in the global batch (no
-    caption, or no clip of its views in the bag) versus identical captions on every row (`uniform_targets`)."""
+    caption, or no clip of its views in the bag) versus identical captions on every row (`uniform_targets`).
+    `fallbacks` ({name: Counter of fallback kinds}, `loss.uniform_fallback`): the contributing steps that used identity
+    targets because their targets were uniform, as `fallback_<kind>` (`identity`, `identity_identical`); the keys are
+    absent without it, so a run without the option logs what it logged before."""
     out = {}
     for name, used in contributing.items():
         reasons = skips.get(name, {})
@@ -435,6 +452,9 @@ def structure_summary(contributing, skips, steps):
                      "median_exact_pairs": statistics.median(p for _, p, _ in used) if used else None,
                      "median_normal_pairs": statistics.median(p for _, _, p in used) if used else None,
                      **{f"skipped_{reason}": int(reasons.get(reason, 0)) for reason in SKIP_REASONS}}
+        if fallbacks is not None:
+            kinds = fallbacks.get(name, {})
+            out[name].update({f"fallback_{kind}": int(kinds.get(kind, 0)) for kind in FALLBACK_KINDS})
     return out
 
 
@@ -577,7 +597,7 @@ def train(config, out_dir, resume=True, stop_after_epoch=None, allow_code_change
                                 selection=data.get("selection", "view_balanced"), training=True, seed=seed,
                                 acquisition_classes=data.get("acquisition_classes", ("bmode", "color_flow")),
                                 normal_fraction=data.get("normal_fraction", 1.0), stills=stills,
-                                view_prefix=phrases)
+                                view_prefix=phrases, color_flow_captions=data.get("color_flow_captions", False))
     global_batch = int(opt["global_batch"])
     sampler = StudyBatchSampler(len(dataset), global_batch, rank, world_size, seed)
     schedule = step_schedule(len(dataset), global_batch, opt["epochs"], opt.get("warmup_fraction", 0.05))
@@ -678,6 +698,8 @@ def train(config, out_dir, resume=True, stop_after_epoch=None, allow_code_change
         dataset.set_epoch(epoch)
         contributing = {name: [] for name in model.loss.structures}
         skips = {name: collections.Counter() for name in model.loss.structures}
+        fallbacks = ({name: collections.Counter() for name in model.loss.structures} if model.loss.fallback
+                     else None)
         epoch_steps = 0
         for batch in loader:
             for group in optimizer.param_groups:
@@ -690,6 +712,8 @@ def train(config, out_dir, resume=True, stop_after_epoch=None, allow_code_change
             for name, stat in stats.items():
                 if stat["loss"] is not None:
                     contributing[name].append((stat["rows"], stat["exact_pairs"], stat["normal_pairs"]))
+                    if fallbacks is not None and stat.get("fallback"):
+                        fallbacks[name][stat["fallback"]] += 1
                 elif stat["skipped"]:
                     skips[name][stat["skipped"]] += 1
             if rank == 0:
@@ -698,6 +722,7 @@ def train(config, out_dir, resume=True, stop_after_epoch=None, allow_code_change
                         "lr": {g["name"]: g["lr"] for g in optimizer.param_groups},
                         "structures": {n: {"rows": s["rows"], "skipped": s["skipped"],
                                            "exact_pairs": s["exact_pairs"], "normal_pairs": s["normal_pairs"],
+                                           **({"fallback": s["fallback"]} if model.loss.fallback else {}),
                                            **{k: v for k, v in s.items() if k.startswith("soft_")}}
                                        for n, s in stats.items()}}
                 if model.last_measurement is not None:
@@ -710,7 +735,7 @@ def train(config, out_dir, resume=True, stop_after_epoch=None, allow_code_change
             step += 1
         rng = _all_rng_states(device, world_size)
         if rank == 0:
-            summary = {"epoch": epoch, "structures": structure_summary(contributing, skips, epoch_steps)}
+            summary = {"epoch": epoch, "structures": structure_summary(contributing, skips, epoch_steps, fallbacks)}
             with open(os.path.join(out_dir, "epochs.jsonl"), "a") as f:
                 f.write(json.dumps(summary) + "\n")
             log_scalars(wandb_run, {f"structures/{name}/{key}": value

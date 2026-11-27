@@ -35,6 +35,13 @@ only input is a still and that has no Doppler caption gets none: B-mode statemen
 alone.
 Without `stills`, `full` rows are never read and items are those of v0.
 
+Colour-flow captions (optional, `color_flow_captions`, off by default): rows of scope `color_flow`
+(`build_radar_captions_merged.py --regurgitation-grade-valves`: a valve's B-mode sentences and its regurgitation
+grade) are read. A structure whose bag holds a colour-flow clip routed to it (`acquisition` = `color_flow`, a view
+of its routing) gets its `color_flow` caption where it would get its `bmode` one; without such a clip, or without such
+a row, it keeps the `bmode` caption. A regurgitation grade is thus trained only against a bag that can show the jet.
+Off, `color_flow` rows are refused as before (a table built with the option needs it on).
+
 View prefix (optional, `view_prefix`: a `src.models.radar.view_prefix.ViewPhrases`; clip-only runs): each caption
 slot holds the caption after the prefix naming the views of the bag's clips that feed the structure ("Apical
 four-chamber view. <caption>"), and its caption id is that of (prefix, caption), so exact-caption positives need the
@@ -59,13 +66,14 @@ from src.models.radar.view_prefix import prefixed, prefixed_caption_id
 
 NORMALITY = ("normal", "abnormal", "unknown")
 SCOPES = ("bmode", "full", "doppler")
+COLOR_FLOW = "color_flow"      # the clip table's acquisition class and the caption scope of `color_flow_captions`
 
 
 class RadarStudyDataset(torch.utils.data.Dataset):
 
     def __init__(self, clips, captions, routing, cache, num_clips=12, selection="view_balanced", training=True,
                  seed=0, eval_seed=0, eval_bag_index=0, acquisition_classes=("bmode", "color_flow"),
-                 normal_fraction=1.0, stills=None, view_prefix=None):
+                 normal_fraction=1.0, stills=None, view_prefix=None, color_flow_captions=False):
         if not 0.0 < normal_fraction <= 1.0:
             raise ValueError(f"normal_fraction must be in (0, 1], got {normal_fraction}.")
         self.normal_fraction = float(normal_fraction)
@@ -80,6 +88,7 @@ class RadarStudyDataset(torch.utils.data.Dataset):
         self.eval_bag_index = eval_bag_index
         self.epoch = 0
         self.acquisition_classes = tuple(acquisition_classes)
+        self.color_flow_captions = bool(color_flow_captions)
         for column in ("study_id", "clip_id", "view", "acquisition"):
             if column not in clips.columns:
                 raise ValueError(f"clips needs a {column!r} column.")
@@ -105,7 +114,8 @@ class RadarStudyDataset(torch.utils.data.Dataset):
         captions = captions[captions.structure.isin(self.structures)]
         if "scope" not in captions.columns:
             captions = captions.assign(scope="bmode")
-        bad_scope = {s for s in set(captions.scope) - set(SCOPES)
+        scopes = SCOPES + ((COLOR_FLOW,) if self.color_flow_captions else ())
+        bad_scope = {s for s in set(captions.scope) - set(scopes)
                      if not str(s).startswith(("ev:", "full:", "doppler:"))}
         if bad_scope:
             raise ValueError(f"scope must be one of {SCOPES}, got {sorted(bad_scope)}.")
@@ -113,7 +123,7 @@ class RadarStudyDataset(torch.utils.data.Dataset):
         self.structured = {s.name for s in routing.structures if s.caption_source == "structured"}
         self.by_finding = {s.name for s in routing.structures if s.finding_support}
         if stills is None:
-            captions = captions[captions.scope == "bmode"]
+            captions = captions[captions.scope.isin(("bmode", COLOR_FLOW))]
         if captions.duplicated(["study_id", "structure", "scope"]).any():
             raise ValueError("A (study, structure) has more than one caption.")
         unknown = set(captions.study_id.astype(str)) - known
@@ -218,13 +228,14 @@ class RadarStudyDataset(torch.utils.data.Dataset):
         for study_id, clips in self.studies:
             clip_views = [v for _, v, _ in clips]
             for name in self.structures:
-                entry = self.captions.get((study_id, name, "bmode"))
-                if entry is None:
-                    continue
-                texts.add(entry[0])
-                for prefix in self.view_prefix.possible_prefixes(clip_views, views[name], self.num_clips,
-                                                                 self.selection):
-                    texts.add(prefixed(prefix, entry[0]))
+                for scope in ("bmode", COLOR_FLOW):
+                    entry = self.captions.get((study_id, name, scope))
+                    if entry is None:
+                        continue
+                    texts.add(entry[0])
+                    for prefix in self.view_prefix.possible_prefixes(clip_views, views[name], self.num_clips,
+                                                                     self.selection):
+                        texts.add(prefixed(prefix, entry[0]))
         return texts
 
     def __getitem__(self, index):
@@ -244,6 +255,9 @@ class RadarStudyDataset(torch.utils.data.Dataset):
             acquisition_ids[slot] = (self.acquisition_classes.index(acquisition)
                                      if acquisition in self.acquisition_classes else -1)
         eligible = self.routing.clip_eligibility(view_ids[None], clip_valid[None], self.structures)[0]
+        color = torch.tensor([acquisition == COLOR_FLOW for _, _, acquisition in chosen]
+                             + [False] * (C - len(chosen)), dtype=torch.bool)
+        color_eligible = (eligible & color[None, :]).any(dim=1)
         still = self.stills.item(study_id, rng) if self.stills is not None else {}
         has_still = still["still_eligible"].any(dim=-1) if still else torch.zeros(S, dtype=torch.bool)
         prefixes = self._prefixes(chosen, eligible) if self.view_prefix is not None else [""] * S
@@ -257,7 +271,11 @@ class RadarStudyDataset(torch.utils.data.Dataset):
                 scope = self._finding_scope(name, bool(eligible[s].any()), still, s)
             else:
                 scope = self._scope(name, bool(eligible[s].any()), bool(has_still[s]))
-            entry = self.captions.get((study_id, name, scope))
+            entry = None
+            if scope == "bmode" and self.color_flow_captions and color_eligible[s]:
+                entry = self.captions.get((study_id, name, COLOR_FLOW))
+            if entry is None:
+                entry = self.captions.get((study_id, name, scope))
             if entry is None and eligible[s].any():
                 entry = self.captions.get((study_id, name, "bmode"))
             if entry is not None and self._left_out(study_id, name, entry[2]):

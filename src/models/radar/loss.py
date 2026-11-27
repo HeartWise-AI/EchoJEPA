@@ -34,7 +34,19 @@ inside the bounds and is called after each optimizer step (the release clamps it
 
 A structure is skipped in a step when it has fewer than `min_pairs` valid rows or its targets are uniform. With
 `release_gate`, a structure with no abnormal row is skipped too, as the release does; that gate is off by default
-because captions of unknown normality still carry identity and exact-caption targets.
+because captions of unknown normality still carry identity and exact-caption targets. `min_pairs` is one integer or
+a mapping {structure: integer} (a structure it does not name keeps 2).
+
+Uniform fallback (`uniform_fallback`, off by default): for the structures it names (`identity` for all of them, or
+{structure: identity}), a step whose targets are uniform uses the identity targets (A0's, CLIP InfoNCE) for that
+structure instead of skipping it. Under exact-caption targets Q is uniform exactly when every valid row has the same
+caption id; under N it is also uniform when every row is normal. Only rows with at least
+`uniform_fallback_min_distinct` distinct caption ids fall back (default 1: every uniform step). When the rows share one
+caption, the identity targets carry no alignment signal: image-to-text logits are constant across the row (zero
+gradient), and text-to-image only evens out the images' similarities to that one caption. That loss would also push the
+shared temperature up, so in that case it is computed with the temperature detached. The stats say which: `fallback`
+is `identity` (rows with distinct captions) or `identity_identical` (one caption), and None otherwise. Set
+`uniform_fallback_min_distinct: 2` to fall back only when the captions differ (A2/A3 all-normal steps).
 
 Soft value targets (`soft_ef`, off by default; A0 and A1 only): for the rows of one structure (the LV) whose caption
 carries a value (an EF), the target row also puts mass on the other rows of that structure in the batch, in
@@ -247,9 +259,14 @@ class StructureContrastiveLoss(nn.Module):
 
     def __init__(self, structures, use_exact=True, use_normal=False, use_abnormal_teacher=False,
                  release_gate=False, min_pairs=2, init_temperature=0.07, temperature_bounds=(0.001, 0.5),
-                 soft_ef=None):
+                 soft_ef=None, uniform_fallback=None, uniform_fallback_min_distinct=1):
         super().__init__()
         self.structures = list(structures)
+        self.min_pairs_of = self._min_pairs(min_pairs)
+        self.fallback = self._fallback(uniform_fallback)
+        if int(uniform_fallback_min_distinct) < 1:
+            raise ValueError("loss.uniform_fallback_min_distinct must be at least 1.")
+        self.fallback_min_distinct = int(uniform_fallback_min_distinct)
         self.soft_ef = None
         if soft_ef:
             soft_ef = dict(soft_ef)
@@ -268,12 +285,40 @@ class StructureContrastiveLoss(nn.Module):
         self.use_normal = use_normal
         self.use_abnormal_teacher = use_abnormal_teacher
         self.release_gate = release_gate
-        if min_pairs < 2:
-            raise ValueError("min_pairs must be at least 2: one row has no contrast.")
-        self.min_pairs = min_pairs
+        self.min_pairs = min(self.min_pairs_of.values()) if self.min_pairs_of else 2
         self.temperature_bounds = tuple(temperature_bounds)
         self.temperature = nn.Parameter(torch.tensor(float(init_temperature)))
         self.caption_weights = None     # severity weights, `set_caption_weights`
+
+    def _min_pairs(self, min_pairs):
+        """{structure: min_pairs} from one integer or a mapping {structure: integer} (others keep 2)."""
+        if isinstance(min_pairs, dict):
+            unknown = sorted(set(min_pairs) - set(self.structures))
+            if unknown:
+                raise ValueError(f"loss.min_pairs names structures that are not trained: {unknown}.")
+            of = {name: int(min_pairs.get(name, 2)) for name in self.structures}
+        else:
+            of = {name: int(min_pairs) for name in self.structures}
+        if any(v < 2 for v in of.values()):
+            raise ValueError("min_pairs must be at least 2: one row has no contrast.")
+        return of
+
+    def _fallback(self, fallback):
+        """The structures whose uniform steps fall back to identity targets: from None (none), `identity` (all) or a
+        mapping {structure: identity}."""
+        if not fallback:
+            return frozenset()
+        if fallback == "identity":
+            return frozenset(self.structures)
+        if not isinstance(fallback, dict):
+            raise ValueError("loss.uniform_fallback must be 'identity' or a mapping {structure: identity}.")
+        unknown = sorted(set(fallback) - set(self.structures))
+        if unknown:
+            raise ValueError(f"loss.uniform_fallback names structures that are not trained: {unknown}.")
+        bad = sorted({str(v) for v in fallback.values()} - {"identity", "None", "none", "off"})
+        if bad:
+            raise ValueError(f"loss.uniform_fallback values must be identity (or none), not {bad}.")
+        return frozenset(name for name, v in fallback.items() if v == "identity")
 
     def set_caption_weights(self, weights):
         """Turn on severity weights: {caption_id: weight} (`severity.caption_weights`), or None to turn them off.
@@ -320,7 +365,8 @@ class StructureContrastiveLoss(nn.Module):
         normal, abnormal: [B, S] bool (needed with use_normal / release_gate / use_abnormal_teacher).
         teacher: [B, S, P] momentum caption embeddings (needed with use_abnormal_teacher).
         Returns (loss, stats): stats[name] = {"rows": int, "loss": float or None, "skipped": reason or None,
-        "exact_pairs": int, "normal_pairs": int or None}. `exact_pairs` counts the unordered pairs of valid rows with
+        "exact_pairs": int, "normal_pairs": int or None, "fallback": None, identity or identity_identical (see
+        `uniform_fallback`)}. `exact_pairs` counts the unordered pairs of valid rows with
         the same caption id, in every arm: E makes them positives (A1-A3), the identity alone keeps them negatives
         (A0). It shows how far A1's targets differ from A0's in the batches actually trained on. `normal_pairs` counts
         the unordered pairs of valid rows that are both normal, in every arm that is given the flags (None without
@@ -365,13 +411,13 @@ class StructureContrastiveLoss(nn.Module):
             abnormal_s = flags[idx, s, 1] if flags is not None else None
             normals = int(normal_s.sum()) if normal_s is not None else None
             stat = {"rows": n, "loss": None, "skipped": None, "exact_pairs": same // 2,
-                    "normal_pairs": normals * (normals - 1) // 2 if normals is not None else None}
+                    "normal_pairs": normals * (normals - 1) // 2 if normals is not None else None, "fallback": None}
             stats[name] = stat
             soft = self.soft_ef is not None and name == self.soft_ef["structure"]
             if soft:
                 values_s = self.soft_values(ids_s)
                 stat.update(soft_rows=int(torch.isfinite(values_s).sum()), soft_mass=None, soft_positives=None)
-            if n < self.min_pairs:
+            if n < self.min_pairs_of[name]:
                 stat["skipped"] = "too_few_rows"
                 continue
             if self.release_gate and not bool(abnormal_s.any()):
@@ -383,14 +429,21 @@ class StructureContrastiveLoss(nn.Module):
             if soft:
                 Q, diag = soft_value_targets(Q, values_s, self.soft_ef["sigma"], self.soft_ef["weight"])
                 stat.update(soft_mass=diag["mass"], soft_positives=diag["positives"])
+            tau_s = tau
             if torch.allclose(Q, torch.full_like(Q, 1.0 / n)):
-                stat["skipped"] = "uniform_targets"
-                continue
+                distinct = int(torch.unique(ids_s).numel())
+                if name not in self.fallback or distinct < self.fallback_min_distinct:
+                    stat["skipped"] = "uniform_targets"
+                    continue
+                Q = torch.eye(n, dtype=torch.float32, device=Q.device)
+                stat["fallback"] = "identity" if distinct > 1 else "identity_identical"
+                if distinct == 1:       # no alignment signal; keep it from moving the shared temperature
+                    tau_s = tau.detach()
             if self.caption_weights is None:
-                loss_s = contrastive_loss(z_all[idx, s], t_all[idx, s], Q, tau)
+                loss_s = contrastive_loss(z_all[idx, s], t_all[idx, s], Q, tau_s)
             else:
                 weight_s = self.caption_weights(ids_s)
-                loss_s = weighted_contrastive_loss(z_all[idx, s], t_all[idx, s], Q, tau, weight_s)
+                loss_s = weighted_contrastive_loss(z_all[idx, s], t_all[idx, s], Q, tau_s, weight_s)
                 stat["mean_weight"] = float(weight_s.mean())
             stat["loss"] = float(loss_s.detach())
             loss = loss + loss_s

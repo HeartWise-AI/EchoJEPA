@@ -29,11 +29,22 @@ as short English sentences, one per finding, from four sources:
 6. Only with `--regurgitation-grade-valves VALVE ...` (off by default): the structured regurgitation grade, in the
    ontology's words, for a valve whose study has a routed colour-flow clip, in a second row of `scope` `color_flow`
    (`regurgitation_grade`). B-mode rows are never changed: a regurgitation jet is seen on colour Doppler only.
+   Training reads these rows only with `data.color_flow_captions: true` (`src/datasets/radar_study_dataset.py`): a
+   bag with a colour clip routed to the valve then gets its colour row, any other bag the B-mode row. This is the
+   decision of 2026-11-19 that a colour clip is captioned for its view with the regurgitation, instead of every
+   Doppler statement being removed.
 7. Only with `--ef-sentence` (off by default): the LV ejection fraction as a number, `LV ejection fraction is 45%.`
    (`ef_entry`), right after the LV function sentence, which is kept. The EF stated in the report text is preferred:
    the LV cell's retained text, else the conclusion, read by `stated_ef` (a point, a closed interval's midpoint);
    else the structured visual EF. The sentence is on no side (`EF_SIDE`): the row's flag is the flag
    without it. Its source is `ef_text`, `ef_conclusion` or `ef_structured`.
+
+8. The right atrium (trained from routing registry v2), which the RADAR parser has no grammar for, is captioned by
+   `ra_sentences` alone: its size from the RA cell (the column review's `ra_size` reading, with a grade word when
+   one is stated: `Right atrium is mildly dilated.`), else from the conclusion's segments that name the right atrium
+   and no other chamber, else from the RA area or major axis against the ASE 2015 limits (`RA_LIMITS`, with a grey
+   zone that decides nothing); and the RA area itself (`Right atrial area is 24 cm2.`, on no side) when it is
+   recorded. A text size that a measurement contradicts beyond the grey zone writes nothing for the study.
 
 The 16 wall segments are one sentence when all are normal, and one sentence per abnormal segment otherwise. A caption
 is the union over the views of every eligible clip of the study: an upper bound for a sampled bag, as in the
@@ -187,6 +198,26 @@ EF_SPREAD = 5.0                                  # text statements further apart
 # An EF labelled with another method than the visual estimate, in the words between the EF label and its value
 # (`calculée à`, `calculée par méthode Simpson`, 3D): left out of the text reading, as a strain value is.
 OTHER_METHOD = re.compile(r"simpson|biplan|\b[23]\s?d\b|teichholz|quinones|\bcalcul|\bmesur", re.IGNORECASE)
+
+
+# The right atrium (`ra_sentences`). Size limits, ASE 2015 (Lang et al.): RA area at end-systole in the apical
+# four-chamber view, upper limit 18 cm2; RA major dimension 5.3 cm. Inside a grey zone around a limit a measurement
+# neither sizes the atrium nor contradicts the text. Area values outside `valid` are not read.
+RA_COLUMN, RA_AREA_KEY = "ra_size", "ra_area"
+RA_LIMITS = {"area": {"column": "RA Area (4C)", "upper": 18.0, "grey": (16.0, 20.0), "valid": (3.0, 80.0),
+                      "contradicts_normal": 22.0, "contradicts_dilated": 14.0},
+             "axis": {"column": "RA Systolic Major Axis Length (4C)", "upper": 5.3, "grey": (5.0, 5.6),
+                      "valid": (2.0, 12.0)}}
+RA_AREA_SENTENCE = "Right atrial area is {} cm2."
+# A conclusion segment (between commas, semicolons, full stops) is read for the right atrium when it names it and no
+# other chamber, valve or vessel (a segment like `VG dilaté et OD normale` says two things).
+RA_NAMED = re.compile(r"\boreillette droite\b|\bod\b|\bcavites droites\b|\bbi-?auriculaire\b|\bdeux oreillettes\b"
+                      r"|\boreillettes\b(?! gauche)")
+RA_OTHER = re.compile(r"\boreillette gauche\b|\bog\b|\bventricul\w*|\bvg\b|\bvd\b|\bvalv\w*|\baort\w*|\bmitral\w*"
+                      r"|\btricuspid\w*|\bpulmonaire\w*|\bvci\b|\bveine\b|\bpericard\w*")
+RA_GRADES = (("mildly", re.compile(r"\blegere?s?\b|\blegerement\b")),
+             ("moderately", re.compile(r"\bmoderee?s?\b|\bmoderement\b")),
+             ("severely", re.compile(r"\bseveres?\b|\bseverement\b|\bimportante?s?\b|\bmarquee?s?\b")))
 
 
 def sentence(cr, spec, column, value):
@@ -453,6 +484,82 @@ def segment_values(report, views, name, acquisition, spec, cr, cache):
     return {concept: next(iter(values)) for concept, values in found.items() if len(values) == 1}
 
 
+def ra_grade(texts):
+    """The one grade word (`RA_GRADES`) of the clauses that state a dilatation, or None (none, or two). Only a
+    comma segment that names the dilatation and no other structure or regurgitation is read: `OD dilatée, IT
+    importante` grades the regurgitation, not the atrium."""
+    segments = [seg for text in texts for seg in text.split(",")
+                if "dilat" in seg and not RA_OTHER.search(seg) and not REGURGITATION_WORD.search(seg)]
+    found = {grade for seg in segments for grade, pattern in RA_GRADES if pattern.search(seg)}
+    return next(iter(found)) if len(found) == 1 else None
+
+
+def ra_text_size(report, cr, column):
+    """(value, grade, source) of the RA size the report text states, or (None, None, reason). The RA cell
+    (`column`) first, each clause read by the column review's `ra_size` reading (hedged clauses are not read); when
+    it states nothing, the conclusion's segments that name the right atrium and no other structure (`RA_NAMED`,
+    `RA_OTHER`). Two values in one source state nothing (`text_disagree`)."""
+    sources = ((column, "ra_text", lambda text: True),
+               (CONCLUSION_COLUMN, "ra_conclusion", lambda text: RA_NAMED.search(text) and not RA_OTHER.search(text)))
+    for source, name, reads in sources:
+        found = []
+        for _, _, text in cr._clauses(report, [source]):
+            for segment in (text.split(",") if source == CONCLUSION_COLUMN else [text]):
+                segment = segment.strip()
+                if segment and reads(segment):
+                    value = cr._text_value(RA_COLUMN, segment)
+                    if value:
+                        found.append((value, segment))
+        values = {v for v, _ in found}
+        if len(values) > 1:
+            return None, None, "text_disagree"
+        if values:
+            value = values.pop()
+            grade = ra_grade([t for _, t in found]) if value == "dilated" else None
+            return value, grade, name
+    return None, None, "text_none"
+
+
+def ra_measure(report, kind):
+    """(value, size or None) of an RA measurement (`RA_LIMITS[kind]`): size `normal`, `dilated`, or None in the grey
+    zone; (None, None) when it is missing or outside its valid range."""
+    limits = RA_LIMITS[kind]
+    value = rc.finite(report.get(limits["column"]))
+    if value is None or not limits["valid"][0] <= value <= limits["valid"][1]:
+        return None, None
+    low, high = limits["grey"]
+    return value, "dilated" if value > high else "normal" if value < low else None
+
+
+def ra_sentences(report, column, cr):
+    """(kept sentences {column: (sentences, side, value, source)} as `merged_sentences` returns them, flag, reason)
+    of one study's right atrium; see item 8 of the module docstring. `reason`: `written`, `no_ra_statement`, or
+    `text_area_conflict` (nothing is written). `cr`: the column review module."""
+    value, grade, source = ra_text_size(report, cr, column)
+    area, area_size = ra_measure(report, "area")
+    _, axis_size = ra_measure(report, "axis")
+    limits = RA_LIMITS["area"]
+    if value is not None and area is not None and (
+            (value == "normal" and area >= limits["contradicts_normal"])
+            or (value == "dilated" and area <= limits["contradicts_dilated"])):
+        return {}, "unknown", "text_area_conflict"
+    if value is None:
+        value, source = (area_size, "ra_area") if area_size else (axis_size, "ra_axis") if axis_size else (None, None)
+    kept = {}
+    if value is not None:
+        text = ("Right atrium is not dilated." if value == "normal" else
+                f"Right atrium is {grade} dilated." if grade else "Right atrium is dilated.")
+        kept[RA_COLUMN] = ([text], "normal" if value == "normal" else "abnormal",
+                           f"{grade}_dilated" if grade else value, source)
+    if area is not None:
+        whole = int(math.floor(area + 0.5))
+        kept[RA_AREA_KEY] = ([RA_AREA_SENTENCE.format(whole)], EF_SIDE, whole, "ra_area")
+    if not kept:
+        return {}, "unknown", "no_ra_statement"
+    flag = "normal" if value == "normal" else "abnormal" if value is not None else "unknown"
+    return kept, flag, "written"
+
+
 def merged_row(study_id, structure, report, views, policy, spec, cr, limits, acquisition="bmode",
                regurgitation_default_from=None, ef_sentence=False):
     """(caption row or None, dropped prefill findings) of one (study, structure) whose clips have `views`. With
@@ -470,6 +577,9 @@ def merged_sentences(study_id, structure, report, views, policy, spec, cr, limit
     import build_radar_captions as brc
 
     name, cache = structure.name, {}
+    if name == "ra":        # no parser grammar: its own reading (`ra_sentences`)
+        kept, flag, _ = ra_sentences(report, structure.report_column, cr)
+        return kept, flag, []
     prefill = ccp.prefill_columns(report, views, name, acquisition, spec, cr, cache)
     without_ef = {**report, policy.ef["column"]: None}
     row = brc.caption_row(study_id, structure, without_ef, policy)
@@ -714,6 +824,8 @@ def main(argv=None):
         needed |= {CONCLUSION_COLUMN, *(GRADE_COLUMNS[valve] for valve in valves)}
     if args.ef_sentence:
         needed |= {CONCLUSION_COLUMN, policy.ef["column"]}
+    if any(s.name == "ra" for s in routing.trained):
+        needed |= {CONCLUSION_COLUMN, *(limit["column"] for limit in RA_LIMITS.values())}
     missing = sorted(needed - set(reports.columns))
     if missing:
         raise SystemExit(f"The reports have no column {missing}: a missing column would look like missing evidence.")
@@ -756,6 +868,18 @@ def main(argv=None):
             "per_valve": {name: {k: ccp.suppressed(int(n)) for k, n in sorted(reasons.items())}
                           for name, reasons in sorted(grade_reasons.items())}}
 
+    if any(s.name == "ra" for s in routing.trained):      # absent unless the registry trains the RA (v2)
+        ra = captions[captions.structure == "ra"]
+        if "scope" in ra.columns:
+            ra = ra[ra.scope == "bmode"]
+        size_sources = Counter(e[2] for row in ra.sources for e in json.loads(row) if e[0] == RA_COLUMN)
+        info["ra_captions"] = {
+            "rows": len(ra), "with_area": int(sum(any(e[0] == RA_AREA_KEY for e in json.loads(row))
+                                                  for row in ra.sources)),
+            "size_sources": {k: ccp.suppressed(int(n)) for k, n in sorted(size_sources.items())},
+            "distinct_captions": int(ra.caption.nunique()),
+            "largest_caption_share": float(ra.caption.value_counts().iloc[0] / len(ra)) if len(ra) else None,
+            "limits": RA_LIMITS}
     if args.ef_sentence:        # absent when off, as above
         lv = captions[captions.structure == "lv"]
         values = [e[1] for s in lv.sources for e in json.loads(s) if e[0] == EF_COLUMN]
