@@ -23,6 +23,10 @@ still's structure tag (from the sonographer's measurement label, `data/build_sti
 may feed, and `still_types` names the still types (`cw_AV`, `pw_LVOT`, ...) that get an embedding. A structure fed
 only by stills may have no views, and one with `caption_source: structured` (Hemo) takes a templated caption instead
 of a report column. A v0 registry has neither key and behaves exactly as before.
+
+Version 2 (`configs/radar/radar_routing_v2.yaml`) adds `weak_views`: views of a structure's `views` that are a named
+override of the source specification (generic PSAX for the pulmonic and tricuspid valves, SUBCOSTAL for the right
+heart and the pericardium). They are routed like any other view; the key only records which ones are exploratory.
 """
 
 import hashlib
@@ -54,6 +58,9 @@ class Structure:
     caption_evidence: tuple = ()
     # a report caption's Doppler findings and the still tags that show each: ((finding, (tag, ...)), ...)
     finding_support: tuple = ()
+    # views of `views` that are a named override of the source (routing v2: generic PSAX for the pulmonic valve),
+    # reported as exploratory; eligibility does not distinguish them
+    weak_views: tuple[str, ...] = ()
 
     def supported_fields(self, tags) -> tuple[str, ...]:
         """The caption fields whose every still tag is among `tags` (the tags of the stills in a bag)."""
@@ -222,6 +229,9 @@ def _problems(raw) -> list[str]:
             problems.append(f"{where}: unknown views {unknown}")
         if UNCLASSIFIED_VIEW in own:
             problems.append(f"{where}: {UNCLASSIFIED_VIEW} carries no structure and cannot be routed")
+        weak = s.get("weak_views", [])
+        if not isinstance(weak, list) or len(set(weak)) != len(weak) or set(weak) - set(own):
+            problems.append(f"{where}: weak_views must be a list of distinct names among its views")
         source = s.get("caption_source", "report")
         if source not in CAPTION_SOURCES:
             problems.append(f"{where}: caption_source must be one of {CAPTION_SOURCES}")
@@ -265,7 +275,8 @@ def load_routing(path: str = DEFAULT_ROUTING) -> Routing:
                   views=tuple(s["views"]), routing=s["routing"], train=s["train"], note=s.get("note", ""),
                   caption_source=s.get("caption_source", "report"),
                   caption_evidence=tuple((str(k), tuple(v)) for k, v in (s.get("caption_evidence") or {}).items()),
-                  finding_support=tuple((str(k), tuple(v)) for k, v in (s.get("finding_support") or {}).items()))
+                  finding_support=tuple((str(k), tuple(v)) for k, v in (s.get("finding_support") or {}).items()),
+                  weak_views=tuple(s.get("weak_views") or ()))
         for s in raw["structures"]
     )
     return Routing(version=raw["version"], sha256=hashlib.sha256(data).hexdigest(),

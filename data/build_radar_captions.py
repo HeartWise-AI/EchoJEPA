@@ -155,15 +155,18 @@ def build_tables(reports, routing, policy, doppler=False, still_only=()):
     fed = {name for targets in routing.still_structs.values() for name in targets}
     if doppler and not fed:
         raise SystemExit("--doppler-captions needs a routing registry with still_structs (version 1).")
-    wanted = {c for s in routing.trained for c in [s.report_column, *rn.report_columns(s.name, policy)]} - {None}
+    # A structure the parser has no grammar for (the right atrium of routing v2) has no French caption: the merged
+    # builder captions it (`build_radar_captions_merged.ra_sentences`).
+    trained = [s for s in routing.trained if s.name in rn.GRAMMARS or s.caption_source == "structured"]
+    wanted = {c for s in trained for c in [s.report_column, *rn.report_columns(s.name, policy)]} - {None}
     if doppler:
-        wanted |= set(rdc.hemo_columns()) if any(s.caption_source == "structured" for s in routing.trained) else set()
+        wanted |= set(rdc.hemo_columns()) if any(s.caption_source == "structured" for s in trained) else set()
     missing = sorted(wanted - set(reports.columns))
     if missing:
         raise SystemExit(f"The reports have no column {missing}: a missing column would look like missing evidence.")
     rows, excluded = [], []
     for record in reports.to_dict("records"):
-        for structure in routing.trained:
+        for structure in trained:
             study_id = str(record["study_id"])
             with_clips = study_id not in still_only
             row = caption_row(study_id, structure, record, policy) if structure.report_column and with_clips else None
