@@ -17,6 +17,7 @@ Example (one process per GPU):
 """
 
 import argparse
+import json
 import os  # noqa: I001 — the environment is set before cv2 is imported.
 import sys
 import time
@@ -50,11 +51,12 @@ def load_panecho(device):
             self.class_indices = np.arange(self.class_names.size)
             self.mean = spec["mean"]
 
-    task_dict = pd.read_pickle(os.path.join(WEIGHTS, "tasks.pkl"))
+    with open(os.path.join(PANECHO_SRC, "content", "tasks.json")) as f:
+        task_dict = json.load(f)
     tasks = [Task(name, spec) for name, spec in task_dict.items()]
     encoder = FrameTransformer("convnext_tiny", 8, 4, 0.0, "mean", CLIP_LEN)
     model = MultiTaskModel(encoder, encoder.encoder.n_features, tasks, 0.25, True)
-    weights = torch.load(os.path.join(WEIGHTS, "panecho.pt"), map_location="cpu", weights_only=False)["weights"]
+    weights = torch.load(os.path.join(WEIGHTS, "panecho.pt"), map_location="cpu", weights_only=True)["weights"]
     del weights["encoder.time_encoder.pe"]
     missing, unexpected = model.load_state_dict(weights, strict=False)
     missing = [k for k in missing if k != "encoder.time_encoder.pe"]

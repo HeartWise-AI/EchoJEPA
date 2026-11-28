@@ -1,0 +1,268 @@
+{
+  "pericardial-effusion": {
+    "task_type": "binary_classification",
+    "class_names": [
+      "mild_mod_severe",
+      "none_trace"
+    ],
+    "mean": 0.961859643488036
+  },
+  "EF": {
+    "task_type": "regression",
+    "class_names": [],
+    "mean": 59.002175258801685
+  },
+  "GLS": {
+    "task_type": "regression",
+    "class_names": [],
+    "mean": 18.556993691537958
+  },
+  "LVEDV": {
+    "task_type": "regression",
+    "class_names": [],
+    "mean": 115.5111406156421
+  },
+  "LVESV": {
+    "task_type": "regression",
+    "class_names": [],
+    "mean": 49.583417494769854
+  },
+  "LVSV": {
+    "task_type": "regression",
+    "class_names": [],
+    "mean": 65.83874621632124
+  },
+  "LVSize": {
+    "task_type": "multi-class_classification",
+    "class_names": [
+      "Mildly Increased",
+      "Moderately|Severely Increased",
+      "Normal"
+    ],
+    "mean": 1.7461797378240904
+  },
+  "LVWallThickness-increased-any": {
+    "task_type": "binary_classification",
+    "class_names": [
+      "Increased",
+      "Normal"
+    ],
+    "mean": 0.5219670379275719
+  },
+  "LVWallThickness-increased-modsev": {
+    "task_type": "binary_classification",
+    "class_names": [
+      "Moderately|severely increased",
+      "Normal or mildly increased"
+    ],
+    "mean": 0.9085002140512771
+  },
+  "LVSystolicFunction": {
+    "task_type": "multi-class_classification",
+    "class_names": [
+      "Mildly Decreased",
+      "Moderately|Severely Decreased",
+      "Normal|Hyperdynamic"
+    ],
+    "mean": 1.7900815714390226
+  },
+  "LVWallMotionAbnormalities": {
+    "task_type": "binary_classification",
+    "class_names": [
+      "None",
+      "Present"
+    ],
+    "mean": 0.21668860816223634
+  },
+  "IVSd": {
+    "task_type": "regression",
+    "class_names": [],
+    "mean": 1.0687505374363675
+  },
+  "LVPWd": {
+    "task_type": "regression",
+    "class_names": [],
+    "mean": 1.0329714537357577
+  },
+  "LVIDs": {
+    "task_type": "regression",
+    "class_names": [],
+    "mean": 3.1036937225490657
+  },
+  "LVIDd": {
+    "task_type": "regression",
+    "class_names": [],
+    "mean": 4.662377451202295
+  },
+  "LVOTDiam": {
+    "task_type": "regression",
+    "class_names": [],
+    "mean": 2.0567495134373415
+  },
+  "LVDiastolicFunction": {
+    "task_type": "multi-class_classification",
+    "class_names": [
+      "Mild|Indeterminate",
+      "Moderate|Severe",
+      "Normal"
+    ],
+    "mean": 1.2414207550193448
+  },
+  "E|EAvg": {
+    "task_type": "regression",
+    "class_names": [],
+    "mean": 10.804208154645387
+  },
+  "RVSP": {
+    "task_type": "regression",
+    "class_names": [],
+    "mean": 30.469686248382423
+  },
+  "RVSize": {
+    "task_type": "multi-class_classification",
+    "class_names": [
+      "Mildly Increased",
+      "Moderately|Severely Increased",
+      "Normal"
+    ],
+    "mean": 1.7230919397830087
+  },
+  "RVSystolicFunction": {
+    "task_type": "binary_classification",
+    "class_names": [
+      "Decreased",
+      "Normal"
+    ],
+    "mean": 0.9085695482536549
+  },
+  "RVIDd": {
+    "task_type": "regression",
+    "class_names": [],
+    "mean": 3.162131545983516
+  },
+  "TAPSE": {
+    "task_type": "regression",
+    "class_names": [],
+    "mean": 2.1422161938799253
+  },
+  "RVSVel": {
+    "task_type": "regression",
+    "class_names": [],
+    "mean": 12.794537628299329
+  },
+  "LASize": {
+    "task_type": "multi-class_classification",
+    "class_names": [
+      "Mildly Dilated",
+      "Moderately|Severely Dilated",
+      "Normal"
+    ],
+    "mean": 1.4749212460623031
+  },
+  "LAIDs2D": {
+    "task_type": "regression",
+    "class_names": [],
+    "mean": 4.127667695482703
+  },
+  "LAVol": {
+    "task_type": "regression",
+    "class_names": [],
+    "mean": 59.82227248910341
+  },
+  "RASize": {
+    "task_type": "binary_classification",
+    "class_names": [
+      "Dilated",
+      "Normal"
+    ],
+    "mean": 0.7001227886670608
+  },
+  "RADimensionM-L(cm)": {
+    "task_type": "regression",
+    "class_names": [],
+    "mean": 3.8826537010431927
+  },
+  "AVStructure": {
+    "task_type": "binary_classification",
+    "class_names": [
+      "Bicuspid",
+      "Normal"
+    ],
+    "mean": 0.9848413783468221
+  },
+  "AVStenosis": {
+    "task_type": "multi-class_classification",
+    "class_names": [
+      "Mild|Moderate",
+      "None",
+      "Severe"
+    ],
+    "mean": 0.9203847129284614
+  },
+  "AVPkVel(m|s)": {
+    "task_type": "regression",
+    "class_names": [],
+    "mean": 1.712958363035933
+  },
+  "AVRegurg": {
+    "task_type": "multi-class_classification",
+    "class_names": [
+      "Mild",
+      "Moderate|Severe",
+      "None|Trace"
+    ],
+    "mean": 1.5436156398788055
+  },
+  "LVOT20mmHg": {
+    "task_type": "binary_classification",
+    "class_names": [
+      "0.0",
+      "1.0"
+    ],
+    "mean": 0.009691400136442072
+  },
+  "MVStenosis": {
+    "task_type": "binary_classification",
+    "class_names": [
+      "Mild|Moderate|Severe",
+      "None"
+    ],
+    "mean": 0.9743735514059562
+  },
+  "MVRegurgitation": {
+    "task_type": "multi-class_classification",
+    "class_names": [
+      "Mild",
+      "Moderate|Severe",
+      "None|Trace"
+    ],
+    "mean": 1.1843198385309197
+  },
+  "TVRegurgitation": {
+    "task_type": "multi-class_classification",
+    "class_names": [
+      "Mild",
+      "Moderate|Severe",
+      "None|Trace"
+    ],
+    "mean": 1.1358925652692495
+  },
+  "TVPkGrad": {
+    "task_type": "regression",
+    "class_names": [],
+    "mean": 26.13051951375867
+  },
+  "RAP-8-or-higher": {
+    "task_type": "binary_classification",
+    "class_names": [
+      "0.0",
+      "1.0"
+    ],
+    "mean": 0.1608393621308361
+  },
+  "AORoot": {
+    "task_type": "regression",
+    "class_names": [],
+    "mean": 3.386209349294387
+  }
+}
