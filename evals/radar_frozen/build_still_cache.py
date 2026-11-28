@@ -38,7 +38,7 @@ import yaml
 
 from evals.radar_frozen.build_token_cache import DEFAULT_NORMALIZATION, REPO, _commit, build_encoder, encode_batch
 from src.datasets.radar_study_dataset import file_sha256
-from src.datasets.radar_token_cache import TokenCacheWriter
+from src.datasets.radar_token_cache import TokenCacheWriter, write_file
 from src.datasets.still_preprocess import PREPROCESS_VERSION, prepare_still
 
 FRAMES = (2, 16)
@@ -135,8 +135,9 @@ def build(config, stills_path, out, frames, split=None, device="auto", batch_siz
         for i, still_tokens in zip(positions, tokens):
             writer.add(table.still_id[i], still_tokens)
     meta = writer.close()
-    pd.DataFrame(failed, columns=["still_id", "reason"]).to_csv(os.path.join(out, "failed.csv"), index=False)
-    table[table.still_id.isin(writer.seen)].to_csv(os.path.join(out, "stills.csv"), index=False)
+    failures = pd.DataFrame(failed, columns=["still_id", "reason"])
+    write_file(out, "failed.csv", failures.to_csv(index=False).encode("utf-8"))
+    write_file(out, "stills.csv", table[table.still_id.isin(writer.seen)].to_csv(index=False).encode("utf-8"))
     summary = {"stills_in_table": len(table), "cached": meta["n_clips"], "token_grid": grid,
                "failed": pd.Series([kind for _, kind in failed]).value_counts().to_dict()}
     print(json.dumps(summary))
