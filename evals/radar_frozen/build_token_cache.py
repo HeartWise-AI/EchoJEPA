@@ -60,7 +60,7 @@ import yaml
 
 from src.datasets.radar_study_dataset import file_sha256, read_table
 from src.datasets.utils import color_order
-from src.datasets.radar_token_cache import TokenCache, TokenCacheWriter
+from src.datasets.radar_token_cache import TokenCache, TokenCacheWriter, move_file, write_file
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 DEFAULT_NORMALIZATION = ((0.485, 0.456, 0.406), (0.229, 0.224, 0.225))
@@ -266,7 +266,7 @@ def write_chunk(folder, clip_ids, loader, encoder, device, cache, record):
         tokens = encode_batch(encoder, clips, indices, device, bool(cache.get("use_bfloat16", True)))
         for i, clip_tokens in zip(positions, tokens):
             writer.add(clip_ids[i], clip_tokens)
-    pd.DataFrame({"clip_id": failed}).to_csv(os.path.join(folder, "failed.csv"), index=False)
+    write_file(folder, "failed.csv", pd.DataFrame({"clip_id": failed}).to_csv(index=False).encode("utf-8"))
     writer.close()
     return len(writer.rows), len(failed)
 
@@ -323,15 +323,15 @@ def merge(config, args):
     writer = TokenCacheWriter(args.out, cache["token_grid"], cache["embed_dim"], cache.get("dtype", "float16"),
                               provenance={**record, "unreadable": len(failed)})
     for part, folder in zip(parts, folders):
+        chunk = os.path.relpath(folder, args.out)
         for row in part.index.to_dict("records"):
-            target = os.path.join(args.out, row["file"])
-            os.makedirs(os.path.dirname(target), exist_ok=True)
-            os.replace(os.path.join(folder, row["file"]), target)
+            move_file(args.out, os.path.join(chunk, row["file"]), row["file"])
             writer.rows.append(row)
             writer.seen.add(row["clip_id"])
     meta = writer.close()
-    failed.to_csv(os.path.join(args.out, "failed.csv"), index=False)
-    clips[clips.clip_id.isin(set(index.clip_id))].to_csv(os.path.join(args.out, "clips.csv"), index=False)
+    write_file(args.out, "failed.csv", failed.to_csv(index=False).encode("utf-8"))
+    kept = clips[clips.clip_id.isin(set(index.clip_id))]
+    write_file(args.out, "clips.csv", kept.to_csv(index=False).encode("utf-8"))
     shutil.rmtree(os.path.join(args.out, "chunks"))
     print(json.dumps({"clips_in_table": len(clips), "excluded": n_excluded, "cached": meta["n_clips"],
                       "unreadable": len(failed), "index_sha256": meta["index_sha256"]}))
