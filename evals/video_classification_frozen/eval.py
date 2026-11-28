@@ -1337,7 +1337,7 @@ def run_test(
     """
     # First load the checkpoint onto CPU, then retrieve the validation score for every probe head
     # and choose the best head using validation only.
-    checkpoint = robust_checkpoint_loader(checkpoint_path, map_location=torch.device("cpu"))
+    checkpoint = robust_checkpoint_loader(checkpoint_path, map_location=torch.device("cpu"), weights_only=True)
     if fingerprint is not None:
         # Every rank checks the same two fingerprints, so all ranks stop together.
         provenance.check_fingerprint(checkpoint.get("fingerprint"), fingerprint, checkpoint_path,
@@ -1666,7 +1666,7 @@ def check_finished(folder, num_epochs):
     `latest.pt` records as the best (by epoch and validation score)."""
     def saved(name):
         path = os.path.join(folder, name)
-        return torch.load(path, map_location="cpu", weights_only=False, mmap=True) if os.path.exists(path) else {}
+        return torch.load(path, map_location="cpu", weights_only=True, mmap=True) if os.path.exists(path) else {}
 
     latest = saved("latest.pt")
     done = latest.get("epoch", 0)
@@ -1685,7 +1685,7 @@ def restore_best(folder, best_epoch):
     again, and `best.pt` goes back to the recorded best epoch, copied from its snapshot."""
     best_path = os.path.join(folder, "best.pt")
     if (os.path.exists(best_path)
-            and torch.load(best_path, map_location="cpu", weights_only=False, mmap=True)["epoch"] == best_epoch):
+            and torch.load(best_path, map_location="cpu", weights_only=True, mmap=True)["epoch"] == best_epoch):
         return
     snapshot = os.path.join(folder, f"epoch_{best_epoch:03d}.pt")
     if not os.path.exists(snapshot):
@@ -1701,7 +1701,7 @@ def checkpoint_reference(path, task_type, head_names, fingerprint, sha=None):
     """Describe a saved probe without its filesystem path using its file name, SHA-256,
     epoch, validation-selected head and score, and encoder checkpoint identity."""
     # Loads the checkpoint.
-    saved = torch.load(path, map_location="cpu", weights_only=False, mmap=True)
+    saved = torch.load(path, map_location="cpu", weights_only=True, mmap=True)
     # Gets the validation score of every head.
     val = np.asarray(saved["val_acc_per_head"], dtype=float)
     # Chooses the best head.
@@ -1719,7 +1719,7 @@ def checkpoint_reference(path, task_type, head_names, fingerprint, sha=None):
 
 
 def load_checkpoint(device, r_path, classifiers, opt, scaler, val_only=False):
-    checkpoint = robust_checkpoint_loader(r_path, map_location=torch.device("cpu"))
+    checkpoint = robust_checkpoint_loader(r_path, map_location=torch.device("cpu"), weights_only=True)
     logger.info(f"read-path: {r_path}")
 
     # -- loading classifier(s)

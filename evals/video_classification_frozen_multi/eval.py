@@ -684,7 +684,7 @@ def load_selected_head(checkpoint_path, classifiers, fingerprint):
     the lowest per-study validation MAE of its epoch, loaded into its classifier in eval mode.
 
     Returns (checkpoint, head index, classifier)."""
-    checkpoint = robust_checkpoint_loader(checkpoint_path, map_location=torch.device("cpu"))
+    checkpoint = robust_checkpoint_loader(checkpoint_path, map_location=torch.device("cpu"), weights_only=True)
     if fingerprint is not None:
         provenance.check_fingerprint(checkpoint.get("fingerprint"), fingerprint, checkpoint_path,
                                      ignore=("settings.world_size",))

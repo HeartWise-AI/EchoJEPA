@@ -255,7 +255,7 @@ def score_validation(args_eval, out_dir=None, overwrite=False, tolerance=DEFAULT
     fingerprint = probe.shared_fingerprint(
         rank, world_size, device, p.checkpoint, p.manifests,
         {"target_mean": p.target_mean, "target_std": p.target_std}, p.settings(world_size))
-    checkpoint = robust_checkpoint_loader(best_path, map_location=torch.device("cpu"))
+    checkpoint = robust_checkpoint_loader(best_path, map_location=torch.device("cpu"), weights_only=True)
     # Every rank checks the same two fingerprints, so all ranks stop together.
     provenance.check_fingerprint(checkpoint.get("fingerprint"), fingerprint, best_path, ignore=NOT_CHECKED)
     head = select_head(checkpoint)
