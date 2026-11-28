@@ -1,10 +1,34 @@
 dependencies = ['torch', 'numpy', 'pandas']
 
+import hashlib
+import io
+import os
+
 import numpy as np
 import pandas as pd
 import torch
 
 from src.models import FrameTransformer, MultiTaskModel
+
+TASKS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'content', 'tasks.pkl')
+WEIGHTS_URL = 'https://github.com/CarDS-Yale/PanEcho/releases/download/v1.0/panecho.pt'
+WEIGHTS_SHA256 = '896a279d2e5d669dd762adb2077e948ec38087006d2b4001657b87a132e2da35'
+
+
+def load_pretrained_weights():
+    cache_dir = os.path.join(torch.hub.get_dir(), 'checkpoints')
+    os.makedirs(cache_dir, exist_ok=True)
+    path = os.path.join(cache_dir, 'panecho.pt')
+    if not os.path.exists(path):
+        torch.hub.download_url_to_file(WEIGHTS_URL, path, hash_prefix=WEIGHTS_SHA256, progress=False)
+    # Hash and load the same bytes so the cached file cannot change in between.
+    with open(path, 'rb') as f:
+        data = f.read()
+    digest = hashlib.sha256(data).hexdigest()
+    if digest != WEIGHTS_SHA256:
+        raise RuntimeError(f'{path} has SHA-256 {digest}, expected {WEIGHTS_SHA256}; delete it and retry')
+    return torch.load(io.BytesIO(data), map_location='cpu', weights_only=True)
+
 
 class Task():
     """Echocardiography interpretation task object."""
@@ -27,7 +51,7 @@ def PanEcho(pretrained=True, image_encoder_only=False, backbone_only=False, task
     transformer_dropout = 0.
 
     # Load tasks
-    task_dict = pd.read_pickle('https://github.com/CarDS-Yale/PanEcho/blob/main/content/tasks.pkl?raw=true')
+    task_dict = pd.read_pickle(TASKS_PATH)
     all_tasks = list(task_dict.keys())
     task_list = [Task(t, task_dict[t]['task_type'], task_dict[t]['class_names'], task_dict[t]['mean']) for t in all_tasks]
 
@@ -39,7 +63,7 @@ def PanEcho(pretrained=True, image_encoder_only=False, backbone_only=False, task
 
     # Load pretrained weights
     if pretrained:
-        weights = torch.hub.load_state_dict_from_url('https://github.com/CarDS-Yale/PanEcho/releases/download/v1.0/panecho.pt', map_location='cpu', progress=False)['weights']
+        weights = load_pretrained_weights()['weights']
         del weights['encoder.time_encoder.pe']  # allow for variable clip_len (fixed positional encoding does not need to be loaded from PanEcho)
         msg = model.load_state_dict(weights, strict=False)
 
